@@ -1,0 +1,17 @@
+name = "Miami-Dade building footprints"
+credit = "Miami-Dade County"
+licence = "disclaimer only"
+theme = "buildings"
+availability = "open"
+notes = "605,762 footprints, 567,944 with BLDG_HEIGHT; the download answered HTTP 500 to the research (USA §5). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Miami-Dade County, Florida, United States), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints with heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1210692"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+completeness = 93.8

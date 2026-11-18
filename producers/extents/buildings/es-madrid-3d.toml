@@ -1,0 +1,16 @@
+name = "Madrid 3D city model"
+credit = "Ayuntamiento de Madrid"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "LoD2 roof-shaped buildings (SLPK, 2.2 GB) (EUROPE-W §12). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Madrid, Comunidad de Madrid, España), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD2"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R5326784"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

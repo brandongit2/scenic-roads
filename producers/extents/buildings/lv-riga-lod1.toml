@@ -1,0 +1,16 @@
+name = "Riga LOD1 model"
+credit = "Rīgas valstspilsētas pašvaldība"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "116,659 LoD1 objects, LoD2 for the historic centre and 13 neighbourhoods; adds a height to 5,074 of 6,723 buildings (EUROPE-E §3.6, §10.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Rīga, Latvija), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R13048688"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod1"

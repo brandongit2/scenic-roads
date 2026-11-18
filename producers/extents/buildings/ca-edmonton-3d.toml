@@ -1,0 +1,16 @@
+name = "Edmonton rooflines and 3D buildings"
+credit = "City of Edmonton"
+licence = "Edmonton Open Data Terms of Use v2.1"
+theme = "buildings"
+availability = "open"
+notes = "A height on 384,228 buildings and MultiPatch with roof form on 383,329 (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Edmonton, Alberta, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Roof forms"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2564500"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

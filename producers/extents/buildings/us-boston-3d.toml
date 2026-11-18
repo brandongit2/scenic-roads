@@ -1,0 +1,17 @@
+name = "Boston roof parts and 3D buildings"
+credit = "City of Boston (Analyze Boston)"
+licence = "PDDL-1.0"
+source = "https://data.boston.gov/"
+theme = "buildings"
+availability = "open"
+notes = "Roof-part heights (128,621 parts) and a 3D scene (USA §4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Boston, Suffolk County, Massachusetts, United States), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Roof parts"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2315704"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

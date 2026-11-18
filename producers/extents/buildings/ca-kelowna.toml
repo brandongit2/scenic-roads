@@ -1,0 +1,17 @@
+name = "Kelowna building footprints"
+credit = "City of Kelowna"
+licence = "the city's licence (read via Wayback)"
+theme = "buildings"
+availability = "open"
+notes = "46,477 footprints with heights (2021) (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Kelowna, Westbank First Nation #9, Regional District of Central Okanagan, British Columbia, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints with heights (2021)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2221794"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+year = 2021

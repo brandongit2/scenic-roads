@@ -1,0 +1,17 @@
+name = "Graz A106 buildings"
+credit = "Stadt Graz"
+licence = "not found"
+theme = "buildings"
+availability = "open"
+notes = "65,617 buildings, 86.7 % with a height; the same as BEV's (EUROPE-W §11, §20.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Graz, Steiermark, Österreich), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R34719"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+completeness = 86.7

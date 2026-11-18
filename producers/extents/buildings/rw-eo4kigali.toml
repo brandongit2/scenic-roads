@@ -1,0 +1,17 @@
+name = "EO4Kigali"
+credit = "EO4Kigali (Zenodo)"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "224,657 polygons with coarse heights (median 2.1 m); 44.2 % of Overture's buildings gain a height (REST §2.6, §9.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (City of Kigali, Rwanda), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Coarse heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1708283"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "estimated"

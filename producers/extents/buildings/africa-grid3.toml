@@ -1,0 +1,15 @@
+name = "GRID3 settlement extents with building heights"
+credit = "GRID3"
+licence = "CC-BY-SA-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Block-level gbuilding_max_height and gbuilding_mean_height from Google's 2.5D: a republication of it (REST §2.3). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Block heights"
+method = "none"
+why = "25 countries' settlement blocks (Nigeria v4.1, DR Congo v4.0, 23 others v3.0), their list not read"
+[piece.metrics]
+detail = "heights"
+measured = "gridded"

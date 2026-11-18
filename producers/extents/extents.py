@@ -35,6 +35,9 @@ A reader per kind of service, none per source:
            a kind of source; with `member`, the files a zip at `url` holds whose names match it
            (the zip fetched whole: GDAL reads no zip by range)
   none    no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
+  overture  the build's own copy of Overture's buildings (`dataset`, an Overture source's name;
+           `holds`: footprints, storeys or heights; `share`): the piece is listed with a null
+           geometry and the class `mask`, its cells drawn by the build's step (bld::bld::extents)
 
 Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
 more than --max-gb (5) read for one source, its answers together (the run stops, naming it):
@@ -187,7 +190,9 @@ FETCHES = "api, data"
 CLASSES = ("mask", "files", "index", "service", "claimed", "unknown")
 AVAILABILITY = ("open", "login", "paid", "closed")
 # The class a method's extents are; None: the declaration says (`class`).
-METHOD_CLASS = {"arcgis": None, "stac": "index", "wfs": None, "file": None, "listing": "index", "raster": "files", "atom": "index", "none": "unknown"}
+METHOD_CLASS = {"arcgis": None, "stac": "index", "wfs": None, "file": None, "listing": "index", "raster": "files", "atom": "index", "none": "unknown", "overture": "mask"}
+# What an `overture` block's piece holds of its dataset's buildings.
+HOLDS = ("footprints", "storeys", "heights")
 M_PER_DEG = 111_320.0
 
 
@@ -1384,12 +1389,21 @@ def block_pieces(net, decl, b, today):
         cls = "claimed"
     specs = b.get("metrics") or {}
     base = {"extent": cls, "availability": avail}
-    if method == "none":
+    if method in ("none", "overture"):
+        # (No extent: `none`'s isn't known; `overture`'s is drawn by the build's step from its own
+        # copy of Overture's buildings, where they are `share` or more of a z14 tile's: bld::bld::extents.)
         vals = {k: metric(s, {})[0] for k, s in specs.items()}
         props = {"piece": b["id"], **base, **{k: v for k, v in vals.items() if v is not None}}
         if b.get("label"):
             props["name"] = b["label"]
-        yield {"type": "Feature", "properties": props, "geometry": None}, {"piece": b["id"], "method": "none", "why": b["why"], "date": today}
+        if method == "none":
+            read = {"piece": b["id"], "method": "none", "why": b["why"], "date": today}
+        else:
+            if not b.get("dataset") or b.get("holds") not in HOLDS or not 0 <= float(b.get("share", -1)) <= 1:
+                sys.exit(f"{decl['id']}/{b['id']}: an overture block names its dataset, what it holds ({', '.join(HOLDS)}) and its share")
+            read = {"piece": b["id"], "method": "overture", "dataset": b["dataset"], "holds": b["holds"],
+                    "share": float(b["share"]), "grain": "z14 tiles", "date": today}
+        yield {"type": "Feature", "properties": props, "geometry": None}, read
         return
     if b.get("name") and b["name"] not in b.get("by", []):
         sys.exit(f"{decl['id']}/{b['id']}: name {b['name']!r} isn't one of `by`: a piece's features would name it apart")

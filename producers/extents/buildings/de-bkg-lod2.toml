@@ -1,0 +1,17 @@
+name = "BKG LoD2-DE, LoD1-DE and HU-DE"
+credit = "Bundesamt für Kartographie und Geodäsie"
+licence = "restricted to federal and Länder authorities"
+theme = "buildings"
+availability = "closed"
+notes = "58,623,843 LoD2 buildings (the Länder's counts summed) (EUROPE-E §2.1). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD2"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["DEU"] }
+tolerance_m = 500
+[piece.metrics]
+detail = "lod2"

@@ -1,0 +1,17 @@
+name = "TxGIO StratMap building footprints with height"
+credit = "Texas Geographic Information Office (TxGIO)"
+licence = "TWDB/TxGIO terms (no licence stated)"
+theme = "buildings"
+availability = "open"
+notes = "2022-25 lidar-derived heights with a confidence, 2,185,538 polygons, 2,185,537 with BuildingHeight > 0; none yet for Harris, Dallas or Bexar (USA §5). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Lidar heights"
+method = "none"
+why = "80 of Texas's 254 counties, not listed as an area"
+[piece.metrics]
+detail = "heights"
+measured = "lidar"
+completeness = 99.99
+year = 2025

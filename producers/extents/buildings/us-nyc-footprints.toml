@@ -1,0 +1,19 @@
+name = "NYC building footprints"
+credit = "City of New York (NYC Open Data)"
+licence = "NYC Open Data terms"
+source = "https://data.cityofnewyork.us/"
+theme = "buildings"
+availability = "open"
+notes = "Measured roof height on 1,082,255 of 1,082,972 buildings (99.93 %), updated weekly; Overture's NYC height share is 98.5 % (an OSM import of this layer), so little to add (USA §4, §7). Its extent: the area it covers, its boundary as OpenStreetMap maps it (New York, United States), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints with roof heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R175905"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "photogrammetry"
+completeness = 99.93

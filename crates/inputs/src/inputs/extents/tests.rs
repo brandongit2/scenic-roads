@@ -482,6 +482,110 @@ fn a_declaration() {
 /// The declarations' own check (`DECL` here is the fixture).
 const DECL_CHECK: &str = super::DECL;
 
+/// A primary of words (the buildings' `detail`): no `within`, its pieces tying on the same word, and
+/// the guarantee's bound the least gap between its values, k ÷ (1 + k).
+#[test]
+fn a_words_primary_and_its_guarantee() {
+    const BUILDINGS: &str = include_str!("../../../../../producers/extents/buildings/score.toml");
+    let c = Extents.file("buildings/score.toml", BUILDINGS.as_bytes());
+    assert!(c.findings.is_empty(), "{:?}", c.findings);
+    let s = score(BUILDINGS.as_bytes()).unwrap();
+    assert_eq!((s.primary.as_str(), s.within), ("detail", None));
+    let Scale::Values(words) = &s.metrics["detail"].scale else { panic!("detail: {:?}", s.metrics["detail"].scale) };
+    // (The least gap, lod3's 0.9 to the mesh's 1.)
+    assert!((Score::bound_values(words).unwrap() - 0.1 / 1.1).abs() < 1e-12);
+    assert_eq!(Score::bound_values(&BTreeMap::from([("one".to_string(), 1.0)])), None);
+    // A better word outscores a worse one whatever the rest; the same word ranks by its rest.
+    let of = |m: serde_json::Value| s.of(m.as_object().unwrap()).0.unwrap();
+    let best_lod2 = of(serde_json::json!({"detail": "lod2", "measured": "lidar", "completeness": 100, "year": 2026}));
+    let worst_lod3 = of(serde_json::json!({"detail": "lod3", "measured": "gridded", "completeness": 0, "year": 2000}));
+    assert!(worst_lod3 > best_lod2);
+    assert!(best_lod2 > of(serde_json::json!({"detail": "lod2", "measured": "estimated"})));
+    assert_eq!(s.tie(), 0.0);
+    for (from, to) in [
+        // A factor for words, a share over the bound, a single word.
+        ("share = 0.05", "share = 0.05\nwithin = 1.25"),
+        ("share = 0.05", "share = 0.1"),
+        (
+            "footprints = 0.0\nstoreys = 0.25\nheights = 0.5\nlod1 = 0.5\nlod2 = 0.75\nlod3 = 0.9\nmesh = 1.0",
+            "mesh = 1.0",
+        ),
+    ] {
+        let bad = BUILDINGS.replacen(from, to, 1);
+        assert_ne!(bad, BUILDINGS);
+        assert_eq!(checks_of("buildings/score.toml", bad.as_bytes()), one(SCORE_CHECK, Level::Error), "{from} → {to}");
+    }
+}
+
+/// An `overture` block: its pieces of class mask, drawn by the build (no geometry in the file), each
+/// naming its dataset, what it holds and its share of a cell's buildings.
+#[test]
+fn an_overture_block() {
+    const OVERTURE: &str = r#"name = "Overture buildings"
+credit = "Overture"
+licence = "ODbL-1.0"
+theme = "buildings"
+availability = "open"
+
+[[piece]]
+id = "osm-heights"
+method = "overture"
+dataset = "OpenStreetMap"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"
+"#;
+    assert!(checks_of("buildings/overture.toml", OVERTURE.as_bytes()).is_empty());
+    let d = declaration(OVERTURE.as_bytes()).unwrap();
+    assert_eq!(d.blocks[0].extent, "mask");
+    assert_eq!(
+        d.blocks[0].overture,
+        Some(Overture { dataset: "OpenStreetMap".into(), holds: "heights".into(), share: 0.5 })
+    );
+    for (from, to) in [
+        ("dataset = \"OpenStreetMap\"\n", ""),
+        ("dataset = \"OpenStreetMap\"", "dataset = \" \""),
+        ("holds = \"heights\"", "holds = \"roofs\""),
+        ("share = 0.5", "share = 1.5"),
+        ("share = 0.5\n", ""),
+        ("method = \"overture\"", "method = \"overture\"\nclass = \"index\""),
+    ] {
+        let bad = OVERTURE.replacen(from, to, 1);
+        assert_ne!(bad, OVERTURE);
+        assert_eq!(
+            checks_of("buildings/overture.toml", bad.as_bytes()),
+            one(DECL_CHECK, Level::Error),
+            "{from} → {to}"
+        );
+    }
+    // Its file: the piece with no geometry, of class mask (another class with none is refused), its
+    // reading the block's dataset, holds and share (another's isn't made from the block).
+    let file = |extent: &str, share: &str| {
+        let f = feature(
+            &format!(r#""piece":"osm-heights","extent":"{extent}","availability":"open","detail":"heights""#),
+            "null",
+        );
+        format!(
+            r#"{{"type":"FeatureCollection","source":"overture","theme":"buildings","read":[{{"piece":"osm-heights","method":"overture","dataset":"OpenStreetMap","holds":"heights","share":{share}}}],"features":[{f}]}}"#
+        )
+    };
+    assert!(checks_of("buildings/overture.geojson", file("mask", "0.5").as_bytes()).is_empty());
+    assert!(!checks_of("buildings/overture.geojson", file("index", "0.5").as_bytes()).is_empty());
+    let score = include_bytes!("../../../../../producers/extents/buildings/score.toml");
+    let made = |share: &str| {
+        let g = file("mask", share);
+        let fs = whole_of(&[
+            ("buildings/score.toml", score),
+            ("buildings/overture.toml", OVERTURE.as_bytes()),
+            ("buildings/overture.geojson", g.as_bytes()),
+        ]);
+        fs.iter().map(|f| f.check().to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(made("0.5"), Vec::<String>::new());
+    assert_eq!(made("0.25"), [MADE]);
+}
+
 #[test]
 fn pieces_and_their_facts() {
     let c = Extents.file("terrain/lidar.geojson", &good());
@@ -1408,9 +1512,11 @@ fn real_files(theme: &str, real: &[(&str, &[u8])]) -> (BTreeMap<String, Vec<u8>>
         warnings.extend(c.findings.iter().filter(|f| f.level == Level::Warning).map(|f| f.message.clone()));
         if p.ends_with(".geojson") {
             assert!(c.facts["pieces"].as_u64().unwrap() > 0, "{p}");
-            // (A source whose only pieces are of unknown extent, Belize's and four more, has no box.)
-            let unknown = c.facts["classes"].as_object().is_some_and(|k| k.keys().all(|k| k == "unknown"));
-            assert!(c.facts.contains_key("box") || unknown, "{p}");
+            // (A source whose only pieces have no geometry in the file, of unknown extent (Belize's and
+            // four more) or masks the build draws (Overture's buildings), has no box.)
+            let no_geometry =
+                c.facts["classes"].as_object().is_some_and(|k| k.keys().all(|k| k == "unknown" || k == "mask"));
+            assert!(c.facts.contains_key("box") || no_geometry, "{p}");
         }
     }
     let read = |p: &str| -> Result<Arc<Vec<u8>>> { Ok(Arc::new(files[p].clone())) };
@@ -1563,6 +1669,465 @@ fn the_real_bathymetry_files_are_taken() {
 
 /// Malformed files are findings, never a panic: each kind's fixture cut short at every few bytes,
 /// and values of the wrong type in its fields, through the file check and the whole version's.
+const REAL_BUILDINGS: [(&str, &[u8]); 335] = [
+    ("score.toml", include_bytes!("../../../../../producers/extents/buildings/score.toml")),
+    ("3d-globfp.geojson", include_bytes!("../../../../../producers/extents/buildings/3d-globfp.geojson")),
+    ("3d-globfp.toml", include_bytes!("../../../../../producers/extents/buildings/3d-globfp.toml")),
+    (
+        "ae-abudhabi-adsdi.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/ae-abudhabi-adsdi.geojson"),
+    ),
+    ("ae-abudhabi-adsdi.toml", include_bytes!("../../../../../producers/extents/buildings/ae-abudhabi-adsdi.toml")),
+    ("ae-dubai-twin.geojson", include_bytes!("../../../../../producers/extents/buildings/ae-dubai-twin.geojson")),
+    ("ae-dubai-twin.toml", include_bytes!("../../../../../producers/extents/buildings/ae-dubai-twin.toml")),
+    ("africa-grid3.geojson", include_bytes!("../../../../../producers/extents/buildings/africa-grid3.geojson")),
+    ("africa-grid3.toml", include_bytes!("../../../../../producers/extents/buildings/africa-grid3.toml")),
+    ("ar-caba-tejido.geojson", include_bytes!("../../../../../producers/extents/buildings/ar-caba-tejido.geojson")),
+    ("ar-caba-tejido.toml", include_bytes!("../../../../../producers/extents/buildings/ar-caba-tejido.toml")),
+    ("at-bev-dlm.geojson", include_bytes!("../../../../../producers/extents/buildings/at-bev-dlm.geojson")),
+    ("at-bev-dlm.toml", include_bytes!("../../../../../producers/extents/buildings/at-bev-dlm.toml")),
+    ("at-graz-a106.geojson", include_bytes!("../../../../../producers/extents/buildings/at-graz-a106.geojson")),
+    ("at-graz-a106.toml", include_bytes!("../../../../../producers/extents/buildings/at-graz-a106.toml")),
+    (
+        "at-tirol-gebaeude.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/at-tirol-gebaeude.geojson"),
+    ),
+    ("at-tirol-gebaeude.toml", include_bytes!("../../../../../producers/extents/buildings/at-tirol-gebaeude.toml")),
+    (
+        "at-wien-baukoerper.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/at-wien-baukoerper.geojson"),
+    ),
+    ("at-wien-baukoerper.toml", include_bytes!("../../../../../producers/extents/buildings/at-wien-baukoerper.toml")),
+    ("au-adelaide-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/au-adelaide-3d.geojson")),
+    ("au-adelaide-3d.toml", include_bytes!("../../../../../producers/extents/buildings/au-adelaide-3d.toml")),
+    ("au-ballarat.geojson", include_bytes!("../../../../../producers/extents/buildings/au-ballarat.geojson")),
+    ("au-ballarat.toml", include_bytes!("../../../../../producers/extents/buildings/au-ballarat.toml")),
+    ("au-geelong.geojson", include_bytes!("../../../../../producers/extents/buildings/au-geelong.geojson")),
+    ("au-geelong.toml", include_bytes!("../../../../../producers/extents/buildings/au-geelong.toml")),
+    ("au-geoscape.geojson", include_bytes!("../../../../../producers/extents/buildings/au-geoscape.geojson")),
+    ("au-geoscape.toml", include_bytes!("../../../../../producers/extents/buildings/au-geoscape.toml")),
+    ("au-iot-outlines.geojson", include_bytes!("../../../../../producers/extents/buildings/au-iot-outlines.geojson")),
+    ("au-iot-outlines.toml", include_bytes!("../../../../../producers/extents/buildings/au-iot-outlines.toml")),
+    ("au-launceston.geojson", include_bytes!("../../../../../producers/extents/buildings/au-launceston.geojson")),
+    ("au-launceston.toml", include_bytes!("../../../../../producers/extents/buildings/au-launceston.toml")),
+    (
+        "au-melbourne-footprints.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/au-melbourne-footprints.geojson"),
+    ),
+    (
+        "au-melbourne-footprints.toml",
+        include_bytes!("../../../../../producers/extents/buildings/au-melbourne-footprints.toml"),
+    ),
+    (
+        "au-qld-lidar-outlines.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/au-qld-lidar-outlines.geojson"),
+    ),
+    (
+        "au-qld-lidar-outlines.toml",
+        include_bytes!("../../../../../producers/extents/buildings/au-qld-lidar-outlines.toml"),
+    ),
+    ("au-vicmap-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/au-vicmap-3d.geojson")),
+    ("au-vicmap-3d.toml", include_bytes!("../../../../../producers/extents/buildings/au-vicmap-3d.toml")),
+    ("be-antwerp-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/be-antwerp-3d.geojson")),
+    ("be-antwerp-3d.toml", include_bytes!("../../../../../producers/extents/buildings/be-antwerp-3d.toml")),
+    ("be-ghent-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/be-ghent-3d.geojson")),
+    ("be-ghent-3d.toml", include_bytes!("../../../../../producers/extents/buildings/be-ghent-3d.toml")),
+    ("be-namur-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/be-namur-3d.geojson")),
+    ("be-namur-3d.toml", include_bytes!("../../../../../producers/extents/buildings/be-namur-3d.toml")),
+    ("be-urbis-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/be-urbis-3d.geojson")),
+    ("be-urbis-3d.toml", include_bytes!("../../../../../producers/extents/buildings/be-urbis-3d.toml")),
+    ("be-vlg-3dgrb.geojson", include_bytes!("../../../../../producers/extents/buildings/be-vlg-3dgrb.geojson")),
+    ("be-vlg-3dgrb.toml", include_bytes!("../../../../../producers/extents/buildings/be-vlg-3dgrb.toml")),
+    ("be-wal-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/be-wal-lod1.geojson")),
+    ("be-wal-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/be-wal-lod1.toml")),
+    ("bg-cadastre.geojson", include_bytes!("../../../../../producers/extents/buildings/bg-cadastre.geojson")),
+    ("bg-cadastre.toml", include_bytes!("../../../../../producers/extents/buildings/bg-cadastre.toml")),
+    ("bh-slrb.geojson", include_bytes!("../../../../../producers/extents/buildings/bh-slrb.geojson")),
+    ("bh-slrb.toml", include_bytes!("../../../../../producers/extents/buildings/bh-slrb.toml")),
+    (
+        "br-bh-edificacao-3d.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/br-bh-edificacao-3d.geojson"),
+    ),
+    ("br-bh-edificacao-3d.toml", include_bytes!("../../../../../producers/extents/buildings/br-bh-edificacao-3d.toml")),
+    ("br-df-edificacao.geojson", include_bytes!("../../../../../producers/extents/buildings/br-df-edificacao.geojson")),
+    ("br-df-edificacao.toml", include_bytes!("../../../../../producers/extents/buildings/br-df-edificacao.toml")),
+    (
+        "br-rio-edificacoes.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/br-rio-edificacoes.geojson"),
+    ),
+    ("br-rio-edificacoes.toml", include_bytes!("../../../../../producers/extents/buildings/br-rio-edificacoes.toml")),
+    ("br-sp-geosampa.geojson", include_bytes!("../../../../../producers/extents/buildings/br-sp-geosampa.geojson")),
+    ("br-sp-geosampa.toml", include_bytes!("../../../../../producers/extents/buildings/br-sp-geosampa.toml")),
+    ("ca-burnaby.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-burnaby.geojson")),
+    ("ca-burnaby.toml", include_bytes!("../../../../../producers/extents/buildings/ca-burnaby.toml")),
+    ("ca-calgary-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-calgary-3d.geojson")),
+    ("ca-calgary-3d.toml", include_bytes!("../../../../../producers/extents/buildings/ca-calgary-3d.toml")),
+    ("ca-edmonton-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-edmonton-3d.geojson")),
+    ("ca-edmonton-3d.toml", include_bytes!("../../../../../producers/extents/buildings/ca-edmonton-3d.toml")),
+    (
+        "ca-geonb-buildings.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/ca-geonb-buildings.geojson"),
+    ),
+    ("ca-geonb-buildings.toml", include_bytes!("../../../../../producers/extents/buildings/ca-geonb-buildings.toml")),
+    ("ca-kelowna.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-kelowna.geojson")),
+    ("ca-kelowna.toml", include_bytes!("../../../../../producers/extents/buildings/ca-kelowna.toml")),
+    ("ca-montreal-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-montreal-3d.geojson")),
+    ("ca-montreal-3d.toml", include_bytes!("../../../../../producers/extents/buildings/ca-montreal-3d.toml")),
+    ("ca-nrcan-aeb.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-nrcan-aeb.geojson")),
+    ("ca-nrcan-aeb.toml", include_bytes!("../../../../../producers/extents/buildings/ca-nrcan-aeb.toml")),
+    ("ca-ottawa-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-ottawa-lod1.geojson")),
+    ("ca-ottawa-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/ca-ottawa-lod1.toml")),
+    ("ca-qc-batiments.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-qc-batiments.geojson")),
+    ("ca-qc-batiments.toml", include_bytes!("../../../../../producers/extents/buildings/ca-qc-batiments.toml")),
+    ("ca-surrey.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-surrey.geojson")),
+    ("ca-surrey.toml", include_bytes!("../../../../../producers/extents/buildings/ca-surrey.toml")),
+    ("ca-toronto-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-toronto-3d.geojson")),
+    ("ca-toronto-3d.toml", include_bytes!("../../../../../producers/extents/buildings/ca-toronto-3d.toml")),
+    ("ca-vancouver.geojson", include_bytes!("../../../../../producers/extents/buildings/ca-vancouver.geojson")),
+    ("ca-vancouver.toml", include_bytes!("../../../../../producers/extents/buildings/ca-vancouver.toml")),
+    ("ch-be-hoehe.geojson", include_bytes!("../../../../../producers/extents/buildings/ch-be-hoehe.geojson")),
+    ("ch-be-hoehe.toml", include_bytes!("../../../../../producers/extents/buildings/ch-be-hoehe.toml")),
+    ("ch-ge-buildings.geojson", include_bytes!("../../../../../producers/extents/buildings/ch-ge-buildings.geojson")),
+    ("ch-ge-buildings.toml", include_bytes!("../../../../../producers/extents/buildings/ch-ge-buildings.toml")),
+    ("ch-gwr.geojson", include_bytes!("../../../../../producers/extents/buildings/ch-gwr.geojson")),
+    ("ch-gwr.toml", include_bytes!("../../../../../producers/extents/buildings/ch-gwr.toml")),
+    (
+        "ch-swissbuildings3d.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/ch-swissbuildings3d.geojson"),
+    ),
+    ("ch-swissbuildings3d.toml", include_bytes!("../../../../../producers/extents/buildings/ch-swissbuildings3d.toml")),
+    (
+        "ch-zurich-dachmodell.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/ch-zurich-dachmodell.geojson"),
+    ),
+    (
+        "ch-zurich-dachmodell.toml",
+        include_bytes!("../../../../../producers/extents/buildings/ch-zurich-dachmodell.toml"),
+    ),
+    ("cn-cmab.geojson", include_bytes!("../../../../../producers/extents/buildings/cn-cmab.geojson")),
+    ("cn-cmab.toml", include_bytes!("../../../../../producers/extents/buildings/cn-cmab.toml")),
+    (
+        "co-bogota-construccion.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/co-bogota-construccion.geojson"),
+    ),
+    (
+        "co-bogota-construccion.toml",
+        include_bytes!("../../../../../producers/extents/buildings/co-bogota-construccion.toml"),
+    ),
+    ("cy-dls-bu3.geojson", include_bytes!("../../../../../producers/extents/buildings/cy-dls-bu3.geojson")),
+    ("cy-dls-bu3.toml", include_bytes!("../../../../../producers/extents/buildings/cy-dls-bu3.toml")),
+    ("cz-brno-vyska.geojson", include_bytes!("../../../../../producers/extents/buildings/cz-brno-vyska.geojson")),
+    ("cz-brno-vyska.toml", include_bytes!("../../../../../producers/extents/buildings/cz-brno-vyska.toml")),
+    (
+        "cz-praha-podlaznosti.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/cz-praha-podlaznosti.geojson"),
+    ),
+    (
+        "cz-praha-podlaznosti.toml",
+        include_bytes!("../../../../../producers/extents/buildings/cz-praha-podlaznosti.toml"),
+    ),
+    ("cz-ruian.geojson", include_bytes!("../../../../../producers/extents/buildings/cz-ruian.geojson")),
+    ("cz-ruian.toml", include_bytes!("../../../../../producers/extents/buildings/cz-ruian.toml")),
+    ("de-bb-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-bb-lod2.geojson")),
+    ("de-bb-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-bb-lod2.toml")),
+    ("de-be-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-be-lod2.geojson")),
+    ("de-be-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-be-lod2.toml")),
+    ("de-bkg-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-bkg-lod2.geojson")),
+    ("de-bkg-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-bkg-lod2.toml")),
+    ("de-bw-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-bw-lod2.geojson")),
+    ("de-bw-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-bw-lod2.toml")),
+    ("de-by-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-by-lod2.geojson")),
+    ("de-by-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-by-lod2.toml")),
+    ("de-ethos-builda.geojson", include_bytes!("../../../../../producers/extents/buildings/de-ethos-builda.geojson")),
+    ("de-ethos-builda.toml", include_bytes!("../../../../../producers/extents/buildings/de-ethos-builda.toml")),
+    ("de-hb-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-hb-lod2.geojson")),
+    ("de-hb-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-hb-lod2.toml")),
+    ("de-he-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-he-lod2.geojson")),
+    ("de-he-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-he-lod2.toml")),
+    ("de-hh-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-hh-lod2.geojson")),
+    ("de-hh-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-hh-lod2.toml")),
+    ("de-mv-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-mv-lod2.geojson")),
+    ("de-mv-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-mv-lod2.toml")),
+    ("de-ni-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-ni-lod2.geojson")),
+    ("de-ni-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-ni-lod2.toml")),
+    ("de-nw-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-nw-lod2.geojson")),
+    ("de-nw-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-nw-lod2.toml")),
+    ("de-rp-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-rp-lod2.geojson")),
+    ("de-rp-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-rp-lod2.toml")),
+    ("de-sh-gebaeude.geojson", include_bytes!("../../../../../producers/extents/buildings/de-sh-gebaeude.geojson")),
+    ("de-sh-gebaeude.toml", include_bytes!("../../../../../producers/extents/buildings/de-sh-gebaeude.toml")),
+    ("de-sl-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-sl-lod2.geojson")),
+    ("de-sl-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-sl-lod2.toml")),
+    ("de-sn-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-sn-lod2.geojson")),
+    ("de-sn-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-sn-lod2.toml")),
+    ("de-st-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-st-lod2.geojson")),
+    ("de-st-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-st-lod2.toml")),
+    ("de-th-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/de-th-lod2.geojson")),
+    ("de-th-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/de-th-lod2.toml")),
+    ("dk-bbr.geojson", include_bytes!("../../../../../producers/extents/buildings/dk-bbr.geojson")),
+    ("dk-bbr.toml", include_bytes!("../../../../../producers/extents/buildings/dk-bbr.toml")),
+    ("ee-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/ee-lod2.geojson")),
+    ("ee-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/ee-lod2.toml")),
+    ("es-bizkaia.geojson", include_bytes!("../../../../../producers/extents/buildings/es-bizkaia.geojson")),
+    ("es-bizkaia.toml", include_bytes!("../../../../../producers/extents/buildings/es-bizkaia.toml")),
+    ("es-catastro.geojson", include_bytes!("../../../../../producers/extents/buildings/es-catastro.geojson")),
+    ("es-catastro.toml", include_bytes!("../../../../../producers/extents/buildings/es-catastro.toml")),
+    ("es-ct-rtt.geojson", include_bytes!("../../../../../producers/extents/buildings/es-ct-rtt.geojson")),
+    ("es-ct-rtt.toml", include_bytes!("../../../../../producers/extents/buildings/es-ct-rtt.toml")),
+    ("es-gipuzkoa.geojson", include_bytes!("../../../../../producers/extents/buildings/es-gipuzkoa.geojson")),
+    ("es-gipuzkoa.toml", include_bytes!("../../../../../producers/extents/buildings/es-gipuzkoa.toml")),
+    ("es-madrid-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/es-madrid-3d.geojson")),
+    ("es-madrid-3d.toml", include_bytes!("../../../../../producers/extents/buildings/es-madrid-3d.toml")),
+    ("es-navarra.geojson", include_bytes!("../../../../../producers/extents/buildings/es-navarra.geojson")),
+    ("es-navarra.toml", include_bytes!("../../../../../producers/extents/buildings/es-navarra.toml")),
+    ("fi-espoo-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/fi-espoo-3d.geojson")),
+    ("fi-espoo-3d.toml", include_bytes!("../../../../../producers/extents/buildings/fi-espoo-3d.toml")),
+    ("fi-helsinki-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/fi-helsinki-3d.geojson")),
+    ("fi-helsinki-3d.toml", include_bytes!("../../../../../producers/extents/buildings/fi-helsinki-3d.toml")),
+    (
+        "fi-maastotietokanta.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/fi-maastotietokanta.geojson"),
+    ),
+    ("fi-maastotietokanta.toml", include_bytes!("../../../../../producers/extents/buildings/fi-maastotietokanta.toml")),
+    (
+        "fr-bdtopo-antilles-guyane.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo-antilles-guyane.geojson"),
+    ),
+    (
+        "fr-bdtopo-antilles-guyane.toml",
+        include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo-antilles-guyane.toml"),
+    ),
+    (
+        "fr-bdtopo-reunion-mayotte.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo-reunion-mayotte.geojson"),
+    ),
+    (
+        "fr-bdtopo-reunion-mayotte.toml",
+        include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo-reunion-mayotte.toml"),
+    ),
+    ("fr-bdtopo.geojson", include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo.geojson")),
+    ("fr-bdtopo.toml", include_bytes!("../../../../../producers/extents/buildings/fr-bdtopo.toml")),
+    ("fr-city-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/fr-city-3d.geojson")),
+    ("fr-city-3d.toml", include_bytes!("../../../../../producers/extents/buildings/fr-city-3d.toml")),
+    ("fr-paris-volumes.geojson", include_bytes!("../../../../../producers/extents/buildings/fr-paris-volumes.geojson")),
+    ("fr-paris-volumes.toml", include_bytes!("../../../../../producers/extents/buildings/fr-paris-volumes.toml")),
+    ("gb-glasgow-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/gb-glasgow-3d.geojson")),
+    ("gb-glasgow-3d.toml", include_bytes!("../../../../../producers/extents/buildings/gb-glasgow-3d.toml")),
+    ("gb-london-bsm.geojson", include_bytes!("../../../../../producers/extents/buildings/gb-london-bsm.geojson")),
+    ("gb-london-bsm.toml", include_bytes!("../../../../../producers/extents/buildings/gb-london-bsm.toml")),
+    ("gb-os-bha.geojson", include_bytes!("../../../../../producers/extents/buildings/gb-os-bha.geojson")),
+    ("gb-os-bha.toml", include_bytes!("../../../../../producers/extents/buildings/gb-os-bha.toml")),
+    ("ghs-obat.geojson", include_bytes!("../../../../../producers/extents/buildings/ghs-obat.geojson")),
+    ("ghs-obat.toml", include_bytes!("../../../../../producers/extents/buildings/ghs-obat.toml")),
+    (
+        "globalbuildingatlas.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/globalbuildingatlas.geojson"),
+    ),
+    ("globalbuildingatlas.toml", include_bytes!("../../../../../producers/extents/buildings/globalbuildingatlas.toml")),
+    (
+        "google-open-buildings-25d.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/google-open-buildings-25d.geojson"),
+    ),
+    (
+        "google-open-buildings-25d.toml",
+        include_bytes!("../../../../../producers/extents/buildings/google-open-buildings-25d.toml"),
+    ),
+    (
+        "hk-landsd-buildings.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/hk-landsd-buildings.geojson"),
+    ),
+    ("hk-landsd-buildings.toml", include_bytes!("../../../../../producers/extents/buildings/hk-landsd-buildings.toml")),
+    ("hr-zagreb-zg3d.geojson", include_bytes!("../../../../../producers/extents/buildings/hr-zagreb-zg3d.geojson")),
+    ("hr-zagreb-zg3d.toml", include_bytes!("../../../../../producers/extents/buildings/hr-zagreb-zg3d.toml")),
+    ("id-balikpapan.geojson", include_bytes!("../../../../../producers/extents/buildings/id-balikpapan.geojson")),
+    ("id-balikpapan.toml", include_bytes!("../../../../../producers/extents/buildings/id-balikpapan.toml")),
+    ("id-big-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/id-big-lod1.geojson")),
+    ("id-big-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/id-big-lod1.toml")),
+    ("id-jakarta.geojson", include_bytes!("../../../../../producers/extents/buildings/id-jakarta.geojson")),
+    ("id-jakarta.toml", include_bytes!("../../../../../producers/extents/buildings/id-jakarta.toml")),
+    ("ie-geodirectory.geojson", include_bytes!("../../../../../producers/extents/buildings/ie-geodirectory.geojson")),
+    ("ie-geodirectory.toml", include_bytes!("../../../../../producers/extents/buildings/ie-geodirectory.toml")),
+    ("il-beer-sheva.geojson", include_bytes!("../../../../../producers/extents/buildings/il-beer-sheva.geojson")),
+    ("il-beer-sheva.toml", include_bytes!("../../../../../producers/extents/buildings/il-beer-sheva.toml")),
+    ("in-gobs.geojson", include_bytes!("../../../../../producers/extents/buildings/in-gobs.geojson")),
+    ("in-gobs.toml", include_bytes!("../../../../../producers/extents/buildings/in-gobs.toml")),
+    ("it-bologna.geojson", include_bytes!("../../../../../producers/extents/buildings/it-bologna.geojson")),
+    ("it-bologna.toml", include_bytes!("../../../../../producers/extents/buildings/it-bologna.toml")),
+    ("it-ferrara.geojson", include_bytes!("../../../../../producers/extents/buildings/it-ferrara.geojson")),
+    ("it-ferrara.toml", include_bytes!("../../../../../producers/extents/buildings/it-ferrara.toml")),
+    ("it-milano-dbt.geojson", include_bytes!("../../../../../producers/extents/buildings/it-milano-dbt.geojson")),
+    ("it-milano-dbt.toml", include_bytes!("../../../../../producers/extents/buildings/it-milano-dbt.toml")),
+    ("it-sardegna-dbgt.geojson", include_bytes!("../../../../../producers/extents/buildings/it-sardegna-dbgt.geojson")),
+    ("it-sardegna-dbgt.toml", include_bytes!("../../../../../producers/extents/buildings/it-sardegna-dbgt.toml")),
+    ("it-sondrio-lecco.geojson", include_bytes!("../../../../../producers/extents/buildings/it-sondrio-lecco.geojson")),
+    ("it-sondrio-lecco.toml", include_bytes!("../../../../../producers/extents/buildings/it-sondrio-lecco.toml")),
+    ("jp-plateau.geojson", include_bytes!("../../../../../producers/extents/buildings/jp-plateau.geojson")),
+    ("jp-plateau.toml", include_bytes!("../../../../../producers/extents/buildings/jp-plateau.toml")),
+    ("kr-gwacheon.geojson", include_bytes!("../../../../../producers/extents/buildings/kr-gwacheon.geojson")),
+    ("kr-gwacheon.toml", include_bytes!("../../../../../producers/extents/buildings/kr-gwacheon.toml")),
+    (
+        "kr-national-buildings.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/kr-national-buildings.geojson"),
+    ),
+    (
+        "kr-national-buildings.toml",
+        include_bytes!("../../../../../producers/extents/buildings/kr-national-buildings.toml"),
+    ),
+    ("kr-seoul-solar.geojson", include_bytes!("../../../../../producers/extents/buildings/kr-seoul-solar.geojson")),
+    ("kr-seoul-solar.toml", include_bytes!("../../../../../producers/extents/buildings/kr-seoul-solar.toml")),
+    ("lu-act-bati3d.geojson", include_bytes!("../../../../../producers/extents/buildings/lu-act-bati3d.geojson")),
+    ("lu-act-bati3d.toml", include_bytes!("../../../../../producers/extents/buildings/lu-act-bati3d.toml")),
+    ("lv-ekas.geojson", include_bytes!("../../../../../producers/extents/buildings/lv-ekas.geojson")),
+    ("lv-ekas.toml", include_bytes!("../../../../../producers/extents/buildings/lv-ekas.toml")),
+    ("lv-riga-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/lv-riga-lod1.geojson")),
+    ("lv-riga-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/lv-riga-lod1.toml")),
+    ("mx-cdmx-niveles.geojson", include_bytes!("../../../../../producers/extents/buildings/mx-cdmx-niveles.geojson")),
+    ("mx-cdmx-niveles.toml", include_bytes!("../../../../../producers/extents/buildings/mx-cdmx-niveles.toml")),
+    ("mx-guadalajara.geojson", include_bytes!("../../../../../producers/extents/buildings/mx-guadalajara.geojson")),
+    ("mx-guadalajara.toml", include_bytes!("../../../../../producers/extents/buildings/mx-guadalajara.toml")),
+    ("nl-3dbag.geojson", include_bytes!("../../../../../producers/extents/buildings/nl-3dbag.geojson")),
+    ("nl-3dbag.toml", include_bytes!("../../../../../producers/extents/buildings/nl-3dbag.toml")),
+    ("nl-rotterdam-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/nl-rotterdam-3d.geojson")),
+    ("nl-rotterdam-3d.toml", include_bytes!("../../../../../producers/extents/buildings/nl-rotterdam-3d.toml")),
+    ("no-matrikkelen.geojson", include_bytes!("../../../../../producers/extents/buildings/no-matrikkelen.geojson")),
+    ("no-matrikkelen.toml", include_bytes!("../../../../../producers/extents/buildings/no-matrikkelen.toml")),
+    ("nz-christchurch.geojson", include_bytes!("../../../../../producers/extents/buildings/nz-christchurch.geojson")),
+    ("nz-christchurch.toml", include_bytes!("../../../../../producers/extents/buildings/nz-christchurch.toml")),
+    ("nz-linz-outlines.geojson", include_bytes!("../../../../../producers/extents/buildings/nz-linz-outlines.geojson")),
+    ("nz-linz-outlines.toml", include_bytes!("../../../../../producers/extents/buildings/nz-linz-outlines.toml")),
+    ("nz-queenstown-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/nz-queenstown-3d.geojson")),
+    ("nz-queenstown-3d.toml", include_bytes!("../../../../../producers/extents/buildings/nz-queenstown-3d.toml")),
+    ("nz-wellington-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/nz-wellington-3d.geojson")),
+    ("nz-wellington-3d.toml", include_bytes!("../../../../../producers/extents/buildings/nz-wellington-3d.toml")),
+    ("overture.geojson", include_bytes!("../../../../../producers/extents/buildings/overture.geojson")),
+    ("overture.toml", include_bytes!("../../../../../producers/extents/buildings/overture.toml")),
+    (
+        "pacific-footprints.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/pacific-footprints.geojson"),
+    ),
+    ("pacific-footprints.toml", include_bytes!("../../../../../producers/extents/buildings/pacific-footprints.toml")),
+    ("pl-gugik-lod2.geojson", include_bytes!("../../../../../producers/extents/buildings/pl-gugik-lod2.geojson")),
+    ("pl-gugik-lod2.toml", include_bytes!("../../../../../producers/extents/buildings/pl-gugik-lod2.toml")),
+    ("rw-eo4kigali.geojson", include_bytes!("../../../../../producers/extents/buildings/rw-eo4kigali.geojson")),
+    ("rw-eo4kigali.toml", include_bytes!("../../../../../producers/extents/buildings/rw-eo4kigali.toml")),
+    ("se-byggnad.geojson", include_bytes!("../../../../../producers/extents/buildings/se-byggnad.geojson")),
+    ("se-byggnad.toml", include_bytes!("../../../../../producers/extents/buildings/se-byggnad.toml")),
+    (
+        "se-stockholm-lod1.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/se-stockholm-lod1.geojson"),
+    ),
+    ("se-stockholm-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/se-stockholm-lod1.toml")),
+    ("se-umea-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/se-umea-lod1.geojson")),
+    ("se-umea-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/se-umea-lod1.toml")),
+    ("sg-hdb.geojson", include_bytes!("../../../../../producers/extents/buildings/sg-hdb.geojson")),
+    ("sg-hdb.toml", include_bytes!("../../../../../producers/extents/buildings/sg-hdb.toml")),
+    (
+        "si-kataster-stavbe.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/si-kataster-stavbe.geojson"),
+    ),
+    ("si-kataster-stavbe.toml", include_bytes!("../../../../../producers/extents/buildings/si-kataster-stavbe.toml")),
+    ("sk-zbgis.geojson", include_bytes!("../../../../../producers/extents/buildings/sk-zbgis.geojson")),
+    ("sk-zbgis.toml", include_bytes!("../../../../../producers/extents/buildings/sk-zbgis.toml")),
+    ("tw-nlsc-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/tw-nlsc-3d.geojson")),
+    ("tw-nlsc-3d.toml", include_bytes!("../../../../../producers/extents/buildings/tw-nlsc-3d.toml")),
+    ("tw-taichung.geojson", include_bytes!("../../../../../producers/extents/buildings/tw-taichung.geojson")),
+    ("tw-taichung.toml", include_bytes!("../../../../../producers/extents/buildings/tw-taichung.toml")),
+    (
+        "tw-taipei-permits.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/tw-taipei-permits.geojson"),
+    ),
+    ("tw-taipei-permits.toml", include_bytes!("../../../../../producers/extents/buildings/tw-taipei-permits.toml")),
+    ("us-boston-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/us-boston-3d.geojson")),
+    ("us-boston-3d.toml", include_bytes!("../../../../../producers/extents/buildings/us-boston-3d.toml")),
+    ("us-cambridge-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/us-cambridge-3d.geojson")),
+    ("us-cambridge-3d.toml", include_bytes!("../../../../../producers/extents/buildings/us-cambridge-3d.toml")),
+    ("us-chattanooga.geojson", include_bytes!("../../../../../producers/extents/buildings/us-chattanooga.geojson")),
+    ("us-chattanooga.toml", include_bytes!("../../../../../producers/extents/buildings/us-chattanooga.toml")),
+    ("us-ct-footprints.geojson", include_bytes!("../../../../../producers/extents/buildings/us-ct-footprints.geojson")),
+    ("us-ct-footprints.toml", include_bytes!("../../../../../producers/extents/buildings/us-ct-footprints.toml")),
+    ("us-dallas.geojson", include_bytes!("../../../../../producers/extents/buildings/us-dallas.geojson")),
+    ("us-dallas.toml", include_bytes!("../../../../../producers/extents/buildings/us-dallas.toml")),
+    ("us-dc-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/us-dc-3d.geojson")),
+    ("us-dc-3d.toml", include_bytes!("../../../../../producers/extents/buildings/us-dc-3d.toml")),
+    ("us-denver.geojson", include_bytes!("../../../../../producers/extents/buildings/us-denver.geojson")),
+    ("us-denver.toml", include_bytes!("../../../../../producers/extents/buildings/us-denver.toml")),
+    ("us-detroit.geojson", include_bytes!("../../../../../producers/extents/buildings/us-detroit.geojson")),
+    ("us-detroit.toml", include_bytes!("../../../../../producers/extents/buildings/us-detroit.toml")),
+    ("us-hamilton-oh.geojson", include_bytes!("../../../../../producers/extents/buildings/us-hamilton-oh.geojson")),
+    ("us-hamilton-oh.toml", include_bytes!("../../../../../producers/extents/buildings/us-hamilton-oh.toml")),
+    ("us-houston.geojson", include_bytes!("../../../../../producers/extents/buildings/us-houston.geojson")),
+    ("us-houston.toml", include_bytes!("../../../../../producers/extents/buildings/us-houston.toml")),
+    ("us-jefferson-co.geojson", include_bytes!("../../../../../producers/extents/buildings/us-jefferson-co.geojson")),
+    ("us-jefferson-co.toml", include_bytes!("../../../../../producers/extents/buildings/us-jefferson-co.toml")),
+    (
+        "us-la-county-lariac.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/us-la-county-lariac.geojson"),
+    ),
+    ("us-la-county-lariac.toml", include_bytes!("../../../../../producers/extents/buildings/us-la-county-lariac.toml")),
+    ("us-louisville.geojson", include_bytes!("../../../../../producers/extents/buildings/us-louisville.geojson")),
+    ("us-louisville.toml", include_bytes!("../../../../../producers/extents/buildings/us-louisville.toml")),
+    ("us-miami-dade.geojson", include_bytes!("../../../../../producers/extents/buildings/us-miami-dade.geojson")),
+    ("us-miami-dade.toml", include_bytes!("../../../../../producers/extents/buildings/us-miami-dade.toml")),
+    ("us-nashville.geojson", include_bytes!("../../../../../producers/extents/buildings/us-nashville.geojson")),
+    ("us-nashville.toml", include_bytes!("../../../../../producers/extents/buildings/us-nashville.toml")),
+    (
+        "us-nga-133-cities.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/us-nga-133-cities.geojson"),
+    ),
+    ("us-nga-133-cities.toml", include_bytes!("../../../../../producers/extents/buildings/us-nga-133-cities.toml")),
+    ("us-nyc-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/us-nyc-3d.geojson")),
+    ("us-nyc-3d.toml", include_bytes!("../../../../../producers/extents/buildings/us-nyc-3d.toml")),
+    (
+        "us-nyc-footprints.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/us-nyc-footprints.geojson"),
+    ),
+    ("us-nyc-footprints.toml", include_bytes!("../../../../../producers/extents/buildings/us-nyc-footprints.toml")),
+    ("us-or-rlis-sbfo.geojson", include_bytes!("../../../../../producers/extents/buildings/us-or-rlis-sbfo.geojson")),
+    ("us-or-rlis-sbfo.toml", include_bytes!("../../../../../producers/extents/buildings/us-or-rlis-sbfo.toml")),
+    ("us-philadelphia.geojson", include_bytes!("../../../../../producers/extents/buildings/us-philadelphia.geojson")),
+    ("us-philadelphia.toml", include_bytes!("../../../../../producers/extents/buildings/us-philadelphia.toml")),
+    ("us-ri-lod1.geojson", include_bytes!("../../../../../producers/extents/buildings/us-ri-lod1.geojson")),
+    ("us-ri-lod1.toml", include_bytes!("../../../../../producers/extents/buildings/us-ri-lod1.toml")),
+    ("us-san-francisco.geojson", include_bytes!("../../../../../producers/extents/buildings/us-san-francisco.geojson")),
+    ("us-san-francisco.toml", include_bytes!("../../../../../producers/extents/buildings/us-san-francisco.toml")),
+    ("us-santa-clara.geojson", include_bytes!("../../../../../producers/extents/buildings/us-santa-clara.geojson")),
+    ("us-santa-clara.toml", include_bytes!("../../../../../producers/extents/buildings/us-santa-clara.toml")),
+    ("us-seattle.geojson", include_bytes!("../../../../../producers/extents/buildings/us-seattle.geojson")),
+    ("us-seattle.toml", include_bytes!("../../../../../producers/extents/buildings/us-seattle.toml")),
+    ("us-semcog.geojson", include_bytes!("../../../../../producers/extents/buildings/us-semcog.geojson")),
+    ("us-semcog.toml", include_bytes!("../../../../../producers/extents/buildings/us-semcog.toml")),
+    ("us-tampa.geojson", include_bytes!("../../../../../producers/extents/buildings/us-tampa.geojson")),
+    ("us-tampa.toml", include_bytes!("../../../../../producers/extents/buildings/us-tampa.toml")),
+    ("us-tn-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/us-tn-3d.geojson")),
+    ("us-tn-3d.toml", include_bytes!("../../../../../producers/extents/buildings/us-tn-3d.toml")),
+    ("us-tx-stratmap.geojson", include_bytes!("../../../../../producers/extents/buildings/us-tx-stratmap.geojson")),
+    ("us-tx-stratmap.toml", include_bytes!("../../../../../producers/extents/buildings/us-tx-stratmap.toml")),
+    (
+        "us-usa-structures.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/us-usa-structures.geojson"),
+    ),
+    ("us-usa-structures.toml", include_bytes!("../../../../../producers/extents/buildings/us-usa-structures.toml")),
+    ("us-vt-structures.geojson", include_bytes!("../../../../../producers/extents/buildings/us-vt-structures.geojson")),
+    ("us-vt-structures.toml", include_bytes!("../../../../../producers/extents/buildings/us-vt-structures.toml")),
+    ("za-capetown.geojson", include_bytes!("../../../../../producers/extents/buildings/za-capetown.geojson")),
+    ("za-capetown.toml", include_bytes!("../../../../../producers/extents/buildings/za-capetown.toml")),
+    ("za-ethekwini.geojson", include_bytes!("../../../../../producers/extents/buildings/za-ethekwini.geojson")),
+    ("za-ethekwini.toml", include_bytes!("../../../../../producers/extents/buildings/za-ethekwini.toml")),
+];
+
+/// The buildings' real files: the declarations of the research (claimed areas, or none where it
+/// isn't stated) and Overture's mask pieces, drawn by the build (no geometry in the file).
+#[test]
+fn the_real_buildings_files_are_taken() {
+    let (files, warnings) = real_files("buildings", &REAL_BUILDINGS);
+    // (Only the sources whose extent isn't stated warn: of class unknown.)
+    assert!(warnings.iter().all(|w| w.contains("of class unknown")), "{warnings:#?}");
+    let c = Extents.file("buildings/overture.geojson", &files["buildings/overture.geojson"]);
+    assert_eq!(c.facts["classes"], serde_json::json!({"mask": 10}));
+    let s = score(REAL_BUILDINGS[0].1).unwrap();
+    assert_eq!((s.primary.as_str(), s.within), ("detail", None));
+}
+
 #[test]
 fn malformed_files_are_findings() {
     let pieces = good();

@@ -1,0 +1,14 @@
+name = "Umeå LOD1"
+credit = "Umeå kommun"
+licence = "CC0-1.0"
+theme = "buildings"
+availability = "open"
+notes = "LoD1 boxes with heights (EUROPE-E §3.3, §10.2). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1"
+method = "none"
+why = "one tile (boxar14) read; the municipality's coverage not stated"
+[piece.metrics]
+detail = "lod1"

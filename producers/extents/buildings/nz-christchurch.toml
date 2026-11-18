@@ -1,0 +1,17 @@
+name = "Christchurch City Council buildings"
+credit = "Christchurch City Council"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "237,094 buildings with drvLiDARHeight; the CBD box: 65 % of Overture's buildings gain a height (REST §3.5, §9.4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Christchurch City, Canterbury, New Zealand / Aotearoa), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Lidar heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1640161"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "lidar"

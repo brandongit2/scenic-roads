@@ -15,7 +15,8 @@
 //!   shape); a `.geojson` that isn't a FeatureCollection, whose `source` isn't its stem or whose
 //!   `read` isn't a list of its blocks' readings; pieces without `piece`, `extent` and
 //!   `availability` or with one of the wrong kind, a geometry that isn't a MultiPolygon (or null,
-//!   for a piece of class `unknown` alone); pieces of invalid geometry (a position not a longitude
+//!   for a piece of class `unknown`, or of class `mask` whose outline the build draws: an `overture`
+//!   block's); pieces of invalid geometry (a position not a longitude
 //!   and latitude, a ring not closed, of fewer than four positions, of no area, crossing itself,
 //!   wound against RFC 7946, or stepping across the antimeridian rather than cut there); a piece's
 //!   id twice; a `.geojson` without its declaration, or not made from it (its blocks read aren't the
@@ -41,8 +42,8 @@ use std::sync::{Arc, Mutex};
 /// The unit's name.
 pub const UNIT: &str = "extents";
 
-/// The themes the app knows (`buildings` is planned).
-pub const THEMES: [&str; 2] = ["terrain", "bathymetry"];
+/// The themes the app knows.
+pub const THEMES: [&str; 3] = ["terrain", "bathymetry", "buildings"];
 
 /// The extent classes, best first, each with what it says in plain words (the app's click shows
 /// them: crates/server/src/available.rs `described`).
@@ -68,8 +69,9 @@ pub const AVAILABILITY: [(&str, &str); 4] = [
 pub const FREE: [&str; 2] = ["open", "login"];
 
 /// The producer's readers and the class each one's extents are (None: the block says, `index`,
-/// `service` or `claimed`).
-pub const METHODS: [(&str, Option<&str>); 8] = [
+/// `service` or `claimed`). `overture`'s pieces have no geometry in their file: the step drawing the
+/// layers draws them from the build's own copy of Overture's buildings (bld::bld::extents).
+pub const METHODS: [(&str, Option<&str>); 9] = [
     ("arcgis", None),
     ("stac", Some("index")),
     ("wfs", None),
@@ -78,7 +80,12 @@ pub const METHODS: [(&str, Option<&str>); 8] = [
     ("raster", Some("files")),
     ("atom", Some("index")),
     ("none", Some("unknown")),
+    ("overture", Some("mask")),
 ];
+
+/// What an `overture` block's pieces hold (its `holds`), of the buildings of its `dataset`: their
+/// footprints, their storeys (a floor count and no height), or their heights.
+pub const HOLDS: [&str; 3] = ["footprints", "storeys", "heights"];
 
 /// The classes a block of a method that doesn't fix its class may say.
 const SAID: [&str; 3] = ["index", "service", "claimed"];
@@ -202,7 +209,9 @@ pub const UNSTATED: f64 = 0.5;
 pub struct Score {
     pub theme: Option<String>,
     pub primary: String,
-    pub within: f64,
+    /// The factor within which two pieces' primary values tie, for a primary on a log scale (None
+    /// for a `values` primary: its pieces tie on the same word).
+    pub within: Option<f64>,
     pub share: f64,
     /// The rest of a piece stating no weighted metric but the primary (`unstated`, 0 to 1;
     /// absent: UNSTATED).
@@ -223,6 +232,16 @@ impl Score {
     pub fn bound(within: f64, worst: f64, best: f64) -> f64 {
         let k = within.dln() / (worst / best).dln().abs();
         k / (1.0 + k)
+    }
+
+    /// The largest `share` the guarantee allows for a primary of `values`: (1 − share) × k > share,
+    /// k the least gap between two of its words' values (None: fewer than two values).
+    pub fn bound_values(values: &BTreeMap<String, f64>) -> Option<f64> {
+        let mut v: Vec<f64> = values.values().copied().collect();
+        v.sort_by(f64::total_cmp);
+        v.dedup();
+        let k = v.windows(2).map(|w| w[1] - w[0]).fold(f64::INFINITY, f64::min);
+        k.is_finite().then(|| k / (1.0 + k))
     }
 
     /// Metric `name`'s 0–1 value of `v` (producers/extents/score.py's `value`): from 0 at `worst` to
@@ -270,10 +289,11 @@ impl Score {
     }
 
     /// How far apart two pieces' primary values (0–1) may be and still tie: a factor of `within`
-    /// on the primary's log scale, ln(within) ÷ ln(worst ÷ best).
+    /// on the primary's log scale, ln(within) ÷ ln(worst ÷ best); none for a `values` primary (the
+    /// same word ties).
     fn tie(&self) -> f64 {
-        match self.metrics.get(&self.primary).map(|m| &m.scale) {
-            Some(Scale::Log { worst, best }) => self.within.dln() / (worst / best).dln().abs(),
+        match (self.metrics.get(&self.primary).map(|m| &m.scale), self.within) {
+            (Some(Scale::Log { worst, best }), Some(within)) => within.dln() / (worst / best).dln().abs(),
             _ => 0.0,
         }
     }
@@ -497,9 +517,15 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
             if primary.is_empty() { "missing".into() } else { format!("{primary:?}") }
         ));
     }
+    // (`within` is a log primary's alone: a `values` primary's pieces tie on the same word.)
+    let words = tables.get(&primary).and_then(|m| m.get("values")).is_some();
     let within = t.get("within").and_then(num).filter(|w| *w > 1.0);
-    if within.is_none() {
-        bad.push("`within` is required, a factor above 1".into());
+    match (words, t.get("within")) {
+        (false, _) if within.is_none() => bad.push("`within` is required, a factor above 1".into()),
+        (true, Some(_)) => {
+            bad.push("`within` is a log primary's: a primary of `values` ties on the same word, no factor".into())
+        }
+        _ => {}
     }
     let share = t.get("share").and_then(num).filter(|s| *s >= 0.0 && *s < 1.0);
     if share.is_none() {
@@ -543,21 +569,32 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
             Err(why) => bad.extend(why),
         }
     }
-    if let (Some(m), Some(within), Some(share)) = (metrics.get(&primary), within, share) {
-        match m.scale {
-            Scale::Log { worst, best } => {
-                let bound = Score::bound(within, worst, best);
+    if let (Some(m), Some(share)) = (metrics.get(&primary), share) {
+        match (&m.scale, within) {
+            (Scale::Log { worst, best }, Some(within)) => {
+                let bound = Score::bound(within, *worst, *best);
                 if share >= bound {
                     bad.push(format!(
                         "`share` {share} breaks the guarantee: it must be under {bound:.4} for within = {within}"
                     ));
                 }
             }
-            _ => bad.push(format!("the primary metric, {primary}, has a log scale (the guarantee is a factor)")),
+            (Scale::Log { .. }, None) => {}
+            (Scale::Values(w), _) => match Score::bound_values(w) {
+                Some(bound) if share >= bound => bad.push(format!(
+                    "`share` {share} breaks the guarantee: it must be under {bound:.4}, for the least gap between \
+                     {primary}'s values"
+                )),
+                Some(_) => {}
+                None => bad.push(format!("the primary metric, {primary}, has fewer than two values")),
+            },
+            (Scale::Linear { .. }, _) => bad.push(format!(
+                "the primary metric, {primary}, has a log scale (the guarantee is a factor) or `values` (a word)"
+            )),
         }
     }
-    match (bad.is_empty(), within, share) {
-        (true, Some(within), Some(share)) => {
+    match (bad.is_empty(), share) {
+        (true, Some(share)) => {
             Ok(Score { theme, primary, within, share, unstated, metrics, label, availability, ignored })
         }
         _ => Err(bad),
@@ -577,6 +614,18 @@ pub struct Block {
     pub availability: String,
     /// Its metrics' declarations: a constant, a reading (`{field = …}`) or a list of readings.
     pub metrics: toml::Table,
+    /// An `overture` block's buildings (None for another method's).
+    pub overture: Option<Overture>,
+}
+
+/// What an `overture` block's piece holds: the cells (z14 tiles) where, of the build's own copy of
+/// Overture's buildings, those of `dataset` with what it `holds` (HOLDS) are at least `share` of
+/// the cell's buildings, and at least one (bld::bld::extents).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overture {
+    pub dataset: String,
+    pub holds: String,
+    pub share: f64,
 }
 
 impl Block {
@@ -733,6 +782,20 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
         if method == "none" && !b.get("why").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
             bad.push(format!("piece {id}: a none block says `why` it has no extent"));
         }
+        if method == "overture" {
+            if !b.get("dataset").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
+                bad.push(format!("piece {id}: an overture block names its `dataset`, as Overture's sources do"));
+            }
+            if !b.get("holds").and_then(|v| v.as_str()).is_some_and(|h| HOLDS.contains(&h)) {
+                bad.push(format!("piece {id}: an overture block's `holds` is one of {}", HOLDS.join(", ")));
+            }
+            if !b.get("share").and_then(num).is_some_and(|x| (0.0..=1.0).contains(&x)) {
+                bad.push(format!(
+                    "piece {id}: an overture block's `share` (of a cell's buildings, for the cell to hold the piece) \
+                     is a number from 0 to 1"
+                ));
+            }
+        }
         let by: Option<Vec<&str>> = match b.get("by") {
             None => Some(Vec::new()),
             Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str()).collect()),
@@ -797,7 +860,12 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                 }
             },
         };
-        blocks.push(Block { id, extent, availability: piece_avail, metrics });
+        let overture = (method == "overture").then(|| Overture {
+            dataset: b.get("dataset").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            holds: b.get("holds").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            share: b.get("share").and_then(num).unwrap_or(0.0),
+        });
+        blocks.push(Block { id, extent, availability: piece_avail, metrics, overture });
     }
     if bad.is_empty() {
         Ok(Declaration { theme, availability, blocks })
@@ -832,6 +900,9 @@ pub struct Summary {
     pub read: Vec<String>,
     /// Why its `read` isn't the list of the blocks' readings.
     pub read_bad: Option<String>,
+    /// Its `overture` blocks' readings, by block id: the dataset, holds and share its mask pieces
+    /// are drawn by (the step reads them here, so they're in its key).
+    pub overture: BTreeMap<String, Overture>,
     pub pieces: Vec<Piece>,
     pub faults: Vec<(usize, String, String)>,
     pub geometry: Vec<(usize, String, String)>,
@@ -968,7 +1039,18 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
         Some(read) => {
             for r in read {
                 match (r.get("piece").and_then(Value::as_str), r.get("method").and_then(Value::as_str)) {
-                    (Some(p), Some(_)) => s.read.push(p.to_string()),
+                    (Some(p), Some(m)) => {
+                        s.read.push(p.to_string());
+                        // (An `overture` block's reading: what its mask pieces are drawn from.)
+                        if m == "overture" {
+                            let text = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                            let share = r.get("share").and_then(Value::as_f64).unwrap_or(f64::NAN);
+                            s.overture.insert(
+                                p.to_string(),
+                                Overture { dataset: text("dataset"), holds: text("holds"), share },
+                            );
+                        }
+                    }
                     _ => s.read_bad = Some("a reading in `read` without its block's `piece` and `method`".into()),
                 }
             }
@@ -1014,11 +1096,13 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
             continue;
         }
         let g = f.get("geometry").unwrap_or(&Value::Null);
+        // (A mask piece's geometry may be the build's to draw: an `overture` block's.)
         match (g.is_null(), extent == "unknown") {
-            (true, false) => {
-                fault(format!("no geometry, but of class {extent} (only an unknown extent has none)"));
+            (true, false) if extent != "mask" => {
+                fault(format!("no geometry, but of class {extent} (only an unknown or mask extent has none)"));
                 continue;
             }
+            (true, false) => {}
             (false, true) => {
                 fault("a geometry, but of class unknown (an unknown extent has none)".into());
                 continue;
@@ -1352,6 +1436,11 @@ impl Checks for Extents {
                 if s.read_bad.is_none() && read != blocks {
                     let fmt = |x: &BTreeSet<&str>| x.iter().copied().collect::<Vec<_>>().join(", ");
                     why.push(format!("it read the blocks {}, the declaration has {}", fmt(&read), fmt(&blocks)));
+                }
+                for b in &d.blocks {
+                    if b.overture.is_some() && s.overture.get(&b.id) != b.overture.as_ref() {
+                        why.push(format!("its reading of {} isn't the block's dataset, holds and share", b.id));
+                    }
                 }
                 let strays: Vec<(usize, String, String)> = s
                     .pieces

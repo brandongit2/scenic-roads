@@ -1,0 +1,16 @@
+name = "Helsinki 3D urban data model"
+credit = "City of Helsinki"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "LoD1 and LoD2 CityGML; the city-wide pages answered 403 or 404 to the research, one 2019 file of Kalasatama read (EUROPE-E §3.4, §10.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Helsinki, Helsingin seutukunta, Uusimaa, Manner-Suomi, Suomi / Finland), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1 and LoD2"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R34914"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

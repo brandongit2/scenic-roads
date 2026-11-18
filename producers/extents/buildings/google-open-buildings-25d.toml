@@ -1,0 +1,20 @@
+name = "Google Open Buildings 2.5D Temporal"
+credit = "Google Research"
+licence = "CC-BY-4.0 or ODbL-1.0"
+theme = "buildings"
+availability = "open"
+notes = "Per-pixel building heights, effective 4 m, 2016-2023 (12.5 km GeoTIFF tiles): Africa but Morocco, Western Sahara and Libya, South and South-East Asia, Latin America; Cape Town: median absolute error 2.24 m (REST §2.1, §9.5). Claimed by its stated regions, as Natural Earth's subregions draw them. Its extent: the area it covers, as Natural Earth's 1:10m countries (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights (estimated)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_0_countries.geojson"
+filter = { SUBREGION = ["Eastern Africa", "Middle Africa", "Southern Africa", "Western Africa", "Northern Africa", "Southern Asia", "South-Eastern Asia", "South America", "Central America", "Caribbean"] }
+exclude = { ADM0_A3 = ["MAR", "SAH", "LBY"] }
+tolerance_m = 2000
+[piece.metrics]
+detail = "heights"
+measured = "estimated"
+year = 2023

@@ -1,0 +1,15 @@
+name = "NGA 133 US cities lidar buildings"
+credit = "National Geospatial-Intelligence Agency"
+licence = "public domain (US Government)"
+theme = "buildings"
+availability = "open"
+notes = "Height above ground, average, min and max roof height, roof type and slope per building, from lidar of 2004-2015 (LoD1 with a roof class). Not measured against Overture (USA §4, §1). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "NGA 133 cities"
+method = "none"
+why = "about 110 cities' buildings, each city a set of shapefiles; the cities' list and outlines aren't stated in one place the research read"
+[piece.metrics]
+detail = "heights"
+measured = "lidar"

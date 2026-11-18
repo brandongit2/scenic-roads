@@ -1,0 +1,17 @@
+name = "Taichung building shapefile"
+credit = "Taichung City Government"
+licence = "Taiwan Open Government Data Licence v1.0"
+theme = "buildings"
+availability = "open"
+notes = "Floors (B1D) on 1,263,194 unit-cut polygons (ASIA §2.3, §11.1). Its extent: the area it covers, its boundary as OpenStreetMap maps it (臺中市, 臺灣), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Storeys"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2921154"
+tolerance_m = 100
+[piece.metrics]
+detail = "storeys"
+measured = "survey"

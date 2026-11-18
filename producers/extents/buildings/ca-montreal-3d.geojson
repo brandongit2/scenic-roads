@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"ca-montreal-3d","theme":"buildings","read":[{"piece":"all","method":"none","why":"6 of the city's 19 boroughs, not drawn apart","date":"2026-11-18"}],"features":[{"type":"Feature","properties":{"piece":"all","extent":"unknown","availability":"open","detail":"mesh","name":"Textured LoD2"},"geometry":null}]}

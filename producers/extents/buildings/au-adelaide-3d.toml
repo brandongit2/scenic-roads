@@ -1,0 +1,17 @@
+name = "City of Adelaide 3D model"
+credit = "City of Adelaide"
+licence = "CC-BY"
+theme = "buildings"
+availability = "open"
+notes = "Mesh heights (3DS blocks, 2010-2014); adds a height to 71 % of the covered Overture buildings (REST §3.2, §9.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Adelaide City Council, South Australia, Australia), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Mesh (2010-14)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R3093825"
+tolerance_m = 100
+[piece.metrics]
+detail = "mesh"
+year = 2014

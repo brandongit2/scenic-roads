@@ -1,0 +1,76 @@
+# The buildings' score (docs/inputs.md §6.11): how a piece's metrics make one number, 0 to 1, and
+# how pieces rank. What is there decides (the owner's list, #1334: footprints only, heights, LoD1,
+# LoD2, LoD3, a textured mesh), as the grid's spacing decides the terrain's: how the heights were
+# found, how complete the piece is and its year only break ties between pieces of the same detail.
+#
+#   score = (1 - share) × value(detail) + share × rest
+#   rest  = Σ weight × value / Σ weight over the other metrics the piece states
+#           (a metric it doesn't state leaves both sums; none of weight above 0 stated:
+#           rest = unstated, 0.5)
+#
+# Each metric's value is 0 at `worst` and 1 at `best`, clamped; `linear` scales by the value; a
+# `values` table gives each word its value. The primary is a word, so it takes no `within`: pieces
+# of the same word tie. The guarantee: a piece of a better word than another scores higher,
+# whatever else either states. It holds when share < k / (1 + k), k the least gap between two of
+# the primary's values (0.1 here, so share < 0.0909): score.py and the server refuse a file where
+# it doesn't. A piece not stating its detail has no score.
+#
+# The best piece at a place: of those of the best detail there, those of the best `availability`
+# below; of them, the best score; of equal scores, the better-founded extent (its class: mask,
+# files, index, service, claimed, unknown); of equals, the first by id. The map's default view,
+# free data, draws only the open and login sources; its other view, all.
+#
+# Nothing is built again for a change here: the server reads it at its next sync.
+theme = "buildings"
+label = "Best data"
+primary = "detail"
+# The other metrics' share: under the bound, 0.0909 for these values.
+share = 0.05
+availability = ["open", "login", "paid", "closed"]
+
+# What a piece's buildings are, of the owner's list: footprints alone; storeys (a floor count, no
+# height); a height per building (an attribute, or an LoD1 block model: the same, one word's value);
+# LoD2 (roof shapes); LoD3 (walls' openings, a building's parts in detail); a textured mesh.
+[metric.detail]
+label = "What is there"
+[metric.detail.values]
+footprints = 0.0
+storeys = 0.25
+heights = 0.5
+lod1 = 0.5
+lod2 = 0.75
+lod3 = 0.9
+mesh = 1.0
+
+# How the heights (or storeys) were found: measured from lidar or from imagery, surveyed (a
+# cadastre's or a register's own), mapped by volunteers (OSM's tags), estimated per building by a
+# model (Microsoft's, 3D-GloBFP's), or an area's average put on its buildings (GHSL's grid).
+[metric.measured]
+label = "How heights were found"
+weight = 0.5
+[metric.measured.values]
+lidar = 1.0
+photogrammetry = 0.9
+survey = 0.8
+mapped = 0.6
+estimated = 0.3
+gridded = 0.1
+
+# The share of the piece's buildings that hold its detail, as the publisher or the research states
+# it (99.93 % of New York's footprints have a roof height).
+[metric.completeness]
+label = "Completeness: buildings with it"
+unit = "%"
+weight = 0.3
+scale = "linear"
+worst = 0
+best = 100
+
+# The year the data was captured (a survey's, a flight's; a compilation's release year where it is
+# the data's own).
+[metric.year]
+label = "Year"
+weight = 0.2
+scale = "linear"
+worst = 2000
+best = 2026

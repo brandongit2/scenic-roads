@@ -1,0 +1,19 @@
+name = "Louisville/Jefferson County buildings (LOJIC)"
+credit = "LOJIC"
+licence = "LOJIC copyright, no open licence"
+theme = "buildings"
+availability = "open"
+notes = "Lidar mean, max and min roof heights on 2025 footprints: 458,237 buildings, 412,896 with MAX_HEIGHT_FEET > 0 (USA §5). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Jefferson County, Kentucky, United States), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Lidar roof heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1804288"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "lidar"
+completeness = 90.1
+year = 2025

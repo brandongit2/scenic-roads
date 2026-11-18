@@ -1,0 +1,14 @@
+name = "Montréal Bâtiments 3D"
+credit = "Ville de Montréal"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Textured LoD2 (CityGML, 3DM, GDB) for 6 of 19 boroughs (AMERICAS §4.3). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Textured LoD2"
+method = "none"
+why = "6 of the city's 19 boroughs, not drawn apart"
+[piece.metrics]
+detail = "mesh"

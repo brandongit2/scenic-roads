@@ -1,0 +1,114 @@
+name = "Overture Maps buildings"
+credit = "Overture Maps Foundation, and its sources: OpenStreetMap contributors, Microsoft, Google, Esri Community Maps contributors, the USGS, Instituto Geográfico Nacional (España)"
+licence = "ODbL-1.0"
+licence_url = "https://docs.overturemaps.org/attribution/"
+source = "https://docs.overturemaps.org/guides/buildings/"
+theme = "buildings"
+availability = "open"
+notes = "The buildings the map's 3D buildings are made from (docs/buildings3d.md §2.1): the pinned Overture release, as the build holds it (its normalized files, work/bld/6-x-y, one per z6 tile within 1 km of the coverage). Each piece is drawn by the build's own step from those files (class mask: bld::bld::extents), a cell a z14 tile (2.4 km at the equator): where the buildings of its dataset with what it holds are at least its share of the cell's buildings, and at least one. A building's footprint is OpenStreetMap's where OSM gave it, else its record's dataset; its height is the dataset Overture names for it. Overture's datasets in the release: OpenStreetMap, Microsoft ML Buildings, Google Open Buildings, Esri Community Maps, USGS Lidar, Instituto Geográfico Nacional (España). The research (RESEARCH-BUILDINGS-INDEX.md §1): Overture's heights are OSM's tags, Microsoft's estimates in some countries and the USGS's lidar values in patches of the USA; most buildings elsewhere have neither height nor storeys. Outside the coverage the build holds none, so these pieces stop there: what the build downloaded, not what Overture has."
+
+# Every footprint: a cell holds the piece where it has one of the dataset's buildings.
+[[piece]]
+id = "osm"
+label = "OpenStreetMap footprints"
+method = "overture"
+dataset = "OpenStreetMap"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+# Storeys or heights: a cell holds them where half its buildings or more have them.
+[[piece]]
+id = "osm-storeys"
+label = "OpenStreetMap storeys"
+method = "overture"
+dataset = "OpenStreetMap"
+holds = "storeys"
+share = 0.5
+[piece.metrics]
+detail = "storeys"
+measured = "mapped"
+
+[[piece]]
+id = "osm-heights"
+label = "OpenStreetMap heights"
+method = "overture"
+dataset = "OpenStreetMap"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"
+measured = "mapped"
+
+[[piece]]
+id = "microsoft"
+label = "Microsoft ML Buildings footprints"
+method = "overture"
+dataset = "Microsoft ML Buildings"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+[[piece]]
+id = "microsoft-heights"
+label = "Microsoft ML Buildings heights (estimated)"
+method = "overture"
+dataset = "Microsoft ML Buildings"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"
+measured = "estimated"
+
+[[piece]]
+id = "google"
+label = "Google Open Buildings footprints"
+method = "overture"
+dataset = "Google Open Buildings"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+[[piece]]
+id = "esri"
+label = "Esri Community Maps footprints"
+method = "overture"
+dataset = "Esri Community Maps"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+[[piece]]
+id = "esri-heights"
+label = "Esri Community Maps heights"
+method = "overture"
+dataset = "Esri Community Maps"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"
+
+[[piece]]
+id = "usgs-lidar-heights"
+label = "USGS lidar heights"
+method = "overture"
+dataset = "USGS Lidar"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"
+measured = "lidar"
+
+[[piece]]
+id = "ign-es"
+label = "IGN España footprints"
+method = "overture"
+dataset = "Instituto Geográfico Nacional (España)"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"

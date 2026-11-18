@@ -1,0 +1,16 @@
+name = "Ferrara Fabbricati"
+credit = "Comune di Ferrara"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "32,058 buildings with heights (EUROPE-W §14). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Ferrara, Emilia-Romagna, Italia), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R43292"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"

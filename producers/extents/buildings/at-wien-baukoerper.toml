@@ -1,0 +1,17 @@
+name = "Vienna Baukörpermodell"
+credit = "Stadt Wien"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "678,965 prisms (LoD1.4); 91.4 % of the height-less buildings gain one (EUROPE-W §11, §20.2). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1.4"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AT-9"] }
+tolerance_m = 200
+[piece.metrics]
+detail = "lod1"

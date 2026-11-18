@@ -1,0 +1,16 @@
+name = "Wellington City 3D buildings"
+credit = "Wellington City Council"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Meshes and solids for 64 suburbs, heights only in the geometry (GDB, DWG, SKP on a bucket, not opened) (REST §3.5). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Wellington City, Wellington, New Zealand / Aotearoa), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Meshes"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R4266321"
+tolerance_m = 100
+[piece.metrics]
+detail = "mesh"

@@ -1,0 +1,18 @@
+name = "Kataster nepremičnin STAVBE"
+credit = "Geodetska uprava Republike Slovenije"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "1,173,180 buildings with heights and storeys; adds storeys on 99.3 % of Ljubljana's box (EUROPE-W §16). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights and storeys"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SVN"] }
+tolerance_m = 500
+[piece.metrics]
+detail = "heights"
+measured = "survey"

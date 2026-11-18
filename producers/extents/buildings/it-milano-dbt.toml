@@ -1,0 +1,18 @@
+name = "Milan DBT 2020 volume units"
+credit = "Comune di Milano"
+licence = "CC-BY"
+theme = "buildings"
+availability = "open"
+notes = "237,743 volume units, 99.9 % with a height; adds a height to 26.6 % of 15,350 Overture buildings (EUROPE-W §14, §20.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Milano, Rodano, Milano, Lombardia, Italia), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Volume units (2020)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R44915"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+completeness = 99.9
+year = 2020

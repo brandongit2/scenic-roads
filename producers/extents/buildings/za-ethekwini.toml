@@ -1,0 +1,16 @@
+name = "eThekwini building footprints"
+credit = "eThekwini Municipality"
+licence = "none stated"
+theme = "buildings"
+availability = "open"
+notes = "846,698 footprints with a survey year and roof area, no height (REST §2.8, §9.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (eThekwini Metropolitan Municipality, KwaZulu-Natal, South Africa), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R610720"
+tolerance_m = 100
+[piece.metrics]
+detail = "footprints"

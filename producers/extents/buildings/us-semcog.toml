@@ -1,0 +1,14 @@
+name = "SEMCOG building footprints"
+credit = "Southeast Michigan Council of Governments"
+licence = "custom agreement"
+theme = "buildings"
+availability = "open"
+notes = "1,742,760 footprints with `median_hgt`, its basis undocumented (USA §4). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints with median heights"
+method = "none"
+why = "Southeast Michigan's seven counties: their outline isn't one area Natural Earth or a single OSM boundary draws"
+[piece.metrics]
+detail = "heights"

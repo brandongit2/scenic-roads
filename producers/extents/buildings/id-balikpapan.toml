@@ -1,0 +1,16 @@
+name = "Balikpapan building footprints"
+credit = "Pemerintah Kota Balikpapan"
+licence = "Other (Public Domain)"
+theme = "buildings"
+availability = "open"
+notes = "185,364 footprints, no height (ASIA §4.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Balikpapan, Kalimantan Timur, Indonesia), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R14921096"
+tolerance_m = 100
+[piece.metrics]
+detail = "footprints"

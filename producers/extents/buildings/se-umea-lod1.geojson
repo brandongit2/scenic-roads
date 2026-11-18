@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"se-umea-lod1","theme":"buildings","read":[{"piece":"all","method":"none","why":"one tile (boxar14) read; the municipality's coverage not stated","date":"2026-11-18"}],"features":[{"type":"Feature","properties":{"piece":"all","extent":"unknown","availability":"open","detail":"lod1","name":"LoD1"},"geometry":null}]}

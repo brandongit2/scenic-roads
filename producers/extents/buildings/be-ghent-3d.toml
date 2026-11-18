@@ -1,0 +1,16 @@
+name = "Gent 3D"
+credit = "Stad Gent"
+licence = "Modellicentie Gratis Hergebruik v1.0"
+theme = "buildings"
+availability = "open"
+notes = "LoD2 DWG tiles (EUROPE-W §7). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Gent, Oost-Vlaanderen, Vlaanderen, België / Belgique / Belgien), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD2"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R897671"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

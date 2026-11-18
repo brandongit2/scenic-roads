@@ -1,0 +1,19 @@
+name = "Launceston building footprints"
+credit = "City of Launceston"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Height_m on 70,246 of 74,059 (1985-97 surveys); 65.8 % of Overture's gain a height (REST §3.3, §9.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (City of Launceston, Tasmania, Australia), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights (1985-97)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R10581631"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "survey"
+completeness = 94.9
+year = 1997

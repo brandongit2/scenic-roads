@@ -1,0 +1,17 @@
+name = "São Paulo GeoSampa edificação"
+credit = "Prefeitura de São Paulo (GeoSampa)"
+licence = "CC-BY-SA-4.0"
+theme = "buildings"
+availability = "open"
+notes = "qt_altura_edificacao on 2,774,157 of 2,817,745 buildings; 97.3 % of matched buildings already have an Overture height (OSM's import of it) (AMERICAS §8, §13.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (São Paulo, Região Sudeste, Brasil), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R298285"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+completeness = 98.5

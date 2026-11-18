@@ -1,0 +1,19 @@
+name = "Portland RLIS and Oregon SBFO buildings"
+credit = "Metro (RLIS), State of Oregon"
+licence = "RLIS Open Database End User Licence Agreement"
+theme = "buildings"
+availability = "open"
+notes = "Lidar AVG_HEIGHT on 552,958 of 749,627 Portland-metro buildings, with roof type (RLIS); Oregon's statewide footprints (SBFO). The state is claimed: the heights are the metro's (USA §6). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints and lidar heights"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["US-OR"] }
+tolerance_m = 200
+[piece.metrics]
+detail = "heights"
+measured = "lidar"
+completeness = 73.8

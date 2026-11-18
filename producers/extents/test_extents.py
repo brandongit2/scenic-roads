@@ -271,6 +271,46 @@ class Score(unittest.TestCase):
                 score.check({**self.DECL, "unstated": bad})
 
 
+class WordsPrimary(unittest.TestCase):
+    """A primary of `values` (the buildings': what is there): a better word always wins, whatever
+    the rest; the same word ties and the rest decides."""
+
+    with open(os.path.join(os.path.dirname(__file__), "buildings", "score.toml"), "rb") as f:
+        DECL = tomllib.load(f)
+
+    def test_a_better_word_always_scores_higher(self):
+        d = self.DECL
+        words = d["metric"][d["primary"]]["values"]
+        rng = random.Random(7)
+        others = [k for k in d["metric"] if k != d["primary"]]
+        for _ in range(20000):
+            a, b = rng.sample(sorted(words), 2)
+            pa, pb = {d["primary"]: a}, {d["primary"]: b}
+            for p in (pa, pb):
+                for k in others:
+                    m = d["metric"][k]
+                    if rng.random() < 0.3:
+                        continue
+                    p[k] = rng.choice(sorted(m["values"])) if "values" in m else rng.uniform(m["worst"], m["best"])
+            sa, sb = score.score(d, pa)[0], score.score(d, pb)[0]
+            if words[a] > words[b]:
+                self.assertGreater(sa, sb, (pa, pb))
+        # The same word: the rest decides, whatever the order given.
+        old = {d["primary"]: "heights", "year": 2005}
+        new = {d["primary"]: "heights", "year": 2024}
+        self.assertEqual(score.ranked(d, [old, new]), [1, 0])
+        self.assertEqual(score.tie(d), 0.0)
+
+    def test_a_words_primary_takes_no_within_and_its_bound(self):
+        d = self.DECL
+        score.check(d)
+        k = score.least_step(d)
+        with self.assertRaises(SystemExit):
+            score.check({**d, "share": k / (1 + k)})
+        with self.assertRaises(SystemExit):
+            score.check({**d, "within": 1.25})
+
+
 class Geometry(unittest.TestCase):
     def test_squares_side_by_side_dissolve_to_their_outline(self):
         import shapely
@@ -427,6 +467,21 @@ class Pieces(unittest.TestCase):
         self.assertIsNone(f["geometry"])
         self.assertEqual(f["properties"], {"piece": "x", "extent": "unknown", "availability": "paid", "spacing_m": 5})
         self.assertEqual(read["why"], "no footprint published")
+
+    def test_an_overture_piece_is_a_mask_the_build_draws(self):
+        """An `overture` block's piece: listed with no geometry and the class `mask`, its cells the
+        build's step's to draw (bld::bld::extents), its block's dataset, holds and share read."""
+        b = {"id": "osm-heights", "method": "overture", "dataset": "OpenStreetMap", "holds": "heights", "share": 0.5,
+             "metrics": {"detail": "heights", "measured": "mapped"}}
+        out = list(extents.block_pieces(FakeNet({}), {"id": "overture", "availability": "open"}, b, "2026-01-01"))
+        f, read = out[0]
+        self.assertIsNone(f["geometry"])
+        self.assertEqual(f["properties"], {"piece": "osm-heights", "extent": "mask", "availability": "open",
+                                           "detail": "heights", "measured": "mapped"})
+        self.assertEqual((read["method"], read["dataset"], read["holds"], read["share"]), ("overture", "OpenStreetMap", "heights", 0.5))
+        for bad in ({"holds": "roofs"}, {"dataset": ""}, {"share": 1.5}):
+            with self.assertRaises(SystemExit):
+                list(extents.block_pieces(FakeNet({}), {"id": "overture", "availability": "open"}, {**b, **bad}, "2026-01-01"))
 
 
 class Listing(unittest.TestCase):

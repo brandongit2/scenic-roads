@@ -1,0 +1,17 @@
+name = "Surrey building footprints"
+credit = "City of Surrey"
+licence = "Surrey Open Data Licence"
+theme = "buildings"
+availability = "open"
+notes = "137,305 of 137,657 with heights (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Surrey, Metro Vancouver Regional District, British Columbia, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Footprints with heights"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1384967"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+completeness = 99.7

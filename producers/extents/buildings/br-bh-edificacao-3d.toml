@@ -1,0 +1,18 @@
+name = "Belo Horizonte Edificação 3D"
+credit = "Prefeitura de Belo Horizonte"
+licence = "CC-BY"
+theme = "buildings"
+availability = "open"
+notes = "DSM-minus-DTM heights on 739,100 rows (2015) (AMERICAS §8). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Belo Horizonte, Minas Gerais, Região Sudeste, Brasil), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights (2015)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R368782"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "photogrammetry"
+year = 2015

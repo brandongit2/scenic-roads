@@ -1,0 +1,17 @@
+name = "Taipei building permit overlay"
+credit = "Taipei City Government"
+licence = "Taiwan Open Government Data Licence v1.0"
+theme = "buildings"
+availability = "open"
+notes = "10,051 permit outlines with bud_fl (ASIA §2.3, §11.1). Its extent: the area it covers, its boundary as OpenStreetMap maps it (臺北市, 臺灣), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Storeys"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R1293250"
+tolerance_m = 100
+[piece.metrics]
+detail = "storeys"
+measured = "survey"

@@ -39,15 +39,27 @@ def value(m, v):
     return min(1.0, max(0.0, (v - worst) / (best - worst)))
 
 
-def check(decl):
-    """The guarantee a score.toml states holds for its numbers: a piece finer by more than `within`
-    scores higher whatever the other metrics say. (1 - share) × the primary's least step, ln(within)
-    over its scale's span, must outweigh `share` × the rest's whole range, 0 to 1 (each value, and
-    `unstated`, in it)."""
+def least_step(decl):
+    """The primary's least step that counts, on its 0-1 value: ln(within) over its log scale's
+    span; for a primary of `values`, the least gap between two of its words' values (its pieces
+    tie on the same word)."""
     m = decl["metric"][decl["primary"]]
-    k = math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
+    if "values" in m:
+        v = sorted(set(m["values"].values()))
+        if len(v) < 2 or "within" in decl:
+            sys.exit(f"{decl['primary']}: a primary of `values` has two values or more, and no `within`")
+        return min(b - a for a, b in zip(v, v[1:]))
+    return math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
+
+
+def check(decl):
+    """The guarantee a score.toml states holds for its numbers: a piece better than another by more
+    than the primary's least step (a factor of `within`, or a word) scores higher whatever the other
+    metrics say. (1 - share) × that step must outweigh `share` × the rest's whole range, 0 to 1
+    (each value, and `unstated`, in it)."""
+    k = least_step(decl)
     if not 0 <= decl["share"] < k / (1 + k):
-        sys.exit(f"share {decl['share']} breaks the guarantee: it must be under {k / (1 + k):.4f} for within = {decl['within']}")
+        sys.exit(f"share {decl['share']} breaks the guarantee: it must be under {k / (1 + k):.4f} for the primary's least step {k:.4f}")
     u = unstated(decl)
     if isinstance(u, bool) or not isinstance(u, (int, float)) or not 0 <= u <= 1:
         sys.exit(f"unstated {u!r} isn't a number from 0 to 1")
@@ -112,13 +124,27 @@ EXAMPLES = {"terrain": [
      [{"spacing_m": 10, "measured": "singlebeam", "year": 1990}, {"spacing_m": 10, "measured": "optical", "year": 2022}]),
     ("GEBCO's cells: gravity-predicted against digitized contours, at its one spacing",
      [{"spacing_m": 463, "measured": "predicted"}, {"spacing_m": 463, "measured": "contours"}]),
+], "buildings": [
+    ("Overture's OSM heights against a city's LoD2 model of 2015 with no completeness stated: the better detail",
+     [{"detail": "heights", "measured": "mapped", "completeness": 80, "year": 2026}, {"detail": "lod2", "year": 2015}]),
+    ("an LoD1 model from lidar, every building, of 2024, against a city's LoD2 of 2010 from photogrammetry",
+     [{"detail": "lod1", "measured": "lidar", "completeness": 100, "year": 2024},
+      {"detail": "lod2", "measured": "photogrammetry", "year": 2010}]),
+    ("the same detail: Microsoft's estimated heights against the USGS's lidar heights, both of 2024",
+     [{"detail": "heights", "measured": "estimated", "year": 2024}, {"detail": "heights", "measured": "lidar", "year": 2024}]),
+    ("storeys only (OSM's floor counts) against footprints alone",
+     [{"detail": "storeys", "measured": "mapped"}, {"detail": "footprints"}]),
+    ("GHSL's gridded heights against OSM's mapped ones",
+     [{"detail": "heights", "measured": "gridded", "year": 2018}, {"detail": "heights", "measured": "mapped"}]),
 ]}
 
 
 def tie(decl):
     """How far apart two pieces' primary values (0-1) may be and still tie: a factor of `within` on
-    the primary's log scale."""
+    the primary's log scale; none for a primary of `values` (the same word ties)."""
     m = decl["metric"][decl["primary"]]
+    if "values" in m:
+        return 0.0
     return math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
 
 

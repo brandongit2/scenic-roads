@@ -1,0 +1,17 @@
+name = "Gwacheon new-address buildings"
+credit = "Gwacheon-si"
+licence = "KOGL"
+theme = "buildings"
+availability = "open"
+notes = "Above and below-ground floors on 5,029 polygons (ASIA §2.2, §11.1). Its extent: the area it covers, its boundary as OpenStreetMap maps it (과천시, 경기도, 대한민국), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Storeys"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2409169"
+tolerance_m = 100
+[piece.metrics]
+detail = "storeys"
+measured = "survey"

@@ -1,0 +1,14 @@
+name = "Poland GUGiK LoD2 and LoD1"
+credit = "Główny Urząd Geodezji i Kartografii"
+licence = "public-sector information (2016 re-use act)"
+theme = "buildings"
+availability = "open"
+notes = "LoD2 per county (Warsaw 138,830, Kraków 82,676 buildings), Warsaw's LoD1 145,508 (EUROPE-E §4.1, §10.3). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD2"
+method = "none"
+why = "LoD2 in 236 of Poland's 380 counties, which aren't listed as an area; the hosts refuse connections (Wayback copies read)"
+[piece.metrics]
+detail = "lod2"

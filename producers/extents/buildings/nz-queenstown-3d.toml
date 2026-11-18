@@ -1,0 +1,16 @@
+name = "Queenstown Lakes Buildings_3D"
+credit = "Queenstown Lakes District Council"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Height, eave height and roof form on 31,000 buildings; 74 % of Overture's gain a height (REST §3.5, §9.4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Queenstown-Lakes District, Otago, New Zealand / Aotearoa), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights and roof forms"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R4429897"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"

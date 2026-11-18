@@ -1,0 +1,16 @@
+name = "Project PLATEAU"
+credit = "MLIT (Project PLATEAU)"
+licence = "PLATEAU Site Policy (free reuse, commercial included)"
+source = "https://www.geospatial.jp/ckan/dataset/plateau"
+theme = "buildings"
+availability = "open"
+notes = "Footprints, LoD1 in all units, LoD2 in 247, LoD3 in 18, with heights and storeys (CityGML zips of 1.5-5 GB, readable by range); Tokyo's 2020 tile adds a height to 98.3 % of its buildings (ASIA §2.1, §11.1). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1 to LoD3"
+method = "none"
+why = "306 city and ward units in 45 prefectures, each a package of its own: their areas aren't drawn as one (a task of its own)"
+[piece.metrics]
+detail = "lod2"
+measured = "photogrammetry"

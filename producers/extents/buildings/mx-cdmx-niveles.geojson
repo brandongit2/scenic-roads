@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"mx-cdmx-niveles","theme":"buildings","read":[{"piece":"all","method":"none","why":"10 of the 16 alcaldías, not drawn apart","date":"2026-11-18"}],"features":[{"type":"Feature","properties":{"piece":"all","extent":"unknown","availability":"open","detail":"storeys","measured":"survey","name":"Storeys"},"geometry":null}]}

@@ -1,0 +1,16 @@
+name = "Ottawa 3D buildings LOD1"
+credit = "City of Ottawa"
+licence = "Open Data Licence 2.0 (OGL-Canada based)"
+theme = "buildings"
+availability = "open"
+notes = "LoD1 box models in 116 neighbourhood downloads (DXF, GDB) (AMERICAS §4.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Ottawa, Eastern Ontario, Ontario, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1 boxes"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R4136816"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod1"

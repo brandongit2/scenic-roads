@@ -1,0 +1,16 @@
+name = "Calgary 3D buildings"
+credit = "City of Calgary"
+licence = "OGL on the portal; all rights reserved in the metadata"
+theme = "buildings"
+availability = "open"
+notes = "LoD2-like multipatch, 457,136 buildings (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Calgary, Alberta, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Multipatch"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R3227127"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod2"

@@ -1,0 +1,17 @@
+name = "Vicmap 3D Buildings"
+credit = "State of Victoria (Digital Twin Victoria)"
+licence = "public-sector licensing, cost recovery"
+theme = "buildings"
+availability = "closed"
+notes = "LoD1 and LoD2 3D Tiles (five sets), view only (REST §3.2). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1 and LoD2"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AU-VIC"] }
+tolerance_m = 200
+[piece.metrics]
+detail = "lod2"

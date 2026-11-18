@@ -1,0 +1,19 @@
+name = "Rio de Janeiro Edificações"
+credit = "Prefeitura do Rio de Janeiro (IPP)"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "ALTURA (m) on 2,207,546 of 2,295,829 buildings (2013 imagery); adds heights to 65.4 % of its buildings in its box (AMERICAS §8, §13.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Rio de Janeiro, Região Sudeste, Brasil), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights (2013)"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R2697338"
+tolerance_m = 100
+[piece.metrics]
+detail = "heights"
+measured = "photogrammetry"
+completeness = 96.2
+year = 2013

@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"fr-city-3d","theme":"buildings","read":[{"piece":"all","method":"none","why":"five cities' and a region's models, their areas not read","date":"2026-11-18"}],"features":[{"type":"Feature","properties":{"piece":"all","extent":"unknown","availability":"open","detail":"lod2","name":"City LoD2 models"},"geometry":null}]}

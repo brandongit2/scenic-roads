@@ -1,0 +1,15 @@
+name = "Mexico City lots with niveles"
+credit = "Gobierno de la Ciudad de México"
+licence = "none found"
+theme = "buildings"
+availability = "open"
+notes = "873,607 lots with storeys (niveles) in 10 of 16 alcaldías; Overture's centre has 0.1 % heights (AMERICAS §5). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Storeys"
+method = "none"
+why = "10 of the 16 alcaldías, not drawn apart"
+[piece.metrics]
+detail = "storeys"
+measured = "survey"

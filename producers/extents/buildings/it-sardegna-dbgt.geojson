@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"it-sardegna-dbgt","theme":"buildings","read":[{"piece":"all","method":"none","why":"the urban centres of each comune, not drawn as one area","date":"2026-11-18"}],"features":[{"type":"Feature","properties":{"piece":"all","extent":"unknown","availability":"open","detail":"heights","name":"Eave levels"},"geometry":null}]}

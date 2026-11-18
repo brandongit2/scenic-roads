@@ -1,0 +1,14 @@
+name = "Sardinia DBGT"
+credit = "Regione Autonoma della Sardegna"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "Eave and foot levels per comune; Cagliari adds 36.1 % of 7,005 Overture buildings (EUROPE-W §14, §20.3). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Eave levels"
+method = "none"
+why = "the urban centres of each comune, not drawn as one area"
+[piece.metrics]
+detail = "heights"

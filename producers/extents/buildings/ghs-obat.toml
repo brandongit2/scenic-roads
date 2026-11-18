@@ -1,0 +1,17 @@
+name = "GHS-OBAT"
+credit = "European Commission, Joint Research Centre"
+licence = "CC-BY-4.0"
+theme = "buildings"
+availability = "open"
+notes = "GHS-BUILT-H's mean height put on 2.28 billion Overture footprints (MAE 2.89 m at feature level per the catalogue), a GeoPackage per country (REST §4.1). Its extent: the area it covers, the land as Natural Earth's 1:10m land polygons (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "Heights (gridded)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_land.geojson"
+tolerance_m = 5000
+[piece.metrics]
+detail = "heights"
+measured = "gridded"

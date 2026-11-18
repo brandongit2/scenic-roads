@@ -1,0 +1,16 @@
+name = "Espoo 3D city model"
+credit = "City of Espoo"
+licence = "open WFS terms"
+theme = "buildings"
+availability = "open"
+notes = "LoD1 to LoD3 (EUROPE-E §3.4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Espoo, Helsingin seutukunta, Uusimaa, Manner-Suomi, Suomi / Finland), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+
+[[piece]]
+id = "all"
+label = "LoD1 to LoD3"
+method = "file"
+class = "claimed"
+url = "https://nominatim.openstreetmap.org/lookup?format=geojson&polygon_geojson=1&polygon_threshold=0.0005&osm_ids=R36097"
+tolerance_m = 100
+[piece.metrics]
+detail = "lod3"
