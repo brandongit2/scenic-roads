@@ -3,7 +3,7 @@ credit = "Wellington City Council"
 licence = "CC-BY-4.0"
 theme = "buildings"
 availability = "open"
-notes = "Meshes and solids for 64 suburbs, heights only in the geometry (GDB, DWG, SKP on a bucket, not opened) (REST §3.5). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Wellington City, Wellington, New Zealand / Aotearoa), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (a later index read). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "Meshes and solids for 64 suburbs, heights only in the geometry (GDB, DWG, SKP on a bucket, not opened) (REST §3.5). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Wellington City, Wellington, New Zealand / Aotearoa), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (board task #1460). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

@@ -951,6 +951,32 @@ class IndexFiles(unittest.TestCase):
         self.assertEqual(len(got), 3)
         self.assertEqual(net.requests, 2)
 
+    def test_a_wfs_ignoring_start_index_or_paging_short_stops(self):
+        def url(off):
+            return "https://h/wfs?" + urllib.parse.urlencode({"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": "t",
+                                                              "outputFormat": "application/json", "count": "2", "startIndex": str(off)})
+        def page(ids, matched):
+            return json.dumps({"type": "FeatureCollection", "numberMatched": matched, "features": [
+                {"type": "Feature", "properties": {"id": i}, "geometry": {"type": "Polygon", "coordinates": [[[i, 0], [i + 1, 0], [i + 1, 1], [i, 0]]]}}
+                for i in ids]}).encode()
+        b = {"url": "https://h/wfs", "type": "t", "page": 2}
+        # (The first page again at 2: stopped there, not paged on to the run's limit.)
+        net = FakeNet({url(0): page([0, 1], 9), url(2): page([0, 1], 9)})
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_wfs(net, b, 0))
+        self.assertIn("repeats", str(e.exception))
+        self.assertEqual(net.requests, 2)
+        # (An empty page while the server says 9 match: stopped, saying so.)
+        net = FakeNet({url(0): page([0, 1], 9), url(2): page([], 9)})
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_wfs(net, b, 0))
+        self.assertIn("says 9 match", str(e.exception))
+        # (An empty last page of a set that's all read: the end.)
+        net = FakeNet({url(0): page([0, 1], 2), url(2): page([], 2)})
+        self.assertEqual(len(list(extents.read_wfs(net, b, 0))), 2)
+        self.assertEqual(extents.number_matched(b'<wfs:FeatureCollection numberMatched="12" numberReturned="0"/>'), 12)
+        self.assertIsNone(extents.number_matched(b"{}"))
+
 
 class StacAssets(unittest.TestCase):
     def test_an_items_footprint_from_its_asset(self):

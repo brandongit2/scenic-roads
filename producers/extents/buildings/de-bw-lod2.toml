@@ -3,7 +3,7 @@ credit = "LGL Baden-Württemberg"
 licence = "dl-de/by-2-0"
 theme = "buildings"
 availability = "open"
-notes = "6,482,992 LoD2 buildings with standard roofs (EUROPE-E §2.2). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (a later index read). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "6,482,992 LoD2 buildings with standard roofs (EUROPE-E §2.2). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (board task #1460). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

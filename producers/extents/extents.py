@@ -541,8 +541,10 @@ def read_stac(net, b, _tol):
 def read_wfs(net, b, _tol):
     """A WFS feature type's features, paged (`page`, by `startIndex`), as GeoJSON or GML, whichever
     the server answers in the `format` asked for; `version` 2.0.0 (the default) or a 1.x's
-    (`typeName`, `maxFeatures`); `sort`, the field to page in the order of, where the server asks one)."""
-    page, off = int(b.get("page", 2000)), 0
+    (`typeName`, `maxFeatures`); `sort`, the field to page in the order of, where the server asks one).
+    A page that repeats the one before, or comes back empty while the server says more match, stops
+    the run, saying so: a server ignoring `startIndex` isn't paged to the limit."""
+    page, off, last = int(b.get("page", 2000)), 0, None
     version = b.get("version", "2.0.0")
     old = version.startswith("1.")
     while True:
@@ -557,12 +559,30 @@ def read_wfs(net, b, _tol):
         body = net.get(b["url"] + ("&" if "?" in b["url"] else "?") + urllib.parse.urlencode(q))
         if b"ExceptionReport" in body[:1000]:
             sys.exit(f"{b['url']}: {body[:1000].decode('utf-8', 'replace')}")
+        # (A server ignoring `startIndex` answers the first page again: stopped, not paged to the
+        # run's limit.)
+        if off and body == last:
+            sys.exit(f"{b['url']}: the page at {off} repeats the one before it (startIndex ignored?): stopped")
+        last = body
         # (Every feature, those without geometry too, so a page's count is the server's.)
         feats = list(index_features(body, b))
+        matched = number_matched(body)
+        if not feats and matched is not None and matched > off:
+            sys.exit(f"{b['url']}: the page at {off} is empty, the server says {matched} match: stopped")
         yield from feats
         off += len(feats)
         if len(feats) < page:
             return
+
+
+def number_matched(body):
+    """The features a WFS answer says match (`numberMatched`, GeoJSON's member or GML's attribute,
+    at either end of the answer), or None where it doesn't say."""
+    for part in (body[:4096], body[-4096:]):
+        m = re.search(rb'numberMatched"?\s*[:=]\s*"?(\d+)', part)
+        if m:
+            return int(m[1])
+    return None
 
 
 def answer_crs(d):
