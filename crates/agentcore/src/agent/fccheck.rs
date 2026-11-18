@@ -529,10 +529,15 @@ pub fn recost(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecas
     let held: std::collections::BTreeSet<&str> =
         st.costs.keys().map(|k| crate::agent::memguard::step_of_key(k)).collect();
     let put = |step: &str, target: &str, c: &mut forecast::Cost| {
-        if held.contains(step) {
-            let was = c.secs;
-            let per = |s: &str| sums.get(s).filter(|x| x.1 > 0.0).map_or(was, |x| x.0 / x.1);
-            *c = forecast::target_cost(&book, step, target, &at, &per, c.peak_mb);
+        // (What is left of a run that stopped short stays as recorded: its events aren't in the input.)
+        if held.contains(step) && c.basis != forecast::Basis::Partial {
+            let was = *c;
+            let per = |s: &str| {
+                sums.get(s)
+                    .filter(|x| x.1 > 0.0)
+                    .map_or((was.secs, was.basis), |x| (x.0 / x.1, forecast::Basis::Sibling))
+            };
+            *c = forecast::target_cost(&book, step, target, &at, &|_, _| None, &per, c.peak_mb);
         }
     };
     for (step, ts) in inp.costs.iter_mut() {
@@ -1032,9 +1037,9 @@ mod tests {
     /// since an earlier record noted their costs, and is archived as code `VERSION`.
     #[test]
     fn the_replay_runs_old_and_new_on_the_records() {
-        use super::super::forecast::{Cadence, Cost, Input, Machine, Record};
+        use super::super::forecast::{Basis, Cadence, Cost, Input, Machine, Record};
         let rec = |now: u64, targets: std::ops::Range<u32>| {
-            let c = Cost { secs: 600.0, known: true, peak_mb: 100 };
+            let c = Cost { secs: 600.0, basis: Basis::Own, peak_mb: 100 };
             Record {
                 input: Input {
                     now,

@@ -18468,13 +18468,105 @@ mod membership_tests {
         );
         let c = &rec.input.costs["terrain-deep"];
         let (old, now) = (c["10/99/0"], c["10/98/0"]);
-        assert!(!old.known, "a run of an older way isn't its measure: {old:?}");
-        assert!(now.known, "{now:?}");
+        assert_eq!(
+            old.basis,
+            crate::agent::forecast::Basis::Sibling,
+            "a run of an older way isn't its measure: {old:?}"
+        );
+        assert_eq!(now.basis, crate::agent::forecast::Basis::Own, "{now:?}");
         // (Its step's mean of the runs the way it runs now, at the same pace as its own run's.)
         let mean = (20.0 * 100.0 + 10.0) / 21.0;
         assert!((old.secs / now.secs - mean / 10.0).abs() < 0.01, "{old:?} {now:?}");
         let drop = &rec.input.drops.iter().find(|j| j.1 == "10/97/0").unwrap().2;
-        assert_eq!((drop.secs, drop.known), (2.0, true), "its step's drops' of the way it runs now");
+        assert_eq!(
+            (drop.secs, drop.basis),
+            (2.0, crate::agent::forecast::Basis::Sibling),
+            "its step's drops' of the way it runs now"
+        );
+    }
+
+    /// Task #1449: the forecast's cost table says which figure each target's time is: a stopped run's
+    /// pace (the history's progress of a job that stopped short: 18 Nov's available-bathymetry,
+    /// paused at 2,169 s, counted 300 s as a guess), else its own run, else its step's mean over its
+    /// targets, else what the lead's jobs of the step took lately, else the first guess; and each
+    /// step's targets are counted by it.
+    #[test]
+    fn the_forecast_says_which_figure_each_targets_time_is() {
+        use crate::agent::forecast::Basis;
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
+        let plan = crate::agent::seam::for_tests();
+        let v = crate::coord::cost_version("terrain-deep");
+        let run = |secs: u64| crate::coord::Cost { peak_mb: 1000, secs, v, ..Default::default() };
+        let key = |t: &str| crate::coord::cost_key("terrain-deep", t);
+        let mut runs: Vec<(String, crate::coord::Cost)> =
+            (0..10).map(|i| (key(&format!("10/{i}/0")), run(100))).collect();
+        runs.push((key("10/98/0"), run(10)));
+        co.add_costs(&runs);
+        // (10/95/0 ran for 600 s and made 100 of 400 z6 tiles before its job was paused.)
+        let job = jobrt::jobid::JobId { epoch: 1, n: 7 };
+        let ev = |kind: &str| crate::coord::history::Event {
+            job: Some(job),
+            step: Some("terrain-deep".into()),
+            ..crate::coord::history::Event::new(kind)
+        };
+        co.note(crate::coord::history::Event { targets: vec!["10/95/0".into()], ..ev("lease") });
+        co.note(crate::coord::history::Event {
+            ok: Some(false),
+            secs: Some(600.0),
+            progress: Some(crate::coord::history::Progress {
+                target: None,
+                done: 100.0,
+                total: 400.0,
+                unit: "z6 tiles".into(),
+                secs: 600.0,
+            }),
+            ..ev("fail")
+        });
+        a.coord = Some(std::sync::Arc::new(co));
+        let regions = [crate::agent::seam::RegionLeft {
+            id: "a".into(),
+            own_terrain_deep: vec!["10/95/0".into(), "10/98/0".into(), "10/97/0".into()],
+            slope_deep: vec!["10/1/0".into()],
+            own_terrain_lo: vec!["8/1/0".into()],
+            ..Default::default()
+        }];
+        let forecast_of = |a: &mut Agent| {
+            a.planner().forecast_record(
+                &[],
+                &regions,
+                &[],
+                &[],
+                Default::default(),
+                &[],
+                None,
+                &Default::default(),
+                &|_, _| 0,
+            )
+        };
+        let rec = forecast_of(&mut a);
+        let c = &rec.input.costs;
+        assert_eq!((c["terrain-deep"]["10/95/0"].basis, c["terrain-deep"]["10/95/0"].secs), (Basis::Partial, 1800.0));
+        assert_eq!((c["terrain-deep"]["10/98/0"].basis, c["terrain-deep"]["10/98/0"].secs), (Basis::Own, 10.0));
+        let step = &c["terrain-deep"]["10/97/0"];
+        assert_eq!(step.basis, Basis::Sibling, "its step's mean over its targets");
+        assert!((step.secs - (10.0 * 100.0 + 10.0) / 11.0).abs() < 1e-6, "{step:?}");
+        assert_eq!(c["slope-deep"]["10/1/0"].basis, Basis::Guess);
+        assert_eq!(c["slope-deep"]["10/1/0"].secs, first_secs("slope-deep"));
+        // (What the lead's jobs of a step took lately, else the guess.)
+        a.mem.step_secs.insert(secs_key(plan, "slope-deep"), 77.0);
+        let rec = forecast_of(&mut a);
+        assert_eq!(
+            (rec.input.costs["slope-deep"]["10/1/0"].basis, rec.input.costs["slope-deep"]["10/1/0"].secs),
+            (Basis::Here, 77.0)
+        );
+        // (The forecast counts each step's targets by it, for the page.)
+        let f = rec.forecast(plan);
+        let s = f.steps.iter().find(|s| s.step == "terrain-deep").expect("its step's work left");
+        assert_eq!(s.basis, [(Basis::Partial, 1), (Basis::Own, 1), (Basis::Sibling, 1)].into_iter().collect());
+        assert_eq!(s.known, 2);
     }
 
     /// Task #1393: a held catalogue is the forecast's `catalog-held`, as its job is granted, never

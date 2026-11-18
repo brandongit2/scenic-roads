@@ -117,13 +117,79 @@ pub fn sustained(points: &[(u64, f64)], step: u64, now: u64) -> Option<f64> {
     best
 }
 
-/// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
-/// and its memory (MB).
+/// Which figure a target's time is (`Cost::basis`), the best first: the build page says it, a step's
+/// card counting its targets by it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Basis {
+    /// What is left of a run that stopped short (a pause, a lapse, a restart: its progress's done,
+    /// total and time, `partials`), at that run's own pace.
+    Partial,
+    /// The target's own finished run, the way its step runs now (crate::needs::Book::own).
+    Own,
+    /// The nearest measured figure: its step's mean over its other targets' runs.
+    Sibling,
+    /// What a target of its step took in the lead's own jobs lately (`Memory::step_secs`).
+    Here,
+    /// A first guess (`first_secs`): nothing of its step measured.
+    #[default]
+    Guess,
+}
+
+impl Basis {
+    /// Whether the time is measured of the target itself, or of the lead's own run of its step (a
+    /// run of it, finished or stopped short, or the lead's jobs of a step it alone runs).
+    pub fn measured(self) -> bool {
+        matches!(self, Basis::Partial | Basis::Own | Basis::Here)
+    }
+
+    /// In words, for the page.
+    pub fn words(self) -> &'static str {
+        match self {
+            Basis::Partial => "a stopped run's pace",
+            Basis::Own => "its own run",
+            Basis::Sibling => "its step's mean",
+            Basis::Here => "the lead's recent jobs of its step",
+            Basis::Guess => "a first guess",
+        }
+    }
+}
+
+/// What a target takes: its time at the lead's pace (seconds), which figure it comes from
+/// (`Basis`), and its memory (MB). A record from before the basis said `known`: its own run's, or a
+/// guess.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "CostRead")]
 pub struct Cost {
     pub secs: f64,
-    pub known: bool,
+    pub basis: Basis,
     pub peak_mb: u64,
+}
+
+impl Cost {
+    /// Whether its time is measured (`Basis::measured`): the forecast's guess spread (`scaled`)
+    /// and its measured share leave the rest out.
+    pub fn known(&self) -> bool {
+        self.basis.measured()
+    }
+}
+
+#[derive(Deserialize)]
+struct CostRead {
+    secs: f64,
+    #[serde(default)]
+    known: Option<bool>,
+    #[serde(default)]
+    basis: Option<Basis>,
+    #[serde(default)]
+    peak_mb: u64,
+}
+
+impl From<CostRead> for Cost {
+    fn from(r: CostRead) -> Cost {
+        let basis = r.basis.unwrap_or(if r.known == Some(true) { Basis::Own } else { Basis::Guess });
+        Cost { secs: r.secs, basis, peak_mb: r.peak_mb }
+    }
 }
 
 /// A job of the lead's alone, or one of the chains': (step, target, cost).
@@ -537,23 +603,81 @@ pub fn step_sums(
     sums
 }
 
-/// What a region's target of `step` takes (`cost_table`'s `cost`): its own run at the lead's pace
-/// (`at`), known, where it ran the way its step runs now (crate::needs::Book::own: the measure the
-/// coordinator sizes its jobs by), else `per`, its step's time a target; its memory `peak_mb`.
+/// The time of what is left of each target whose run stopped short (`Event::progress`), at the
+/// lead's pace, by (step, target): the run's own pace (its part's time over what it made) over what
+/// it hadn't made of its total. From the history's events, oldest first: a "start" or "lease" names
+/// its job's targets, a stopped "end" or "fail" of that job (not ok, in its progress's unit; of the
+/// way its step runs now, `Event::v`) sets the time left of its progress's target (its one target,
+/// when its progress names none), and a job that ended well, its targets', clears it. `at` puts a
+/// time of a worker's at the lead's pace (`at_lead`).
+pub fn partials(
+    the_plan: &dyn crate::agent::seam::Plan,
+    events: &[crate::coord::history::Event],
+    at: &dyn Fn(f64, Option<&str>, &str) -> f64,
+) -> BTreeMap<(String, String), f64> {
+    let mut jobs: BTreeMap<jobrt::jobid::JobId, Vec<String>> = BTreeMap::new();
+    let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
+    for e in events {
+        let (Some(job), Some(step)) = (e.job, e.step.as_deref()) else { continue };
+        match e.kind.as_str() {
+            "start" | "lease" => {
+                jobs.insert(job, e.targets.clone());
+            }
+            "end" | "done" | "fail" => {
+                let named = jobs.get(&job).filter(|t| !t.is_empty()).unwrap_or(&e.targets);
+                if e.ok == Some(true) {
+                    for t in named.iter().chain(&e.targets) {
+                        out.remove(&(step.to_string(), t.clone()));
+                    }
+                    continue;
+                }
+                let Some(p) = e.progress.as_ref().filter(|p| p.done > 0.0 && p.done < p.total && p.secs > 0.0) else {
+                    continue;
+                };
+                if e.v.is_some_and(|v| v != the_plan.cost_version(step)) {
+                    continue;
+                }
+                let target = match (&p.target, named.as_slice()) {
+                    (Some(t), _) => t,
+                    (None, [t]) => t,
+                    _ => continue,
+                };
+                let left = (p.total - p.done) * p.secs / p.done;
+                out.insert((step.to_string(), target.clone()), at(left, e.worker.as_deref(), step));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// What a region's target of `step` takes (`cost_table`'s `cost`): what is left of a run that
+/// stopped short, at its own pace (`partial`: `partials`), the target's own run at the lead's pace (`at`), known, where it ran the way its step runs now
+/// (crate::needs::Book::own: the measure the coordinator sizes its jobs by), else `per`, the
+/// nearest figure of its step's and where it comes from (`Basis`); its memory `peak_mb`.
 /// (Task #1165: the table had known any run of a target, so 155 of 165 terrain-deep targets on 12
 /// Nov were known at 0-8 s from runs of cost version 0 that found no tiffs, and the forecast saw 17-18
-/// of their jobs a Mac in 5 minutes where the lead granted 2.)
+/// of their jobs a Mac in 5 minutes where the lead granted 2. Task #1449: a target with a paused run,
+/// available-bathymetry's 2,169 s on 18 Nov, counted as the guess's 300 s though its run said how
+/// far it had got.)
 pub fn target_cost(
     book: &crate::needs::Book,
     step: &str,
     target: &str,
     at: &dyn Fn(&crate::coord::Cost, &str) -> f64,
-    per: &dyn Fn(&str) -> f64,
+    partial: &dyn Fn(&str, &str) -> Option<f64>,
+    per: &dyn Fn(&str) -> (f64, Basis),
     peak_mb: u64,
 ) -> Cost {
+    if let Some(secs) = partial(step, target) {
+        return Cost { secs, basis: Basis::Partial, peak_mb };
+    }
     match book.own(step, target) {
-        Some(c) => Cost { secs: at(c, step), known: true, peak_mb },
-        None => Cost { secs: per(step), known: false, peak_mb },
+        Some(c) => Cost { secs: at(c, step), basis: Basis::Own, peak_mb },
+        None => {
+            let (secs, basis) = per(step);
+            Cost { secs, basis, peak_mb }
+        }
     }
 }
 
@@ -963,6 +1087,9 @@ pub struct StepFc {
     /// Its time at the lead's pace (seconds), and how many of its targets' times are measured.
     pub work_s: u64,
     pub known: usize,
+    /// Its targets by the figure their time comes from (`Basis`): the page says it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub basis: BTreeMap<Basis, usize>,
     /// Whether members take its jobs (a shared step's).
     pub shared: bool,
     pub done_at: Option<u64>,
@@ -1549,7 +1676,7 @@ impl Pool {
             .map(|(k, _)| crate::agent::memguard::step_of_key(k).to_string())
             .collect();
         if inp.sched.is_none() {
-            for it in items.iter().filter(|it| it.cost.known) {
+            for it in items.iter().filter(|it| it.cost.known()) {
                 pool.learn(it);
             }
         }
@@ -2092,7 +2219,7 @@ pub fn low_priority() {
 const SCALINGS: [(f64, f64); 3] = [(1.0, 1.0), (0.95, 0.75), (1.15, 1.6)];
 
 fn scaled((known, guess): (f64, f64)) -> impl Fn(&Cost) -> f64 {
-    move |c| c.secs * if c.known { known } else { guess }
+    move |c| c.secs * if c.known() { known } else { guess }
 }
 
 /// The forecast for `inp`, within `BUDGET`.
@@ -2187,7 +2314,7 @@ pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input,
         .collect();
     // (From 0, not the empty sum's -0.)
     let total: f64 = expected.items.iter().map(|i| i.cost.secs).fold(0.0, |a, b| a + b);
-    let known: f64 = expected.items.iter().filter(|i| i.cost.known).map(|i| i.cost.secs).fold(0.0, |a, b| a + b);
+    let known: f64 = expected.items.iter().filter(|i| i.cost.known()).map(|i| i.cost.secs).fold(0.0, |a, b| a + b);
     f.measured = if total > 0.0 { (known / total * 100.0).round() / 100.0 } else { 1.0 };
     // Each step's work left, in the order the steps first come.
     let mut order: Vec<String> = Vec::new();
@@ -2203,7 +2330,11 @@ pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input,
             shared: mine.iter().any(|i| i.shared),
             left: mine.len(),
             work_s: mine.iter().map(|i| i.cost.secs).sum::<f64>().round() as u64,
-            known: mine.iter().filter(|i| i.cost.known).count(),
+            known: mine.iter().filter(|i| i.cost.known()).count(),
+            basis: mine.iter().fold(BTreeMap::new(), |mut m, i| {
+                *m.entry(i.cost.basis).or_default() += 1;
+                m
+            }),
             done_at: mine.iter().all(|i| i.by.is_some()).then(|| at(ends)),
             step: s,
         });
@@ -2810,7 +2941,7 @@ mod tests {
         r.terrain_deep = vec!["10/256/352".into(), "10/256/353".into(), "10/100/252".into()];
         let regions = vec![r];
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
-        let drop = Cost { secs: 2.0, known: true, peak_mb: 150 };
+        let drop = Cost { secs: 2.0, basis: Basis::Own, peak_mb: 150 };
         inp.drops = vec![
             ("terrain-deep".into(), "10/100/252".into(), drop),
             ("terrain-deep".into(), "10/100/253".into(), drop),
@@ -2821,6 +2952,112 @@ mod tests {
         assert!(lanes[0].drop && lanes[0].n == 2 && lanes[0].until - lanes[0].from <= 5, "{lanes:?}");
         assert!(!lanes[1].drop && lanes[1].n == 2 && lanes[1].from >= lanes[0].until, "{lanes:?}");
         assert!(serde_json::to_value(lanes[1]).unwrap().get("drop").is_none(), "said only of a drop");
+    }
+
+    fn stopped(kind: &str, job: u64, step: &str, targets: &[&str]) -> crate::coord::history::Event {
+        crate::coord::history::Event {
+            job: Some(jobrt::jobid::JobId { epoch: 1, n: job }),
+            step: Some(step.into()),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            ..crate::coord::history::Event::new(kind)
+        }
+    }
+
+    fn at_progress(
+        e: crate::coord::history::Event,
+        target: Option<&str>,
+        (done, total, secs): (f64, f64, f64),
+    ) -> crate::coord::history::Event {
+        let progress = crate::coord::history::Progress {
+            target: target.map(str::to_string),
+            done,
+            total,
+            unit: "z6 tiles".into(),
+            secs,
+        };
+        crate::coord::history::Event { ok: Some(false), progress: Some(progress), ..e }
+    }
+
+    /// Task #1449, the first source of a target's time: a run that stopped short says how far it got
+    /// (available-bathymetry on 18 Nov: 2,169 s paused, its z6 tiles made and to make): what is left
+    /// of its total at the pace it ran, put at the lead's by its worker; its one target when its
+    /// progress names none; none of a job with several, a run of an older way, a stop that said
+    /// nothing, or a target a later job finished.
+    #[test]
+    fn a_stopped_runs_pace_gives_the_time_left_of_its_target() {
+        let plan = crate::agent::seam::for_tests();
+        let none = |_: f64, _: Option<&str>, _: &str| unreachable!();
+        assert!(partials(plan, &[], &none).is_empty());
+        let key = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let half = |s: f64, w: Option<&str>, _: &str| if w == Some("m1") { s / 0.5 } else { s };
+        let at = |e: &[crate::coord::history::Event]| partials(plan, e, &half);
+        // (800 of 2,000 tiles in 2,169 s: 1,200 more at 2.711 s each.)
+        let lease = stopped("lease", 1, "available", &["available-bathymetry"]);
+        let fail = at_progress(stopped("fail", 1, "available", &[]), None, (800.0, 2000.0, 2169.0));
+        let got = at(&[lease.clone(), fail.clone()]);
+        let left = 1200.0 * 2169.0 / 800.0;
+        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&left));
+        // (A lead's own job's "end" after its "start", on its Mac's pace: the lead's.)
+        let end = crate::coord::history::Event { worker: Some("m1".into()), ..fail.clone() };
+        let got = at(&[crate::coord::history::Event { kind: "start".into(), ..lease.clone() }, end]);
+        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&(left / 0.5)));
+        // (Its progress's own target, of a job with several.)
+        let two = stopped("lease", 2, "available", &["available-terrain", "available-bathymetry"]);
+        let f2 = at_progress(stopped("fail", 2, "available", &[]), Some("available-bathymetry"), (1.0, 4.0, 10.0));
+        assert_eq!(at(&[two.clone(), f2]).keys().collect::<Vec<_>>(), [&key("available", "available-bathymetry")]);
+        // (None of a job with several targets and no target said.)
+        let f3 = at_progress(stopped("fail", 2, "available", &[]), None, (1.0, 4.0, 10.0));
+        assert!(at(&[two, f3]).is_empty());
+        // (None of a run that said nothing, or went through its total, or of an older way of its step.)
+        let nothing = stopped("fail", 1, "available", &[]);
+        let done = at_progress(stopped("fail", 1, "available", &[]), None, (5.0, 5.0, 10.0));
+        let old = crate::coord::history::Event { v: Some(plan.cost_version("available") + 1), ..fail.clone() };
+        for e in [nothing, done, old] {
+            assert!(at(&[lease.clone(), e]).is_empty());
+        }
+        // (A later run that ended well clears it, one that stopped again replaces it.)
+        let again = at_progress(stopped("fail", 3, "available", &[]), Some("available-bathymetry"), (1.0, 2.0, 100.0));
+        let l3 = stopped("lease", 3, "available", &["available-bathymetry"]);
+        let got = at(&[lease.clone(), fail.clone(), l3.clone(), again]);
+        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&100.0));
+        let ok = crate::coord::history::Event { ok: Some(true), ..stopped("done", 3, "available", &[]) };
+        assert!(at(&[lease, fail, l3, ok]).is_empty());
+    }
+
+    /// Task #1449: a target's time comes from its stopped run, else its own run, else the nearest
+    /// figure of its step (its basis said), the stopped run's first.
+    #[test]
+    fn a_targets_time_is_its_stopped_runs_then_its_own_then_its_steps() {
+        let plan = crate::agent::seam::for_tests();
+        let v = plan.cost_version("terrain-deep");
+        let run = |secs: u64| crate::coord::Cost { peak_mb: 1000, secs, v, ..Default::default() };
+        let costs: BTreeMap<String, crate::coord::Cost> =
+            [(cost_key("terrain-deep", "10/1/0"), run(40))].into_iter().collect();
+        let book = crate::needs::Book::new(plan, &costs);
+        let at = |c: &crate::coord::Cost, _: &str| c.secs as f64;
+        let partial = |_: &str, t: &str| (t == "10/1/0" || t == "10/2/0").then_some(7.0);
+        let per = |_: &str| (99.0, Basis::Sibling);
+        let cost = |t: &str| target_cost(&book, "terrain-deep", t, &at, &partial, &per, 500);
+        let c = |secs, basis| Cost { secs, basis, peak_mb: 500 };
+        assert_eq!(cost("10/1/0"), c(7.0, Basis::Partial), "a stopped run before its own");
+        assert_eq!(cost("10/2/0"), c(7.0, Basis::Partial), "and where it has no run of its own");
+        let none = |_: &str, _: &str| None;
+        let cost =
+            |t: &str, per: &dyn Fn(&str) -> (f64, Basis)| target_cost(&book, "terrain-deep", t, &at, &none, per, 500);
+        assert_eq!(cost("10/1/0", &per), c(40.0, Basis::Own));
+        assert_eq!(cost("10/3/0", &per), c(99.0, Basis::Sibling));
+        assert_eq!(cost("10/3/0", &|_| (30.0, Basis::Here)), c(30.0, Basis::Here));
+        assert_eq!(cost("10/3/0", &|_| (300.0, Basis::Guess)), c(300.0, Basis::Guess));
+        // (Said by the page, a step's targets by basis; measured but a guess and its step's mean.)
+        assert!([Basis::Partial, Basis::Own, Basis::Here].iter().all(|b| c(1.0, *b).known()));
+        assert!(![Basis::Sibling, Basis::Guess].iter().any(|b| c(1.0, *b).known()));
+        // (A record from before the basis: its `known` said it.)
+        let old: Cost = serde_json::from_str(r#"{"secs":5.0,"known":true,"peak_mb":9}"#).unwrap();
+        assert_eq!(old, Cost { secs: 5.0, basis: Basis::Own, peak_mb: 9 });
+        let old: Cost = serde_json::from_str(r#"{"secs":5.0,"known":false,"peak_mb":9}"#).unwrap();
+        assert_eq!(old.basis, Basis::Guess);
+        let new: Cost = serde_json::from_str(&serde_json::to_string(&c(3.0, Basis::Partial)).unwrap()).unwrap();
+        assert_eq!(new, c(3.0, Basis::Partial));
     }
 
     /// A map tile and the z6 tiles that draw it.
@@ -2852,7 +3089,7 @@ mod tests {
             "slope-hi" => 200.0,
             _ => 100.0,
         };
-        Cost { secs, known: step != "slope-hi", peak_mb: 1000 }
+        Cost { secs, basis: if step != "slope-hi" { Basis::Own } else { Basis::Guess }, peak_mb: 1000 }
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
@@ -2865,7 +3102,7 @@ mod tests {
             cadence: Cadence::default(),
             blind: None,
             chains: Vec::new(),
-            after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })],
+            after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, basis: Basis::Own, peak_mb: 0 })],
             idle: Vec::new(),
             machines,
             running: BTreeMap::new(),
@@ -2996,7 +3233,7 @@ mod tests {
         // (Each piece longer than a job's quarter hour: one a job.)
         let long = |step: &str, t: &str| Cost { secs: 1000.0, ..cost(step, t) };
         let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &long);
-        inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
+        inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, basis: Basis::Guess, peak_mb: 1000 })];
         let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
         // The assembly once its z6 tiles are made (the member takes some), by the lead alone.
@@ -3032,7 +3269,7 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         busy(&mut inp);
         inp.before =
-            vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, known: true, peak_mb: 0 })];
+            vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, basis: Basis::Own, peak_mb: 0 })];
         inp.running.insert(("labels".into(), "labels 2026-09-28".into()), 0);
         let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
@@ -3167,7 +3404,7 @@ mod tests {
     fn a_slope_tile_reading_the_stale_root_waits_for_it() {
         let regions = [region("a", &[], &[], &["6/0/48", "6/1/48"])];
         let mut inp = input(&regions, vec![mac("m4", 1.0), member("m1")], &cost);
-        let root = Cost { secs: 500.0, known: true, peak_mb: 100 };
+        let root = Cost { secs: 500.0, basis: Basis::Own, peak_mb: 100 };
         inp.unknown = vec![Unknown {
             step: "slope-hi".into(),
             targets: vec!["6/0/48".into()],
@@ -3210,7 +3447,7 @@ mod tests {
         use crate::coord::{Ask, Capacity};
         let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
         let regions = [RegionLeft { slope_deep: ts.clone(), ..region("a", &[], &[], &[]) }];
-        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let c = |_: &str, _: &str| Cost { secs: 600.0, basis: Basis::Own, peak_mb: 1000 };
         let v = crate::coord::cost_version("slope-deep");
         assert!(v > 0);
         let mut st = State::default();
@@ -3257,7 +3494,7 @@ mod tests {
         use crate::coord::{Ask, Capacity};
         let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
         let regions = [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }];
-        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let c = |_: &str, _: &str| Cost { secs: 600.0, basis: Basis::Own, peak_mb: 1000 };
         // (Targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's lane
         // busy, a member's job out for 900 s: held, one at a time while it runs.)
         let limits = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
@@ -3326,7 +3563,7 @@ mod tests {
         use crate::coord::{Ask, Capacity};
         let ts: Vec<String> = (0..6).map(|i| format!("10/{i}/0")).collect();
         let regions = [RegionLeft { slope_deep: ts.clone(), ..region("a", &[], &[], &[]) }];
-        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 3000 };
+        let c = |_: &str, _: &str| Cost { secs: 600.0, basis: Basis::Own, peak_mb: 3000 };
         let mut st = State::default();
         for t in &ts {
             let v = crate::coord::cost_version("slope-deep");
@@ -3444,7 +3681,7 @@ mod tests {
         // region's terrain, a set: `Items::groups`), after the reach they wait on too (its own dep).
         let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
-        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, known: true, peak_mb: 0 })];
+        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, basis: Basis::Own, peak_mb: 0 })];
         let f = forecast(crate::agent::seam::for_tests(), &inp);
         let steps: Vec<&str> = f.lanes["m4"].iter().map(|l| l.step.as_str()).collect();
         let at = |s: &str| steps.iter().position(|&x| x == s).unwrap() as u32;
@@ -3573,7 +3810,7 @@ mod tests {
         let lead2 =
             Machine { lead_steps: true, busy_s: 2400.0, running: Some(("depth".into(), 3)), ..mac("m4 #2", 1.0) };
         let mut inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1")], &cost);
-        inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
+        inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, basis: Basis::Own, peak_mb: 1000 })];
         let f = forecast(crate::agent::seam::for_tests(), &inp);
         let first = &f.lanes["m4 #2"][0];
         assert_eq!((first.step.as_str(), first.from, first.until, first.n), ("depth", 1_000_000, 1_002_400, 3));
@@ -3613,7 +3850,7 @@ mod tests {
         assert_eq!(most(&run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far())), 2);
         // A step never measured: its first job alone on its Mac, nothing beside it (task #499);
         // once it ends its measure packs the rest as above.
-        let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
+        let cold = |step: &str, t: &str| Cost { basis: Basis::Guess, ..small(step, t) };
         inp.costs = cost_table(&regions, &cold);
         let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let first =
@@ -3719,7 +3956,11 @@ mod tests {
             if step != "unit" {
                 return c;
             }
-            Cost { known: !(all_cold || k % 3 == 0), peak_mb: if k % 5 == 0 { 6000 } else { 1500 }, ..c }
+            Cost {
+                basis: if all_cold || k % 3 == 0 { Basis::Guess } else { Basis::Own },
+                peak_mb: if k % 5 == 0 { 6000 } else { 1500 },
+                ..c
+            }
         }
     }
 
@@ -4293,13 +4534,13 @@ mod tests {
             }
         }
         let cost = |step: &str, t: &str| match costs.get(&cost_key(step, t)) {
-            Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
-            None => Cost { secs: 120.0, known: false, peak_mb: 1000 },
+            Some(c) => Cost { secs: c.secs as f64, basis: Basis::Own, peak_mb: c.peak_mb },
+            None => Cost { secs: 120.0, basis: Basis::Guess, peak_mb: 1000 },
         };
         let chains: Vec<Job> = ["pois", "bldtiles", "depth", "peaks"]
             .iter()
             .flat_map(|s| {
-                (0..n_chain).map(move |i| (s.to_string(), z6(i), Cost { secs: 90.0, known: true, peak_mb: 700 }))
+                (0..n_chain).map(move |i| (s.to_string(), z6(i), Cost { secs: 90.0, basis: Basis::Own, peak_mb: 700 }))
             })
             .collect();
         let ask = |w: &str, mem_mb: u64, cores: u32| Asked {
@@ -4401,7 +4642,7 @@ mod tests {
         };
         for round in 0..6 {
             let mut inp = live_scale_input(2 + next(5), 3 + next(20));
-            let job = |s: &str, t: String| (s.to_string(), t, Cost { secs: 50.0, known: true, peak_mb: 500 });
+            let job = |s: &str, t: String| (s.to_string(), t, Cost { secs: 50.0, basis: Basis::Own, peak_mb: 500 });
             inp.before = (0..next(3)).map(|i| job(["heritage-sites", "reach", "buildings"][i], "all".into())).collect();
             inp.after = (0..next(3)).map(|i| job("catalog", format!("a{i}"))).collect();
             inp.idle = (0..next(3)).map(|i| job("idle", format!("i{i}"))).collect();
@@ -4564,7 +4805,7 @@ mod tests {
     /// tile's depth left. Each waits for those, and is placed after them; code 5 ran them at once.
     #[test]
     fn a_target_waits_through_a_read_built_as_it_stands() {
-        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        let c = |secs: f64| Cost { secs, basis: Basis::Own, peak_mb: 1000 };
         let regions: [RegionLeft; 0] = [];
         let unit = |_: &str, _: &str| c(1.0);
         let base = input(&regions, vec![mac("m4", 1.0)], &unit);
@@ -4602,7 +4843,7 @@ mod tests {
     /// SCENIC_FORECAST_RECORD, that record's input too.
     #[test]
     fn the_forecast_waits_for_what_the_planner_does() {
-        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        let c = |secs: f64| Cost { secs, basis: Basis::Own, peak_mb: 1000 };
         let regions: [RegionLeft; 0] = [];
         let unit = |_: &str, _: &str| c(1.0);
         let base = input(&regions, vec![mac("m4", 1.0), mac("m1", 1.0)], &unit);

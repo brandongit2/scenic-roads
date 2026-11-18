@@ -2230,7 +2230,7 @@ impl Planner {
         left: &seam::Left,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Record<'static> {
-        use forecast::{Cost, Machine};
+        use forecast::{Basis, Cost, Machine};
         // (Work done whose record the plan didn't read yet, offered still by a plan made from
         // records read before its hand-off was merged: none of it is to come, task #1375.)
         let unread = match &self.coord {
@@ -2333,21 +2333,42 @@ impl Planner {
         // (A step whose time is the work its target finds, crate::needs::PER_WORK, weighed by it: a
         // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
         let sums = forecast::step_sums(self.o.the_plan, &costs, &at_lead);
-        let own_secs = |step: &str| self.step_secs_here(step).unwrap_or_else(|| first_secs(step));
-        let per =
-            |step: &str| -> f64 { sums.get(step).filter(|s| s.1 > 0.0).map_or_else(|| own_secs(step), |s| s.0 / s.1) };
+        // (Its time and where it comes from, `forecast::Basis`: the mean of its targets measured, else
+        // its jobs' here, else the guess.)
+        let per = |step: &str| -> (f64, forecast::Basis) {
+            if let Some(s) = sums.get(step).filter(|s| s.1 > 0.0) {
+                return (s.0 / s.1, forecast::Basis::Sibling);
+            }
+            match self.step_secs_here(step) {
+                Some(t) => (t, forecast::Basis::Here),
+                None => (first_secs(step), forecast::Basis::Guess),
+            }
+        };
+        // (What is left of each target whose run stopped short, at the pace it ran at.)
+        let stopped = forecast::partials(self.o.the_plan, &events, &|secs, worker, step| {
+            at_lead(
+                &crate::coord::Cost {
+                    secs: secs.round() as u64,
+                    worker: worker.map(str::to_string),
+                    ..Default::default()
+                },
+                step,
+            )
+        });
+        let partial = |step: &str, t: &str| stopped.get(&(step.to_string(), t.to_string())).copied();
         // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
         // else its step's fit or largest, else `peak`'s first guess.)
         let book = crate::needs::Book::new(self.o.the_plan, &costs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
-        let cost = |step: &str, t: &str| forecast::target_cost(&book, step, t, &at_lead, &per, need_mb(step, t));
+        let cost =
+            |step: &str, t: &str| forecast::target_cost(&book, step, t, &at_lead, &partial, &per, need_mb(step, t));
         // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
         // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
         let drop_cost = |step: &str, t: &str| -> Cost {
             match book.own(step, t).filter(|c| crate::needs::is_drop(c)) {
-                Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
+                Some(c) => Cost { secs: c.secs as f64, basis: Basis::Own, peak_mb: c.peak_mb },
                 None => match book.drop_need(step) {
-                    Some((secs, mb)) => Cost { secs: secs as f64, known: true, peak_mb: mb },
+                    Some((secs, mb)) => Cost { secs: secs as f64, basis: Basis::Sibling, peak_mb: mb },
                     None => cost(step, t),
                 },
             }
@@ -2358,11 +2379,11 @@ impl Planner {
         // (A PER_WORK step's, its costs' weighed time, as its jobs' times here mix in those that
         // found nothing to do.)
         let mine = |step: &str, n: usize| -> Cost {
-            let (each, known) = match sums.get(step).filter(|s| s.1 > 0.0 && is_per_work(step)) {
-                Some(s) => (s.0 / s.1, true),
-                None => self.step_secs_here(step).map_or((first_secs(step), false), |t| (t, true)),
+            let (each, basis) = match sums.get(step).filter(|s| s.1 > 0.0 && is_per_work(step)) {
+                Some(s) => (s.0 / s.1, Basis::Sibling),
+                None => self.step_secs_here(step).map_or((first_secs(step), Basis::Guess), |t| (t, Basis::Here)),
             };
-            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
+            Cost { secs: each * n.max(1) as f64, basis, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
         // (Each job before the regions' is a step of its own; one running now is its slot's
@@ -2552,7 +2573,7 @@ impl Planner {
                     j.progress
                         .as_ref()
                         .and_then(|p| p.eta_s)
-                        .map_or_else(|| at_its(&step_of(&j.id), per(&step_of(&j.id))), |e| e as f64)
+                        .map_or_else(|| at_its(&step_of(&j.id), per(&step_of(&j.id)).0), |e| e as f64)
                 });
                 let busy_s = eta.map_or(0.0, |e| forecast::busy_s(e, lease_left));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
@@ -2650,8 +2671,13 @@ impl Planner {
         // (Each lane's job under way held to its step's longest of late.)
         forecast::cap_busy(&mut inp, &forecast::longest_jobs(&events, now_s()));
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
-        let each_s =
-            self.o.the_plan.step_names().into_iter().map(|n| (n.to_string(), (per(n) * 10.0).round() / 10.0)).collect();
+        let each_s = self
+            .o
+            .the_plan
+            .step_names()
+            .into_iter()
+            .map(|n| (n.to_string(), (per(n).0 * 10.0).round() / 10.0))
+            .collect();
         // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)
         let waiting =
             (0..self.inp.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();

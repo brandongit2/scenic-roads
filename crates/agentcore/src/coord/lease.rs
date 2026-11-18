@@ -220,13 +220,26 @@ impl Lease {
         if self.taken_up() {
             return e;
         }
+        let progress = self.pace.stopped_at().filter(|_| e.ok != Some(true));
         crate::coord::history::Event {
             still_s: Some(self.still_most(end)),
             gap_s: self.pace.gap_most(end),
             rates: self.pace.rates(),
             threads: self.pace.threads_most(),
+            progress,
             ..e
         }
+    }
+
+    /// `e` (its job's "fail": stopped, not finished) with how far its progress had got
+    /// (`Pace::stopped_at`) and nothing else: a stopped run's stillness and rates aren't its step's usual.
+    /// None of a lease `taken_up`, as `noted`: it heard only the part of its run since, whose time
+    /// isn't what its progress took.
+    pub fn stopped(&self, e: crate::coord::history::Event) -> crate::coord::history::Event {
+        if self.taken_up() {
+            return e;
+        }
+        crate::coord::history::Event { progress: self.pace.stopped_at(), ..e }
     }
 
     /// A job lease's targets (none for a task).
@@ -954,6 +967,21 @@ impl Pace {
         ran.into_iter().filter(|(_, (_, secs))| *secs > 0.0).map(|(u, (n, secs))| (u, n / secs)).collect()
     }
 
+    /// Where its progress stood: the part under way's most done of its total, and how long it ran
+    /// (to its last beat); None when it never said its progress or the part reached its total (a
+    /// job stopped short only if it didn't).
+    pub fn stopped_at(&self) -> Option<crate::coord::history::Progress> {
+        let p = self.part.as_ref().filter(|p| p.best < p.total)?;
+        let secs = p.beats.back().map_or(p.since, |b| b.0).saturating_duration_since(p.since).as_secs_f64();
+        Some(crate::coord::history::Progress {
+            target: p.target.clone(),
+            done: p.best,
+            total: p.total,
+            unit: p.unit.clone(),
+            secs,
+        })
+    }
+
     /// Its rate over the last `window` of the part under way, to its last beat: its unit and what
     /// it went on by a second; None until the part has run that long.
     pub fn lately(&self, window: Duration) -> Option<(&str, f64)> {
@@ -1372,6 +1400,13 @@ mod tests {
         assert_eq!((l.pace.threads_least(), l.pace.threads_most()), (None, None), "its threads not said");
         let e = l.noted(crate::coord::history::Event::new("done"), at(900));
         assert_eq!((e.gap_s, e.still_s, e.rates.len()), (Some(240), Some(240), 1), "its end 240 s after its last");
+        // (Where it stood: its part under way's most of its total, over the time that part ran; the
+        // "fail" of a job stopped says only that.)
+        let at_end = l.pace.stopped_at().expect("its part under way hadn't reached its total");
+        assert_eq!((at_end.done, at_end.total, at_end.unit.as_str(), at_end.secs), (12.0, 100.0, "tiles", 240.0));
+        assert_eq!(e.progress.as_ref(), Some(&at_end));
+        let f = l.stopped(crate::coord::history::Event::new("fail"));
+        assert_eq!((f.progress.as_ref(), f.rates.is_empty(), f.gap_s), (Some(&at_end), true, None));
         // (Its threads: the fewest over its part under way, the most over its run.)
         ls.set_threads(id, 4);
         beat(&mut ls, 720, "14/100 tiles", "6/1/2", 210);
@@ -1387,6 +1422,6 @@ mod tests {
         let quiet = ls.grant("m1", Work::Job { step: "pack".into(), targets: vec![] }, t0);
         assert!(ls.renew_live(quiet, "m1", None, None, at(60)));
         let e = ls.of(quiet).unwrap().noted(crate::coord::history::Event::new("done"), at(90));
-        assert_eq!((e.gap_s, e.rates.is_empty()), (None, true));
+        assert_eq!((e.gap_s, e.rates.is_empty(), e.progress), (None, true, None));
     }
 }

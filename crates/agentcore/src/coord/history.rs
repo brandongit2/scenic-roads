@@ -112,11 +112,30 @@ pub struct Event {
     /// that had no more (`Paces`). Events before task #990 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
+    /// How far its job's progress had got when it stopped short (a pause, a lapse, a restart: its
+    /// last part's done and total in its unit, and how long that part ran; crate::coord::lease::Pace::stopped_at):
+    /// the forecast takes what is left of a target from it (`forecast::partials`). On a job's "end"
+    /// (the lead's own) or "fail" that said its progress and didn't reach its total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
     /// The member's note it was (crate::coord::notes), on an event a member noted to the lead: its
     /// line in the file is the lead's word that it took that note (`History::noted`), so a note is
     /// taken once whatever the lead's crashes. Events before task #1160 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noted: Option<Box<super::notes::From>>,
+}
+
+/// Where a job's progress stood as it stopped (`Event::progress`): its last part (the target under
+/// way, as its progress line's view said, if any) had made `done` of `total` of its `unit` in
+/// `secs` of the job's time.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Progress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub done: f64,
+    pub total: f64,
+    pub unit: String,
+    pub secs: f64,
 }
 
 /// The fewest jobs a step's usual pace is taken from (`History::paces`): its 10th and 90th

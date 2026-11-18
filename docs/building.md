@@ -319,8 +319,15 @@ from the first (`edit_held`).
   overlays each once its cadence has passed since it last went (the low zooms by the map log's mark of their batches, docs/formats.md, Marks; the
   others by `LastCatalogue`'s runs), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
-  Each target takes its own run's time at the lead's pace (a run of the way its step runs now, as
-  the coordinator sizes it: docs/pool.md §7.7), else its step's mean, else a first guess; each machine at its measured speed (half the lead's until measured). Run three times for
+  Each target takes, in this order (`forecast::Basis`, which the step's card on the build page counts its
+  targets by): what is left of a run of it that stopped short (a pause, a lapse, a restart: its job's
+  progress line's done and total and the time that part ran, kept on the history's "end" or "fail"
+  event as `progress`; the rest of its total at that pace: `forecast::partials`), else its own run's
+  time at the lead's pace (a run of the way its step runs now, as the coordinator sizes it:
+  docs/pool.md §7.7), else its step's mean over the targets measured, else what the lead's own jobs
+  of the step took lately, else a first guess (`first_secs`); each machine at its measured speed
+  (half the lead's until measured). A stopped run's time, its own run's and the lead's own jobs'
+  count as measured, a step's mean and a guess as estimated. Run three times for
   a range. It says when each step, region and everything will be done, when each region is all on
   the map, when each cadenced step may next go, and each machine's schedule, or why there's no
   finish. It doesn't model the lead's duties planned outside the regions' work, one list

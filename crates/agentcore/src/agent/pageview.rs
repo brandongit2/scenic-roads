@@ -566,7 +566,7 @@ pub fn spawn(pv: Arc<PageView>) {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::forecast::{self, Cadence, Cost, Input, Machine};
+    use super::super::forecast::{self, Basis, Cadence, Cost, Input, Machine};
     use super::*;
     use crate::coord::history::Event;
     use std::borrow::Cow;
@@ -634,7 +634,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn record(now: u64) -> Record<'static> {
-        let c = Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let c = Cost { secs: 600.0, basis: Basis::Own, peak_mb: 1000 };
         Record {
             input: Input {
                 now,
@@ -864,7 +864,7 @@ pub(crate) mod tests {
         let now = now_s();
         let (c, first) = lead_and_view(d.path(), now);
         let mut rec = record(now);
-        let cost = Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let cost = Cost { secs: 600.0, basis: Basis::Own, peak_mb: 1000 };
         rec.input.chains.push(("depth-lo".into(), "3/0/0".into(), cost));
         c.set_page_forecast(&rec.bytes().unwrap());
         let keep = d.path().join("home/pageview-waits.json");

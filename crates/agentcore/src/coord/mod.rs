@@ -5277,14 +5277,16 @@ fn route(
             };
             let note = if f.interrupted { format!("stopped: {why}") } else { why.clone() };
             let back = e.kind == "task-back";
-            s.history.add(history::Event {
+            let e = history::Event {
                 worker: Some(f.worker.clone()),
                 job: Some(l.job()),
                 secs: Some(l.ran(now).as_secs_f64().round()),
                 ok: (!back).then_some(false),
                 note: if back { why.clone() } else { note },
                 ..e
-            });
+            };
+            // (A job stopped short says how far it got: the forecast's time for what is left of it.)
+            s.history.add(if back { e } else { l.stopped(e) });
             let how = if f.interrupted { "gave back" } else { "failed" };
             s.seen(&f.worker, format!("{how} {}: {why}", l.what()), None, now);
             eprintln!("coordinator: {} {how} {}: {why}", f.worker, l.what());
