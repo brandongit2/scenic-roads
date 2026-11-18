@@ -388,9 +388,10 @@ struct GcRemoving {
 #[derive(Deserialize)]
 struct GcChunk {
     max: usize,
-    /// The newest complete OSM pass: the older passes' sources are the queue's (`by_the_queue`).
+    /// The newest complete OSM pass: its sources and the older passes' are the queue's
+    /// (`by_the_queue`).
     #[serde(default)]
-    passes_before: Option<String>,
+    newest_pass: Option<String>,
     #[serde(default)]
     dry: bool,
 }
@@ -4882,7 +4883,7 @@ fn route(
                     // The next chunk (a dry run's: every name due, nothing marked), and the
                     // folders the orphan sweep lists.
                     let b: GcChunk = serde_json::from_slice(body)?;
-                    let take = |n: &str| crate::agent::gc::by_the_queue(n, b.passes_before.as_deref());
+                    let take = |n: &str| crate::agent::gc::by_the_queue(n, b.newest_pass.as_deref());
                     let names =
                         if b.dry { Ok(q.due_by(&holders, &take)) } else { q.chunk(&holders, lease, b.max, &take) };
                     names.map(|names| serde_json::json!({ "names": names, "tops": q.tops() }))

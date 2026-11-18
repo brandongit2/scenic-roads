@@ -15,13 +15,15 @@
 //!   drop, the archives, the uploads' checks, once a day); the gate's checked
 //!   copies (`inputs_walk`, by their own holders: the accepted indexes); and the orphan sweep
 //!   (`orphan_walk`, §7.5), which lists the folders the map and the records name, the removed
-//!   steps' and the retired passes', a folder at a time, and queues on the lead what's old enough
+//!   steps', the newest complete pass's and the retired ones', and the rail lists' (`RAIL_LISTS`),
+//!   a folder at a time, and queues on the lead what's old enough
 //!   that no job still holds it by its upload (`ORPHAN_AGE_S`), with the stray `.tmp` files and a
 //!   retired pass's planet removed as it meets them.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
-//! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session). The newest
-//! pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
+//! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session). A pass newer
+//! than the newest complete one (in progress), the newest pass's and a waiting pass's other files (its
+//! planet), the rail feeds' zips, the rest of `sources/` (the packed tile stores,
 //! `aws-terrarium/` and `pyramids/`, kept by their own indexes, buildstore::rawpack), the user's folders
 //! (the inputs folders), state and the app are never touched. The lead not reached, nothing is
 //! removed.
@@ -66,7 +68,7 @@ pub trait Lead {
 pub struct ChunkAsk<'a> {
     pub max: usize,
     /// The newest complete OSM pass (`by_the_queue`).
-    pub passes_before: Option<&'a str>,
+    pub newest_pass: Option<&'a str>,
     pub dry: bool,
 }
 
@@ -109,8 +111,7 @@ impl TheLead {
 
 impl Lead for TheLead {
     fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
-        let v =
-            self.ask(CHUNK, &serde_json::json!({ "max": a.max, "passes_before": a.passes_before, "dry": a.dry }))?;
+        let v = self.ask(CHUNK, &serde_json::json!({ "max": a.max, "newest_pass": a.newest_pass, "dry": a.dry }))?;
         serde_json::from_value(v).context("the lead's chunk")
     }
 
@@ -191,7 +192,8 @@ impl Report {
 }
 
 /// Top folders no chunk or walk takes a file of, whatever the map names (`sources/` but its
-/// retired passes, the removed steps' names and the gate's checked copies, each on its own rules).
+/// passes, the rail lists, the removed steps' names and the gate's checked copies, each on its own
+/// rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
 
 /// The logical-name prefixes of what removed steps made (removed means deleted): GC's duties drop
@@ -217,11 +219,17 @@ pub fn retired(l: &str) -> bool {
 }
 
 /// Whether a chunk takes content name `n` when GC's queue frees it: one in a folder the map
-/// indexes (outside `NEVER`), a removed step's (`RETIRED`), or a source of a pass older than the
-/// newest complete one (`passes_before`; `sources/osm/<date>/`, `sources/items/<date>/`). The rest
-/// of `sources/` is never GC's; the gate's copies (`sources/inputs/`) are `inputs_walk`'s, by the
-/// indexes that hold them, which the queue doesn't see.
-pub fn by_the_queue(n: &str, passes_before: Option<&str>) -> bool {
+/// indexes (outside `NEVER`), a removed step's (`RETIRED`), a source of the newest complete pass or
+/// an older one (`newest_pass`; `sources/osm/<date>/`, `sources/items/<date>/`, their subfolders
+/// too), or a rail list (`RAIL_LISTS`). Never a pass newer than the newest complete one: it is in
+/// progress, and its job's uploads reach the records only as it hands off. Never a rail feed's
+/// zip (`sources/rail/gtfs/`): the rail lists name each by its content name, which the rail and
+/// ferries jobs open (inputs::rail::feeds_for_counting), and the records may have moved its logical
+/// name on (a rail-feeds run that failed keeps its downloads) while a list still names the old one;
+/// no holder sees that. The rest of `sources/` is never GC's; the gate's copies
+/// (`sources/inputs/`) are `inputs_walk`'s, by the indexes that hold them, which the queue doesn't
+/// see.
+pub fn by_the_queue(n: &str, newest_pass: Option<&str>) -> bool {
     let mut parts = n.split('/');
     let top = parts.next().unwrap_or_default();
     if !NEVER.contains(&top) || retired(n) {
@@ -229,11 +237,16 @@ pub fn by_the_queue(n: &str, passes_before: Option<&str>) -> bool {
     }
     match (top, parts.next(), parts.next(), parts.next()) {
         ("sources", Some("osm" | "items"), Some(date), Some(_)) => {
-            inputs::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
+            inputs::osmpass::is_date(date) && newest_pass.is_some_and(|newest| date <= newest)
         }
-        _ => false,
+        _ => n.strip_prefix(RAIL_LISTS).is_some_and(|f| !f.contains('/')),
     }
 }
+
+/// The rail lists' folder (inputs::rail: the catalogue, the feeds checked, the zips' days and the
+/// rail and ferry feeds), each read by its logical name: its own files are GC's (`by_the_queue`,
+/// the orphan sweep), its subfolder of zips (`gtfs/`) not.
+pub const RAIL_LISTS: &str = "sources/rail/";
 
 /// The depth's current targets as the agent's last plan found them (`build::depth_kept`: the z3 and
 /// z6 tiles the coverage and the declared sources make targets, and those leased now), written to
@@ -833,10 +846,10 @@ fn drain(
     root: &store::nasfs::NasRoot,
     ways: &Ways,
     dry_run: bool,
-    passes_before: Option<&str>,
+    newest_pass: Option<&str>,
     rep: &mut Report,
 ) -> Result<(Flow, BTreeSet<String>)> {
-    let ask = ChunkAsk { max: if dry_run { usize::MAX } else { CHUNK_NAMES }, passes_before, dry: dry_run };
+    let ask = ChunkAsk { max: if dry_run { usize::MAX } else { CHUNK_NAMES }, newest_pass, dry: dry_run };
     loop {
         let c = ways.lead.chunk(&ask).context("nothing removed: GC's queue on the lead not asked")?;
         if dry_run {
@@ -913,8 +926,8 @@ fn share_answers(root: &store::nasfs::NasRoot) -> bool {
 }
 
 /// A folder a walk starts at: listed whole, or only its own files whose path starts with `only`
-/// (a removed step's prefix in `sources/`); `pass`: a retired pass's (its other files removed once
-/// the newer pass has settled).
+/// (a removed step's prefix in `sources/`, the rail lists'); `pass`: a retired pass's (its other
+/// files removed once the newer pass has settled).
 #[derive(Clone, Debug, PartialEq)]
 struct Root {
     dir: String,
@@ -989,7 +1002,8 @@ fn seen_key(p: &str) -> Vec<String> {
 }
 
 /// The orphan sweep (docs/storage.md, GC): the folders the map and the records name (`tops`, the
-/// lead's), the removed steps' (`RETIRED`) and the retired passes' (older than `latest`), a folder
+/// lead's), the removed steps' (`RETIRED`), the passes' up to the newest complete one (`latest`;
+/// a newer one in progress never) and the rail lists' (`RAIL_LISTS`, not its zips), a folder
 /// at a time from the one it reached: each content-named file at least `ORPHAN_AGE_S` old sent to
 /// the lead, which queues those nothing holds (GC's queue frees them as any); each `.tmp` file
 /// `TMP_AGE_S` old removed; a retired pass's other files removed once the newer pass has been
@@ -1021,6 +1035,7 @@ fn orphan_walk(
             roots.push(Root { dir: dir.into(), only: None, pass: false });
         }
     }
+    roots.push(Root { dir: RAIL_LISTS.trim_end_matches('/').into(), only: Some(RAIL_LISTS), pass: false });
     // (A retired pass's planet goes once the newest pass completed `PLANET_KEEP_S` ago: its
     // summary's time.)
     let mut planet_due = false;
@@ -1037,8 +1052,9 @@ fn orphan_walk(
         for kind in ["osm", "items"] {
             meta(1, 0, 0);
             let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
-            for e in rd.into_iter().filter(|e| inputs::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
-                roots.push(Root { dir: format!("sources/{kind}/{}", e.name), only: None, pass: true });
+            for e in rd.into_iter().filter(|e| inputs::osmpass::is_date(&e.name) && e.name.as_str() <= latest) {
+                let pass = e.name.as_str() < latest;
+                roots.push(Root { dir: format!("sources/{kind}/{}", e.name), only: None, pass });
             }
         }
     }
@@ -1369,7 +1385,7 @@ mod tests {
     impl Lead for InProcess<'_> {
         fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
             let none = BTreeMap::new();
-            let take = |n: &str| by_the_queue(n, a.passes_before);
+            let take = |n: &str| by_the_queue(n, a.newest_pass);
             let names = if a.dry {
                 self.q.due_by(&self.holders(&none), &take)
             } else {
@@ -1633,9 +1649,11 @@ mod tests {
 
     /// The orphan sweep (docs/storage.md, GC) queues a content-named file nothing holds only once
     /// it's `ORPHAN_AGE_S` old, freed when found (so it waits its grace from then, and a lease older
-    /// than that holds it); a held one never; a removed step's files and a retired pass's too; it
-    /// removes `.tmp` files `TMP_AGE_S` old and a retired pass's planet once the newer pass has
-    /// settled; it never goes through a link, nor lists the newest pass or the rest of `sources/`.
+    /// than that holds it); a held one never; a removed step's files, a retired pass's, the newest
+    /// complete pass's (task #1395) and the rail lists' too; it removes `.tmp` files `TMP_AGE_S` old
+    /// and a retired pass's planet once the newer pass has settled, never the newest pass's; it
+    /// never goes through a link, nor lists a pass in progress, the rail feeds' zips or the rest of
+    /// `sources/`.
     #[test]
     fn an_orphan_is_queued_only_after_its_age() {
         use std::os::unix::fs::symlink;
@@ -1656,8 +1674,20 @@ mod tests {
             "sources/osm/2026-09-28/pieces/6-1-1.7777777777777777.osm.pbf",
             "sources/osm/2026-09-28/pass.8888888888888888.json",
         );
+        // (The newest pass's: an extract the records name, its planet, and an item list they
+        // don't; a pass begun since, not complete; the rail lists' folder and a feed's zip.)
+        let (newest_held, newest_planet, newest_items) = (
+            "sources/osm/2026-09-28/pieces/6-1-2.aaaaaaaaaaaaaaaa.osm.pbf",
+            "sources/osm/2026-09-28/planet.osm.pbf",
+            "sources/items/2026-09-28/facts.bbbbbbbbbbbbbbbb.json",
+        );
+        let begun = "sources/osm/2026-12-01/pieces/6-1-1.cccccccccccccccc.osm.pbf";
+        let (rail, zip) = ("sources/rail/feeds.dddddddddddddddd.json", "sources/rail/gtfs/x.eeeeeeeeeeeeeeee.zip");
         let outside = "state/x.9999999999999999.json";
         for f in [kept, old, plain, z8, other, old_pass, planet, newest, outside] {
+            put(root, f, days + 1);
+        }
+        for f in [newest_held, newest_planet, newest_items, begun, rail, zip] {
             put(root, f, days + 1);
         }
         put(root, young, days - 1);
@@ -1667,30 +1697,32 @@ mod tests {
         symlink(root.join("layers/a/hi"), root.join("layers/a/hi/loop")).unwrap();
         symlink(root.join("state"), root.join("layers/a/state")).unwrap();
         let (q, _) = queue_of(q_dir.path(), &[], &[kept], now_s());
+        q.records((2, 2), [newest_held, newest_done].map(String::from).iter(), now_s());
         let lead = InProcess { q: &q, now: Cell::new(now_s()) };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
         let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
         let r = run(&nas, &Asked { dry_run: true, ..asked }, &ways_for_tests(&lead)).unwrap();
-        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed), (4, 0, 1), "{r:?}");
+        // (Found: kept, old, z8, old_pass, newest, newest_done, newest_held, newest_items, rail.)
+        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed), (9, 0, 1), "{r:?}");
         assert!(q.is_empty() && root.join(tmp_old).exists() && root.join(planet).exists(), "a dry run does nothing");
         let r = run(&nas, &asked, &ways_for_tests(&lead)).unwrap();
         assert_eq!(r.swept, ["orphans"]);
-        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed, r.retired_removed), (4, 3, 1, 1), "{r:?}");
-        for f in [old, z8, old_pass] {
+        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed, r.retired_removed), (9, 6, 1, 1), "{r:?}");
+        for f in [old, z8, old_pass, newest, newest_items, rail] {
             assert_eq!(q.queued(f).map(|x| x.at), Some(lead.now.get()), "{f}");
         }
-        for f in [kept, young, other, newest, outside] {
+        for f in [kept, young, other, outside, newest_held, newest_done, begun, zip] {
             assert!(q.queued(f).is_none(), "{f}");
         }
         assert!(!root.join(tmp_old).exists() && root.join(tmp_young).exists() && !root.join(planet).exists());
-        assert!(root.join(plain).exists() && root.join(old_pass).exists());
+        assert!(root.join(plain).exists() && root.join(old_pass).exists() && root.join(newest_planet).exists());
         // Found now: due once its grace has passed (and the lease rule from now), not before.
         let none = BTreeMap::new();
         let at = |now: u64, lease: Option<u64>| q.due(&Holders { cursors: &none, oldest_lease: lease, now });
         assert!(at(lead.now.get() + GRACE_S - 1, None).is_empty());
         assert!(at(lead.now.get() + GRACE_S, Some(lead.now.get() - 1)).is_empty(), "a lease older than the find");
-        assert_eq!(at(lead.now.get() + GRACE_S, None).len(), 3);
+        assert_eq!(at(lead.now.get() + GRACE_S, None).len(), 6);
         // The pass ended: not due again until `ORPHAN_AGE_S` after.
         let s = Sweeps::read(&sweeps);
         assert!(!s.due("orphans", now_s()) && s.due("orphans", now_s() + ORPHAN_AGE_S));
@@ -1957,9 +1989,68 @@ mod tests {
         ] {
             assert!(!by_the_queue(f, Some("2026-09-28")), "{f}");
         }
-        assert!(by_the_queue("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", Some("2026-09-28")));
-        assert!(!by_the_queue("sources/osm/2026-09-28/pieces/6-1-1.1111111111111111.osm.pbf", Some("2026-09-28")));
-        assert!(!by_the_queue("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", None));
+    }
+
+    /// Task #1395: a chunk takes the sources of the newest complete pass and the older ones (their
+    /// subfolders too) and the rail lists, as GC's queue frees them; never a pass in progress (newer
+    /// than the newest complete one, or any while none is complete), a rail feed's zip (the lists
+    /// name it by its content name, which no holder sees), the rest of `sources/`, or a name a holder
+    /// names again before its chunk.
+    #[test]
+    fn the_newest_pass_and_the_rail_lists_go_by_the_queue() {
+        let newest = Some("2026-09-28");
+        for f in [
+            "sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf",
+            "sources/osm/2026-09-28/outlines.1111111111111111.sect",
+            "sources/osm/2026-09-28/pieces/6-1-1.1111111111111111.osm.pbf",
+            "sources/osm/2026-09-28/roads/6-1-1.1111111111111111.bin",
+            "sources/osm/2026-09-28/sets/ferries.1111111111111111.osm.pbf",
+            "sources/items/2026-09-28/facts.1111111111111111.json",
+            "sources/rail/feeds.1111111111111111.json",
+            "sources/rail/fetched.1111111111111111.json",
+        ] {
+            assert!(by_the_queue(f, newest), "{f}");
+        }
+        for (f, newest) in [
+            ("sources/osm/2026-12-01/pieces/6-1-1.1111111111111111.osm.pbf", newest),
+            ("sources/items/2026-12-01/facts.1111111111111111.json", newest),
+            ("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", None),
+            ("sources/osm/x/pieces/6-1-1.1111111111111111.osm.pbf", newest),
+            ("sources/rail/gtfs/sncf.1111111111111111.zip", newest),
+            ("sources/railway/feeds.1111111111111111.json", newest),
+            ("sources/registers/r.1111111111111111.tar", newest),
+        ] {
+            assert!(!by_the_queue(f, newest), "{f}");
+        }
+        // In a run: what's freed goes but a zip, a pass begun and a name the records hold again.
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        fs::create_dir_all(root.join(crate::agent::NAS_CHECK)).unwrap();
+        let (outlines, list, zip, begun, again) = (
+            "sources/osm/2026-09-28/outlines.1111111111111111.sect",
+            "sources/rail/checked.2222222222222222.json",
+            "sources/rail/gtfs/sncf.3333333333333333.zip",
+            "sources/osm/2026-12-01/pieces/6-1-1.4444444444444444.osm.pbf",
+            "sources/osm/2026-09-28/pieces/6-1-2.5555555555555555.osm.pbf",
+        );
+        let freed: Vec<String> = [outlines, list, zip, begun, again].map(String::from).into();
+        for f in &freed {
+            put(root, f, 1);
+        }
+        put(root, "sources/osm/2026-09-28/pass.6666666666666666.json", 1);
+        let (q, _) = queue_of(q_dir.path(), &freed, &[], now_s() - GRACE_S);
+        q.records((2, 2), [again.to_string()].iter(), now_s());
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
+        let r = run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
+        assert_eq!(r.removed, 2, "{r:?}");
+        assert!(!root.join(outlines).exists() && !root.join(list).exists());
+        for f in [zip, begun, again] {
+            assert!(root.join(f).exists(), "{f}");
+        }
+        assert!(q.queued(zip).is_some() && q.queued(begun).is_some() && q.queued(again).is_none());
     }
 
     /// Task #52: the old pipeline's converted data (`global/legacy/`) is retired: its names leave

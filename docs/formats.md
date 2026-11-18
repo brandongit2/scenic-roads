@@ -1429,7 +1429,8 @@ the id with the clicked point. A reader takes version 8 only.
     `<lang>|<Title>\t<views>` lines; landmarks::pageviews); `sources/fetched/<dataset>/<file>` (a
     declared elevation dataset's `store` files, deflate GeoTIFF, `.none` where missing;
     docs/inputs.md §6.8).
-- **Rail sources** (`sources/rail/`, content-named, in the manifest, never swept; `inputs::rail`,
+- **Rail sources** (`sources/rail/`, content-named, in the manifest; the lists GC's, the zips never:
+  docs/storage.md, GC; `inputs::rail`,
   docs/steps.md §10):
   - `catalogue.csv`: the Mobility Database catalogue as downloaded (docs/inputs.md §6.7.1);
   - `checked.json`: every catalogue feed checked for rail routes, by `id`: `id`, `provider`, `name`,

@@ -199,8 +199,14 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
   went and lets the rest go back to the queue, unmarked (but a name told more than once, which the
   killed job may have removed, stays marked). A chunk takes a name in a folder the map indexes, a removed
-  step's, or a source of a pass older than the newest complete one (`gc::by_the_queue`); the
-  gate's copies are the inputs sweep's below, and the rest of `sources/` is never GC's. The lead
+  step's, a source of the newest complete pass or an older one (`sources/osm/<date>/`,
+  `sources/items/<date>/`, their subfolders too), or a rail list (a file of `sources/rail/` itself:
+  the catalogue, the feeds checked, the zips' days, the rail and ferry feeds; `gc::by_the_queue`).
+  Never a pass newer than the newest complete one (in progress: its job's uploads reach the records
+  only as it hands off), nor a rail feed's zip (`sources/rail/gtfs/`): the rail and ferries jobs open
+  each zip by the content name the feeds lists store, and a rail-feeds run that fails keeps its
+  downloads, moving a zip's logical name on while a list still names the old file, which no holder
+  sees. The gate's copies are the inputs sweep's below, and the rest of `sources/` is never GC's. The lead
   not reached, or not able to put its marks on its disk, nothing is removed and the job fails. The
   job's card says how many names it has; the queue knows no sizes.
 - **Reuse without a touch.** A job that finds its file already on the NAS takes it as it is and
@@ -231,13 +237,15 @@ it stopped. So there is no run to finish: the queue's length is what's left.
     uploads' check (above), last.
   - **The orphan sweep**, a pass every 14 days (`ORPHAN_AGE_S`): it lists,
     a folder at a time, the top folders of what the map and the records name, the removed steps'
-    folders and the retired passes' (`sources/osm/<date>/`, `sources/items/<date>/` older than the
-    newest complete pass), and sends the lead each content-named file at least 14 days old (no job
+    folders, the passes' up to the newest complete one (`sources/osm/<date>/`,
+    `sources/items/<date>/`, their subfolders too; a newer pass, in progress, never) and the rail
+    lists' (`sources/rail/`'s own files, not its zips), and sends the lead each content-named file at least 14 days old (no job
     runs that long between its upload and its hand-off), which queues those nothing holds, freed
     as it finds them (so a lease older than that holds them, and they wait their grace). A pass
     begins 14 days after the last ended, so an orphan goes within twice its age. It removes stray `.tmp`
     files after 2 days, and a retired pass's other files (the planet download) once the newer
-    pass has been complete 14 days, with its folders left empty.
+    pass has been complete 14 days, with its folders left empty; the newest pass's other files
+    (its planet, the items' answers archives) it leaves.
   - **The inputs sweep**, a pass every 14 days: the input check's checked copies (`sources/inputs/`,
     inputs.md §4.9) are kept while the records' manifest, an accepted index or
     an index of the last 14 days names them (a hand-off not merged yet bringing one removed is
@@ -273,8 +281,8 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   Their files then go as GC's queue frees them. `scenic gc --dry-run` counts them, writing nothing.
 - `scenic gc --dry-run` says what's due by the queue, what each sweep would find and drop, and
   marks, sends and removes nothing; without `--sweeps` every sweep runs whole.
-- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs and
-  state. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
+- Never swept: a pass in progress, the newest pass's files no content name is (its planet), a
+  planet waiting for its pass, the rail feeds' zips, the rest of `sources/`, inputs and state. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
   archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.
 
 **Backups.** Daily, the lead's `backup` job (agentcore::agent::backup) copies `inputs/`, the input

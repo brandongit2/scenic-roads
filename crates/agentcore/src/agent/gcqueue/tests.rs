@@ -367,7 +367,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(refusal(&back, &reused, T0).is_some(), "kept on the lead's disk");
     // The chunks and the orphans by HTTP alike: the records seen, nothing due, nothing queued.
     use crate::agent::gc::ChunkAsk;
-    let c = lead().chunk(&ChunkAsk { max: 200, passes_before: None, dry: false }).unwrap();
+    let c = lead().chunk(&ChunkAsk { max: 200, newest_pass: None, dry: false }).unwrap();
     assert!(c.names.is_empty());
     assert_eq!(lead().orphans(&["base/6-1-2.k0.base".to_string()]).unwrap(), 1);
     assert!(q.queued("base/6-1-2.k0.base").is_some());

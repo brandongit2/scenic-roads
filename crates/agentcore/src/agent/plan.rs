@@ -1211,8 +1211,8 @@ impl Planner {
     }
 
     /// Whether the `gc` job has work (docs/storage.md, GC): a chunk GC's queue would hand
-    /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`, the older
-    /// passes before `latest`), only the lead's agent running the jobs knowing; or a sweep's pass
+    /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`: the
+    /// passes up to `latest`, the newest complete one), only the lead's agent running the jobs knowing; or a sweep's pass
     /// under way or due (`gc::Sweeps`, `sweeps` its file). In words, for the job's card.
     pub(super) fn gc_work(&self, sweeps: &Path, latest: Option<&str>) -> Option<String> {
         let now = now_s();
