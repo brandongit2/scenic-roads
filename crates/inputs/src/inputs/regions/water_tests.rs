@@ -1341,3 +1341,37 @@ fn a_countrys_inlet_half_in_its_zone_is_split_at_the_zone() {
     assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
     assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
 }
+
+/// Task #1426: an area cut down round a box (`tiles::near_part`) meets anything inside the box as
+/// the whole does, exactly: a wiggly coast (many points, a hole, a far island) against a stretch's
+/// ring of 100 m; a long segment crossing both the box and the cut is refused (None); nothing near,
+/// empty.
+#[test]
+fn an_area_cut_down_round_a_box_meets_what_is_inside_it_the_same() {
+    use super::tiles::near_part;
+    let coast: geom::Ring = (0..=2000)
+        .map(|i| {
+            let t = i as f64 / 2000.0;
+            [e7(t * 2.0), e7(1.0 + 0.003 * (t * 400.0).sin() + 0.001 * (t * 1300.0).cos())]
+        })
+        .chain([[e7(2.0), e7(0.0)], [e7(0.0), e7(0.0)]])
+        .collect();
+    let hole = bx(1.0, 0.5, 1.2, 0.7).remove(0);
+    let island = bx(1.9, 1.8, 1.95, 1.85);
+    let q = Area::from_rings(&[vec![coast, hole], island].concat());
+    for (w, s) in [(0.3, 0.99), (1.05, 0.55), (1.0, 0.45), (1.7, 0.98), (1.915, 1.815)] {
+        let inner = Area::from_rings(&bx(w, s, w + 0.02, s + 0.02));
+        let ring = geom::buffer_area_coarse(&inner, 100.0).minus(&inner);
+        let rb = ring.bbox().unwrap();
+        let cut = near_part(&q, rb).unwrap_or_else(|| panic!("{w}, {s}: no long segment near"));
+        assert!(geom::points(&cut) < geom::points(&q), "{w}, {s}: cut down");
+        assert_eq!(ring.intersect(&cut), ring.intersect(&q), "{w}, {s}");
+    }
+    // A box with nothing near: empty.
+    assert!(near_part(&q, [e7(5.0), e7(5.0), e7(5.1), e7(5.1)]).is_some_and(|a| a.is_empty()));
+    // The coast's long closing edge along 0°E, and a triangle's long edge, crossing the box and
+    // running on past the cut: read whole.
+    assert!(near_part(&q, [e7(-0.001), e7(0.9), e7(0.02), e7(0.92)]).is_none());
+    let tri = Area::from_rings(&[vec![[e7(0.0), e7(0.0)], [e7(2.0), e7(2.0)], [e7(0.0), e7(2.0)]]]);
+    assert!(near_part(&tri, [e7(0.99), e7(0.99), e7(1.01), e7(1.01)]).is_none());
+}

@@ -971,81 +971,125 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     drop(made);
     trace("hand-outs");
     // 4. Hand-outs: to outer folders first (a folder's waters region with a hand_out of its own
-    // hands on what it was handed); the order is otherwise the ids'.
+    // hands on what it was handed); the order is otherwise the ids'. A run of them in that order
+    // none of which touches a region an earlier one of the run does (its own, its members) is made
+    // together, their stretches one pool of work: none reads what another writes, so making them
+    // together gives what one after another would.
     let mut handing = ids.clone();
     handing.sort_by_key(|id| folder.regions[id].1.hand_out.as_ref().map_or(0, |g| g.split('/').count()));
     progress.begin(Step::HandOuts, handing.len());
-    for id in &handing {
-        let _one = progress.one_on_drop();
-        let Some(g) = folder.regions[id].1.hand_out.clone() else { continue };
-        if !areas.contains_key(id) {
+    let mut next = 0;
+    while next < handing.len() {
+        // (The run: each handing region and its units, in order.)
+        let mut batch: Vec<(&String, BTreeMap<String, Vec<String>>)> = Vec::new();
+        let mut touched: BTreeSet<String> = BTreeSet::new();
+        while let Some(id) = handing.get(next) {
+            let Some(g) = folder.regions[id].1.hand_out.clone().filter(|_| areas.contains_key(id)) else {
+                next += 1;
+                drop(progress.one_on_drop());
+                continue;
+            };
+            // (Only regions with water take a hand-out: those without resolve as they always have.
+            // The regions with water are all in `areas`, but those held.)
+            let (members, old): (Vec<String>, Vec<String>) = folder
+                .members(&g, id)
+                .into_iter()
+                .filter(|m| areas.contains_key(m) || others.contains_key(m))
+                .partition(|m| folder.regions[m].1.has_water());
+            if !batch.is_empty() && (touched.contains(id) || members.iter().any(|m| touched.contains(m))) {
+                break;
+            }
+            next += 1;
+            if let Some(o) = old.first() {
+                let (p, r) = &folder.regions[id];
+                out.problems.push(problem("rg-ref", r, p, format!("{id}: the hand-out to \"{g}\" has region {o} without water (and {} more): a hand-out gives only to regions with water", old.len() - 1)));
+            }
+            let units = standing(folder, &g, id, &members, &mut out.problems);
+            touched.insert(id.clone());
+            touched.extend(members);
+            batch.push((id, units));
+        }
+        if batch.is_empty() {
             continue;
         }
-        // (Only regions with water take a hand-out: those without resolve as they always have. The
-        // regions with water are all in `areas`, but those held.)
-        let (members, old): (Vec<String>, Vec<String>) = folder
-            .members(&g, id)
-            .into_iter()
-            .filter(|m| areas.contains_key(m) || others.contains_key(m))
-            .partition(|m| folder.regions[m].1.has_water());
-        if let Some(o) = old.first() {
-            let (p, r) = &folder.regions[id];
-            out.problems.push(problem("rg-ref", r, p, format!("{id}: the hand-out to \"{g}\" has region {o} without water (and {} more): a hand-out gives only to regions with water", old.len() - 1)));
-        }
-        let mine = areas[id].clone();
-        let units = standing(folder, &g, id, &members, &mut out.problems);
-        // (Counted by cell, the units' unions' and the stretches': a large stretch, or a hand-out to
-        // a folder of many regions, says how far it is as it goes.)
-        let comps = components(&mine);
-        let joined: Vec<(&String, Vec<&TArea>)> = units
-            .iter()
-            .filter(|(_, ms)| ms.len() > 1)
-            .map(|(to, ms)| (to, ms.iter().map(|m| &areas[m]).collect()))
-            .collect();
-        let union_cells: usize =
-            joined.iter().map(|(_, ts)| ts.iter().flat_map(|t| t.cells.keys()).collect::<BTreeSet<_>>().len()).sum();
-        progress.item(union_cells + comps.iter().map(BTreeMap::len).sum::<usize>());
-        let unions: BTreeMap<&String, TArea> =
-            joined.into_iter().map(|(to, ts)| (to, union_of(&ts, progress))).collect();
-        let theirs: Vec<(&String, &TArea)> = units.keys().map(|m| (m, unions.get(m).unwrap_or(&areas[m]))).collect();
-        // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
-        // where it goes.
-        let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(comps, |comp| {
-            let km2: f64 = comp.values().map(geom::area_km2).sum();
-            let mut edge: Vec<f64> = vec![0.0; theirs.len()];
-            for (c, p) in &comp {
-                let _part = progress.part_on_drop();
-                let mut ring: Option<Area> = None;
-                for (k, (_, t)) in theirs.iter().enumerate() {
-                    edge[k] += edge_in(p, *c, t, &mut ring);
+        let moves: Vec<(usize, String, BTreeMap<Cell, Area>)> = {
+            // (Counted by cell, the units' unions' and the stretches': a large stretch, or a
+            // hand-out to a folder of many regions, says how far it is as it goes.)
+            let comps: Vec<Vec<BTreeMap<Cell, Area>>> = batch.iter().map(|(id, _)| components(&areas[*id])).collect();
+            let joined: Vec<Vec<(&String, Vec<&TArea>)>> = batch
+                .iter()
+                .map(|(_, units)| {
+                    units
+                        .iter()
+                        .filter(|(_, ms)| ms.len() > 1)
+                        .map(|(to, ms)| (to, ms.iter().map(|m| &areas[m]).collect()))
+                        .collect()
+                })
+                .collect();
+            let union_cells: usize = joined
+                .iter()
+                .flatten()
+                .map(|(_, ts)| ts.iter().flat_map(|t| t.cells.keys()).collect::<BTreeSet<_>>().len())
+                .sum();
+            progress.item(union_cells + comps.iter().flatten().map(BTreeMap::len).sum::<usize>());
+            let unions: Vec<BTreeMap<&String, TArea>> = joined
+                .into_iter()
+                .map(|j| j.into_iter().map(|(to, ts)| (to, union_of(&ts, progress))).collect())
+                .collect();
+            let theirs: Vec<Vec<(&String, &TArea)>> = batch
+                .iter()
+                .zip(&unions)
+                .map(|((_, units), u)| units.keys().map(|m| (m, u.get(m).unwrap_or(&areas[m]))).collect())
+                .collect();
+            // (Each member's boxes by cell, made once: every stretch reads them.)
+            let boxes: Vec<Vec<HashMap<Cell, [i64; 4]>>> =
+                theirs.iter().map(|ts| pace::par_map(ts.iter().map(|(_, t)| *t).collect(), boxes_of)).collect();
+            // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell),
+            // and where it goes.
+            let work: Vec<(usize, BTreeMap<Cell, Area>)> =
+                comps.into_iter().enumerate().flat_map(|(b, cs)| cs.into_iter().map(move |c| (b, c))).collect();
+            pace::par_map(work, |(b, comp)| {
+                let km2: f64 = comp.values().map(geom::area_km2).sum();
+                let mut edge: Vec<f64> = vec![0.0; theirs[b].len()];
+                for (c, p) in &comp {
+                    let _part = progress.part_on_drop();
+                    let mut ring: Option<Area> = None;
+                    for (k, (_, t)) in theirs[b].iter().enumerate() {
+                        edge[k] += edge_in(p, *c, t, &boxes[b][k], &mut ring);
+                    }
                 }
-            }
-            let mut touching: Vec<(f64, &String)> =
-                edge.iter().zip(&theirs).filter(|(l, _)| **l > 0.0).map(|(l, (m, _))| (*l, *m)).collect();
-            touching.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
-            let to = match touching.len() {
-                1 => Some(touching[0].1.clone()),
-                n if n > 1 && km2 < rules.sliver_km2 => Some(touching[0].1.clone()),
-                _ => None,
-            };
-            to.map(|m| (m, comp))
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        // Applied cell by cell: taken from this region, given to each member.
+                let mut touching: Vec<(f64, &String)> =
+                    edge.iter().zip(&theirs[b]).filter(|(l, _)| **l > 0.0).map(|(l, (m, _))| (*l, *m)).collect();
+                touching.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(y.1)));
+                let to = match touching.len() {
+                    1 => Some(touching[0].1.clone()),
+                    n if n > 1 && km2 < rules.sliver_km2 => Some(touching[0].1.clone()),
+                    _ => None,
+                };
+                to.map(|m| (b, m, comp))
+            })
+            .into_iter()
+            .flatten()
+            .collect()
+        };
+        // Applied cell by cell: taken from each handing region, given to each member.
         let mut given: BTreeMap<String, BTreeMap<Cell, Vec<Area>>> = BTreeMap::new();
-        let mut taken: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
-        for (m, comp) in moves {
+        let mut taken: Vec<BTreeMap<Cell, Vec<Area>>> = vec![BTreeMap::new(); batch.len()];
+        for (b, m, comp) in moves {
             for (c, p) in comp {
-                taken.entry(c).or_default().push(p.clone());
+                taken[b].entry(c).or_default().push(p.clone());
                 given.entry(m.clone()).or_default().entry(c).or_default().push(p);
             }
         }
-        let a = areas.get_mut(id).unwrap();
-        for (c, ps) in taken {
-            let left = a.get(c).minus(&geom::union_all(&ps));
-            a.set(c, left);
+        let handed: Vec<String> = batch.iter().map(|(id, _)| (*id).clone()).collect();
+        drop(batch);
+        for (id, cells) in handed.iter().zip(taken) {
+            let a = areas.get_mut(id).unwrap();
+            for (c, ps) in cells {
+                let left = a.get(c).minus(&geom::union_all(&ps));
+                a.set(c, left);
+            }
+            drop(progress.one_on_drop());
         }
         for (m, cells) in given {
             let b = areas.get_mut(&m).unwrap();
@@ -1796,13 +1840,19 @@ fn joined(polys: &[(Cell, &Sides)]) -> Vec<usize> {
 /// neighbouring cells.
 pub fn shared_km(a: &TArea, b: &TArea) -> f64 {
     // (Summed in the cells' order: the same total whatever the threads' schedule.)
-    let parts: Vec<f64> = pace::par_map(a.cells.iter().collect(), |(c, p)| edge_in(p, *c, b, &mut None));
+    let boxes = boxes_of(b);
+    let parts: Vec<f64> = pace::par_map(a.cells.iter().collect(), |(c, p)| edge_in(p, *c, b, &boxes, &mut None));
     parts.iter().sum()
 }
 
-/// The edge (km) piece `p` of cell `c` shares with `t`'s pieces in the cells round it, its ring of
-/// 100 m made once (in `ring`) and only when one comes near.
-fn edge_in(p: &Area, c: Cell, t: &TArea, ring: &mut Option<Area>) -> f64 {
+/// Each cell's box of a tiled area.
+fn boxes_of(t: &TArea) -> HashMap<Cell, [i64; 4]> {
+    t.cells.iter().filter_map(|(c, a)| a.bbox().map(|b| (*c, b))).collect()
+}
+
+/// The edge (km) piece `p` of cell `c` shares with `t`'s pieces in the cells round it (`boxes`, its
+/// cells' boxes), its ring of 100 m made once (in `ring`) and only when one comes near.
+fn edge_in(p: &Area, c: Cell, t: &TArea, boxes: &HashMap<Cell, [i64; 4]>, ring: &mut Option<Area>) -> f64 {
     let Some(pb) = p.bbox() else { return 0.0 };
     let pad = 20_000;
     let mut sum = 0.0;
@@ -1810,16 +1860,65 @@ fn edge_in(p: &Area, c: Cell, t: &TArea, ring: &mut Option<Area>) -> f64 {
         let (w, shift) = wrap(x);
         for y in c.1 - 1..=c.1 + 1 {
             let Some(q) = t.cells.get(&(w, y)) else { continue };
-            let Some(qb) = q.bbox().map(|b| [b[0] + shift, b[1], b[2] + shift, b[3]]) else { continue };
+            let Some(qb) = boxes.get(&(w, y)).map(|b| [b[0] + shift, b[1], b[2] + shift, b[3]]) else { continue };
             if !(pb[0] <= qb[2] + pad && qb[0] <= pb[2] + pad && pb[1] <= qb[3] + pad && qb[1] <= pb[3] + pad) {
                 continue;
             }
-            let q = if shift == 0 { q.clone() } else { q.shifted(shift) };
             let r = ring.get_or_insert_with(|| geom::buffer_area_coarse(p, 100.0).minus(p));
+            let Some(rb) = r.bbox() else { continue };
+            // (Only `q`'s part round the ring, where it can meet it: the same intersection, as
+            // `near_part` keeps every segment that comes near the ring as it is.)
+            let local = near_part(q, [rb[0] - shift, rb[1], rb[2] - shift, rb[3]]);
+            let q = match &local {
+                Some(a) if a.is_empty() => continue,
+                Some(a) => a,
+                None => q,
+            };
+            let q = if shift == 0 { q.clone() } else { q.shifted(shift) };
             sum += geom::area_km2(&r.intersect(&q)) / 0.1;
         }
     }
     sum
+}
+
+/// How far round a box `near_part` keeps an area (E7: about 1 km, longer than most of a coast's
+/// segments, so few cross the cut near the box).
+const NEAR_PAD: i64 = 100_000;
+
+/// Area `a` cut down to what lies round box `r` (within `NEAR_PAD`), for an operation with
+/// something inside `r`: rings whose box misses `r` left out (they neither cross nor hold any of
+/// it), rings within the pad kept whole, the rest clipped to the padded box. Every segment of `a`
+/// meeting `r` is kept as it is, and what's inside `r` is the same area, so an overlay with
+/// anything inside `r` gives the same result. None when a segment the clip would cut comes near
+/// `r` (a long one, crossing both): `a` is to be read whole then. Empty when nothing of `a` comes
+/// near `r`.
+pub(super) fn near_part(a: &Area, r: [i64; 4]) -> Option<Area> {
+    let meets = |b: [i64; 4], x: [i64; 4]| b[0] <= x[2] && x[0] <= b[2] && b[1] <= x[3] && x[1] <= b[3];
+    let within = |b: [i64; 4], x: [i64; 4]| b[0] >= x[0] && b[2] <= x[2] && b[1] >= x[1] && b[3] <= x[3];
+    // (`r` itself two units wider: a clipped segment's end is rounded to the unit.)
+    let near = [r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2];
+    let pad = [r[0] - NEAR_PAD, r[1] - NEAR_PAD, r[2] + NEAR_PAD, r[3] + NEAR_PAD];
+    let mut rings: Vec<Ring> = Vec::new();
+    for ring in a.polys.iter().flatten() {
+        let Some(b) = geom::bbox_of(ring.iter()) else { continue };
+        if !meets(b, near) {
+            continue;
+        }
+        if within(b, pad) {
+            rings.push(ring.clone());
+            continue;
+        }
+        let n = ring.len();
+        for i in 0..n {
+            let (p, q) = (ring[i], ring[(i + 1) % n]);
+            let sb = [p[0].min(q[0]), p[1].min(q[1]), p[0].max(q[0]), p[1].max(q[1])];
+            if !within(sb, pad) && meets(sb, near) {
+                return None;
+            }
+        }
+        rings.extend(clip(ring, pad));
+    }
+    Some(if rings.is_empty() { Area::default() } else { Area { polys: vec![rings] } })
 }
 
 /// With `cover`: a region's stretches of water under `km2` touching none of its land go to the
