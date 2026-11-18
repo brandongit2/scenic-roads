@@ -1,0 +1,333 @@
+name = "Litto3D (Shom and IGN): topo-bathymetric models of the French coasts"
+credit = "Shom and IGN, Litto3D"
+licence = "Licence Ouverte 1.0 and 2.0 (Etalab), by product"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://diffusion.shom.fr/donnees/altimetrie-littorale.html"
+theme = "bathymetry"
+availability = "open"
+notes = "The coastal strip of France's Litto3D programme (airborne topo-bathymetric lidar on the sea side, multibeam where the lidar fails, topographic lidar inland; a model of 1 m or 5 m, tiles as 7z archives; free under the Licence Ouverte, not for navigation), a piece for each of the Shom's 25 products (the metropolitan regions, Corsica, the Antilles, Réunion, Mayotte, the Îles Éparses, Saint-Pierre-et-Miquelon, four of French Polynesia's islands, the Rance and Roches Douvres): the tiles the Shom's WFS lists for each (GRILLE layers: 2,982 tiles; the 7z downloads can't be read by range), a tile counted where the product has data. The spacing is the finest each tile's record states (1 m, or 5 m alone for Finistère 2014, Languedoc-Roussillon 2011 and Iroise 2012; Brittany's, Nouvelle-Aquitaine's, Saint-Pierre-et-Miquelon's, the Rance's and Roches Douvres's records state both and are taken at 1 m); the year is the last of the product's name. The sea values are heights in the land's vertical system (IGN69; IGN78 in Corsica), not chart depths."
+
+[[piece]]
+id = "bzh-2018-2021"
+label = "Brittany 2018-2021"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_BZH_2018_2021_GRILLE_WFS:grille_bathymetrie_litto3d_bzh_2018_2021"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2021
+
+[[piece]]
+id = "nhdf-2016-2018"
+label = "Normandy and Hauts-de-France 2016-2018"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_NHDF_2016_2018_GRILLE_WFS:grille_bathymetrie_l3d_mar_nhdf_2016_2018"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2018
+
+[[piece]]
+id = "corse-2017-2018"
+label = "Corsica 2017-2018"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_CORSE_2017_2018_GRILLE_WFS:grille_bathymetrie_l3d_mar_corse_2017_2018"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2018
+
+[[piece]]
+id = "naq-2020-2022"
+label = "Nouvelle-Aquitaine 2020-2022"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_NAQ_2020_2022_GRILLE_WFS:grille_bathymetrie_litto3d_naq_2020_2022"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2022
+
+[[piece]]
+id = "paca-2015"
+label = "Provence-Alpes-Côte d'Azur 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_PACA_2015_GRILLE_WFS:grille_litto3d_paca2015"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "finistere-2014"
+label = "Finistère 2014"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_FINISTR_2014_GRILLE_WFS:grille_litto3d_finistr2014"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 5.0
+measured = "lidar"
+year = 2014
+
+[[piece]]
+id = "lr-2014-2015"
+label = "Languedoc-Roussillon 2014-2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_LR_2014_2015_GRILLE_WFS:grille_l3d_mar_lr_2014_2015_3857"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "lr-2011"
+label = "Languedoc-Roussillon 2011"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_LR_2011_GRILLE_WFS:grille_l3d_mar_lr2011"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 5.0
+measured = "lidar"
+year = 2011
+
+[[piece]]
+id = "lr-2009"
+label = "Languedoc-Roussillon 2009"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_LR_2009_GRILLE_WFS:grille_litto3d_lr2009"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2009
+
+[[piece]]
+id = "morbihan-2015"
+label = "Morbihan 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_MORBIHAN_2015_GRILLE_WFS:grille_l3d_mar_morbihan_2015"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "iroise-2012"
+label = "Iroise 2012"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_MAR_PNMI_2012_GRILLE_WFS:grille_l3d_mar_pnmi2012"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 5.0
+measured = "lidar"
+year = 2012
+
+[[piece]]
+id = "rance-2019"
+label = "Rance 2019"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_RANCE_2019_GRILLE_WFS:grille_bathymetrie_lidar_rance_2019"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2019
+
+[[piece]]
+id = "roches-douvres-2022"
+label = "Roches Douvres and Barnouic 2022"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_ROCHES_DOUVRES_BARNOUIC_2022_GRILLE_WFS:grille_bathymetrie_lidar_roches_douvres_barnouic_2022"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2022
+
+[[piece]]
+id = "guadeloupe-2016"
+label = "Guadeloupe 2016"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_GUAD_2016_GRILLE_WFS:grille_litto3d_guad2016"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2016
+
+[[piece]]
+id = "martinique-2016"
+label = "Martinique 2016"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_MART_2016_GRILLE_WFS:grille_litto3d_mart2016"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2016
+
+[[piece]]
+id = "saint-martin-2019"
+label = "Saint-Martin 2019"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_STMARTIN_2019_GRILLE_WFS:grille_bathymetrie_litto3d_stmartin_2019"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2019
+
+[[piece]]
+id = "saint-barthelemy-2019"
+label = "Saint-Barthélemy 2019"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_STBARTHELEMY_2019_GRILLE_WFS:grille_bathymetrie_litto3d_stbarth_2019"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2019
+
+[[piece]]
+id = "reunion-2016"
+label = "Réunion 2016"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_REUNION_2016_GRILLE_WFS:grille_litto3d_reunion2016"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2016
+
+[[piece]]
+id = "mayotte-2012"
+label = "Mayotte 2012"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_MAYOT_2012_GRILLE_WFS:grille_litto3d_mayot2012"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2012
+
+[[piece]]
+id = "eparses-2012"
+label = "Îles Éparses 2012"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_EPARSES_2012_GRILLE_WFS:grille_litto3d_eparses2012"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2012
+
+[[piece]]
+id = "spm-2023"
+label = "Saint-Pierre-et-Miquelon 2023"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_SPM_2023_GRILLE_WFS:grille_bathymetrie_litto3d_spm_2023"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2023
+
+[[piece]]
+id = "polynesie-bora-bora-2015"
+label = "Bora Bora 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_POLYNESIE_BOR_2015_GRILLE_WFS:grille_lidar_polynesie_bor_2015_3857"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "polynesie-moorea-2015"
+label = "Moorea 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_POLYNESIE_MOO_2015_GRILLE_WFS:grille_lidar_polynesie_moo_2015_3857"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "polynesie-taha-a-2015"
+label = "Taharuu 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_POLYNESIE_TAHARUU_2015_GRILLE_WFS:grille_lidar_polynesie_taharuu_2015_3857"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015
+
+[[piece]]
+id = "polynesie-tahiti-2015"
+label = "Tahiti 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "L3D_LIDAR_POLYNESIE_TAHITI_2015_GRILLE_WFS:grille_lidar_polynesie_tahiti_2015_3857"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "lidar"
+year = 2015

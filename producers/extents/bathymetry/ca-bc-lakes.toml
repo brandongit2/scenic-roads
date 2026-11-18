@@ -1,0 +1,19 @@
+name = "BC Bathymetric Maps of Surveyed Lakes"
+credit = "Province of British Columbia, Ministry of Environment and Parks"
+licence = "Access Only (the Province's catalogue licence for the layer)"
+licence_url = "https://catalogue.data.gov.bc.ca/dataset/bc-bathymetric-maps-of-surveyed-lakes"
+source = "https://catalogue.data.gov.bc.ca/dataset/bc-bathymetric-maps-of-surveyed-lakes"
+theme = "bathymetry"
+availability = "open"
+notes = "The Province's georeferenced depth-contour polygons of its surveyed lakes (the WFS layer `WHSE_FISH.BATH_LAKE_BATHYMETRIC_SP`, 137 polygons of 26 lakes, no login; each contour's polygon nested in the lake's), from the 2009 standard's digital surveys (8) or from digitized hardcopy maps (129), by how it was made and the survey's year. They are contours, not a grid: no spacing is stated, so these pieces have no score, and they are drawn on the layers of how depths were measured and the year. The catalogue's licence is `Access Only`: the terms of reuse aren't clear (kept, as the owner's stance on unclear licences has it)."
+
+[[piece]]
+id = "contours"
+method = "wfs"
+class = "service"
+url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
+type = "pub:WHSE_FISH.BATH_LAKE_BATHYMETRIC_SP"
+tolerance_m = 20
+[piece.metrics]
+measured = { field = "BATHYMAP_SOURCE", map = { "From digital lake bathymetric survey data for this lake" = "survey", "From one or more PDF Images of hardcopy map sheets that depict a bathymap for this lake." = "contours" } }
+year = { field = "LAKE_SURVEY_DATE", date = "iso" }

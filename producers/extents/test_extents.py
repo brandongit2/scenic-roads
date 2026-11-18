@@ -894,6 +894,15 @@ class IndexFiles(unittest.TestCase):
                for g, p in extents.read_file(FakeNet({"u": body}), b, 0)]
         self.assertEqual(got, [((0.0, 0.0, 3.0, 1.0), "a", "OT.1", False), ((5.0, 5.0, 6.0, 6.0), "b", None, False), (None, "c", None, False)])
 
+    def test_an_answer_that_is_one_record(self):
+        # (LINZ's page for one layer, read with several `urls`: the record is the answer, its extent a
+        # polygon at a dotted path, its title a metric's source.)
+        def page(title, x):
+            return json.dumps({"title": title, "data": {"extent": {"type": "Polygon", "coordinates": [[[x, 0], [x + 1, 0], [x + 1, 1], [x, 0]]]}}}).encode()
+        b = {"urls": ["a", "b"], "records": "", "footprint": "data.extent"}
+        got = [(g().bounds, p["title"]) for g, p in extents.read_file(FakeNet({"a": page("Porirua 1m", 0), "b": page("Otago 2m", 5)}), b, 0)]
+        self.assertEqual(got, [((0.0, 0.0, 1.0, 1.0), "Porirua 1m"), ((5.0, 0.0, 6.0, 1.0), "Otago 2m")])
+
     def test_a_shapefiles_text_in_its_encoding(self):
         import io
         import zipfile
@@ -1135,15 +1144,20 @@ class RasterFiles(unittest.TestCase):
         with self.assertRaises(SystemExit):
             list(extents.read_raster(FakeNet({"https://h/tid.tif": self.codes()}), {"urls": ["https://h/tid.tif"], "values": "tid"}, 0))
 
-    def test_g_a_zips_files_read_whole(self):
-        # (The members matching `member`, of a zip fetched whole; its mask by block.)
+    def test_g_a_zips_files_read_by_range(self):
+        # (The members matching `member`, of a zip read by range, its central directory and those
+        # members' bytes alone, none of the 2 MB of another beside them; its mask by block.)
+        import os
         import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("tid_a.tif", self.codes())
             z.writestr("readme.txt", "not a raster")
+            z.writestr("big.bin", os.urandom(2_000_000))
+        net = FakeNet({"https://h/tid.zip": buf.getvalue()})
         b = {"url": "https://h/tid.zip", "member": r"\.tif$", "block": 16}
-        [(geom, props)] = list(extents.read_raster(FakeNet({"https://h/tid.zip": buf.getvalue()}), b, 0))
+        [(geom, props)] = list(extents.read_raster(net, b, 0))
+        self.assertLess(net.bytes, 600_000)
         self.assertEqual(props, {"res_m": round(0.01 * extents.M_PER_DEG, 4)})
         self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 49.36, 10.64, 50.0))
 

@@ -33,7 +33,7 @@ A reader per kind of service, none per source:
            by `block` cells, and with `values` a mask per value its cells hold (that property
            the value; `skip`, values that are no data), so a source-identifier grid is a piece
            a kind of source; with `member`, the files a zip at `url` holds whose names match it
-           (the zip fetched whole: GDAL reads no zip by range)
+           (the zip read by range: its central directory and those members' bytes)
   none    no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
   overture  the build's own copy of Overture's buildings (`dataset`, an Overture source's name;
            `holds`: footprints, storeys or heights): the piece is listed with a null geometry and
@@ -422,6 +422,9 @@ class RangeFile:
     def tell(self):
         return self.pos
 
+    def seekable(self):
+        return True
+
     def close(self):
         pass
 
@@ -674,8 +677,10 @@ def record_features(d, b):
     """A catalogue's records as features (a JSON answer that isn't GeoJSON: OpenTopography's
     otCatalog): the list at the dotted path `records`, each record's footprint the GeoJSON at its
     dotted path `footprint` (a geometry, a Feature or a FeatureCollection, its features' geometries
-    one), its properties its scalar fields by their dotted paths."""
-    for r in dotted(d, b["records"]) or []:
+    one), its properties its scalar fields by their dotted paths. An answer that is one record, not a
+    list (`records` empty or naming a record: a catalogue's page for one layer), is that record."""
+    rs = dotted(d, b["records"]) or []
+    for r in [rs] if isinstance(rs, dict) else rs:
         g = dotted(r, b["footprint"]) or {}
         if g.get("type") == "FeatureCollection":
             parts = [f["geometry"] for f in g.get("features") or [] if f.get("geometry")]
@@ -1126,19 +1131,24 @@ def read_raster(net, b, _tol):
     b["crs"] = "OGC:CRS84"
     with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_PAM_ENABLED="NO"):
         if "member" in b:
-            # (A zip of files fetched whole, as `file` fetches one, its members matching `member`
-            # opened from a copy of it on disk, removed once they're read.)
+            # (A zip's members matching `member`, each read from the zip by range (its central
+            # directory, then the member's own bytes: a 2.4 GB zip holding a 7.6 MB grid costs the
+            # grid) and opened from a copy on disk, removed once it is read. A server that ignores
+            # ranges sends the whole zip, as `RangeFile` has it.)
+            import shutil
             import tempfile
-            with tempfile.TemporaryDirectory() as tmp:
-                local = os.path.join(tmp, "files.zip")
-                with open(local, "wb") as f:
-                    f.write(net.get(b["url"]))
-                names = sorted(n for n in zipfile.ZipFile(local).namelist() if re.search(b["member"], n))
+            with tempfile.TemporaryDirectory() as tmp, RangeFile(net, b["url"]) as remote:
+                z = zipfile.ZipFile(remote)
+                names = sorted(n for n in z.namelist() if re.search(b["member"], n))
                 if not names:
                     sys.exit(f"{b['url']}: no member matches {b['member']!r}")
                 for n in names:
-                    with rasterio.open(f"/vsizip/{local}/{n}") as ds:
+                    local = os.path.join(tmp, "member" + os.path.splitext(n)[1])
+                    with z.open(n) as src, open(local, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    with rasterio.open(local) as ds:
                         yield from raster_shapes(ds, b)
+                    os.remove(local)
             return
         for url in raster_files(net, b):
             with rasterio.open(url, opener=lambda p, mode="rb", net=net: RangeFile(net, p)) as ds:

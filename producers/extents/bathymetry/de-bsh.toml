@@ -1,0 +1,23 @@
+name = "BSH Meeresboden-DGM (Höhe, Bathymetrie)"
+credit = "Bundesamt für Seeschifffahrt und Hydrographie (BSH)"
+licence = "DL-DE-BY-2.0"
+licence_url = "https://www.govdata.de/dl-de/by-2-0"
+source = "https://gdi.bsh.de/en/mapservice/Elevation-Bathymetry-WCS"
+theme = "bathymetry"
+availability = "open"
+notes = "The BSH's 50 m digital terrain model of the German North and Baltic Sea (EEZ and the 12 nm sea; INSPIRE Elevation, a high-value dataset), compiled from its hydrographic surveys, on NHN (heights, not chart depths), EPSG:25832, nodata -99999. Its extent is its valid data in each of its two coverages' GetCoverage asked for at a scale factor of 0.05 (1 km cells, 1 MB each): `files`, the grain the coarse cell. The model states no survey year and no per-cell source."
+
+[[piece]]
+id = "dgm-50m"
+label = "Meeresboden-DGM 50 m"
+method = "raster"
+urls = [
+  "https://gdi.bsh.de/en/mapservice/Elevation-Bathymetry-WCS?service=WCS&version=2.0.1&request=GetCoverage&coverageId=ELC_INSPIRE__EL.GridCoverage_northsea&format=image/tiff&SCALEFACTOR=0.05",
+  "https://gdi.bsh.de/en/mapservice/Elevation-Bathymetry-WCS?service=WCS&version=2.0.1&request=GetCoverage&coverageId=ELC_INSPIRE__EL.GridCoverage_balticsea&format=image/tiff&SCALEFACTOR=0.05",
+]
+mask_m = 1000
+nodata = -99999
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 50.0
+measured = "survey"

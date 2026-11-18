@@ -1,0 +1,21 @@
+name = "Danmarks Dybdemodel (DDM) 50 m, version 2.0"
+credit = "Contains data from the Danish Geodata Agency, Denmark's Depth Model, 50 m resolution"
+licence = "Geodatastyrelsen's terms for Denmark's Depth Model (free, worldwide, unlimited right of use; not for navigation)"
+licence_url = "https://geodata-info.dk/srv/api/records/3e99c6df-b31a-4f32-be0c-685dcbd866f5/formatters/xml"
+source = "https://dataforsyningen.dk/data/4817"
+theme = "bathymetry"
+availability = "open"
+notes = "The Danish Geodata Agency's 50 m depth model of Denmark's EEZ (mean depths per cell, on mean sea level, DKMSL 2022, EPSG:3034), its per-cell source grid ddm_50m.kilde (2.9 MB, from the agency's public download folder, no login) read whole by range: 1, a digitized survey's fair sheet; 2, singlebeam; 3, multibeam; 4, airborne lidar; 5, satellite-derived; 6, crowdsourced; 7, a historical dataset (lead line); 8, interpolated (where no depths exist); a piece for each. A mask cell is 20 by 20 grid cells (1 km), holding every kind it has a cell of. The survey-year grid (ddm_50m.aar) isn't read: a piece states one grid's values, not a pair's."
+
+[[piece]]
+id = "ddm50"
+label = "DDM 50 m"
+method = "raster"
+urls = ["https://ftp.sdfe.dk/main.html?download&weblink=b4324b6389898704fd8ec7484882dbf3&subfolder=2024&realfilename=ddm%5F50m%2Ekilde%2Etiff"]
+block = 20
+values = "src"
+by = ["src"]
+tolerance_m = 250
+[piece.metrics]
+spacing_m = 50.0
+measured = { field = "src", map = { "1" = "soundings", "2" = "singlebeam", "3" = "multibeam", "4" = "lidar", "5" = "optical", "6" = "survey", "7" = "soundings", "8" = "interpolated" } }

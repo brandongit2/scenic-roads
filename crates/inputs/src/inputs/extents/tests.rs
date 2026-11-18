@@ -1623,18 +1623,34 @@ fn the_real_terrain_files_are_taken() {
     assert_eq!(c.facts["classes"], serde_json::json!({"files": 2, "index": 1900}));
 }
 
-const REAL_BATHYMETRY: [(&str, &[u8]); 23] = [
+const REAL_BATHYMETRY: [(&str, &[u8]); 49] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/bathymetry/score.toml")),
+    ("au-ausbathytopo.geojson", include_bytes!("../../../../../producers/extents/bathymetry/au-ausbathytopo.geojson")),
+    ("au-ausbathytopo.toml", include_bytes!("../../../../../producers/extents/bathymetry/au-ausbathytopo.toml")),
     ("au-ausseabed.geojson", include_bytes!("../../../../../producers/extents/bathymetry/au-ausseabed.geojson")),
     ("au-ausseabed.toml", include_bytes!("../../../../../producers/extents/bathymetry/au-ausseabed.toml")),
+    ("ca-bc-lakes.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ca-bc-lakes.geojson")),
+    ("ca-bc-lakes.toml", include_bytes!("../../../../../producers/extents/bathymetry/ca-bc-lakes.toml")),
     ("ca-chs-nonna.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ca-chs-nonna.geojson")),
     ("ca-chs-nonna.toml", include_bytes!("../../../../../producers/extents/bathymetry/ca-chs-nonna.toml")),
+    ("ca-on-lakes.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ca-on-lakes.geojson")),
+    ("ca-on-lakes.toml", include_bytes!("../../../../../producers/extents/bathymetry/ca-on-lakes.toml")),
+    ("ca-qc-gblq.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ca-qc-gblq.geojson")),
+    ("ca-qc-gblq.toml", include_bytes!("../../../../../producers/extents/bathymetry/ca-qc-gblq.toml")),
+    ("de-bsh.geojson", include_bytes!("../../../../../producers/extents/bathymetry/de-bsh.geojson")),
+    ("de-bsh.toml", include_bytes!("../../../../../producers/extents/bathymetry/de-bsh.toml")),
+    ("dk-ddm.geojson", include_bytes!("../../../../../producers/extents/bathymetry/dk-ddm.geojson")),
+    ("dk-ddm.toml", include_bytes!("../../../../../producers/extents/bathymetry/dk-ddm.toml")),
     ("emodnet-dtm.geojson", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-dtm.geojson")),
     ("emodnet-dtm.toml", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-dtm.toml")),
     ("emodnet-hr.geojson", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-hr.geojson")),
     ("emodnet-hr.toml", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-hr.toml")),
     ("fo-fodm.geojson", include_bytes!("../../../../../producers/extents/bathymetry/fo-fodm.geojson")),
     ("fo-fodm.toml", include_bytes!("../../../../../producers/extents/bathymetry/fo-fodm.toml")),
+    ("fr-shom-homonim.geojson", include_bytes!("../../../../../producers/extents/bathymetry/fr-shom-homonim.geojson")),
+    ("fr-shom-homonim.toml", include_bytes!("../../../../../producers/extents/bathymetry/fr-shom-homonim.toml")),
+    ("fr-shom-litto3d.geojson", include_bytes!("../../../../../producers/extents/bathymetry/fr-shom-litto3d.geojson")),
+    ("fr-shom-litto3d.toml", include_bytes!("../../../../../producers/extents/bathymetry/fr-shom-litto3d.toml")),
     ("gebco-2026.geojson", include_bytes!("../../../../../producers/extents/bathymetry/gebco-2026.geojson")),
     ("gebco-2026.toml", include_bytes!("../../../../../producers/extents/bathymetry/gebco-2026.toml")),
     ("gmrt.geojson", include_bytes!("../../../../../producers/extents/bathymetry/gmrt.geojson")),
@@ -1643,10 +1659,20 @@ const REAL_BATHYMETRY: [(&str, &[u8]); 23] = [
     ("ibcao-v5.toml", include_bytes!("../../../../../producers/extents/bathymetry/ibcao-v5.toml")),
     ("ibcso.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ibcso.geojson")),
     ("ibcso.toml", include_bytes!("../../../../../producers/extents/bathymetry/ibcso.toml")),
+    ("ie-infomar.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ie-infomar.geojson")),
+    ("ie-infomar.toml", include_bytes!("../../../../../producers/extents/bathymetry/ie-infomar.toml")),
     ("ncei-dems.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.geojson")),
     ("ncei-dems.toml", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.toml")),
+    ("nl-rijkswaterstaat.geojson", include_bytes!("../../../../../producers/extents/bathymetry/nl-rijkswaterstaat.geojson")),
+    ("nl-rijkswaterstaat.toml", include_bytes!("../../../../../producers/extents/bathymetry/nl-rijkswaterstaat.toml")),
+    ("no-kartverket.geojson", include_bytes!("../../../../../producers/extents/bathymetry/no-kartverket.geojson")),
+    ("no-kartverket.toml", include_bytes!("../../../../../producers/extents/bathymetry/no-kartverket.toml")),
     ("noaa-bluetopo.geojson", include_bytes!("../../../../../producers/extents/bathymetry/noaa-bluetopo.geojson")),
     ("noaa-bluetopo.toml", include_bytes!("../../../../../producers/extents/bathymetry/noaa-bluetopo.toml")),
+    ("nz-linz.geojson", include_bytes!("../../../../../producers/extents/bathymetry/nz-linz.geojson")),
+    ("nz-linz.toml", include_bytes!("../../../../../producers/extents/bathymetry/nz-linz.toml")),
+    ("us-mn-dnr-lakes.geojson", include_bytes!("../../../../../producers/extents/bathymetry/us-mn-dnr-lakes.geojson")),
+    ("us-mn-dnr-lakes.toml", include_bytes!("../../../../../producers/extents/bathymetry/us-mn-dnr-lakes.toml")),
 ];
 
 #[test]
@@ -1656,6 +1682,15 @@ fn the_real_bathymetry_files_are_taken() {
     // GEBCO's pieces a kind of source its type identifier grid holds, each from the file's cells.
     let c = Extents.file("bathymetry/gebco-2026.geojson", &files["bathymetry/gebco-2026.geojson"]);
     assert_eq!(c.facts["classes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["files"]);
+    // Each national or local grid by what its extent stands on: the Faroes' and Denmark's source
+    // grids, the German model's coverages, AusBathyTopo's type identifier grid and Shom's WMS layers
+    // are the data's own (`files`); LINZ's depth models, a layer's bounding box, are claimed.
+    let classes = |f: &str| Extents.file(&format!("bathymetry/{f}.geojson"), &files[&format!("bathymetry/{f}.geojson")]).facts["classes"].clone();
+    assert_eq!(classes("dk-ddm"), serde_json::json!({"files": 8}));
+    assert_eq!(classes("de-bsh"), serde_json::json!({"files": 1}));
+    assert_eq!(classes("fr-shom-homonim"), serde_json::json!({"files": 4}));
+    assert_eq!(classes("nz-linz"), serde_json::json!({"claimed": 35, "index": 1}));
+    assert_eq!(classes("nl-rijkswaterstaat"), serde_json::json!({"index": 1, "service": 1}));
     // The bathymetry's score: its guarantee holds, its primary the grid's spacing.
     let s = score(REAL_BATHYMETRY[0].1).unwrap();
     assert_eq!(s.primary, "spacing_m");

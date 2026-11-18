@@ -1,0 +1,18 @@
+name = "Minnesota DNR lake bathymetry"
+credit = "Minnesota Department of Natural Resources, Fisheries"
+licence = "Minnesota DNR GIS Data License Agreement"
+licence_url = "https://gisdata.mn.gov/dataset/water-lake-bathymetry"
+source = "https://gisdata.mn.gov/dataset/water-lake-bathymetry"
+theme = "bathymetry"
+availability = "open"
+notes = "The DNR's bathymetry of Minnesota's lakes: depth contours (46,306 lines) digitized from its survey maps, and from them a 5 m grid (10 m for some) of each lake bed, depths below the water surface with no datum. The extent is the DNR's own outline layer of the surveyed lakes (`water_lake_bathymetry` MapServer layer 1, 7,499 polygons, each a lake or island), its grid cell the publisher's stated 5 m. The depths are interpolated from contours, not measured at the grid; no survey year is stated. The DNR licence states internal use unrestricted and external use under its standard data licence agreement (not read)."
+
+[[piece]]
+id = "lakes"
+method = "arcgis"
+class = "service"
+url = "https://enterprise.gisdata.mn.gov/aghost/rest/services/us_mn_state_dnr/water_lake_bathymetry/MapServer/1"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 5.0
+measured = "contours"

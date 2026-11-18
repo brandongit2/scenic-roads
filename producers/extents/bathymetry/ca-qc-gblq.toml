@@ -1,0 +1,28 @@
+name = "Géobase des bathymétries de lacs du Québec (GBLQ)"
+credit = "Ministère de l'Environnement, de la Lutte contre les changements climatiques, de la Faune et des Parcs du Québec (MELCCFP)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.donneesquebec.ca/recherche/dataset/bathymetrie-des-lacs-du-quebec"
+theme = "bathymetry"
+availability = "open"
+notes = "Québec's lake bathymetry database: the index of its lakes (Index_bathymetries.gpkg, 3,280 lake outlines, 36.7 MB zipped), each flagged for what exists of it: a bathymetric model (MNB, 2,204 lakes: a grid interpolated from the survey points, or from a producer's isobaths; its cell varies by lake and isn't stated in the index, 2 m on the one lake read), the survey points (mostly single-beam echo sounder soundings, 540 lakes). A piece for each, the lake's outline: no spacing is stated, so these pieces have no score; they're drawn on the layers of how depths were measured. The isobaths (2,210 lakes) and the PDF maps (2,141) are not declared (contours, not grids)."
+
+[[piece]]
+id = "models"
+method = "file"
+class = "index"
+url = "https://stqc380donopppdtce01.blob.core.windows.net/donnees-ouvertes/Bathymetrie/Lacs/DQ/Index_bathymetries_gpkg.zip"
+filter = { MNB_DISPO = ["Oui"] }
+tolerance_m = 50
+[piece.metrics]
+measured = "interpolated"
+
+[[piece]]
+id = "points"
+method = "file"
+class = "index"
+url = "https://stqc380donopppdtce01.blob.core.windows.net/donnees-ouvertes/Bathymetrie/Lacs/DQ/Index_bathymetries_gpkg.zip"
+filter = { PTS_DISPO = ["Oui"] }
+tolerance_m = 50
+[piece.metrics]
+measured = "singlebeam"

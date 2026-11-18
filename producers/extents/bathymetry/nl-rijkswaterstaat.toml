@@ -1,0 +1,31 @@
+name = "Rijkswaterstaat bodemhoogte: the Dutch coast and sea (20 m) and inland waters (1 m)"
+credit = "Rijkswaterstaat, Ministerie van Infrastructuur en Waterstaat"
+licence = "CC0 1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://data.overheid.nl/en/dataset/79123-bathymetrie-nederland-2023---kust-en-vaklodingen-20-mtr"
+theme = "bathymetry"
+availability = "open"
+notes = "Rijkswaterstaat's two open bed-height grids, on NAP (heights, not chart depths). The coast and sea (Kust en vaklodingen, 20 m, each year's newest soundings of the coast, the estuaries, the Wadden Sea and the shipping lanes composed): the outlines of the surveys behind the 2025 edition, the WFS layer `bodemhoogte_20mtr_lodingspoly` (65 polygons, each named with its survey's year and month in two digits, which no metric reads: no year stated). The inland waters (the rivers, canals and IJsselmeer area's multibeam grid, 1 m; a monthly 14.5 GB GeoTIFF, over the limit for a source, and its INSPIRE tiles): the 628 tiles of the INSPIRE set `el_1mtr_lol` (a 0.1° square named for its south-west corner, a tile where the grid has water data in it, so a tile's square reaches over the land beside it)."
+
+[[piece]]
+id = "coast-20m"
+method = "wfs"
+class = "service"
+url = "https://geo.rijkswaterstaat.nl/services/ogc/gdr/bodemhoogte_20mtr_lodingspolygonen/ows"
+type = "bodemhoogte_20mtr_lodingspolygonen:bodemhoogte_20mtr_lodingspoly"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 20.0
+measured = "survey"
+
+[[piece]]
+id = "inland-1m"
+method = "listing"
+list = "links"
+url = "https://downloads.rijkswaterstaatdata.nl/uitleveren/inspire/el_1mtr_lol/"
+pattern = '(?P<y>\d+\.\d+)_(?P<x>\d+\.\d+)\.tif$'
+size = 0.1
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1.0
+measured = "multibeam"

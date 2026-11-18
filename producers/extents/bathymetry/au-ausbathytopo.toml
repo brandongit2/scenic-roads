@@ -1,0 +1,45 @@
+name = "AusBathyTopo (Geoscience Australia): the 250 m Australian grid and the regional 30 m and 100 m grids"
+credit = "Commonwealth of Australia (Geoscience Australia) AusBathyTopo, with the Australian Hydrographic Office and James Cook University"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.ausseabed.gov.au/"
+theme = "bathymetry"
+availability = "open"
+notes = "Geoscience Australia's national compilation of Australia's bathymetry and topography (CC BY 4.0, not for navigation, on mean sea level) and its higher-resolution regional compilations. The 250 m AusBathyTopo Australia 2026 grid (92-172° E, 8-60° S; Australia, Tasmania, Macquarie, Norfolk, Christmas and Cocos Islands; compiled from 1,542 sources) by its type identifier grid in the 2.4 GB zip (GEBCO's codes: 10, 11, 12, 14, 15, 16 measured, 70 a pregenerated grid, 0 land; only that 7.6 MB member read, by range), 200 by 200 cells a mask cell (about 0.5°, 55 km). The regional compilations (the Great Barrier Reef, Torres Strait, Northern Australia, Bass Strait and Perth at 30 m, the Kerguelen Plateau and Williams Ridge at 100 m) by the AusSeabed register of compilations (WFS layer MARINEDATAREGISTER_COMPILATIONS_INDEX, 62 compilations, those named AusBathyTopo and not superseded), their outlines as the register gives them (the grid's box); no year stated (a compilation's release year isn't a survey's); their depths mixed (multibeam, singlebeam, lidar and satellite-derived data, and where none exists the coarser grid beneath)."
+
+[[piece]]
+id = "national-250m"
+label = "AusBathyTopo Australia 2026 250 m"
+method = "raster"
+url = "https://files.ausseabed.gov.au/survey/AusBathyTopo_Australia_2026_250m.zip"
+member = '_tid\.tif$'
+block = 200
+values = "tid"
+skip = [0]
+by = ["tid"]
+tolerance_m = 5000
+[piece.metrics]
+spacing_m = 250.0
+measured = { field = "tid", map = { "10" = "singlebeam", "11" = "multibeam", "12" = "seismic", "14" = "soundings", "15" = "lidar", "16" = "optical", "70" = "compiled" } }
+
+[[piece]]
+id = "regional"
+method = "wfs"
+class = "index"
+url = "https://warehouse.ausseabed.gov.au/geoserver/wfs"
+type = "ausseabed:MARINEDATAREGISTER_COMPILATIONS_INDEX"
+filter = { NAME = [
+  "AusBathyTopo (Great Barrier Reef) Bathymetry 30m 2017",
+  "AusBathyTopo (Torres Strait) Bathymetry 30m 2023",
+  "AusBathyTopo (Northern Australia) Bathymetry 30m 2018",
+  "AusBathyTopo (Bass Strait) Bathymetry 30m 2022",
+  "AusBathyTopo (Perth) Bathymetry 30m 2026",
+  "AusBathyTopo (Kerguelen Plateau) Bathymetry 100m 2022",
+  "AusBathyTopo (Williams Ridge) Bathymetry 100m 2022",
+] }
+by = ["NAME"]
+name = "NAME"
+tolerance_m = 1000
+[piece.metrics]
+spacing_m = { field = "RESOLUTION", text = "m" }
+measured = "compiled"

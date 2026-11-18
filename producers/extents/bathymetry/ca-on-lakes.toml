@@ -1,0 +1,30 @@
+name = "Ontario lake bathymetry (Bathymetry Index)"
+credit = "Ontario Ministry of Natural Resources and Forestry, Land Information Ontario"
+licence = "Open Government Licence - Ontario"
+licence_url = "https://www.ontario.ca/page/open-government-licence-ontario"
+source = "https://www.ontario.ca/page/bathymetry-ontario"
+theme = "bathymetry"
+availability = "open"
+notes = "The Ministry's index of the Province's lake bathymetry (LIO Open01 MapServer layer 31, 11,517 lake outlines), each flagged for what it holds: echo-sounder points with GPS (a few lakes), their contour lines, and the scanned hand-made maps of 1940 to 1990 (HISTORIC_MAP_IND; the survey year is the index's, 0 where it isn't known). A piece for each of the points' lakes (single-beam soundings) and the historic maps' (contours), by survey year. No spacing is stated for either, so these pieces have no score; they are drawn on the layers of how depths were measured and the year."
+
+[[piece]]
+id = "points"
+method = "arcgis"
+class = "service"
+url = "https://ws.lioservices.lrc.gov.on.ca/arcgis2/rest/services/LIO_OPEN_DATA/LIO_Open01/MapServer/31"
+where = "BATHYMETRY_POINT_IND = 'Yes'"
+tolerance_m = 250
+[piece.metrics]
+measured = "singlebeam"
+year = { field = "SURVEY_YEAR", date = "year" }
+
+[[piece]]
+id = "historic-maps"
+method = "arcgis"
+class = "service"
+url = "https://ws.lioservices.lrc.gov.on.ca/arcgis2/rest/services/LIO_OPEN_DATA/LIO_Open01/MapServer/31"
+where = "HISTORIC_MAP_IND = 'Yes' AND BATHYMETRY_POINT_IND <> 'Yes'"
+tolerance_m = 250
+[piece.metrics]
+measured = "contours"
+year = { field = "SURVEY_YEAR", date = "year" }

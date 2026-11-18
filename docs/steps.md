@@ -1192,6 +1192,13 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   6′ mask cells (46.5 MB) made 10,573,588 tiles in packs of 7.14 GB in 1,388 s, a peak of 7.39 GB:
   at 30′ they cost 3.27 GB of packs less. Not yet run by the pool: whether these costs are to be
   borne, or the inland water drawn coarser (lakes over an area), is the owner's.
+  With the national and local grids of task #1439 (431 pieces more: 622 in all, the same test on
+  the M4 under a load of 10 to 21, the NAS's water layer read over SMB): 1,201 s, a peak resident
+  set of 11.45 GB (the M4's, not the mini's: the figures aren't from one Mac), 6,619,529 tiles
+  (z12's 4,189,609) in packs of 4.03 GB; 1,381 tiles of more than 256 sets, the most 15,808. The
+  new grids add 149,918 tiles and 0.16 GB of packs: AusBathyTopo's pieces cross 176,723 tiles
+  (83,515 no other source's), Kartverket's 163,578 (57,837), INFOMAR's 16,346, Ontario's lakes
+  13,429 (none their own).
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1403).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent

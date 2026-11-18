@@ -1,0 +1,81 @@
+name = "Shom bathymetric models of the façades and the coasts (HOMONIM, TANDEM)"
+credit = "Shom (Service hydrographique et océanographique de la Marine)"
+licence = "Licence Ouverte 2.0 (Etalab)"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/organizations/shom/"
+theme = "bathymetry"
+availability = "open"
+notes = "The Shom's digital terrain models for hydrodynamic (tide, surge, tsunami) modelling, free under the Licence Ouverte 2.0 and not for navigation: the façades' 100 m models (Atlantic, Gulf of Lion and Côte d'Azur, Corsica, the Antilles, Guyane, Réunion, Mayotte, New Caledonia, Tahiti and Moorea, Clipperton; 0.001°) compiled from the Shom's soundings and other surveys, and the coastal models (20 m in the Pas-de-Calais, Morbihan, the Pertuis Charentais, the Gironde, Arcachon, the Baie de Saint-Jean-de-Luz, the Gulf of Normandy-Brittany, Tahiti, Moorea and Clipperton; 10 m at Boulogne-sur-Mer; 5 m at Île de Ré and Saint-Malo), whose nodes are interpolated from the soundings. The downloads are 7z archives, which can't be read by range, so each model's extent is where the Shom's own WMS layer (MNT_*_WMSR) draws it: a GetMap of the layer's published bounding box as a GeoTIFF at 0.01° (façades, 1 km cells), 0.002° (20 m models, 220 m) or 0.0005° (harbours, 55 m), its alpha channel the valid data. The models state no survey year and no per-cell source (the Shom's sounding surveys, LEVES_BATHY, are not declared). Heights and depths are on the lowest astronomical tide (PBMA) or mean sea level (NM), in two files each."
+
+[[piece]]
+id = "facade-100m"
+label = "100 m façade models"
+method = "raster"
+urls = [
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_ANTN100m_HOMONIM_PBMA_4326_WMSR&styles=&crs=CRS:84&bbox=-63.5005,17.5995,-62.4905,18.5095&width=101&height=91&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_ANTS100m_HOMONIM_4326_WMSR&styles=&crs=CRS:84&bbox=-62.3005,14.0995,-60.2905,16.9095&width=201&height=281&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_ATL100m_HOMONIM_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-6.0005,43.2495,5.8595,52.9095&width=1186&height=966&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_FACADE_CLIPPERTON_3857_WMSR&styles=&crs=CRS:84&bbox=-109.8195,9.7805,-108.6795,10.6805&width=114&height=90&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_FACADE_TAHITI_MOOREA_100m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-150.0505,-18.0005,-148.9905,-17.3405&width=106&height=66&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_GUY100m_HOMONIM_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-54.7505,3.2495,-49.7405,8.0095&width=501&height=476&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_MAY100m_HOMONIM_PBMA_PYR_PNG_3857_WMSR&styles=&crs=CRS:84&bbox=44.4995,-13.5005,45.7595,-12.2405&width=126&height=126&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_MED100m_CORSE_HOMONIM_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=7.6995,40.6995,10.4095,43.7095&width=271&height=301&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_MED100m_GDL_CA_HOMONIM_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=2.8995,41.6995,7.9095,44.4095&width=501&height=271&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_NC100m_PBMA_4326_WMSR&styles=&crs=CRS:84&bbox=162.3995,-24.6005,169.3095,-16.9905&width=691&height=761&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_REU100m_HOMONIM_PBMA_PYR_PNG_3857_WMSR&styles=&crs=CRS:84&bbox=54.4995,-22.0005,56.5095,-20.2405&width=201&height=176&format=image/geotiff&transparent=true",
+]
+mask_m = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 100.0
+measured = "compiled"
+
+[[piece]]
+id = "coastal-20m"
+label = "coastal 20 m models"
+method = "raster"
+urls = [
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_ARCACHON_HOMONIM_20m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-1.4101,44.4299,-0.9481,45.1919&width=231&height=381&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_BAIE_SJL_TANDEM_20m_3857_WMSR&styles=&crs=CRS:84&bbox=-1.7346,43.3742,-1.6106,43.4562&width=62&height=41&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_CLIPPERTON_3857_WMSR&styles=&crs=CRS:84&bbox=-109.3499,10.2001,-109.1239,10.4401&width=113&height=120&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_DETROIT_PDC_20m_PBMA_WMSR_3857&styles=&crs=CRS:84&bbox=0.8335,50.4998,2.5435,51.3338&width=855&height=417&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_GIRONDE_AMONT_20m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-0.7792,44.8053,-0.2532,45.1873&width=263&height=191&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_GIRONDE_AVAL_20m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-1.5088,45.1828,-0.6468,45.7608&width=431&height=289&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_GNB_PAPI_SM_20m_PBMA_4326_WMSR&styles=&crs=CRS:84&bbox=-2.1501,48.5499,-1.2981,48.9519&width=426&height=201&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_MOOREA_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-150.0505,-18.0005,-148.9985,-17.3485&width=526&height=326&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_MORBIHAN_TANDEM_20m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-3.3334,47.1999,-2.3654,47.7259&width=484&height=263&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_PERTUIS_HOMONIM_20m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-1.7038,45.7457,-0.9418,46.4557&width=381&height=355&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_TAHITI_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-150.0505,-18.0005,-148.9985,-17.3485&width=526&height=326&format=image/geotiff&transparent=true",
+]
+mask_m = 200
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 20.0
+measured = "interpolated"
+
+[[piece]]
+id = "harbour-10m"
+label = "harbour 10 m model"
+method = "raster"
+urls = [
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_PORT_BSM_TANDEM_10m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=1.5125,50.6949,1.6220,50.7950&width=219&height=200&format=image/geotiff&transparent=true",
+]
+mask_m = 50
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 10.0
+measured = "interpolated"
+
+[[piece]]
+id = "harbour-5m"
+label = "harbour and coastal 5 m models"
+method = "raster"
+urls = [
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_ILE_DE_RE_5m_PBMA_3857_WMSR&styles=&crs=CRS:84&bbox=-1.7229,46.1247,-1.4449,46.3182&width=556&height=387&format=image/geotiff&transparent=true",
+  "https://services.data.shom.fr/INSPIRE/wms/r?service=WMS&version=1.3.0&request=GetMap&layers=MNT_COTIER_PORT_SM_PAPI_SM_5m_PBMA_4326_WMSR&styles=&crs=CRS:84&bbox=-2.1100,48.6100,-1.9795,48.6905&width=261&height=161&format=image/geotiff&transparent=true",
+]
+mask_m = 50
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 5.0
+measured = "compiled"

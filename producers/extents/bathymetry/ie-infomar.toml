@@ -1,0 +1,20 @@
+name = "INFOMAR seabed survey coverage and bathymetric grids of Irish waters"
+credit = "Contains Irish Public Sector Data (Geological Survey Ireland and Marine Institute) licensed under CC BY 4.0"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.infomar.ie/data"
+theme = "bathymetry"
+availability = "open"
+notes = "Ireland's seabed mapping programme (the Geological Survey Ireland and the Marine Institute; multibeam and, inshore, bathymetric lidar; free under CC BY 4.0, not for navigation, on LAT) by its survey coverage layer (SurveyPolygons MapServer layer 0, `Seabed Survey Coverage 20261016`, 376 survey legs, 63 KB of attributes), the legs that state a bathymetric grid (`BathyRes_m`: 2, 5, 10, 25, 30 and 100 m; 335 of 376), a piece for each resolution, how it was measured (multibeam, else single beam) and the survey's year. The programme's 10 m inshore and 25 m whole-of-Irish-waters grids (its ImageServers) merge these legs; the 2 and 5 m legs are downloadable per survey, not all of them (the programme's download viewer says so), so the 2 and 5 m pieces are the legs' outlines, not a guarantee of each."
+
+[[piece]]
+id = "legs"
+method = "arcgis"
+class = "service"
+url = "https://infomar.marine.ie/arcgis/rest/services/INFOMAR/SurveyPolygons/MapServer/0"
+where = "BathyRes_m > 0"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = { field = "BathyRes_m" }
+measured = { field = "MULTIBEAM", map = { "1" = "multibeam", "0" = "singlebeam" } }
+year = { field = "YEAR", date = "year" }
