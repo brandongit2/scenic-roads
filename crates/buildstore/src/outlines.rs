@@ -328,10 +328,7 @@ pub fn assemble(
     // (Each program and stage its sub-phase, with the memory it held: jobrt::timings.)
     let p = sub("listing the relations (osmium cat)");
     osmium(
-        store::spawn::command("osmium")
-            .args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"])
-            .arg(&rels_opl)
-            .arg(set),
+        jobrt::sys::osmium().args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set),
         "osmium cat (the outline set's relations)",
     )?;
     let rels = opl::kept_relations(BufReader::with_capacity(1 << 20, std::fs::File::open(&rels_opl)?))?;
@@ -344,7 +341,7 @@ pub fn assemble(
     std::fs::remove_file(&idx).ok();
     let p = sub("exporting the polygons (osmium export)");
     let st = store::spawn::status(
-        store::spawn::command("osmium")
+        jobrt::sys::osmium()
             .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
             .arg(format!("--index-type=sparse_file_array,{}", idx.display()))
             .arg("-o")
@@ -378,7 +375,7 @@ pub fn assemble(
         }
         std::fs::write(&ids, list)?;
         osmium(
-            store::spawn::command("osmium")
+            jobrt::sys::osmium()
                 .args(["getid", "-r", "-f", "opl", "--overwrite", "-i"])
                 .arg(&ids)
                 .arg("-o")

@@ -417,7 +417,7 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &inputs::inputs::Accepted
         Ok(())
     };
     let osmium = |args: &[&str]| {
-        let mut c = store::spawn::command("osmium");
+        let mut c = jobrt::sys::osmium();
         c.current_dir(&work).args(args);
         c
     };

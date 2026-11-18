@@ -1007,6 +1007,36 @@ pub fn threads_now() -> Option<usize> {
     in_force().or_else(|| Some(ALLOWED.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0))
 }
 
+/// The environment holding a program to `n` threads (task #1419): rayon's, the numeric libraries' a
+/// Python producer's numpy and the like run on (OpenMP, OpenBLAS, Accelerate's vecLib, MKL,
+/// numexpr), and libosmium's pool (`OSMIUM_POOL_THREADS`: one fewer, its main thread working
+/// beside it, one at least). A job's agent starts it with these (agentcore's jobs::Running::start);
+/// a program a job runs gets them at the threads its work runs on then (`cap_threads`). Without
+/// them those libraries take every core, past the grant its job runs under.
+pub fn thread_env(n: usize) -> [(&'static str, String); 7] {
+    let n = n.max(1);
+    let s = n.to_string();
+    [
+        ("RAYON_NUM_THREADS", s.clone()),
+        ("OMP_NUM_THREADS", s.clone()),
+        ("OPENBLAS_NUM_THREADS", s.clone()),
+        ("VECLIB_MAXIMUM_THREADS", s.clone()),
+        ("MKL_NUM_THREADS", s.clone()),
+        ("NUMEXPR_NUM_THREADS", s),
+        ("OSMIUM_POOL_THREADS", (n - 1).max(1).to_string()),
+    ]
+}
+
+/// Program `c`, about to be run by this job, held to the threads its work runs on now
+/// (`threads_now`, else its RAYON_NUM_THREADS): `thread_env`. Neither said (a run by hand): left
+/// as it is.
+pub fn cap_threads(c: &mut std::process::Command) {
+    let n = threads_now().or_else(|| std::env::var("RAYON_NUM_THREADS").ok()?.parse().ok());
+    if let Some(n) = n {
+        c.envs(thread_env(n));
+    }
+}
+
 /// The fewest threads this process's work has been allowed so far (`allowed`); None: none said. A
 /// target's memory, measured over a run whose threads changed, is spread over no more threads
 /// than these (buildstore::costin's `threads_least`, agentcore's `per_thread_mb`).

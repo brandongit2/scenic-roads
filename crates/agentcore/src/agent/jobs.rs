@@ -398,8 +398,9 @@ impl Running {
         }
         c.arg(prog).args(args);
         // (The Python steps' output reaches the log, and so the status, as they print it: piped, it
-        // would wait in their buffers, for minutes.)
-        c.env("RAYON_NUM_THREADS", threads.to_string())
+        // would wait in their buffers, for minutes. Its threads, rayon's and the numeric libraries'
+        // and osmium's alike: jobrt::control::thread_env.)
+        c.envs(jobrt::control::thread_env(threads))
             .env("PYTHONUNBUFFERED", "1")
             .envs(env.iter().copied())
             .stdin(Stdio::null())
