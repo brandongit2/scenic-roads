@@ -5,7 +5,7 @@ licence_url = "https://dap.ceda.ac.uk/bodc/gebco/ibcao/ibcao_v5.2/00README_catal
 source = "https://catalogue.ceda.ac.uk/uuid/30ad58b60d8c4a4dab6d64a40640540a"
 theme = "bathymetry"
 availability = "open"
-notes = "The Arctic north of 64° N on a 100 m grid (EPSG:3996), its Type Identifier grid (GEBCO's codes) read whole from its 37 MB zip, a piece for each kind of source its cells hold, 0 land left out. A mask cell is 100 by 100 grid cells (10 km), holding every kind any of its cells holds."
+notes = "The Arctic north of 64° N on a 100 m grid (EPSG:3996), its Type Identifier grid (GEBCO's codes) read whole from its 37 MB zip, a piece for each kind of source its cells hold, 0 land left out. A mask cell is 500 by 500 grid cells (50 km, as GEBCO's), holding every kind any of its cells holds."
 
 [[piece]]
 id = "tid"
@@ -13,11 +13,11 @@ label = "IBCAO 5.2"
 method = "raster"
 url = "https://dap.ceda.ac.uk/bodc/gebco/ibcao/ibcao_v5.2/100mx100m_data_type_identifier_grid/ibcao_v5_2_2026_tid_100m.zip"
 member = '\.tiff?$'
-block = 100
+block = 500
 values = "tid"
 skip = [0]
 by = ["tid"]
-tolerance_m = 5000
+tolerance_m = 20000
 [piece.metrics]
 spacing_m = { field = "res_m" }
 measured = { field = "tid", map = { "10" = "singlebeam", "11" = "multibeam", "12" = "seismic", "13" = "soundings", "14" = "soundings", "15" = "lidar", "16" = "optical", "17" = "survey", "40" = "predicted", "41" = "interpolated", "42" = "contours", "43" = "contours", "44" = "compiled", "45" = "predicted", "46" = "estimated", "47" = "estimated", "48" = "estimated", "70" = "compiled", "72" = "interpolated" } }

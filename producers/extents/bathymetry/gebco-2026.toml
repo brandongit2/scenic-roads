@@ -5,7 +5,7 @@ licence_url = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/00README_cata
 source = "https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid"
 theme = "bathymetry"
 availability = "open"
-notes = "The worldwide 15 arc-second grid's Type Identifier grid (the eight 90° GeoTIFFs in one 96 MB zip, read whole), a piece for each kind of source its cells hold: GEBCO's codes 10 to 17 measured, 40 to 48 indirect, 70 to 72 unknown, 0 land (left out). A mask cell is 24 by 24 grid cells (6 arc-minutes, about 11 km; at 2 arc-minutes the outlines were unfinished after half an hour), holding every kind any of its cells holds, so a measured track narrower than a cell is drawn a cell wide. The grid's own cells are resampled from its sources: it is no finer than 15 arc-seconds wherever they are."
+notes = "The worldwide 15 arc-second grid's Type Identifier grid (the eight 90° GeoTIFFs in one 96 MB zip, read whole), a piece for each kind of source its cells hold: GEBCO's codes 10 to 17 measured, 40 to 48 indirect, 70 to 72 unknown, 0 land (left out). A mask cell is 120 by 120 grid cells (30 arc-minutes, about 56 km), holding every kind any of its cells holds, so a measured track narrower than a cell is drawn a cell wide: the kinds' boundaries cross every ocean, and at 6 arc-minutes they made the layers' step store 3.8 million tiles of its own (docs/steps.md §14). The grid's own cells are resampled from its sources: it is no finer than 15 arc-seconds wherever they are."
 
 [[piece]]
 id = "tid"
@@ -13,11 +13,11 @@ label = "GEBCO_2026"
 method = "raster"
 url = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/type_identifier_grid/geotiff/gebco_2026_tid_geotiff.zip"
 member = '\.tif$'
-block = 24
+block = 120
 values = "tid"
 skip = [0]
 by = ["tid"]
-tolerance_m = 5000
+tolerance_m = 20000
 [piece.metrics]
 spacing_m = { field = "res_m" }
 measured = { field = "tid", map = { "10" = "singlebeam", "11" = "multibeam", "12" = "seismic", "13" = "soundings", "14" = "soundings", "15" = "lidar", "16" = "optical", "17" = "survey", "40" = "predicted", "41" = "interpolated", "42" = "contours", "43" = "contours", "44" = "compiled", "45" = "predicted", "46" = "estimated", "47" = "estimated", "48" = "estimated", "70" = "compiled", "72" = "interpolated" } }

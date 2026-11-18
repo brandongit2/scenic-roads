@@ -1127,6 +1127,19 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   as its grid is (LiDAR HD's, the Länder's, Slovakia's, most of Scotland's), or a source's surface
   model read as its ground model is (MRDEM-30's DSM, on its DTM's mask), has the grid's outline and makes no
   tile of its own.
+  **Bathymetry's** 191 pieces of 18 Nov (producers/extents/bathymetry/, the same test with
+  `SCENIC_RENDER_THEME=bathymetry`, cut to the same pass's land and the NAS's water layer, on the
+  Mac mini under its build jobs, load 5 to 17): 1,127 s, a peak resident set of 5.50 GB, 6,469,611
+  tiles in packs of 3.87 GB (z12's 4,082,293, 2.35 GB); 1,044 tiles of more than 256 sets, the
+  most 14,523. The water's side costs what the land's doesn't: every lake's and river's edge the
+  water layer draws, at z9's 153 m, is cut into the pieces over it, so the worldwide grids'
+  outlines over the land's lakes store a tile wherever a lake's edge crosses one (GEBCO's pieces,
+  holding the lakes it grids, cross 2.70 million tiles, 1.47 million no other source's; NCEI's
+  DEMs over the American coasts' marshes 2.02 million), and an overview's union shows a land of
+  lakes as their best piece zoomed out (Russia, Canada at z2). GEBCO's type identifier pieces at
+  6′ mask cells (46.5 MB) made 10,573,588 tiles in packs of 7.14 GB in 1,388 s, a peak of 7.39 GB:
+  at 30′ they cost 3.27 GB of packs less. Not yet run by the pool: whether these costs are to be
+  borne, or the inland water drawn coarser (lakes over an area), is the owner's.
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1403).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
