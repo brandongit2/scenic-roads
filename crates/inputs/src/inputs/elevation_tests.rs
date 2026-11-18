@@ -1218,7 +1218,27 @@ fn a_group_in_regions_is_its_folders_regions() {
     // (Not the regions of a folder sharing a name's start, nor the other places.)
     assert_eq!(groups, scoped_to(&e, &["group:canada"]).unwrap());
     assert_ne!(scoped_to(&e, &["group:canada/provinces/ontario"]).unwrap(), groups);
-    assert_eq!(e.resolve_regions(&["group:canada/prov".into()]).1, ["group:canada/prov"]);
+    let cov = e.regions.as_ref().unwrap();
+    assert_eq!(e.resolve_regions(&["group:canada/prov".into()], cov).1, ["group:canada/prov"]);
+}
+
+/// A waters region with no land under the folder (a divided place's lake: the coverage's
+/// `depth_only`) cuts no dataset: the group is its land regions', and a folder of it alone names none.
+#[test]
+fn a_group_leaves_out_a_waters_region_with_no_land() {
+    let mut e = divided_places(&[]);
+    let lake = buildstore::coverage::Shape::new(
+        "lake-on: ne-lake:1".into(),
+        vec![buildstore::coverage::fixture_circle(12.0, 46.5, 20.0)],
+        0.0,
+    );
+    e.regions.as_mut().unwrap().depth_only.push(lake);
+    e.region_geometry.insert("lake-on".into(), "lake-on.rgeo".into());
+    e.region_paths.insert("lake-on".into(), "canada/provinces/ontario/lakes/lake-on.toml".into());
+    assert_eq!(scoped_to(&e, &["group:canada/provinces/ontario"]).unwrap(), scoped_to(&e, &["on-a", "on-b"]).unwrap());
+    let err = scoped_to(&e, &["group:canada/provinces/ontario/lakes"]).unwrap_err();
+    assert!(err.contains("group:canada/provinces/ontario/lakes"), "{err}");
+    assert!(scoped_to(&e, &["lake-on"]).unwrap_err().contains("lake-on"));
 }
 
 /// A region added under the folder moves the cut as naming its id would; one added elsewhere

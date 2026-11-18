@@ -62,9 +62,10 @@ pub struct Declaration {
     /// names by its description's `label`, through the catalogue's `dem_labels`), 1–9 (roadcore::NDEM − 1).
     pub code: u8,
     /// The map regions it's used in at all (by id, crate::inputs::regions, or every region under a
-    /// folder of the regions input: `group:<folder path>`), by the roads and the terrain alike; None: wherever it has data. Its coverage is cut to them as it's read
-    /// (`scope`); not in its `keyed` digest (`keyed_part`), so the z6 tiles in its regions keep
-    /// their keys and only those whose datasets change are built again.
+    /// folder of the regions input: `group:<folder path>`), by the roads and the terrain alike;
+    /// None: wherever it has data. Its coverage is cut to them as it's read (`scope`, the groups
+    /// resolved to ids: crate::inputs::elevation); not in its `keyed` digest (`keyed_part`), so the
+    /// z6 tiles in its regions keep their keys and only those whose datasets change are built again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regions: Option<Vec<String>>,
     /// 1° cells it isn't used in (boxes w, s, e, n of whole degrees), by the roads and the terrain
@@ -1085,7 +1086,7 @@ pub fn scope_cover(
 }
 
 /// The region a coverage's shape is of (its source, "<region id>: <from>").
-fn region_of(s: &buildstore::coverage::Shape) -> &str {
+pub fn region_of(s: &buildstore::coverage::Shape) -> &str {
     s.source.split_once(": ").map_or(s.source.as_str(), |(id, _)| id)
 }
 
@@ -1404,7 +1405,7 @@ mod tests {
         assert_eq!(grouped.keyed_part(), d("").unwrap());
         for bad in ["group:", "group:/a", "group:a//b", "group:a/../b", "group:a/", "Group:a"] {
             let r = format!("regions = [\"{bad}\"]");
-            assert_eq!(d(&r).is_ok(), false, "{bad}");
+            assert!(d(&r).is_err(), "{bad}");
         }
         // (Excluded cells as whole-degree boxes; not in the digest either.)
         let cut = d("exclude = [[153, 24, 155, 25]]").unwrap();

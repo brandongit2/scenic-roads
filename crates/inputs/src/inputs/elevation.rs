@@ -74,7 +74,8 @@ pub struct Elevation {
     /// The accepted regions' stored geometry (content names) by region id: what a dataset's
     /// outlines are read from (`Measured::outline`).
     pub region_geometry: BTreeMap<String, String>,
-    /// The accepted regions' files (their paths in the regions input) by region id: what a
+    /// The accepted regions' files (their paths in the regions input) by region id, those of
+    /// `region_geometry` (enabled, with stored geometry: a disabled region is no coverage): what a
     /// `group:<folder>` in a dataset's `regions` is resolved against (`resolve_regions`).
     pub region_paths: BTreeMap<String, String>,
 }
@@ -665,10 +666,13 @@ impl Elevation {
     }
 
     /// The region ids a declaration's `regions` entries name, sorted, once each: an id as it is,
-    /// `group:<folder>` the accepted regions under that folder (`region_paths`, at any depth); and
-    /// the entries naming none (a folder with no accepted region under it). The cut, and so every
-    /// key, depends on the regions resolved, never on how they were named.
-    fn resolve_regions(&self, entries: &[String]) -> (Vec<String>, Vec<String>) {
+    /// `group:<folder>` the accepted regions under that folder (`region_paths`, at any depth) with
+    /// land in coverage `cov` (a waters region with no land, `Coverage::depth_only`, cuts no
+    /// dataset: named by its id it's as unknown); and the entries naming none (a folder with no such
+    /// region under it). The cut, and so every key, depends on the regions resolved, never on how
+    /// they were named.
+    fn resolve_regions(&self, entries: &[String], cov: &buildstore::coverage::Coverage) -> (Vec<String>, Vec<String>) {
+        let land: BTreeSet<&str> = cov.shapes.iter().map(declared::region_of).collect();
         let (mut ids, mut none) = (BTreeSet::new(), Vec::new());
         for e in entries {
             let Some(g) = e.strip_prefix("group:") else {
@@ -678,7 +682,7 @@ impl Elevation {
             let under: Vec<&String> = self
                 .region_paths
                 .iter()
-                .filter(|(_, p)| crate::inputs::regions::file::in_group(g.trim_end_matches('/'), p))
+                .filter(|(id, p)| land.contains(id.as_str()) && crate::inputs::regions::file::in_group(g, p))
                 .map(|(id, _)| id)
                 .collect();
             if under.is_empty() {
@@ -694,7 +698,7 @@ impl Elevation {
     fn scoped(&self, d: &Declaration, mut m: Measured) -> std::result::Result<Measured, String> {
         if let Some(regions) = &d.regions {
             let cov = self.regions.as_ref().ok_or("it names regions, and no regions version is accepted")?;
-            let (regions, mut missing) = self.resolve_regions(regions);
+            let (regions, mut missing) = self.resolve_regions(regions, cov);
             let regions = &regions;
             let (cover, unknown) = declared::scope_cover(m.cover.as_deref(), regions, cov);
             missing.extend(unknown);
