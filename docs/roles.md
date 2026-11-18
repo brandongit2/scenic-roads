@@ -153,7 +153,7 @@ contact it has, and the menu needs only the lead's name. No NAS read in the menu
 The menu bar (tools/status) shows on a member its own state while it builds, else the lead's
 line, or "Lead (<name>) out of touch since <time>" when the lead hasn't answered for the
 out-of-touch threshold, and its own agent out of touch as this Mac's; the build's pause from the
-lead's line. The lead's menu shows its status's `build`, the same line (an older agent's: its
+lead's line. The lead's menu shows its status's `build`, the same line (a Mac not leading: its
 verdict): the rule is Rust's alone. A member's menu doesn't show the lead's checklist, forecast, regions or the other
 Macs' jobs (the lead's build page has them); the pool's lines from this Mac's agent's view stay.
 Any click on the item, left or right, opens the menu; nothing else opens.
@@ -170,7 +170,7 @@ nothing a process of the Mac still writes goes (`room::member_leftovers`,
   writer, agent/publish.rs `MAPLOG`), `plan-stall-sample-*.txt`, `costs.jsonl` and
   `costs-<n>.jsonl` (what the lead's own jobs' targets cost, `Agent::costs_path`; a member's jobs
   note theirs in their lease's folder), and in `coord/` the coordinator's files (`costs.json`,
-  `disks.json`, `floors.json`, `cache-fills.json`, `job-disks*.json`, `leases.json`, `pause.json`,
+  `disks.json`, `floors.json`, `cache-fills.json`, `job-disks-v6.json`, `leases.json`, `pause.json`,
   `timings.jsonl`, `store/`), which only a lead's coordinator reads, as its store's first fill (a
   broker read them at its start, and wrote the jobs' disks and fills back, until step 6);
 - written by nothing since the code that wrote them went: `loop-stall-sample-*.txt` (the loop
@@ -257,8 +257,8 @@ Each step ships alone and keeps the build running; each ends with its tests.
    left out (§3.4). Cut: `menu::lead_heartbeat` and `scenic menu`'s NAS read (every 5 s, on every
    Mac), its `--root`, the lead's status shown in a member's menu with the member put in its
    `helpers` (`here`), a member's own status standing in for a lead unheard with the lead's last
-   checklist copied in, the reply's "via the NAS" (`local`, still written for a menu bar before
-   this step); `LEAD_STATUS` moved to `crate::agent` (the server reads it). `scenic menu`'s log
+   checklist copied in, the reply's "via the NAS" (`local`) and `held_here` (the status's `hold`
+   says it); `LEAD_STATUS` moved to `crate::agent` (the server reads it). `scenic menu`'s log
    path is the first of `jobs`'s. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
 6. *Built.* **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file` (the agent's own
    `timings.jsonl` and the broker's `coord/` files, `workers-token` and `journal/` among them, in

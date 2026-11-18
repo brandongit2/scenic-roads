@@ -250,9 +250,9 @@ can tell "holder gone" from "holder unreachable" only by hearing from it, so it 
   refused if a newer lease set its targets (lease order), so nothing is merged twice.
 - **A member returning** beats with what it holds; those leases go on, or, released meanwhile, the
   answer says so (`released`) and the member stops those jobs at once.
-- **Gated by what the member speaks** (`held::SPEAKS`, `held-leases`, kept in the store as
-  `member/<host>`, so a restart keeps it): an app that doesn't say it has its leases lapse after
-  `coord::TTL` (10 min) unrenewed. Every Mac says it. The lead's own jobs' leases are its slots'
+- **Every member heard** holds its jobs' leases so: when each was last heard is kept in the store
+  (`member/<host>`), so a restart keeps it. A member never heard by a beat has its jobs' leases
+  lapse after `coord::TTL` (10 min) unrenewed. The lead's own jobs' leases are its slots'
   (`Leases::mine`, pool.md §7.6).
 
 ### 6.2 What it costs

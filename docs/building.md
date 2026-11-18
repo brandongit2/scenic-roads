@@ -62,7 +62,7 @@ from the first (`edit_held`).
   map updates, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
   five minutes (`why_plan`), but no sooner after a plan than that plan took. Each plan is numbered
   (from the time in ms, so past every earlier lead's) and published whole; the round grants from the
-  last one at once, each grant carrying its number (`coord::Grant::plan`; 0 from an older lead), so
+  last one at once, each grant carrying its number (`coord::Grant::plan`), so
   a plan of minutes holds no grant, pause or heartbeat, and a grant from a plan no newer than a
   cancel of its job or target is dropped. The checklist and the regions' counts are the plan's
   too. Planning reads the terrain packs' indexes once each by content name, kept in the agent's

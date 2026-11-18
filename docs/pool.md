@@ -708,10 +708,10 @@ say no threads, so nothing is decided for them).
     starting threads and those), within its capacity's `mem_mb` less what its jobs' grows hold
     already (`Agent::grown_mb`), and none while its Mac's memory admits no work (the brake, the
     floor, a give-back's cool-down: `Capacity::mem_held_back`). A job its lead has no memory
-    figure for (no peak: `thread_mb` 0) grows past none of the threads its grant covers. So a grow
-    never takes a Mac past its memory floor by the same count the lead admits work by, and the
-    memory guard stands behind it. A grant of an older lead (no `thread_covers`) takes the job's
-    whole memory a thread past the threads it was granted.
+    figure for (no peak: `thread_mb` 0) grows past none of the threads its grant covers; a task's
+    grant says neither, so it grows past none. A job resumed on the Mac holding its progress is
+    granted them as a packed job is. So a grow never takes a Mac past its memory floor by the same
+    count the lead admits work by, and the memory guard stands behind it.
     A job waiting on the NAS or the network a quarter of its minute or more is never grown, its
     threads all busy or not: more threads would wait there with it (pacing the NAS is its budget's,
     §7.7).
@@ -907,7 +907,7 @@ counts as any other process).
   lead packed it at, carried by its grant (`Grant::peak_mb`: its targets' measure, `pack_need`; a
   cold start's provisional need; a task's predicted memory), which its agent counts it at in its
   capacity (`Agent::need_mb`, `Capacity::mem_reserved_mb`) and its cool-down; no agent has a
-  figure of its own (task #970). A grant of an older lead's says none: its job counts at what it
+  figure of its own (task #970). A grant saying no figure (`peak_mb` 0): its job counts at what it
   holds.
 - **Give-back**: below the floor, at safe points, the work lost least first (§7.2, The memory
   guard).
@@ -1365,12 +1365,9 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   says which it lacks (posted next,
   `POST /pool/handoff`, into the lead's store before its 200) and which a saved records snapshot
   names (dropped). The lead's agent merges what its coordinator took from memory, with its own
-  jobs' hand-offs (never written anywhere first). Nothing goes to the NAS; the hand-offs an older
-  app's saved state lists as written to the NAS's old journal (`state/journal/`) and
-  unacknowledged are read back whole once and posted (`Mine::read_back`, under a new member id
-  too). A job's folder is removed only once the saved state holding its hand-off is durable, its
-  rename flushed (the hand-off's only other copy). A lead says `handoff` in every beat's answer,
-  so a member on an older app never falls back to that journal.
+  jobs' hand-offs (never written anywhere first). Nothing goes to the NAS. A job's folder is
+  removed only once the saved state holding its hand-off is durable, its rename flushed (the
+  hand-off's only other copy).
 - **The lead validates at merge** (`agent::membership::check`, `records::Check`): every change within the
   step's write-set, content names matching logical names, the lease's targets. Write-sets are one
   function per step (`agent::steps::writes`) that both the job's `Out` (`Out::open` for its step)

@@ -125,7 +125,7 @@ Common rules:
 - **Pausing** (docs/building.md §2, Pausing): the coordinator holds the pause (in its store); asks are refused, beats carry
   it, and no lease lapses while it holds. Work given back for an interruption isn't held against it.
 - **Leases** (`coord::lease`): ten minutes on the coordinator's monotonic clock, renewed by a beat
-  each minute; a lapsed lease's work is offered again. A member whose agent speaks for its leases
+  each minute; a lapsed lease's work is offered again. A member the lead has heard by its beat
   (`coord::held`, docs/coordination.md §6) holds its jobs' leases until its word instead: its beat
   to the lead every 10 s lists them, one left out is released, and they go after 12 h unheard or
   by `scenic pool release <member>`.

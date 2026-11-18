@@ -1525,8 +1525,9 @@ the id with the clicked point. A reader takes version 8 only.
     (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, job?
     (the run it's held again for, below, Job ids), progress, …}`), `cost/<key>` (`{peak_mb, secs, worker,
     job?, v, sizes}`: `job` the run that measured it), `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
-    files below held them; `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
-    last beat said, `agentcore::coord::held`; `beat/<member>` (its last heartbeat and when heard,
+    files below held them; `member/<host>`, `{speaks: [<word>], at}`, a member as its last beat
+    said (the words its app speaks, `agentcore::coord::beats`, and when heard: its jobs' leases
+    held by its word while heard, `agentcore::coord::held`); `beat/<member>` (its last heartbeat and when heard,
     `kept::Beat`); `inbox/<member>` (its mail not yet read); `hold/<member>` and `settings` (the
     owner's asks, `agentcore::coord::asks`); `handoff/<key>` (a hand-off taken, until a saved
     snapshot names it); `progress/<member>`, `answers-lease` and `budget-hold`
@@ -1608,9 +1609,7 @@ the id with the clicked point. A reader takes version 8 only.
     `<day>/<epoch>-<n>`) and posts it whole (`POST /pool/handoff {entry}`, kept in the lead's store
     as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md §5.3): `{member, lease
     (its run's job id), step, handoff, at}` (`handoff.sizes`: the bytes of each file it wrote, by content name; none in
-    older ones). Nothing goes to the NAS. The old journal, `state/journal/` (entries
-    `<day>/<epoch>-<n>.json`), is written by no app and read only for the keys an older app's
-    saved state still lists (`mine.entries`, read back once whole, `Mine::read_back`).
+    older ones). Nothing goes to the NAS.
   - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md §5.1):
     `{member, host, app, beat, leads, addresses, reach, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
