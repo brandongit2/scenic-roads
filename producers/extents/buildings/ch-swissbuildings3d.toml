@@ -4,15 +4,16 @@ licence = "swisstopo OGD terms (free, source named)"
 source = "https://www.swisstopo.admin.ch/en/landscape-model-swissbuildings3d-3-0-beta"
 theme = "buildings"
 availability = "open"
-notes = "National LoD2 with roofs and overhangs, Switzerland and Liechtenstein, by tile (EUROPE-W §10). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "National LoD2 with roofs and overhangs, Switzerland and Liechtenstein, by tile (EUROPE-W §10). Its extent: swisstopo's STAC collection's items, a tile each (a 1:25,000 map sheet's sixteenth), each tile's newest by its date. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"
 label = "LoD2"
-method = "file"
-class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-filter = { adm0_a3 = ["CHE", "LIE"] }
-tolerance_m = 500
+method = "stac"
+url = "https://data.geo.admin.ch/api/stac/v1/collections/ch.swisstopo.swissbuildings3d_3_0"
+page = 100
+latest = { field = "id", pattern = '\d{4}-\d{2}$', order = "datetime" }
+tolerance_m = 100
 [piece.metrics]
 detail = "lod2"
+year = { field = "datetime", date = "iso" }

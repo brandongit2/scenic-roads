@@ -10,7 +10,8 @@
 #
 # Each metric's value is 0 at `worst` and 1 at `best`, clamped; `linear` scales by the value; a
 # `values` table gives each word its value. The primary is a word, so it takes no `within`: pieces
-# of the same word tie. The guarantee: a piece of a better word than another scores higher,
+# of the same value tie, not only of the same word (`heights` and `lod1` tie). The guarantee: a
+# piece of a better value than another scores higher,
 # whatever else either states. It holds when share < k / (1 + k), k the least gap between two of
 # the primary's values (0.1 here, so share < 0.0909): score.py and the server refuse a file where
 # it doesn't. A piece not stating its detail has no score.

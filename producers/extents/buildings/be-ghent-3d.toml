@@ -3,7 +3,7 @@ credit = "Stad Gent"
 licence = "Modellicentie Gratis Hergebruik v1.0"
 theme = "buildings"
 availability = "open"
-notes = "LoD2 DWG tiles (EUROPE-W §7). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Gent, Oost-Vlaanderen, Vlaanderen, België / Belgique / Belgien), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "LoD2 DWG tiles (EUROPE-W §7). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Gent, Oost-Vlaanderen, Vlaanderen, België / Belgique / Belgien), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (a later index read). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

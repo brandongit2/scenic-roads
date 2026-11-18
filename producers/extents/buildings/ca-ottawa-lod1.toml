@@ -3,7 +3,7 @@ credit = "City of Ottawa"
 licence = "Open Data Licence 2.0 (OGL-Canada based)"
 theme = "buildings"
 availability = "open"
-notes = "LoD1 box models in 116 neighbourhood downloads (DXF, GDB) (AMERICAS §4.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Ottawa, Eastern Ontario, Ontario, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "LoD1 box models in 116 neighbourhood downloads (DXF, GDB) (AMERICAS §4.3). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Ottawa, Eastern Ontario, Ontario, Canada), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its downloads come by tile or district, and their listing isn't read here (a later index read). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

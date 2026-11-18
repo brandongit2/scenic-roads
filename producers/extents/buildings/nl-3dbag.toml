@@ -4,16 +4,19 @@ licence = "CC-BY-4.0"
 source = "https://3dbag.nl/"
 theme = "buildings"
 availability = "open"
-notes = "LoD1 and LoD2.2 with roof shapes and storeys for 10.78 million buildings; Amsterdam's are already in Overture through an OSM import (EUROPE-W §6, §19.3). The Kadaster's 3D Basisvoorziening is the same reconstruction: not declared apart. Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "LoD1 and LoD2.2 with roof shapes and storeys for 10.78 million buildings; Amsterdam's are already in Overture through an OSM import (EUROPE-W §6, §19.3). The Kadaster's 3D Basisvoorziening is the same reconstruction: not declared apart. Its extent: 3DBAG's tile index, its WFS layer `BAG3D:tiles` (the tiles its downloads are cut by). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"
 label = "LoD2.2"
-method = "file"
-class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-filter = { adm0_a3 = ["NLD"] }
-tolerance_m = 500
+method = "wfs"
+class = "index"
+url = "https://data.3dbag.nl/api/BAG3D/wfs"
+type = "BAG3D:tiles"
+page = 1000
+sort = "tile_id"
+fields = ["tile_id", "geometry"]
+tolerance_m = 100
 [piece.metrics]
 detail = "lod2"
 measured = "lidar"

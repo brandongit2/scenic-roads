@@ -3,16 +3,19 @@ credit = "LGLN Niedersachsen"
 licence = "CC-BY-4.0"
 theme = "buildings"
 availability = "open"
-notes = "7,324,012 LoD2 and LoD1 buildings; Hannover: 70.2 % add a height (EUROPE-E §2.3, §10.1). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "7,324,012 LoD2 and LoD1 buildings; Hannover: 70.2 % add a height (EUROPE-E §2.3, §10.1). Its extent: the LGLN's open-data bucket's tiles (1 km), each tile's square. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"
 label = "LoD2"
-method = "file"
-class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-filter = { iso_3166_2 = ["DE-NI"] }
-tolerance_m = 200
+method = "listing"
+url = "https://lod2.opengeodata.lgln.niedersachsen.de"
+list = "s3"
+pattern = 'LoD2_32_(?P<x>\d{3})_(?P<y>\d{4})_1_ni\.gml'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
 [piece.metrics]
 detail = "lod2"
 measured = "lidar"

@@ -3,7 +3,7 @@ credit = "Abu Dhabi Spatial Data Infrastructure"
 licence = "none on the service"
 theme = "buildings"
 availability = "open"
-notes = "Storeys on 50.1 % of 392,495 polygons (ASIA §5.2, §11.4). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "Storeys on 50.1 % of 392,495 polygons (ASIA §5.2, §11.4). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). Claimed because its data is its buildings, one layer or file for its whole area with no tile index, and buildings draw no area's outline: reading them would be the whole download. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

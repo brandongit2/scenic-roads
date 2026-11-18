@@ -3,16 +3,27 @@ credit = "State of Queensland (Department of Resources)"
 licence = "CC-BY-4.0"
 theme = "buildings"
 availability = "open"
-notes = "Roof ridge and eave heights from lidar (the state's layer 11, its current rows); Brisbane: 25.3 % of Overture's buildings gain a height. The state is claimed: the outlines are where its lidar is (REST §3.1, §9.3). Its extent: the area it covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw it (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+source = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Structure/BuildingsAndSettlements/MapServer/11"
+notes = "Roof ridge and eave heights from lidar: the state's generated building outlines (BuildingsAndSettlements layer 11, its Current rows), 3,069,378 outlines in 119 lidar projects on 18 Nov 2026 (the layer's own count by `featuresourceproject`); Brisbane: 25.3 % of Overture's buildings gain a height (REST §3.1, §9.3). Its extent: of the 55 projects the state's elevation data extents layer lists (2,096,443 outlines), their footprints there (ElevationProjectExtents, its `project_name` the outlines' `featuresourceproject`): where each project's lidar was flown, not where its buildings are. The other 64 (972,935 outlines, Brisbane 2025's 484,871 among them) aren't in that layer, and their outlines (building polygons, not areas) don't make one: not drawn. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
-id = "all"
+id = "projects"
 label = "Lidar ridge and eave heights"
-method = "file"
-class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-filter = { iso_3166_2 = ["AU-QLD"] }
-tolerance_m = 200
+method = "arcgis"
+class = "service"
+url = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Elevation/ElevationProjectExtents/MapServer/0"
+where = "project_name IN ('Agnes_Water_2023_Twn', 'Alpha_2023_Twn', 'Aramac_2023_Twn', 'Atherton_2023_Prj', 'Augathella_2023_Twn', 'Banana_2024_Twn', 'Blackall_2024_Twn', 'Bollon_2023_Twn', 'Border_Rivers_2023_Prj', 'Bramston_Beach_2023_Twn', 'Bundaberg_2023_LGA', 'Carnarvon_Creek_Floodplain_2024_Prj', 'Charleville_2023_Prj', 'Chinchilla_2023_Twn', 'Dalby_2023_Prj', 'Dirranbandi_2023_Twn', 'Dumaresq_River_Catchment_2023_Prj', 'Gold_Coast_2022_LGA', 'Goondiwindi_2023_Prj', 'Gympie_2023_LGA', 'Hebel_2023_Twn', 'Hughenden_West_2024_Prj', 'Hughenden_to_Prairie_2024_Prj', 'Innisfail_to_Cairns_2023_Prj', 'Ipswich_2023_LGA', 'Jandowae_2023_Twn', 'Jericho_2023_Twn', 'Kowanyama_2023_Prj', 'Lockyer_Valley_2022_LGA', 'Logan_2023_LGA', 'Logan_Creek_Catchments_2023_Prj', 'Longreach_2023_Prj', 'Mackay_2021_Prj', 'Mareeba_2023_Twn', 'Miles_2023_Twn', 'Moonie_South_2023_Prj', 'Moreton_Bay_2023_LGA', 'Mt_Morgan_2022_Prj', 'Mungindi_2023_Twn', 'Nindigully_2023_Twn', 'Noosa_2022_LGA', 'Rannes_to_Dululu_2024_Prj', 'Redland_2022_LGA', 'Rockhampton_2023_Twn', 'Scenic_Rim_2023_LGA', 'Somerset_2023_LGA', 'St_George_2023_Twn', 'Stanthorpe_2023_Twn', 'Sunshine_Coast_2022_LGA', 'Tambo_2024_Twn', 'Tara_2023_Twn', 'Toowoomba_2023_LGA', 'Upper_Burnett_River_2023_Prj', 'Wandoan_2023_Twn', 'Warwick_2023_Prj')"
+tolerance_m = 50
+[piece.metrics]
+detail = "heights"
+measured = "lidar"
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "unlisted"
+label = "Lidar ridge and eave heights, projects with no published extent"
+method = "none"
+why = "the outlines' projects the elevation extents layer doesn't list: Awoonga_Dam_2025_Prj, Baffle_Creek_2025_Prj, Bajool_2025_Prj, Baralaba_2025_Twn, Barcoo_River_2025_Prj, Bedourie_2025_Prj, Belmont_Creek_2025_Prj, Betoota_2025_Twn, Birdsville_2025_Twn, Boulia_2025_Twn, Boyne_Valley_2025_Prj, Brisbane_2025_Prj, Burke_Developmental_Road_2025_Prj, Burketown_2024_Prj, Byfield_Weerriba_2025_Prj, Cairns_2024_Prj, Callide_Valley_2025_Prj, Carmila_2025_Twn, Clairview_2025_Twn, Clermont_2025_Twn, Condamine_2025_Twn, Dulacca_2025_Twn, Dysart_2025_Twn, Flinton_2025_Twn, Fraser_Coast_2022_LGA, Gladstone_2025_Prj, Glenden_2025_Twn, Glenmorgan_2025_Twn, Glenore_Weir_Gauge_2025_Prj, Gogango_2025_Twn, Great_Keppel_Island_2025_Prj, Ilfracombe_2025_Twn, Isisford_2025_Twn, Jundah_2025_Twn, Kingaroy_2025_Twn, Kogan_2025_Twn, Lowmead_2025_Twn, Magnificent_Creek_Gauge_2025_Prj, Maranoa_2024_Prj, Meandarra_2025_Twn, Middlemount_2025_Twn, Miriam_Vale_2025_Twn, Moranbah_2025_Twn, Morven_2025_Twn, Mount_Morgan_2025_Prj, Moura_2025_Twn, Muttaburra_2025_Twn, Nebo_2025_Twn, Rubyvale_2025_Prj, Seventeen_Seventy_2025_Twn, St_Lawrence_2025_Twn, Stanage_2025_Twn, Stonehenge_2025_Twn, Taroom_2025_Twn, Theodore_2025_Twn, Townsville_2025_Prj, Turkey_Beach_2025_Twn, Upper_Medway_Creek_2025_Prj, Warra_2025_Twn, Westwood_2025_Twn, Windorah_2025_Prj, Yappa_River_2025_Prj, Yaraka_2025_Twn, Yeppoon_2025_Prj"
 [piece.metrics]
 detail = "heights"
 measured = "lidar"

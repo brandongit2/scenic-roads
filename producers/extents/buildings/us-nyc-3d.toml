@@ -4,7 +4,7 @@ licence = "NYC Open Data terms"
 source = "https://data.cityofnewyork.us/"
 theme = "buildings"
 availability = "open"
-notes = "LoD2 for every building present in 2014 (CityGML DA_WISE_GML.zip, 916 MB, and multipatch) (USA §4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (New York, United States), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "LoD2 for every building present in 2014 (CityGML DA_WISE_GML.zip, 916 MB, and multipatch) (USA §4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (New York, United States), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its data is its buildings, one layer or file for its whole area with no tile index, and buildings draw no area's outline: reading them would be the whole download. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

@@ -10,7 +10,7 @@ notes = "Footprints, LoD1 in all units, LoD2 in 247, LoD3 in 18, with heights an
 id = "all"
 label = "LoD1 to LoD3"
 method = "none"
-why = "306 city and ward units in 45 prefectures, each a package of its own: their areas aren't drawn as one (a task of its own)"
+why = "306 city and ward units in 45 prefectures, each a package of its own: their areas aren't drawn as one"
 [piece.metrics]
 detail = "lod2"
 measured = "photogrammetry"

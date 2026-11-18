@@ -3,7 +3,7 @@ credit = "City of Burnaby"
 licence = "OGL - Burnaby"
 theme = "buildings"
 availability = "open"
-notes = "54,792 footprints with heights (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Burnaby, Metro Vancouver Regional District, British Columbia, Canada), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "54,792 footprints with heights (AMERICAS §4.2). Its extent: the area it covers, its boundary as OpenStreetMap maps it (Burnaby, Metro Vancouver Regional District, British Columbia, Canada), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its data is its buildings, one layer or file for its whole area with no tile index, and buildings draw no area's outline: reading them would be the whole download. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"

@@ -3,7 +3,7 @@ credit = "Beer Sheva Municipality"
 licence = "Other (Open)"
 theme = "buildings"
 availability = "open"
-notes = "Floors on 26,350 building outlines; adds storeys to 89.7 % (ASIA §5.3, §11.4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (באר שבע, נפת באר שבע, מחוז הדרום, ישראל), read from Nominatim's lookup (claimed, not checked against the data). From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
+notes = "Floors on 26,350 building outlines; adds storeys to 89.7 % (ASIA §5.3, §11.4). Its extent: the area it covers, its boundary as OpenStreetMap maps it (באר שבע, נפת באר שבע, מחוז הדרום, ישראל), read from Nominatim's lookup (claimed, not checked against the data). Claimed because its data is its buildings, one layer or file for its whole area with no tile index, and buildings draw no area's outline: reading them would be the whole download. From RESEARCH-BUILDINGS-INDEX.md §2 (task #1438)."
 
 [[piece]]
 id = "all"
