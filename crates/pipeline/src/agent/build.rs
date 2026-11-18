@@ -12710,5 +12710,22 @@ mod tests {
             assert!(differ.is_empty(), "{differ:?}");
             eprintln!("bench: [{round}] the coverage's memos hold {} KB", buildstore::coverage::memo_bytes() >> 10);
         }
+        // (The terrain-deep targets, those with data past z12 (not hollow), and the latter's tiles
+        // by zoom, z13 to z16: after the plans, which work them out cold.)
+        let deep = tiles.deep(&m, &cov).unwrap();
+        let (mut n, mut run, mut by) = (0, 0, [0usize; 4]);
+        for &t6 in coverage_tiles(&cov).values().flatten() {
+            for &t in deep.targets_in(t6).iter() {
+                n += 1;
+                if terrain::terrain_zoom::hollow(&deep.sets, t.0, t.1) {
+                    continue;
+                }
+                run += 1;
+                for (z, ts) in terrain::terrain_deep::levels(&cov, &deep.sets, t) {
+                    by[(z - terrain::terrain_deep::FIRST_Z) as usize] += ts.len();
+                }
+            }
+        }
+        lap(&format!("deep targets {n}, {run} with data; their tiles z13-16 {by:?}"), &mut t);
     }
 }
