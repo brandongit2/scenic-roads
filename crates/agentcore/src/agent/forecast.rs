@@ -636,7 +636,11 @@ pub fn partials(
                     for t in cleared {
                         stops.remove(&(step.to_string(), t.clone()));
                     }
-                    continue;
+                    // (A job paused after finishing some of its targets is "done" well: its stop
+                    // is of the rest, if its progress stood short.)
+                    if e.targets.is_empty() || named.iter().all(|t| e.targets.contains(t)) {
+                        continue;
+                    }
                 }
                 let Some(p) = e.progress.as_ref().filter(|p| p.done > p.since && p.done < p.total && p.secs > 0.0)
                 else {
@@ -3048,15 +3052,22 @@ mod tests {
         let got = at(&[lease.clone(), fail.clone(), l3.clone(), again]);
         assert_eq!(got.get(&bathy), Some(&(700.0 * 1000.0 / 500.0)));
         // (A run that ended well clears its finished targets: all its job's when it lists none, only
-        // those it lists otherwise; and a not-ok "done" keeps the stop of what it didn't finish.)
+        // those it lists otherwise; and a done that finished only some keeps the stop of the rest.)
         let ok = |t: &[&str]| crate::coord::history::Event { ok: Some(true), ..stopped("done", 3, "available", t) };
         assert!(at(&[lease.clone(), fail.clone(), l3.clone(), ok(&[])]).is_empty());
         assert!(at(&[lease.clone(), fail.clone(), l3.clone(), ok(&["available-bathymetry"])]).is_empty());
         let got = at(&[lease.clone(), fail.clone(), l3, ok(&["available-terrain"])]);
         assert_eq!(got.get(&bathy), Some(&redo), "a done of another target leaves the stop");
-        let not_ok = crate::coord::history::Event { ok: Some(false), ..stopped("done", 1, "available", &[]) };
-        let member_done = at_progress(not_ok, None, (800.0, 2000.0, 0.0, 2169.0));
-        assert_eq!(at(&[lease, member_done]).get(&bathy), Some(&redo), "a member's stopped \"done\" too");
+        // (A member's job paused after finishing one of its two targets: a "done" with ok true and
+        // that target alone, its progress the other's.)
+        let two = stopped("lease", 4, "available", &["available-terrain", "available-bathymetry"]);
+        let paused = at_progress(
+            stopped("done", 4, "available", &["available-terrain"]),
+            Some("available available-bathymetry"),
+            (800.0, 2000.0, 0.0, 2169.0),
+        );
+        let paused = crate::coord::history::Event { ok: Some(true), ..paused };
+        assert_eq!(at(&[two, paused]).into_iter().collect::<Vec<_>>(), [(bathy.clone(), redo)], "the rest's stop");
     }
 
     /// Task #1449: a target's time comes from its stopped run, else its own run, else the nearest

@@ -220,7 +220,7 @@ impl Lease {
         if self.taken_up() {
             return e;
         }
-        let progress = self.pace.stopped_at().filter(|_| e.ok != Some(true));
+        let progress = self.pace.stopped_at();
         crate::coord::history::Event {
             still_s: Some(self.still_most(end)),
             gap_s: self.pace.gap_most(end),
@@ -1414,6 +1414,9 @@ mod tests {
             (12.0, 100.0, 10.0, "tiles", 180.0)
         );
         assert_eq!(e.progress.as_ref(), Some(&at_end));
+        // (A job paused after finishing a target of its lease is a done well: its progress kept.)
+        let paused = crate::coord::history::Event { ok: Some(true), ..crate::coord::history::Event::new("done") };
+        assert_eq!(l.noted(paused, at(900)).progress.as_ref(), Some(&at_end));
         let f = l.stopped(crate::coord::history::Event::new("fail"));
         assert_eq!((f.progress.as_ref(), f.rates.is_empty(), f.gap_s), (Some(&at_end), true, None));
         // (Its threads: the fewest over its part under way, the most over its run.)
