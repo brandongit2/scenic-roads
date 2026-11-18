@@ -1805,11 +1805,12 @@ mod tests {
             }
             n
         };
-        // (Known at 3 alone: the busy cores' grant, 0.3 + 0.5 → 1 and a thread, 2, not known yet:
-        // none explore; known at 2 too, its knee 3, a tenth explore 4.)
+        // (Known at 3 alone: the busy cores' grant, 0.3 cores busy over its wall time, waits and
+        // all, to the nearest whole, 0, and a thread, 1, not known yet: none explore; known at 2
+        // too, its knee 3, a tenth explore 4.)
         let n = count(&curve_costs(&[3], 30, 0.0, sat));
-        assert_eq!(n.keys().copied().collect::<Vec<_>>(), [2], "{n:?}");
-        assert_eq!(count(&curve_costs(&[3], 4, 0.0, sat)).keys().copied().collect::<Vec<_>>(), [2]);
+        assert_eq!(n.keys().copied().collect::<Vec<_>>(), [1], "{n:?}");
+        assert_eq!(count(&curve_costs(&[3], 4, 0.0, sat)).keys().copied().collect::<Vec<_>>(), [1]);
         // (Known at 2 and 3: the knee 3, a tenth exploring 4.)
         let n = count(&curve_costs(&[2, 3], 30, 0.0, sat));
         assert_eq!(n.keys().copied().collect::<Vec<_>>(), [3, 4], "{n:?}");
