@@ -1642,7 +1642,7 @@ impl Run {
                 if !done.is_empty() {
                     co.note(crate::pubtimes::merged_event(done));
                 }
-                co.again(again);
+                co.merged(done, again);
             }
         }
         out

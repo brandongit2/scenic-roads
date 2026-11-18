@@ -210,6 +210,11 @@ In `agent/pool/` on its own disk:
 - its **own hold and settings**, told again to a lead that lacks them or has them older (a moved
   lead, a lost store: `Beats::set_settings`, seeded from `pool-settings.json`).
 
+A hand-off the lead's merge refuses (a write outside its step's write-set, a bad content name:
+pool.md §7.3) lets its targets go to be done again, held from the worker its job ran on for an
+hour, doubling with each refusal in a row, and refused twice in a row is flagged in `scenic status
+--flags` ("refused"), so the hourly health check sees it (task #1384).
+
 A repeat changes nothing (principle 4). A hand-off is lost only to a double fault: its member's
 saved state lost after its job ended and before a saved snapshot named it, while no store of the
 declared lead's holds it (the simulator excuses that alone, pool.md §13).

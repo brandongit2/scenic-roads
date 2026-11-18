@@ -310,7 +310,7 @@ from the first (`edit_held`).
   the coordinator holds done at the key the plan has, its record not yet read by the plan (a plan
   made from records read before the job's hand-off was merged, such as one under way as the job
   ended, task #1375), is not work to come (`forecast::unread`); one whose hand-off the merge
-  refused is work to come again (the coordinator lets it go: `Coordinator::again`). The map is
+  refused is work to come again (the coordinator lets it go: `Coordinator::merged`). The map is
   updated per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
   once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last

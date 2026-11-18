@@ -538,7 +538,7 @@ pub struct Merged {
     pub done: Vec<MergedJob>,
     /// Of those refused or passed over, each one whose done record names targets the records don't
     /// hold under its keys once the merge is through (`Keys::holds`): work that isn't in them, to do
-    /// again (the lead's coordinator lets go of its done entries: crate::coord::Coordinator::again).
+    /// again (the lead's coordinator lets go of its done entries: crate::coord::Coordinator::merged).
     pub again: Vec<Again>,
 }
 

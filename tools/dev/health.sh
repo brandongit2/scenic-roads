@@ -10,7 +10,8 @@
 # is and its batch's progress; "slow:" a job whose progress goes on, over the factor times its
 # step's usual longest wait for progress, at less than its step's slowest tenth of jobs divided by
 # the factor; "stale:" a map update due that hasn't gone out; "repeat:" a GC or backup run that did
-# nothing soon after the one before), the pool's
+# nothing soon after the one before; "refused:" a step's targets whose hand-offs the lead's merge refused
+# twice in a row or more), the pool's
 # warnings ("warning:" no
 # lead, the lead or a member out of touch, the lead's loop stuck) and the jobs failed since the last
 # check's stamp ("failed:"). The same flags are on the build page's alerts and the menu bar.

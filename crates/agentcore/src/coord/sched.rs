@@ -158,7 +158,7 @@ pub struct Sched {
     /// (`Refused::words`), and no work to come in the forecast (crate::agent::forecast::unread);
     /// let go by the first plan that doesn't offer it at that key (Coordinator::offer), or as the
     /// lead's merge refuses its hand-off or passes it over with the records under another key: its
-    /// record never to be read (Coordinator::again).
+    /// record never to be read (Coordinator::merged).
     pub done: BTreeMap<(String, String), String>,
     /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
     /// it again for an hour, doubling each time.

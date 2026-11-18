@@ -1384,13 +1384,24 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   again while a plan made before the record was read offers them at those keys); the merge's result names the
   targets of the entries it refused, or passed over (below) while the records hold them under
   other keys (`records::Merged::again`, weighed by `Keys::holds` once the whole merge is through),
-  and the lead's coordinator lets go of exactly those (step, target) entries at those keys
-  (`Coordinator::again`), so the next ask grants them again; the status's "done (its record not
-  read yet)" and the forecast's work to come follow. A held entry keeps them done (its record
-  is read later). Each refusal is in the history ("refused", on the build page as a problem,
-  with why) and the log ("merged 0 entries (0 passed over, 1 refused; 1 target to do again)").
-  Nothing stops a job whose hand-off is refused every time from coming round again: each round
-  shows.
+  and the lead's coordinator lets go of exactly those (step, target) entries at those keys where
+  that entry's job made them (`Coordinator::merged`, `Shared::done_by`: one a later job of the
+  same target made at the same key stays, its own hand-off still to merge), so the next ask grants
+  them again; the status's "done (its record not read yet)" and the forecast's work to come
+  follow. A held entry keeps them done (its record is read later). Each refusal is in the history
+  ("refused", on the build page as a problem, with why) and the log ("merged 0 entries (0 passed
+  over, 1 refused; 1 target to do again)").
+- **A hand-off refused every time backs off** (task #1384): a refusal holds its targets from the
+  worker its job ran on (found by the done entry, else its lease, else its "done" event in the
+  history; a lead's own job's "end": the lead) as a failure does (`Sched::backoff`: an hour,
+  doubling, 32 h at most), counted with each refusal of the target in a row
+  (`Shared::handoffs_refused`), so a job refused on one Mac goes to another, and one refused
+  everywhere comes round less and less often. The status's `handoffs_refused` lists those targets
+  (step, target, times, the last's time, Mac and why), and a target refused twice in a row or
+  more is flagged (§10, Flags: *refused*), until a hand-off of it is merged or the plan offers it
+  no more. Neither is kept across a lead's restart (the history's rows are). A page's retry of the
+  target (`Coordinator::clear_failed`) lifts its backoff. GC's refusals stop by themselves
+  (its next run hands off again, below).
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
   lead's whose entry carries only a done record, merged only by the lead whose member it is
   (`agent::membership::by_its_lead`).
@@ -2597,6 +2608,14 @@ asks passed on are one-shot: the lead's store keeps them (below).
     day after the last ended well, it ends a day after it at the soonest). The lead's log says the
     same churn by its grants (§7.2's "many grants of a step the forecast doesn't model", any of
     those steps, whatever its runs did); this flag says which runs found nothing.
+  - *refused*: targets whose hand-offs the lead's merge refused twice in a row or more, none
+    merged between (`flags::REFUSED_AGAIN`, the status's `handoffs_refused`; task #1384): work
+    done again and again that never reaches the records (a write outside its step's write-set, a
+    bad content name). One flag per step: its targets with their counts (the first four), the
+    latest refusal's age, Mac and why. Its targets are held from each Mac they were refused from
+    meanwhile (§7.3, a hand-off refused every time backs off), so the loop slows but doesn't stop
+    by itself; the flag stands until a hand-off of the target is merged or the plan offers it no
+    more. It has no window or setting of its own: the backoff is a failure's.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
@@ -2765,7 +2784,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   made from records read before its job's hand-off was merged, such as one under way as the job
   ended or while the merge holds the entry; never granted again, and gone at the first plan that
   doesn't offer it at that key, or as soon as the merge refuses its hand-off or passes it over with
-  the records under another key: `Coordinator::again`), steps offered but not to this Mac (the
+  the records under another key: `Coordinator::merged`), steps offered but not to this Mac (the
   lead's own, a step it doesn't run; `Rule::Away`: "3 steps offered are the lead's alone:
   names-todo, rail, pack"), or no job offered at all (`Rule::Empty`, also while the plan has no
   pass). The lead's status words the last two with the plan's waits (`flags::nothing_words`, each

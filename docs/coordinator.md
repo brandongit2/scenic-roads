@@ -138,14 +138,17 @@ Common rules:
   counts none of them as work to come, and the first plan that doesn't offer one at its key lets
   it go. A hand-off the lead's merge refuses, or passes over with the records holding its targets
   under other keys (`records::Merged::again`), lets its targets go at once
-  (`Coordinator::again`): their record is never to be read, so they're granted again at the next
-  ask; a held one (from a member on a newer app) stays done. Each refusal is in the history
-  ("refused": the Mac, the job, its targets and why; on the build page as a problem), so a job
-  whose hand-off is always refused shows every time it comes round.
+  (`Coordinator::merged`): their record is never to be read, so they're granted again at the next
+  ask; a held one (from a member on a newer app) stays done, and so does one a later job of the
+  same target made at the same key (`Shared::done_by`). Each refusal is in the history
+  ("refused": the Mac, the job, its targets and why; on the build page as a problem), and holds
+  its targets from the worker its job ran on as a failure does (below; task #1384), so a job whose
+  hand-off is always refused comes round less and less often; refused twice in a row it's flagged
+  ("refused": docs/pool.md §10).
 - **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
   `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.
-- **Failures:** a worker's failed z6 tile isn't offered to it for an hour, doubling; a task out of
+- **Failures:** a worker's failed z6 tile, or one whose hand-off the merge refused, isn't offered to it for an hour, doubling; a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.
 - **Planned:** NAS outages extending leases; idle workers racing slow ones when the queue runs dry.
 

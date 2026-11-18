@@ -673,7 +673,7 @@ impl Mac {
                 };
                 self.sim.count(kind);
             }
-            Event::Merged { applied, overtaken, again, .. } => {
+            Event::Merged { applied, overtaken, done, again, .. } => {
                 let (n, e) = (*overtaken as u64, self.driver.leads().unwrap_or(0));
                 self.sim.alive(|w| {
                     *w.counts.entry("hand-offs passed over for a later lease's").or_default() += n;
@@ -681,7 +681,7 @@ impl Mac {
                     // (Their work not taken, granted again: as crate::agent::membership's step.)
                     if let Some(c) = w.macs[k].coord.clone().filter(|_| !again.is_empty()) {
                         w.tick(k);
-                        c.again(again);
+                        c.merged(done, again);
                     }
                 })?;
             }

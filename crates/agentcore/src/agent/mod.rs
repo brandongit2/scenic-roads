@@ -1025,6 +1025,11 @@ pub struct Status {
     /// stuck or slow, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<flags::Flag>,
+    /// The targets whose hand-offs the lead's merge refused one after another, none taken between
+    /// (crate::coord::Coordinator::handoffs_refused): the lead's, each round; flagged 2+ times
+    /// (flags::refused).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs_refused: Vec<crate::coord::RefusedHandoff>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -4806,6 +4811,7 @@ impl Agent {
         // needs a look, flags::of, the same in both.)
         if let Some(c) = &self.coord {
             let factor = c.overdue().0;
+            status.handoffs_refused = c.handoffs_refused();
             status.flags = flags::of(self.o.the_plan, &status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());

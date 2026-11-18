@@ -65,6 +65,14 @@
 //!   it is that recent: the duty planned again with nothing for it to do (13 Nov: GC granted 192
 //!   times in 100 s after a run that removed 1,427 files, each run removing none).
 //!
+//! - **Refused** (`refused`): targets whose hand-offs the lead's merge refused `REFUSED_AGAIN`
+//!   times in a row or more, none taken between (`Status::handoffs_refused`,
+//!   crate::coord::Coordinator::merged): work done again and again that never reaches the records
+//!   (a write outside its step's write-set, a bad content name), a flag per step, with the latest
+//!   refusal's Mac and why. Each refusal holds its targets from the worker its job ran on, an hour
+//!   doubling with each refusal in a row, so the loop slows but doesn't stop by itself. Flagged
+//!   until a hand-off of the target is merged, or the plan offers it no more.
+//!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
 //! measured its stillness (its first runs; every step as the stillness was first recorded) is held
@@ -76,7 +84,7 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -86,7 +94,7 @@ pub struct Flag {
 
 impl Flag {
     /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "slow: …",
-    /// "stale: …", "repeat: …".
+    /// "stale: …", "repeat: …", "refused: …".
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.said)
     }
@@ -182,7 +190,50 @@ pub fn of(
     v.extend(slow(st, &moving, factor));
     v.extend(stale(st, runs, factor, now));
     v.extend(repeat(st, now));
+    v.extend(refused(st, now));
     v
+}
+
+/// How many times in a row a target's hand-offs are refused before it's flagged: once may be a
+/// one-off (a member's write the lead's app doesn't know yet); twice, the same work refused again
+/// as it came round.
+pub const REFUSED_AGAIN: u32 = 2;
+
+/// The refused flags (the module's doc): one per step with targets whose hand-offs were refused
+/// `REFUSED_AGAIN` times in a row or more (`Status::handoffs_refused`), the latest refusal's Mac
+/// and why.
+pub fn refused(st: &Status, now: u64) -> Vec<Flag> {
+    const SHOWN: usize = 4;
+    let mut by_step: Vec<(&str, Vec<&crate::coord::RefusedHandoff>)> = Vec::new();
+    for r in st.handoffs_refused.iter().filter(|r| r.times >= REFUSED_AGAIN) {
+        match by_step.iter_mut().find(|(s, _)| *s == r.step) {
+            Some((_, v)) => v.push(r),
+            None => by_step.push((&r.step, vec![r])),
+        }
+    }
+    by_step
+        .into_iter()
+        .filter_map(|(step, rs)| {
+            let last = rs.iter().max_by_key(|r| r.at)?;
+            let mut shown: Vec<String> = rs.iter().take(SHOWN).map(|r| format!("{} ×{}", r.target, r.times)).collect();
+            if rs.len() > SHOWN {
+                shown.push(format!("and {} more", rs.len() - SHOWN));
+            }
+            Some(Flag {
+                kind: "refused".into(),
+                mac: last.mac.clone(),
+                said: format!(
+                    "{step}: {} {} refused {REFUSED_AGAIN} times in a row or more ({}), the last {} ago, from {}: {}; each held from the Mac it ran on, an hour doubling with each refusal (32 h at most)",
+                    rs.len(),
+                    if rs.len() == 1 { "target's hand-off" } else { "targets' hand-offs" },
+                    shown.join(", "),
+                    span(now.saturating_sub(last.at)),
+                    last.mac,
+                    last.why
+                ),
+            })
+        })
+        .collect()
 }
 
 /// The lead's duties whose runs say whether they did anything (`Done::empty`), each with how soon
