@@ -2395,20 +2395,13 @@ mod tests {
         let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
         let r = jobrt::timings::snapshot(true).unwrap();
         // (The process's peak physical footprint, compressed and swapped memory included.)
-        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
-        unsafe {
-            libc::proc_pid_rusage(
-                libc::getpid(),
-                libc::RUSAGE_INFO_V4,
-                &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
-            )
-        };
+        let peak = jobrt::sys::rusage(std::process::id() as i32).map_or(0, |r| r.peak);
         println!(
             "{} {}: {n} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores), peak footprint {} MB; digest {:x}",
             a[1],
             a[2],
             cpu / wall,
-            info.ri_lifetime_max_phys_footprint >> 20,
+            peak >> 20,
             sha2::Digest::finalize(h)
         );
         for (z, (n, b)) in by_z {

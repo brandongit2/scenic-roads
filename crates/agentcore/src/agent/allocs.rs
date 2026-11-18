@@ -277,17 +277,9 @@ impl Memory {
             let me = libc::mach_task_self();
             libc::task_info(me, TASK_VM_INFO, &mut v as *mut TaskVm as *mut i32, &mut n) == 0
         };
-        let mut r: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
-        let got = unsafe {
-            libc::proc_pid_rusage(
-                libc::getpid(),
-                libc::RUSAGE_INFO_V4,
-                &mut r as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
-            )
-        } == 0;
         Memory {
             footprint: if ok { v.phys_footprint } else { 0 },
-            peak: if got { r.ri_lifetime_max_phys_footprint } else { 0 },
+            peak: jobrt::sys::rusage(std::process::id() as i32).map_or(0, |r| r.peak),
             resident: if ok { v.resident_size } else { 0 },
             reusable: if ok { v.reusable } else { 0 },
         }

@@ -994,6 +994,17 @@ pub fn allowed(n: usize) {
     use std::sync::atomic::Ordering;
     let n = n.max(1);
     let _ = FEWEST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| Some(if f == 0 { n } else { f.min(n) }));
+    ALLOWED.store(n, Ordering::Relaxed);
+}
+
+/// The threads this process's work was last allowed (`allowed`; 0: none said).
+static ALLOWED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The threads this process's work runs on now: the target's under way (`in_force`), else what a
+/// paced job was last allowed (`allowed`); None when neither says (crate::timings' run then counts
+/// its RAYON_NUM_THREADS).
+pub fn threads_now() -> Option<usize> {
+    in_force().or_else(|| Some(ALLOWED.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0))
 }
 
 /// The fewest threads this process's work has been allowed so far (`allowed`); None: none said. A

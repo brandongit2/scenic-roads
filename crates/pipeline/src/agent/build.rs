@@ -12510,21 +12510,13 @@ mod tests {
         let nr = store::nasfs::NasRoot::from_arg(root);
         let t = std::time::Instant::now();
         let lap = |what: &str, t: &mut std::time::Instant| {
-            // SAFETY: the call fills the struct we own, of the flavour asked for.
-            let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
-            let ok = unsafe {
-                libc::proc_pid_rusage(
-                    libc::getpid(),
-                    libc::RUSAGE_INFO_V4,
-                    &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
-                )
-            } == 0;
-            let mb = |b: u64| if ok { format!("{} MB", b >> 20) } else { "?".into() };
+            let r = jobrt::sys::rusage(std::process::id() as i32);
+            let mb = |b: Option<u64>| b.map_or("?".into(), |b| format!("{} MB", b >> 20));
             eprintln!(
                 "bench: {what}: {:.2} s (footprint {}, peak {})",
                 t.elapsed().as_secs_f64(),
-                mb(info.ri_phys_footprint),
-                mb(info.ri_lifetime_max_phys_footprint)
+                mb(r.map(|r| r.footprint)),
+                mb(r.map(|r| r.peak))
             );
             *t = std::time::Instant::now();
         };

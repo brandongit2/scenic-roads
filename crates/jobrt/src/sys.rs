@@ -373,23 +373,144 @@ pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
 pub fn footprint() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: the call fills the struct we own, of the flavour asked for.
-        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-            libc::proc_pid_rusage(
-                libc::getpid(),
-                libc::RUSAGE_INFO_V4,
-                &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
-            )
-        };
-        if ok == 0 {
-            return Some(info.ri_phys_footprint);
-        }
-        None
+        rusage(std::process::id() as i32).map(|r| r.footprint)
     }
     #[cfg(not(target_os = "macos"))]
     {
         Some(peak_rss()).filter(|v| *v > 0)
+    }
+}
+
+/// What a process has used and retired so far, as macOS counts it (`proc_pid_rusage`,
+/// `RUSAGE_INFO_V6`; task #1419): its CPU time, the instructions and cycles its threads retired,
+/// each of those on the performance cores apart, its memory now and at most, and its disk writes.
+/// Every thread's of the process, never its children's (a child's counts end with it once it's
+/// reaped: only its times reach its parent, `RUSAGE_CHILDREN`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rusage {
+    /// CPU time, user and system (ns), and of it on the performance cores.
+    pub cpu_ns: u64,
+    pub p_cpu_ns: u64,
+    /// Instructions and cycles retired, and of them on the performance cores.
+    pub insn: u64,
+    pub cycles: u64,
+    pub p_insn: u64,
+    pub p_cycles: u64,
+    /// Physical footprint now, and the most it has been (bytes).
+    pub footprint: u64,
+    pub peak: u64,
+    /// Bytes written to disks (`ri_diskio_byteswritten`).
+    pub written: u64,
+    /// When it started (mach absolute time): with its pid, which process it is (a pid is used again).
+    pub start: u64,
+}
+
+/// Process `pid`'s use (`Rusage`); None where it can't be read (gone and reaped, another user's, or
+/// elsewhere than macOS). A macOS without `RUSAGE_INFO_V6` is read at V4: no performance-core split.
+pub fn rusage(pid: i32) -> Option<Rusage> {
+    #[cfg(target_os = "macos")]
+    {
+        // (The flavours' layouts, in u64 words after the 16-byte uuid's two: the SDK's
+        // sys/resource.h. The buffer is larger than any flavour: the kernel writes its own size.)
+        const USER: usize = 2;
+        const SYSTEM: usize = 3;
+        const FOOTPRINT: usize = 9;
+        const START: usize = 10;
+        const WRITTEN: usize = 19;
+        const PEAK: usize = 30;
+        const INSN: usize = 31;
+        const CYCLES: usize = 32;
+        const USER_P: usize = 38;
+        const SYSTEM_P: usize = 39;
+        const INSN_P: usize = 40;
+        const CYCLES_P: usize = 41;
+        const RUSAGE_INFO_V6: i32 = 6;
+        let mut w = [0u64; 96];
+        // SAFETY: the buffer (768 bytes) holds any flavour's struct (V6's is 464), which the call
+        // fills; it's plain words.
+        let read = |flavour: i32, w: &mut [u64; 96]| unsafe { libc::proc_pid_rusage(pid, flavour, w.as_mut_ptr().cast()) } == 0;
+        let v6 = read(RUSAGE_INFO_V6, &mut w);
+        if !v6 && !read(libc::RUSAGE_INFO_V4, &mut w) {
+            return None;
+        }
+        let ns = mach_ns();
+        let p = |i: usize| if v6 { w[i] } else { 0 };
+        Some(Rusage {
+            cpu_ns: ns(w[USER] + w[SYSTEM]),
+            p_cpu_ns: ns(p(USER_P) + p(SYSTEM_P)),
+            insn: w[INSN],
+            cycles: w[CYCLES],
+            p_insn: p(INSN_P),
+            p_cycles: p(CYCLES_P),
+            footprint: w[FOOTPRINT],
+            peak: w[PEAK],
+            written: w[WRITTEN],
+            start: w[START],
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Mach absolute time units to ns (rusage_info's times: 1 ns on Intel, 125/3 ns on Apple silicon).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn mach_ns() -> impl Fn(u64) -> u64 {
+    static TB: std::sync::OnceLock<(u128, u128)> = std::sync::OnceLock::new();
+    let &(numer, denom) = TB.get_or_init(|| {
+        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: the call fills the struct we own.
+        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
+        if ok {
+            (tb.numer as u128, tb.denom as u128)
+        } else {
+            (1, 1)
+        }
+    });
+    move |t| (t as u128 * numer / denom) as u64
+}
+
+/// This Mac's performance cores' clock at full tilt (cycles a CPU-second, Hz), measured once a
+/// process (`Rusage`'s performance-core cycles over their time while a thread of its own spins for
+/// 0.2 s at the user-interactive QoS, which macOS runs on them): what a job's cycles over its CPU
+/// time can't pass (crate::timings::implausible). Other threads of the process running meanwhile
+/// count in at their own clock, which only lowers it. None where it can't be measured (no split,
+/// another platform).
+pub fn top_clock() -> Option<f64> {
+    static CLOCK: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *CLOCK.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("top-clock".into())
+            .spawn(|| {
+                interactive();
+                let me = std::process::id() as i32;
+                let a = rusage(me)?;
+                let t = std::time::Instant::now();
+                let mut x = 0u64;
+                while t.elapsed() < std::time::Duration::from_millis(200) {
+                    for i in 0..10_000u64 {
+                        x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
+                    }
+                }
+                let b = rusage(me)?;
+                let (cyc, ns) = (b.p_cycles.saturating_sub(a.p_cycles), b.p_cpu_ns.saturating_sub(a.p_cpu_ns));
+                (ns >= 50_000_000).then(|| cyc as f64 / (ns as f64 / 1e9))
+            })
+            .ok()
+            .and_then(|h| h.join().ok())
+            .flatten()
+    })
+}
+
+/// This thread at the user-interactive QoS (macOS runs it on a performance core).
+fn interactive() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: sets this thread's own QoS class.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
     }
 }
 
@@ -683,21 +804,26 @@ pub fn thermal_state() -> Option<u32> {
     None
 }
 
-/// The memory this process's group holds now (bytes): a job's (the agent starts each in a group of
-/// its own: scenic-build and every program it runs, a pool's workers too), its processes' physical
-/// footprints (each one's memory as Activity Monitor shows it) summed; None where it can't be read.
-pub fn group_footprint() -> Option<u64> {
-    #[cfg(target_os = "macos")]
+/// This process's group: a job's (the agent starts each in a group of its own: scenic-build and
+/// every program it runs, a pool's workers too). 0 where there are none.
+pub fn this_group() -> i32 {
+    #[cfg(unix)]
     {
         // SAFETY: getpgrp has no failure.
-        footprint_of_group(unsafe { libc::getpgrp() })
+        unsafe { libc::getpgrp() }
     }
-    #[cfg(not(target_os = "macos"))]
-    None
+    #[cfg(not(unix))]
+    0
 }
 
-/// The memory process group `pgid` holds now (bytes), as `group_footprint`: a running job's, for
-/// the agent's status.
+/// The memory this process's group holds now (bytes), as `footprint_of_group`; None where it
+/// can't be read.
+pub fn group_footprint() -> Option<u64> {
+    footprint_of_group(this_group())
+}
+
+/// The memory process group `pgid` holds now (bytes), its processes' physical footprints (each
+/// one's memory as Activity Monitor shows it) summed: a running job's, for the agent's status.
 pub fn footprint_of_group(pgid: i32) -> Option<u64> {
     usage_of_group(pgid).map(|u| u.footprint)
 }
@@ -721,36 +847,18 @@ pub struct Usage {
 
 /// What the live processes of group `pgid` have used (one `proc_pid_rusage` each); None where none
 /// can be read. (A process that ended takes its counts with it: the sums may fall.)
-#[allow(deprecated)]
 pub fn usage_of_group(pgid: i32) -> Option<Usage> {
-    #[cfg(target_os = "macos")]
-    {
-        // (rusage_info's times are in mach absolute time units: ns on Intel, 125/3 ns on Apple
-        // silicon.)
-        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
-        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
-        let (numer, denom) = if ok { (tb.numer as u128, tb.denom as u128) } else { (1, 1) };
-        let mut total: Option<Usage> = None;
-        for pid in group_members(pgid) {
-            // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
-            let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-            if unsafe {
-                libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast())
-            } == 0
-            {
-                let u = total.get_or_insert_with(Usage::default);
-                u.cpu_ns += ((ri.ri_user_time as u128 + ri.ri_system_time as u128) * numer / denom) as u64;
-                u.footprint += ri.ri_phys_footprint;
-                u.written += ri.ri_diskio_byteswritten;
-            }
-        }
-        total
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pgid;
-        None
-    }
+    let all = group_rusage(pgid);
+    (!all.is_empty()).then(|| Usage {
+        cpu_ns: all.iter().map(|(_, r)| r.cpu_ns).sum(),
+        footprint: all.iter().map(|(_, r)| r.footprint).sum(),
+        written: all.iter().map(|(_, r)| r.written).sum(),
+    })
+}
+
+/// Each live process of group `pgid` and its use (`rusage`; one call each), those that can be read.
+pub fn group_rusage(pgid: i32) -> Vec<(i32, Rusage)> {
+    group_members(pgid).into_iter().filter_map(|p| Some((p, rusage(p)?))).collect()
 }
 
 /// Each core's CPU ticks since the Mac started, (busy, all), in the processors' order (Apple
