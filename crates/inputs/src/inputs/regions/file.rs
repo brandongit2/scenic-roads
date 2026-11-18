@@ -454,7 +454,8 @@ pub fn parse_box(s: &str) -> Result<[i64; 4], String> {
 /// The folder path a `group:` names (`rest`, what follows the colon): its components non-empty,
 /// none `.` or `..`. Shared by the regions' parts and the elevation declarations' `regions`.
 pub fn group_path(rest: &str) -> Option<&str> {
-    (!rest.is_empty() && rest.split('/').all(|c| !c.is_empty() && c != "." && c != "..")).then(|| rest.trim_end_matches('/'))
+    (!rest.is_empty() && rest.split('/').all(|c| !c.is_empty() && c != "." && c != ".."))
+        .then(|| rest.trim_end_matches('/'))
 }
 
 /// Whether the region file at `path` is under folder `group` (a `group_path`), at any depth.

@@ -1178,7 +1178,11 @@ fn divided_places(extra: &[(&str, &str, &str)]) -> Elevation {
     regions.extend_from_slice(extra);
     let recipes: Vec<_> = regions
         .iter()
-        .map(|(id, _, o)| buildstore::recipes::Recipe { id: id.to_string(), name: id.to_string(), outline: vec![o.to_string()] })
+        .map(|(id, _, o)| buildstore::recipes::Recipe {
+            id: id.to_string(),
+            name: id.to_string(),
+            outline: vec![o.to_string()],
+        })
         .collect();
     Elevation {
         regions: Some(buildstore::coverage::Coverage::fixture(&recipes, None, dir.path()).unwrap()),
@@ -1206,11 +1210,11 @@ fn a_group_in_regions_is_its_folders_regions() {
     assert_eq!(ids, groups);
     assert_eq!(serde_json::to_value(&ids).unwrap(), serde_json::to_value(&groups).unwrap());
     // (A nested folder alone, and a group beside an id of the same folder.)
+    assert_eq!(scoped_to(&e, &["group:canada/provinces/ontario/north"]).unwrap(), scoped_to(&e, &["on-b"]).unwrap());
     assert_eq!(
-        scoped_to(&e, &["group:canada/provinces/ontario/north"]).unwrap(),
-        scoped_to(&e, &["on-b"]).unwrap()
+        scoped_to(&e, &["group:canada/provinces/ontario", "on-a"]).unwrap(),
+        scoped_to(&e, &["on-a", "on-b"]).unwrap()
     );
-    assert_eq!(scoped_to(&e, &["group:canada/provinces/ontario", "on-a"]).unwrap(), scoped_to(&e, &["on-a", "on-b"]).unwrap());
     // (Not the regions of a folder sharing a name's start, nor the other places.)
     assert_eq!(groups, scoped_to(&e, &["group:canada"]).unwrap());
     assert_ne!(scoped_to(&e, &["group:canada/provinces/ontario"]).unwrap(), groups);
