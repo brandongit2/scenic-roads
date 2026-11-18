@@ -259,7 +259,8 @@ pub const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(300
 /// `reads`: how many reads `run` makes, for progress (0: none said, the caller says its own). Each
 /// `ssh` is bounded by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte;
 /// after it, a read moving no bytes for `stall` (`STREAM_STALL`) fails; both counted in the time
-/// this process ran (`ready`). When the feed fails, the
+/// this process ran (`ready`). While it waits for the next open, the pipe last fed is opened and
+/// closed again each look, so a read whose end of file macOS lost still ends. When the feed fails, the
 /// reader is let go: the link removed (a later open fails) and a pipe it waits to open given its
 /// end, so `run` ends rather than wait for a writer. Returns the bytes read off the NAS. In `dir`,
 /// made afresh.
@@ -347,6 +348,15 @@ pub fn streamed(
                     Ok(Some(w)) => w,
                     Ok(None) if stop.load(Relaxed) => break Ok(()),
                     Ok(None) => {
+                        // (The pipe last fed, opened and closed again each look: on macOS a read
+                        // taken to its end can wait for good, Darwin now and then losing a FIFO's
+                        // end of file to a close made as the reader's open returns; the next
+                        // writer's close brings it (task #1302). Its bytes all written and its
+                        // writer closed before this wait, a close only says again the end that
+                        // comes after them; once osmium has let go of it, the open fails, ENXIO.)
+                        if let Some(j) = k.checked_sub(1) {
+                            drop(open(j));
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
                     }
@@ -1976,6 +1986,39 @@ mod tests {
         })
         .unwrap_err();
         assert!(format!("{e:#}").contains("cat") && format!("{e:#}").contains("failed"), "{e:#}");
+    }
+
+    /// Task #1431: a reader on a pipe fed whole and closed, waiting for a writer, as Darwin's lost
+    /// end of file leaves osmium (#1302: its open returned, its read waiting with no writer left;
+    /// only a writer's open and close end it), is ended while the feeder waits for the next open.
+    /// Here the reader waits in a second open of the pipe, which nothing but such a writer ends
+    /// either: before the fix, it waited for good.
+    #[test]
+    fn a_read_whose_end_of_file_was_lost_still_ends() {
+        let d = tempfile::tempdir().unwrap();
+        let src = bytes_file(d.path(), 1000);
+        let want = std::fs::read(&src).unwrap();
+        let ssh = fake_ssh(d.path());
+        let n = stream_bounded(ssh(""), WAIT, &src, d.path(), move |p| {
+            // (The pipe it opens: the link moves on only once it's open.)
+            let fed = std::fs::read_link(p)?;
+            ensure!(std::fs::read(p)? == want, "the read whole");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let again = fed.clone();
+            std::thread::spawn(move || tx.send(std::fs::read(again)));
+            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(got) => ensure!(got?.is_empty(), "nothing more fed"),
+                Err(_) => {
+                    // (The waiting open let go, so the test's thread doesn't stay.)
+                    use std::os::unix::fs::OpenOptionsExt;
+                    drop(std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fed));
+                    anyhow::bail!("the reader still waits on {} 10 s on", fed.display());
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n, 1000);
     }
 
     /// Task #1189: a read moving no bytes past the stall bound fails `TimedOut`, saying which end
