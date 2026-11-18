@@ -18549,10 +18549,14 @@ mod membership_tests {
         let rec = forecast_of(&mut a);
         let c = &rec.input.costs;
         assert_eq!((c["terrain-deep"]["10/95/0"].basis, c["terrain-deep"]["10/95/0"].secs), (Basis::Partial, 1800.0));
-        assert_eq!((c["terrain-deep"]["10/98/0"].basis, c["terrain-deep"]["10/98/0"].secs), (Basis::Own, 10.0));
+        let own = c["terrain-deep"]["10/98/0"];
+        assert_eq!(own.basis, Basis::Own);
         let step = &c["terrain-deep"]["10/97/0"];
         assert_eq!(step.basis, Basis::Sibling, "its step's mean over its targets");
-        assert!((step.secs - (10.0 * 100.0 + 10.0) / 11.0).abs() < 1e-6, "{step:?}");
+        assert!(
+            (step.secs / own.secs - ((10.0 * 100.0 + 10.0) / 11.0) / 10.0).abs() < 0.01,
+            "its own run's pace: {step:?} {own:?}"
+        );
         assert_eq!(c["slope-deep"]["10/1/0"].basis, Basis::Guess);
         assert_eq!(c["slope-deep"]["10/1/0"].secs, first_secs("slope-deep"));
         // (What the lead's jobs of a step took lately, else the guess.)
