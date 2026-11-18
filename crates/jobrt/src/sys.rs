@@ -474,8 +474,8 @@ fn mach_ns() -> impl Fn(u64) -> u64 {
 }
 
 /// This Mac's performance cores' clock at full tilt (cycles a CPU-second, Hz), measured once a
-/// process (`Rusage`'s performance-core cycles over their time while a thread of its own spins for
-/// 0.2 s at the user-interactive QoS, which macOS runs on them): what a job's cycles over its CPU
+/// process (`Rusage`'s performance-core cycles over their time while a thread of its own spins at
+/// the user-interactive QoS, which macOS runs on them, till 0.2 s of their CPU or 2 s by the clock): what a job's cycles over its CPU
 /// time can't pass (crate::timings::implausible). Other threads of the process running meanwhile
 /// count in at their own clock, which only lowers it. None where it can't be measured (no split,
 /// another platform).
@@ -488,14 +488,19 @@ pub fn top_clock() -> Option<f64> {
                 interactive();
                 let me = std::process::id() as i32;
                 let a = rusage(me)?;
+                // (Till 0.2 s on the performance cores, or 2 s by the clock on a Mac too busy to give
+                // them: then 50 ms of them at least.)
                 let t = std::time::Instant::now();
                 let mut x = 0u64;
-                while t.elapsed() < std::time::Duration::from_millis(200) {
-                    for i in 0..10_000u64 {
+                let mut b = a;
+                while b.p_cpu_ns.saturating_sub(a.p_cpu_ns) < 200_000_000
+                    && t.elapsed() < std::time::Duration::from_secs(2)
+                {
+                    for i in 0..100_000u64 {
                         x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
                     }
+                    b = rusage(me)?;
                 }
-                let b = rusage(me)?;
                 let (cyc, ns) = (b.p_cycles.saturating_sub(a.p_cycles), b.p_cpu_ns.saturating_sub(a.p_cpu_ns));
                 (ns >= 50_000_000).then(|| cyc as f64 / (ns as f64 / 1e9))
             })

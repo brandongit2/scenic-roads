@@ -3488,11 +3488,14 @@ mod tests {
         crate::control::allowed(5);
         reset();
         start("test");
+        // (CPU time, not wall: on a loaded Mac a spin by the clock gets little of it.)
         let spin = |s: f64| {
-            let t = Instant::now();
+            let t = cpu_us().unwrap();
             let mut x = 0u64;
-            while t.elapsed().as_secs_f64() < s {
-                x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
+            while cpu_us().unwrap() - t < (s * 1e6) as u64 {
+                for _ in 0..10_000 {
+                    x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
+                }
             }
         };
         {
@@ -3502,7 +3505,7 @@ mod tests {
         {
             let _p = phase("program");
             let mut c = store::spawn::command("/usr/bin/python3");
-            c.args(["-c", "import time\nt = time.time()\nwhile time.time() - t < 1.5: pass"]);
+            c.args(["-c", "import time\nt = time.process_time()\nwhile time.process_time() - t < 1.5: pass"]);
             assert!(store::spawn::status(&mut c).unwrap().success());
         }
         let r = snapshot(true).unwrap();

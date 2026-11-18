@@ -997,8 +997,8 @@ read as absent):
   - its instructions consistent with its CPU at its Mac's speed: counted over its whole CPU
     (`work.cpu_s` against `cpu_s`), some counted where it took CPU, and its cycles over that CPU,
     the performance cores' too, at most 1.3 × the Mac's top clock (`CLOCK_SLACK`; jobrt::sys::top_clock:
-    the performance cores' cycles over their time while a thread of the agent's spins 0.2 s at the
-    user-interactive QoS, once a process);
+    the performance cores' cycles over their time while a thread of the agent's spins at the
+    user-interactive QoS till 0.2 s of their CPU (2 s by the clock at most), once a process);
   - its phases summing to its run: the main thread's phases' wall within `wall_s`, and its phases'
     CPU and `untimed_cpu_s` adding up to `cpu_s`.
 
