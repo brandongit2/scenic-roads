@@ -2021,7 +2021,8 @@ fn largest(a: &Area) -> Option<(f64, Pt)> {
 }
 
 /// With `cover`: each region with land, its stretches of sea (its area less its land and the big
-/// lakes, joined across the cells' edges) that touch none of its land past `HAIR_KM2`, an error
+/// lakes, joined across the cells' edges, and to a stretch within a metre of one touching its land:
+/// the snapping parts pieces meeting exactly) that touch none of its land past `HAIR_KM2`, an error
 /// (`stray`) at a point inside, naming the regions round it. A lake is its outline's or its water's
 /// wherever its shores are (a lake whose shores are another's: a border on the far shore). A region
 /// of water alone (a waters region, the rest) has no land for its water to touch: its stretches are
@@ -2071,24 +2072,65 @@ fn strays(
             }
             idx
         };
-        let found: Vec<StrayFit> = pace::par_map(comps, |comp| {
-            let _part = progress.part_on_drop();
-            let km2: f64 = comp.values().map(geom::area_km2).sum();
-            if km2 <= HAIR_KM2 {
-                return None;
-            }
-            let touches = comp.iter().any(|(c, p)| {
-                let idx = land_round(*c);
+        // (Whether a stretch's edge lies on (within a metre of) the segments a cell's index holds.)
+        let meets = |comp: &BTreeMap<Cell, Area>, round: &dyn Fn(Cell) -> SegIndex| {
+            comp.iter().any(|(c, p)| {
+                let idx = round(*c);
                 p.polys.iter().flatten().any(|r| {
                     (0..r.len()).any(|k| {
                         let (a, b) = (r[k], r[(k + 1) % r.len()]);
                         idx.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
                     })
                 })
-            });
-            if touches {
-                return None;
+            })
+        };
+        let km2s: Vec<f64> = comps.iter().map(|comp| comp.values().map(geom::area_km2).sum()).collect();
+        let mut ok: Vec<bool> = pace::par_map((0..comps.len()).collect(), |i| {
+            let _part = progress.part_on_drop();
+            meets(&comps[i], &land_round)
+        });
+        // (A stretch the operations' snapping parts from one that touches the land, its edge on
+        // that one's within a metre, is one with it: joined until none more joins.)
+        loop {
+            let open: Vec<usize> = (0..comps.len()).filter(|&i| !ok[i] && km2s[i] > HAIR_KM2).collect();
+            if open.is_empty() {
+                break;
             }
+            let mut by_cell: HashMap<Cell, Vec<&Ring>> = HashMap::new();
+            for (i, comp) in comps.iter().enumerate().filter(|(i, _)| ok[*i]) {
+                for (c, p) in comp {
+                    by_cell.entry(*c).or_default().extend(p.polys.iter().flatten());
+                }
+            }
+            let joined_round = |c: Cell| {
+                let mut idx = SegIndex::default();
+                for x in c.0 - 1..=c.0 + 1 {
+                    let (w, shift) = wrap(x);
+                    for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
+                        for r in by_cell.get(&(w, y)).into_iter().flatten() {
+                            idx.add(0, r, shift, [i64::MIN / 2, -1_000_000_000, i64::MAX / 2, 1_000_000_000]);
+                        }
+                    }
+                }
+                idx
+            };
+            let now: Vec<usize> = open.into_iter().filter(|&i| meets(&comps[i], &joined_round)).collect();
+            if now.is_empty() {
+                break;
+            }
+            for i in now {
+                ok[i] = true;
+            }
+        }
+        let strays: Vec<BTreeMap<Cell, Area>> = comps
+            .into_iter()
+            .zip(ok)
+            .zip(&km2s)
+            .filter(|((_, ok), k)| !*ok && **k > HAIR_KM2)
+            .map(|((c, _), _)| c)
+            .collect();
+        let found: Vec<StrayFit> = pace::par_map(strays, |comp| {
+            let km2: f64 = comp.values().map(geom::area_km2).sum();
             // (The regions round it: their segments in its cells and across their sides.)
             let mut len: BTreeMap<&String, f64> = BTreeMap::new();
             for (c, p) in &comp {

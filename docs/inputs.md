@@ -583,7 +583,9 @@ it (`tiles::Fit`):
 - `rest-in-zone`: the open sea's part inside a 200-nmi zone (any of Marine Regions' zones with
   its internal waters) in a cell: a zone no region's water names;
 - `stray`: a region with land's stretch of sea (its area less its land and the lakes over 100 km²,
-  joined across the cells' edges) touching none of its land, at a point inside it, naming the
+  joined across the cells' edges, and to a stretch of it whose edge lies within a metre of one's
+  that touches its land: the operations' snapping parts pieces meeting exactly by a few
+  centimetres) touching none of its land, at a point inside it, naming the
   region and those round it; a lake is its outline's or its water's wherever its shores are (a
   border on a lake's far shore), and a region of water alone (a waters region, the rest) has no
   land for its water to touch.

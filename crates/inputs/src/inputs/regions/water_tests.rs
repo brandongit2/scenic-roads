@@ -1046,6 +1046,26 @@ fn a_lake_whose_shores_are_anothers_is_no_stray() {
     assert!(at("u", 10.8, 10.5) && !at("v", 10.8, 10.5), "the water's lake is u's");
 }
 
+/// With `cover = "earth"`: a stretch of a region's water a centimetre from one touching its land
+/// (the operations' snapping parts pieces meeting exactly) is one with it, no stray; one 2 km off
+/// is (task #1427).
+#[test]
+fn a_stretch_a_centimetre_off_its_water_is_no_stray() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
+    let land = vec![bx(10.0, 10.0, 11.0, 11.0)];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let near = "id = \"n\"\nname = \"N\"\noutline = [\"box:9.9,9.9,11.0,11.1\"]\nwater = [\"box:11.0,10.0,11.5,11.0\", \"box:11.5000001,10.2,11.6,10.8\"]\n";
+    let out = run(&w, &[PINS, RULES, ("n.toml", near), ("high-seas.toml", HIGH)]);
+    let strays: Vec<_> = out.problems.iter().filter(|p| p.found.first().is_some_and(|f| f == "stray")).collect();
+    assert!(strays.is_empty(), "{:?}", out.problems);
+    let far = "id = \"n\"\nname = \"N\"\noutline = [\"box:9.9,9.9,11.0,11.1\"]\nwater = [\"box:11.0,10.0,11.5,11.0\", \"box:11.52,10.2,11.6,10.8\"]\n";
+    let out = run(&w, &[PINS, RULES, ("n.toml", far), ("high-seas.toml", HIGH)]);
+    let strays: Vec<_> = out.problems.iter().filter(|p| p.found.first().is_some_and(|f| f == "stray")).collect();
+    assert_eq!(strays.len(), 1, "{:?}", out.problems);
+}
+
 /// The coast: sea between one region's shore and a big lake over the sea that another's outline
 /// holds (task #1427) is the shore's region's, never the lake's
 /// holder's (land dominates the sea: given to the lake's holder, it touched none of its land).
