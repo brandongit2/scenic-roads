@@ -78,6 +78,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/jobrt/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Links that open a place elsewhere.
     ("web/src/main.ts", "-", "https://www.google.com/maps/", "opens the place in Google Maps"),
+    ("web/src/mapschemes.ts", "-", "label: 'Ordnance Survey'", "a colour scheme's name, the look of the OS's paper maps; the OS's building heights (producers/extents/buildings/gb-os-bha.toml) are never read here"),
     // A place's law, named in help text.
     ("web/src/basemap.ts", "-", "Ontario Part IV", "the heritage designation's help names the law that makes it (Part IV of the Ontario Heritage Act), not a source"),
     // Tools that check the app.

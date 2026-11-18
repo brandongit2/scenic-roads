@@ -541,7 +541,7 @@ detail = "heights"
     assert_eq!(d.blocks[0].extent, "mask");
     assert_eq!(
         d.blocks[0].overture,
-        Some(Overture { dataset: "OpenStreetMap".into(), holds: "heights".into(), share: 0.5 })
+        Some(MaskBlock { dataset: "OpenStreetMap".into(), holds: "heights".into(), share: 0.5 })
     );
     for (from, to) in [
         ("dataset = \"OpenStreetMap\"\n", ""),
@@ -1925,14 +1925,6 @@ const REAL_BUILDINGS: [(&str, &[u8]); 335] = [
     ),
     ("globalbuildingatlas.toml", include_bytes!("../../../../../producers/extents/buildings/globalbuildingatlas.toml")),
     (
-        "google-open-buildings-25d.geojson",
-        include_bytes!("../../../../../producers/extents/buildings/google-open-buildings-25d.geojson"),
-    ),
-    (
-        "google-open-buildings-25d.toml",
-        include_bytes!("../../../../../producers/extents/buildings/google-open-buildings-25d.toml"),
-    ),
-    (
         "hk-landsd-buildings.geojson",
         include_bytes!("../../../../../producers/extents/buildings/hk-landsd-buildings.geojson"),
     ),
@@ -1999,6 +1991,11 @@ const REAL_BUILDINGS: [(&str, &[u8]); 335] = [
     ("nz-queenstown-3d.toml", include_bytes!("../../../../../producers/extents/buildings/nz-queenstown-3d.toml")),
     ("nz-wellington-3d.geojson", include_bytes!("../../../../../producers/extents/buildings/nz-wellington-3d.geojson")),
     ("nz-wellington-3d.toml", include_bytes!("../../../../../producers/extents/buildings/nz-wellington-3d.toml")),
+    (
+        "open-buildings-25d.geojson",
+        include_bytes!("../../../../../producers/extents/buildings/open-buildings-25d.geojson"),
+    ),
+    ("open-buildings-25d.toml", include_bytes!("../../../../../producers/extents/buildings/open-buildings-25d.toml")),
     ("overture.geojson", include_bytes!("../../../../../producers/extents/buildings/overture.geojson")),
     ("overture.toml", include_bytes!("../../../../../producers/extents/buildings/overture.toml")),
     (
@@ -2123,7 +2120,7 @@ fn the_real_buildings_files_are_taken() {
     // (Only the sources whose extent isn't stated warn: of class unknown.)
     assert!(warnings.iter().all(|w| w.contains("of class unknown")), "{warnings:#?}");
     let c = Extents.file("buildings/overture.geojson", &files["buildings/overture.geojson"]);
-    assert_eq!(c.facts["classes"], serde_json::json!({"mask": 10}));
+    assert_eq!(c.facts["classes"], serde_json::json!({"mask": 16}));
     let s = score(REAL_BUILDINGS[0].1).unwrap();
     assert_eq!((s.primary.as_str(), s.within), ("detail", None));
 }

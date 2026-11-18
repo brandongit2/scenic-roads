@@ -112,3 +112,67 @@ holds = "footprints"
 share = 0.0
 [piece.metrics]
 detail = "footprints"
+
+[[piece]]
+id = "ign-es-storeys"
+label = "IGN España storeys"
+method = "overture"
+dataset = "Instituto Geográfico Nacional (España)"
+holds = "storeys"
+share = 0.5
+[piece.metrics]
+detail = "storeys"
+measured = "survey"
+
+[[piece]]
+id = "esri-storeys"
+label = "Esri Community Maps storeys"
+method = "overture"
+dataset = "Esri Community Maps"
+holds = "storeys"
+share = 0.5
+[piece.metrics]
+detail = "storeys"
+
+[[piece]]
+id = "usgs-lidar"
+label = "USGS lidar footprints"
+method = "overture"
+dataset = "USGS Lidar"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+# The East Asian buildings (CLSM: Shi et al. 2023, footprints only; China, Japan, the Koreas,
+# Mongolia), as Overture names its source (RESEARCH-BUILDINGS-ASIA.md).
+[[piece]]
+id = "east-asia"
+label = "East Asian buildings (CLSM) footprints"
+method = "overture"
+dataset = "doi:10.5281/zenodo.8174931"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+year = 2023
+
+[[piece]]
+id = "vancouver"
+label = "City of Vancouver footprints"
+method = "overture"
+dataset = "City of Vancouver"
+holds = "footprints"
+share = 0.0
+[piece.metrics]
+detail = "footprints"
+
+[[piece]]
+id = "vancouver-heights"
+label = "City of Vancouver heights"
+method = "overture"
+dataset = "City of Vancouver"
+holds = "heights"
+share = 0.5
+[piece.metrics]
+detail = "heights"

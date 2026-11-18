@@ -615,14 +615,14 @@ pub struct Block {
     /// Its metrics' declarations: a constant, a reading (`{field = …}`) or a list of readings.
     pub metrics: toml::Table,
     /// An `overture` block's buildings (None for another method's).
-    pub overture: Option<Overture>,
+    pub overture: Option<MaskBlock>,
 }
 
 /// What an `overture` block's piece holds: the cells (z14 tiles) where, of the build's own copy of
 /// Overture's buildings, those of `dataset` with what it `holds` (HOLDS) are at least `share` of
 /// the cell's buildings, and at least one (bld::bld::extents).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Overture {
+pub struct MaskBlock {
     pub dataset: String,
     pub holds: String,
     pub share: f64,
@@ -784,7 +784,9 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
         }
         if method == "overture" {
             if !b.get("dataset").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
-                bad.push(format!("piece {id}: an overture block names its `dataset`, as Overture's sources do"));
+                bad.push(format!(
+                    "piece {id}: an overture block names its `dataset`, as the release names its sources"
+                ));
             }
             if !b.get("holds").and_then(|v| v.as_str()).is_some_and(|h| HOLDS.contains(&h)) {
                 bad.push(format!("piece {id}: an overture block's `holds` is one of {}", HOLDS.join(", ")));
@@ -860,7 +862,7 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                 }
             },
         };
-        let overture = (method == "overture").then(|| Overture {
+        let overture = (method == "overture").then(|| MaskBlock {
             dataset: b.get("dataset").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             holds: b.get("holds").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             share: b.get("share").and_then(num).unwrap_or(0.0),
@@ -902,7 +904,7 @@ pub struct Summary {
     pub read_bad: Option<String>,
     /// Its `overture` blocks' readings, by block id: the dataset, holds and share its mask pieces
     /// are drawn by (the step reads them here, so they're in its key).
-    pub overture: BTreeMap<String, Overture>,
+    pub overture: BTreeMap<String, MaskBlock>,
     pub pieces: Vec<Piece>,
     pub faults: Vec<(usize, String, String)>,
     pub geometry: Vec<(usize, String, String)>,
@@ -1047,7 +1049,7 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
                             let share = r.get("share").and_then(Value::as_f64).unwrap_or(f64::NAN);
                             s.overture.insert(
                                 p.to_string(),
-                                Overture { dataset: text("dataset"), holds: text("holds"), share },
+                                MaskBlock { dataset: text("dataset"), holds: text("holds"), share },
                             );
                         }
                     }
