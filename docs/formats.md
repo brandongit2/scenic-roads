@@ -6,8 +6,8 @@ is `roadcore::archive::tile_key(z, x, y) = z << 58 | x << 29 | y`.
 
 Bump a format's version on any incompatible change; readers accept the current and previous
 version (docs/building.md §2, Format bumps). Within a container's version 1, additions are told apart by
-section names and meta keys, and readers take both forms: base packs' `elevu` (else `elev`), road
-values' `byroad`, hidata's `railinfo` and meta `lsum`.
+section names and meta keys, and readers take both forms: road values' `byroad`, hidata's
+`railinfo` and meta `lsum`.
 
 ## Names and hashes
 
@@ -135,7 +135,7 @@ map update works it out from the sections where missing.
 |---|---|---|
 | `ways` | `WayRec` (48 B, roadcore) | sorted by (z9 key, Morton) of first vertex; `vstart` local; `name`, `ref_`, `surface`, `route` index `strings` |
 | `verts` | `[i32; 2]` | densified geometry |
-| `elevu` | `u16` | elevation, decimetres + 5,000 (`final.u16`); older packs: `elev`, `i16` dm clamped at ±3,200 m. Readers take either (`roadcore::elev`) |
+| `elevu` | `u16` | elevation, decimetres + 5,000 (`final.u16`, `roadcore::elev`) |
 | `raw` | `f32` | raw DEM sample, NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
 | `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the map's `dem_labels` |
