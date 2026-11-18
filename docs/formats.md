@@ -917,7 +917,7 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …]}
+{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …]}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
@@ -996,25 +996,30 @@ read as absent):
   agent's, as the history's end says them), `resumed` the blocks or pieces it found kept by an
   earlier run's resume log (jobrt::resume_log: the work a resume skips) and `made` those it made and
   kept (the job's, a child program's taken in). A cancelled job is stopped by SIGTERM: the job
-  writes its record from the signal (`ok` false, an error span "stopped by a signal") and exits
-  143; its agent (`cancel_slot`) waits for it within the stop's grace, then takes it as
+  writes its record from the signal (`ok` false, an error span "stopped by a signal"; a record
+  being written as it came is written whole first, and stands) and exits 143; its agent (`cancel_slot`) waits for it within the stop's grace, then takes it as
   `cancelled`.
 - `implausible`: the plausibility checks it failed as its agent took it (jobrt::timings::implausible),
-  each a sentence; such a record is kept, never learned from (the phase shares, `learnable`), and
-  the build page's job view says why. Each check within 5 % and 1 s of its figure (the readings'
+  each a sentence; such a record is kept, never learned from (the phase shares, `learnable`: nor
+  is one that isn't `ok` or whose `done.end` is said and isn't `done`, a cancel that came after
+  its last write), and the build page's job view says why. Each check within 5 % and 1 s of its figure (the readings'
   grain, `CHECK_SHARE`, `CHECK_S`):
   - its CPU within its threads: `cpu_s` ≤ `threads_most` (else `threads`) × `wall_s`;
   - its instructions consistent with its CPU at its Mac's speed: never counted over more than its
     CPU (`work.cpu_s` at most `cpu_s`; less is `uncounted_s`, not a failure), some counted where
     it took CPU, and its cycles over that CPU, the performance cores' too, at most the Mac's top
-    clock (jobrt::sys::top_clock: the performance cores' top state in the power manager's table,
-    IOKit's `pmgr` `voltage-states5-sram`, a u32 Hz (kHz on newer chips) every 8 bytes; where
-    that's missing, the performance cores' cycles over their time while a thread spins at the
-    user-interactive QoS till 0.2 s of their CPU, 2 s by the clock at most; read once a process,
-    the agent's in the background from its start, a record taken before it's known not checked
-    for it);
+    clock (jobrt::sys::top_clock: the highest state in the power manager's tables, every
+    `AppleARMIODevice` node's `voltage-states<n>-sram` (`pmgr`'s on the M1 and M4 generations,
+    `pmgr-child`'s on the M6), a u32 frequency every 8 bytes, a table's in kHz where its top is
+    under 10^8 Hz: the fastest cluster's, `5` (the M1 Pro's 3228 MHz, the M4 Pro's 4512, the M6's
+    Super cores' 4788); read once a process, the agent's in the background from its start);
   - its phases summing to its run: the main thread's phases' wall within `wall_s`, and its phases'
     CPU and `untimed_cpu_s` adding up to `cpu_s`.
+- `unchecked`: the checks its agent couldn't make, each said with why, and shown in the job view:
+  the clock's where this Mac has no table (its clock then measured, the performance cores' cycles
+  over their time while a thread spins at the user-interactive QoS till 0.2 s of their CPU, 2 s
+  by the clock at most: the clock as it was, not its top, so nothing to hold cycles to) or its
+  top clock wasn't read yet.
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,

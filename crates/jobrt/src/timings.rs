@@ -372,6 +372,10 @@ pub struct RunRec {
     /// learned from. Empty: it passed them (or it's from before them, task #1419).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implausible: Vec<String>,
+    /// The checks its agent couldn't make, each said with why (`stamp`): its clock's, where this
+    /// Mac's top clock was measured, not read from its table, or not yet known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<String>,
 }
 
 /// What a job's processes retired (macOS's counts, crate::sys::Rusage): its own process's exactly,
@@ -622,13 +626,24 @@ impl RunRec {
 
     /// Stamped by the agent that ran it, as it ended (task #1419): how it ended (`end`: `Done`'s),
     /// the targets it finished of the `of` it was given, its processes' NAS traffic from its counts
-    /// folder `counts` (`Nas::of_dir`), then the plausibility checks it fails at its Mac's clock
-    /// `top_clock` (`implausible`).
-    pub fn stamp(&mut self, end: &str, finished: usize, of: usize, counts: &Path, top_clock: Option<f64>) {
+    /// folder `counts` (`Nas::of_dir`), then the plausibility checks it fails at its Mac's top clock
+    /// `top` (`implausible`): the clock's only at one from the power manager's table, a measured
+    /// one's or none's said in `unchecked`.
+    pub fn stamp(&mut self, end: &str, finished: usize, of: usize, counts: &Path, top: Option<crate::sys::TopClock>) {
         let done = self.done.get_or_insert_with(Done::default);
         (done.end, done.targets, done.of) = (end.to_string(), finished as u64, of as u64);
         self.nas = Nas::of_dir(counts);
-        self.implausible = implausible(self, top_clock);
+        // (A spun clock is the clock as it was then, not its top: nothing to hold cycles to.)
+        let table = top.filter(|t| t.from_table).map(|t| t.hz);
+        self.implausible = implausible(self, table);
+        self.unchecked = match top {
+            Some(t) if !t.from_table => vec![format!(
+                "its clock: this Mac's top clock measured by a spin ({:.2} GHz), not read from its power manager's table",
+                t.hz / 1e9
+            )],
+            None => vec!["its clock: this Mac's top clock not known yet".into()],
+            Some(_) => Vec::new(),
+        };
     }
 
     /// The main thread's top-level phases' wall time.
@@ -1090,7 +1105,9 @@ extern "C" fn on_term(_: i32) {
 }
 
 /// The job stopped by a signal (`TERMED`): its run ended as not ok (`finish`), its record kept where
-/// its agent takes it, and the process gone with the status a SIGTERM's death says (128 + 15).
+/// its agent takes it, and the process gone with the status a SIGTERM's death says (128 + 15). A
+/// `finish` under way on another thread is waited for (`FINISHING`), so its record is written whole
+/// before the exit, and this one's then does nothing.
 fn ended_by_term() -> ! {
     span_event(crate::spans::event("error", "stopped by a signal (its agent's)"));
     finish(false);
@@ -1141,6 +1158,9 @@ fn sample_memory() {
                     let t = Instant::now();
                     let Some((v, all)) = group_now() else { continue };
                     LAST_MEM.store(v, Ordering::Relaxed);
+                    // (A thread that panicked holding the run: no more samples, and a SIGTERM then
+                    // goes unseen here, so the job dies by its agent's SIGKILL at the stop's grace,
+                    // 30 s, with no record.)
                     let Ok(mut g) = run().lock() else { return };
                     let Some(r) = g.as_mut().filter(|r| !r.finished) else { continue };
                     for o in &r.open {
@@ -1664,6 +1684,7 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
             (resumed + made > 0).then(|| Done { resumed, made, ..Default::default() })
         },
         implausible: Vec::new(),
+        unchecked: Vec::new(),
     };
     let sg = crate::control::safe_gaps();
     rec.safe_points = sg.points;
@@ -1713,9 +1734,14 @@ fn gap_name(g: &Gap) -> String {
     }
 }
 
+/// Held through a `finish`, from its record's taking to its last write: a SIGTERM's exit
+/// (`ended_by_term`) waits for it, so it never cuts a record's write short.
+static FINISHING: Mutex<()> = Mutex::new(());
+
 /// Ends the run: its table in the log, its record where `SCENIC_TIMINGS` (a job's) or
 /// `SCENIC_PHASES_TO` (a child's) says. Once; a run never started: nothing.
 pub fn finish(ok: bool) {
+    let _writing = FINISHING.lock().unwrap_or_else(|e| e.into_inner());
     // (Its spans' last: the open ones cut here, its end said.)
     if run().lock().unwrap().as_ref().is_some_and(|r| !r.finished && r.spans.is_some()) {
         span_event(crate::spans::Ev { ok: Some(ok), ..crate::spans::event("end", "") });
@@ -2194,10 +2220,13 @@ pub struct PhaseShare {
     pub bytes: f64,
 }
 
-/// Whether a run's record is learned from (its phase shares): it ended well, took time, and passed
-/// the plausibility checks its agent made (`implausible`).
+/// Whether a run's record is learned from (its phase shares): it ended well and did its whole job
+/// (`done.end` `done`, or none said: before task #1419; a cancel coming after its last write leaves
+/// it `ok` but `cancelled`), took time, and passed the plausibility checks its agent made
+/// (`implausible`).
 pub fn learnable(r: &RunRec) -> bool {
-    r.ok && r.wall_s > 0.0 && r.implausible.is_empty()
+    let whole = r.done.as_ref().is_none_or(|d| d.end.is_empty() || d.end == "done");
+    r.ok && whole && r.wall_s > 0.0 && r.implausible.is_empty()
 }
 
 /// The step a run of `kind` is a job of (pipeline::agent::steps' id): a leased task's runs are timed
@@ -3510,7 +3539,7 @@ mod tests {
         b.extend(1200u64.to_le_bytes());
         std::fs::write(d.path().join(BASE), b).unwrap();
         let mut r = RunRec { done: Some(Done { resumed: 4, made: 6, ..Default::default() }), ..clean() };
-        r.stamp("paused", 2, 5, d.path(), Some(3.2e9));
+        r.stamp("paused", 2, 5, d.path(), Some(crate::sys::TopClock { hz: 3.2e9, from_table: true }));
         assert_eq!(r.done, Some(Done { end: "paused".into(), targets: 2, of: 5, resumed: 4, made: 6 }));
         let n = r.nas.unwrap();
         assert_eq!((n.read_b, n.held_b, n.read_back_b, n.wrote_b), (5000, 1200, 200, 700));
@@ -3521,6 +3550,25 @@ mod tests {
         r.stamp("done", 1, 1, &d.path().join("none"), None);
         assert_eq!((r.nas, r.done.as_ref().map(|d| d.end.as_str())), (None, Some("done")));
         assert_eq!(r.implausible.len(), 2, "{:?}", r.implausible);
+        assert_eq!(r.unchecked, vec!["its clock: this Mac's top clock not known yet".to_string()]);
+        // (Its cycles at 5 GHz: past a table's 3.2 GHz; a spun 3.2 GHz is not held to, and said.)
+        let fast = || RunRec {
+            work: clean().work.map(|w| Work { cycles: 1_500_000_000_000, p_cycles: 1_000_000_000_000, ..w }),
+            ..clean()
+        };
+        let mut r = fast();
+        r.stamp("done", 1, 1, d.path(), Some(crate::sys::TopClock { hz: 3.2e9, from_table: true }));
+        assert!(r.implausible.iter().any(|w| w.contains("GHz")) && r.unchecked.is_empty(), "{r:?}");
+        let mut r = fast();
+        r.stamp("done", 1, 1, d.path(), Some(crate::sys::TopClock { hz: 3.2e9, from_table: false }));
+        assert!(r.implausible.is_empty() && learnable(&r), "{:?}", r.implausible);
+        assert!(r.unchecked.len() == 1 && r.unchecked[0].contains("spin (3.20 GHz)"), "{:?}", r.unchecked);
+        // (A cancel after its last write: ok, but not its whole job, so not learned from; one from
+        // before ends were said is.)
+        r.done.as_mut().unwrap().end = "cancelled".into();
+        assert!(r.ok && !learnable(&r));
+        assert!(learnable(&RunRec { done: None, ..r.clone() }));
+        assert!(learnable(&RunRec { done: Some(Done::default()), ..r }));
     }
 
     /// Task #1419: a job stopped by its agent's SIGTERM (a cancel) keeps its record, as a run that
@@ -3680,8 +3728,8 @@ mod tests {
         assert!(r.peak_mb.is_some_and(|m| m > 0), "{:?}", r.peak_mb);
         assert_eq!((r.threads, r.threads_most, r.peak_threads), (Some(2), Some(5), Some(5)));
         let top = crate::sys::top_clock();
-        assert!(top.is_some_and(|t| t > 5e8 && t < 1e10), "{top:?}");
-        assert_eq!(implausible(&r, top), Vec::<String>::new(), "{r:?}");
+        assert!(top.is_some_and(|t| t.hz > 5e8 && t.hz < 1e10 && t.from_table), "{top:?}");
+        assert_eq!(implausible(&r, top.map(|t| t.hz)), Vec::<String>::new(), "{r:?}");
         assert!(table(&r).contains("retired"), "{}", table(&r));
     }
 }

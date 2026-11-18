@@ -47,7 +47,7 @@ test("the axis's ticks: round steps of the job's time, milliseconds zoomed in, a
 
 const rec = (job, wall, cpu, peak, nas = 0) => ({ job, wall_s: wall, cpu_s: cpu, threads: 4, phases: [{ name: "a", wall_s: wall, waits: { nas_s: nas }, peak_mb: peak / 2, sub: [{ name: "b", peak_mb: peak }] }, { name: "bg", background: true, waits: { nas_s: 99 } }] });
 test("a record's figures, and its step's medians without it", () => {
-  const none = { insn: null, ipc: null, ghz: null, pShare: null, counted: null, asked: null, served: null, done: null, implausible: [] };
+  const none = { insn: null, ipc: null, ghz: null, pShare: null, counted: null, asked: null, served: null, done: null, implausible: [], unchecked: [] };
   assert.deepEqual(recordFigures(rec("x", 100, 250, 800, 12)), { wall: 100, cpu: 250, cores: 2.5, peak: 800, threads: 4, nas: 12, net: 0, ...none });
   // (Task #1419: the run's own peak, what it retired, its NAS asked and served, its work and checks.)
   const f = recordFigures({ ...rec("y", 100, 250, 800), peak_mb: 900, work: { insn: 6e11, cycles: 5e11, p_cpu_s: 200, cpu_s: 250 }, nas: { read_b: 300, held_b: 700 }, done: { end: "paused", targets: 1, of: 3 }, implausible: ["CPU past"] });

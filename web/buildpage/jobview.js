@@ -86,7 +86,7 @@ export function recordFigures(rec) {
     insn: w?.insn ?? null, ipc: w?.cycles > 0 ? w.insn / w.cycles : null, ghz: w?.cpu_s > 0 ? w.cycles / w.cpu_s / 1e9 : null,
     pShare: w?.cpu_s > 0 ? w.p_cpu_s / w.cpu_s : null, counted: w?.cpu_s ?? null,
     asked: nas ? nas.read_b + (nas.held_b || 0) : null, served: nas ? nas.read_b : null,
-    done: rec.done ?? null, implausible: rec.implausible || [],
+    done: rec.done ?? null, implausible: rec.implausible || [], unchecked: rec.unchecked || [],
   };
 }
 

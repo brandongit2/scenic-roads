@@ -130,7 +130,7 @@ function side(f, out) {
       ["NAS asked", fig?.asked != null ? `${bytes(fig.asked)} read, ${bytes(fig.served)} of it served by the NAS${v.record.nas.wrote_b ? `; ${bytes(v.record.nas.wrote_b)} written` : ""}` : null, "The NAS files' bytes it read, whichever answered, and those read through the share (the rest this Mac's page cache held)"],
       ["work done", fig?.done ? `${fig.done.of ? `${n(fig.done.targets)} of ${n(fig.done.of)} targets` : "no targets"}${fig.done.end && fig.done.end !== "done" ? `, ${fig.done.end}: a part's figures` : ""}${fig.done.resumed ? `; ${n(fig.done.resumed)} blocks resumed, ${n(fig.done.made || 0)} made` : ""}` : null, "The targets it finished, how it ended, and the blocks a resumed run took from an earlier one"],
       ["NAS weight", "not recorded", "The lead weighs a running job's NAS share from its beats (coord::sched job_weight); nothing keeps the weight it was granted under"],
-    ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null),
+    ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null, fig?.unchecked.length ? h("div", "small dim", `Not checked: ${fig.unchecked.join("; ")}`) : null),
     sec("When and how", kv([
       ["started", f.t0 != null ? clockText(f.t0, { date: true }) : "–"],
       ["took", f.t0 != null && end != null ? `${dur(end - f.t0)}${v.running ? " so far" : ""}` : "–"],

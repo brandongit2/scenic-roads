@@ -3424,7 +3424,8 @@ impl Agent {
     /// with what this agent knows of the run (task #1419): how it ended (`end`: jobrt::timings::Done's),
     /// the targets it finished of the `of` it was given, its processes' NAS traffic (its counts
     /// folder), and the plausibility checks it fails at this Mac's top clock
-    /// (jobrt::timings::implausible; none checked while it's still being read, `top_clock_soon`).
+    /// (jobrt::timings::implausible: the clock's only at one from its power manager's table, not
+    /// while it's still being read, `top_clock_soon`, nor at a measured one; the record says so).
     fn take_timings(&mut self, k: usize, end: &str, finished: usize, of: usize) {
         // (By where the job writes them, whoever leads now: a member's leased job in its folder,
         // this Mac's own in the agent's.)
