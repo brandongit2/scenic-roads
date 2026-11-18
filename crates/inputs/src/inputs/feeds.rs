@@ -192,7 +192,7 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
     };
     let mut feed = json!({
         "id": id, "format": format, "url": url, "fetch": fetch, "refresh_days": refresh,
-        "name": d.name, "licence": d.licence, "source": d.source, "territory": d.territory, "redistribute": d.redistribute,
+        "name": d.name, "licence": d.licence, "source": d.source, "territory": d.territory,
     });
     if format == CATALOGUE {
         let table = |k: &str, bad: &mut dyn FnMut(&str, String)| -> Map<String, Value> {
@@ -630,7 +630,7 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
         assert_eq!(
             c.facts["feed"],
             json!({"id": "sncf", "format": "gtfs", "url": "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip", "fetch": {"method": "get"}, "refresh_days": 7,
-                   "name": "SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER)", "licence": "Licence Ouverte 2.0", "source": "https://ressources.data.sncf.com/", "territory": ["FR"], "redistribute": true,
+                   "name": "SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER)", "licence": "Licence Ouverte 2.0", "source": "https://ressources.data.sncf.com/", "territory": ["FR"],
                    "replaces": [], "ferry_routes": [], "modes": ["rail"], "order": 1})
         );
         assert_eq!(c.facts["description"]["credit"], "SNCF Voyageurs");

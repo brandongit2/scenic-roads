@@ -361,7 +361,6 @@ dataset (registers, static GTFS), or the declaration itself (feeds, elevation).
 | `licence_url`, `source` | URL | no | the terms; the page it comes from |
 | `retrieved` | date | no | the owner's record |
 | `territory` | ISO 3166 codes, or `"world"` | yes | where it applies, checked against the data where possible |
-| `redistribute` | bool, default true | yes | false: never in the World download |
 | `notes` | string | no | free text |
 
 Parsed by `inputs::credits::parse_description`; a description without its `credit` is an error (the
@@ -1908,7 +1907,7 @@ its index's features each naming a `.tif` `file` and a `zoom` 0–18, and a pack
 |---|---|---|---|---|---|
 | `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` | z8 |
 | `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m) |
-| `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
+| `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; its terms bar redistribution; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
 | `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
 | `gblq` | surveyed lakes (Québec) | 11 | lake | `raster.py` (metres, positive down) | z16 |

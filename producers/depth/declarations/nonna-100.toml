@@ -5,8 +5,7 @@ licence = "CHS NONNA Licence"
 licence_url = "https://open.canada.ca/data/en/dataset/d3881c4c-650d-4070-bf9b-1e00aabf0a1d"
 source = "https://open.canada.ca/data/en/dataset/d3881c4c-650d-4070-bf9b-1e00aabf0a1d"
 territory = ["CA"]
-redistribute = false
-notes = "The owner accepted the licence on 2026-10-06. producers/depth/nonna.py 100 reads the keyless coverage service; chart datum to MSL by CHS's stations (stations.py chs). Never redistributed; its notice shows on the map wherever its depths do, and in the credits."
+notes = "The owner accepted the licence on 2026-10-06. producers/depth/nonna.py 100 reads the keyless coverage service; chart datum to MSL by CHS's stations (stations.py chs). Its terms bar redistribution (a note, not a gate); its notice shows on the map wherever its depths do, and in the credits."
 
 [data]
 role = "depth"

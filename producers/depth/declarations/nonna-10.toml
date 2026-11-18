@@ -5,7 +5,6 @@ licence = "CHS NONNA Licence"
 licence_url = "https://open.canada.ca/data/en/dataset/d3881c4c-650d-4070-bf9b-1e00aabf0a1d"
 source = "https://open.canada.ca/data/en/dataset/d3881c4c-650d-4070-bf9b-1e00aabf0a1d"
 territory = ["CA"]
-redistribute = false
 notes = "As NONNA-100 (nonna.py 10's steps in the service's 0.5° by 0.3° blocks where NONNA-100 has water, a chunk of blocks at a time: producers/depth/chunked.py nonna10)."
 
 [data]

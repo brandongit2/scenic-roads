@@ -38,18 +38,12 @@ pub struct Description {
     /// ISO 3166 codes, or `["world"]`.
     #[serde(default)]
     pub territory: Vec<String>,
-    #[serde(default = "yes")]
-    pub redistribute: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
     /// The short name a list on the map gives it (an elevation dataset's, by its `code`: §6.8);
     /// none: its `name`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// Where a description's data lies, read from the data (§4.8).
@@ -66,7 +60,7 @@ pub enum Extent {
 
 /// A description file parsed (TOML): it, and the findings its shape raises (an error for its credit
 /// missing, or a field of the wrong type). `keyed`: the digest of the fields that enter keys
-/// (`territory`, `redistribute`).
+/// (`territory`).
 pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<Finding>, String) {
     let err = |what: &str, msg: String| {
         Finding::new("description", Level::Error, &[path], &[what], vec![path.to_string()], msg)
@@ -87,7 +81,6 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
         let ok = match k.as_str() {
             "name" | "what" | "credit" | "licence" | "licence_url" | "source" | "notes" | "label" => x.is_str(),
             "retrieved" => x.is_str() || x.is_datetime(),
-            "redistribute" => x.is_bool(),
             "territory" => {
                 x.as_str() == Some("world")
                     || x.as_array().is_some_and(|a| a.iter().all(|c| c.as_str().is_some_and(iso_3166)))
@@ -110,7 +103,6 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
         }
         None => Vec::new(),
     };
-    let redistribute = v.get("redistribute").and_then(|x| x.as_bool()).unwrap_or(true);
     let retrieved =
         v.get("retrieved").map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).unwrap_or_default();
     let d = Description {
@@ -122,12 +114,12 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
         source: s("source"),
         retrieved,
         territory: territory.clone(),
-        redistribute,
         notes: s("notes"),
         label: s("label"),
     };
-    let keyed =
-        store::naming::hash16(format!("territory {}\nredistribute {redistribute}", territory.join(",")).as_bytes());
+    // (The digest's text ends as it did when a `redistribute` field was part of it: changing it
+    // would re-key every description's users, so it stays as the digest's own fixed text.)
+    let keyed = store::naming::hash16(format!("territory {}\nredistribute true", territory.join(",")).as_bytes());
     (Some(d), Vec::new(), keyed)
 }
 

@@ -143,18 +143,8 @@ pub struct Declaration {
 pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let text = std::str::from_utf8(bytes).map_err(|_| vec!["isn't UTF-8 text".to_string()])?;
     let v: toml::Table = toml::from_str(text).map_err(|e| vec![format!("isn't TOML: {}", e.message())])?;
-    const DESCRIPTION: [&str; 10] = [
-        "name",
-        "what",
-        "credit",
-        "licence",
-        "licence_url",
-        "source",
-        "retrieved",
-        "territory",
-        "redistribute",
-        "notes",
-    ];
+    const DESCRIPTION: [&str; 9] =
+        ["name", "what", "credit", "licence", "licence_url", "source", "retrieved", "territory", "notes"];
     let mut why: Vec<String> = v
         .keys()
         .filter(|k| !DESCRIPTION.contains(&k.as_str()) && k.as_str() != "data")

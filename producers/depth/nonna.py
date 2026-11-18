@@ -2,7 +2,7 @@
 """Canada's depth sources' grids (docs/inputs.md §6.10): CHS's NONNA-100 (100 m) and NONNA-10
 (10 m), from CHS's keyless coverage service (WCS 2.0.1, EPSG:3857 subsets), heights above chart
 datum (negative below it; drying heights positive). Its licence (accepted by the owner) asks every
-product made from it to carry its notice; the declaration carries it, never redistributed.
+product made from it to carry its notice; the declaration carries it (its terms bar redistribution: a note).
 
 - `--box` is fetched in blocks (`--block` degrees, 0.5 × 0.3 for NONNA-10 as the service's own
   index cells are) into `--cache`, one request at a time; a block with

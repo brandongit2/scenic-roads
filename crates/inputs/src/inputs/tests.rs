@@ -626,7 +626,7 @@ fn copies_are_named_by_their_path_and_content() {
 fn credits_come_from_the_descriptions_beside_the_tables() {
     let toml = "name = \"Repertoire\"\nwhat = \"Québec heritage\"\ncredit = \"Ministere de la Culture du Quebec\"\nlicence = \"CC-BY-4.0\"\nterritory = [\"CA-QC\"]\n".as_bytes();
     let (d, f, keyed) = parse_description_ok(toml);
-    assert!(f.is_empty() && d.credit.starts_with("Ministere") && d.redistribute && keyed.len() == 16);
+    assert!(f.is_empty() && d.credit.starts_with("Ministere") && keyed.len() == 16);
     // The credit is required, the territory checked.
     let (none, f, _) = credits::parse_description("x.toml", b"what = \"x\"\nterritory = [\"france\"]\n");
     assert!(none.is_none() && f.len() == 2 && f.iter().all(|x| x.level == Level::Error), "{f:?}");
