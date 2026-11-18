@@ -1473,7 +1473,9 @@ fn coast(
             .unwrap_or(&none)
             .iter()
             .flat_map(|&k| match made.get(ids[k]) {
-                Some(m) => [m.land.cells.get(&c), m.water.cells.get(&c), m.lakes.cells.get(&c)].into_iter().flatten().collect(),
+                Some(m) => {
+                    [m.land.cells.get(&c), m.water.cells.get(&c), m.lakes.cells.get(&c)].into_iter().flatten().collect()
+                }
                 None => side_ref(k, false, c),
             })
             .cloned()
