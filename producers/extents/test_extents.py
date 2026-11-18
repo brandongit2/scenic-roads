@@ -318,6 +318,15 @@ class Geometry(unittest.TestCase):
         self.assertEqual(g.bounds[3], 90.0)
         self.assertTrue(g.contains(sg.Point(100.0, 89.0)))
 
+    def test_a_polygons_many_holes_are_taken_out(self):
+        # (A mask's polygon with a hole for every cell of no data among its cells.)
+        holes = [sg.box(x * 4000 + 1000, y * 4000 + 1000, x * 4000 + 2000, y * 4000 + 2000).exterior for x in range(20) for y in range(20)]
+        p = sg.Polygon(sg.box(0, 0, 80000, 80000).exterior, holes)
+        g = extents.to_wgs84(p, "EPSG:32631", 1000)
+        self.assertAlmostEqual(g.area / extents.to_wgs84(sg.box(0, 0, 80000, 80000), "EPSG:32631", 1000).area, 1 - 400 / 6400, 3)
+        hole = extents.to_wgs84(sg.box(1000, 1000, 2000, 2000), "EPSG:32631", 1000).centroid
+        self.assertFalse(g.contains(hole))
+
 
 class Pieces(unittest.TestCase):
     def run_block(self, block, feats, availability="open"):

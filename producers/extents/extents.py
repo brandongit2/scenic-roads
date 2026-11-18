@@ -1131,7 +1131,9 @@ def raster_shapes(ds, b):
         h, w = mask.shape
         tr = ds.transform @ ds.transform.scale(ds.width / w, ds.height / h)
         shapes = [sg.shape(s) for s, k in rasterio.features.shapes(mask.astype(np.uint8), mask=mask, transform=tr) if k]
-        geom = to_wgs84(shapely.union_all(shapes), ds.crs.to_wkt(), abs(tr.a))
+        # (The mask's regions are apart already, meeting at most at a corner: a union of them
+        # would only cost, the pieces' repair below takes their corners.)
+        geom = to_wgs84(sg.MultiPolygon(shapes), ds.crs.to_wkt(), abs(tr.a))
         yield geom, ({"res_m": round(res, 4)} if v is None else {"res_m": round(res, 4), b["values"]: v})
 
 
@@ -1284,6 +1286,11 @@ def ring_region(lons, lats):
         pole = 90.0 if sum(lats) > 0 else -90.0
         pts = pts[:-1] + [(xs[-1], lats[-1]), (xs[-1], pole), (xs[0], pole), (xs[0], lats[0])]
     poly = shapely.make_valid(sg.Polygon(pts))
+    if not turns and min(xs) >= -180 and max(xs) <= 180:
+        # (Within the plane already, as nearly every ring is: no cut to make. A mask's tens of
+        # thousands of rings cut against five boxes each took most of a source-identifier grid's
+        # run.)
+        return polygons(poly)
     parts = []
     for k in (-2, -1, 0, 1, 2):
         cut = poly.intersection(sg.box(-180 + 360 * k, -90, 180 + 360 * k, 90))
@@ -1321,10 +1328,9 @@ def to_wgs84(geom, crs, step):
             if tr:
                 xs, ys = tr.transform(xs, ys)
             regions.append(ring_region(list(xs), list(ys)))
-        shell = regions[0]
-        for hole in regions[1:]:
-            shell = shell.difference(hole)
-        out.append(shell)
+        # (Its holes taken out at once: one at a time, a mask's thousands of holes made each
+        # difference again of the whole shell, half an hour for IBCSO's.)
+        out.append(regions[0].difference(shapely.union_all(regions[1:])) if len(regions) > 1 else regions[0])
     return polygons(shapely.union_all(out))
 
 
