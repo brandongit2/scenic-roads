@@ -1969,8 +1969,8 @@ Where each known data source really has data, and how good it is there: the inpu
 "data available" layers (docs/steps.md §14), which colour every place by the best data any source
 has for it. The map's regions play no part in it, and no source is assumed to cover the planet: the
 worldwide models are sources like any other, and a place no declared source covers has no data.
-One format serves three **themes**, each with its own metrics and score: `terrain` (built here),
-and `bathymetry` and `buildings` (planned, when their research is done).
+One format serves three **themes**, each with its own metrics and score: `terrain` and
+`bathymetry` (built here), and `buildings` (planned).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 tables at this section's end (`producers/extents/`), and the unit `extents` that checks them
@@ -1979,8 +1979,10 @@ Europe's (task #1350), the surface models of both (task #1370), the point clouds
 #1370 left (task #1379), Asia's, Latin America's and the
 Caribbean's, Oceania's, Africa's, the polar south's and the worldwide models not declared before
 (task #1350's third run); the step `available` that draws the pieces' tiles, and the server's
-score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the built set, the elevation datasets each where the terrain used it, drawn from the build's own masks (the step `available-built`, task #1349). Planned:
-`piece.dataset` (extents from the build's own data; task #1403). Task #1334.
+score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the built set, the elevation datasets each where the terrain used it, drawn from the build's own masks (the step `available-built`, task #1349); the bathymetry theme: its score, its
+declarations and pieces (below), the `raster` reader by value, and its layers cut to the sea's side
+with the inland water (task #1351). Planned: `piece.dataset` (extents from the build's own data;
+task #1403); the buildings theme (below). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1991,6 +1993,7 @@ inputs/extents/
     score.toml          the theme's score: its metrics, their scales and weights, and how tied pieces rank (below)
     <source>.toml       a source: its description, availability, and how each piece's extent is found
     <source>.geojson    its pieces, made by producers/extents/extents.py from the declaration
+  bathymetry/           the same three kinds of file
 ```
 
 **A piece** is a source's extent with one set of metrics: the area where the source's data has the
@@ -2046,7 +2049,7 @@ area; otherwise the piece is `none`, listed and not drawn.
 
 | Field | Meaning |
 |---|---|
-| `theme` | `terrain` |
+| `theme` | `terrain` or `bathymetry`, its folder's |
 | `availability` | the source's, as above; a piece block may say its own |
 | `[[piece]]` | one or more blocks, each a way of finding extents and the metrics of what it finds |
 | `piece.id` | the block's name, the first part of its pieces' ids |
@@ -2073,7 +2076,7 @@ a new source of a kind it knows is a new declaration, no code):
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
 | `file` | a published index file fetched whole, its size checked first: GeoJSON (a collection, or a lone Feature: LINZ's capture areas) or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn; or a catalogue's JSON answer that isn't GeoJSON (`records`, the dotted path of its list of records; `footprint`, the dotted path in each to its GeoJSON outline, a geometry, Feature or FeatureCollection, its polygons one feature; its properties the record's other values by their dotted paths, `Dataset.identifier.value`: OpenTopography's otCatalog) | `index` or `service` |
 | `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder; with `links`, each zip's a page links, FABDEM's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR` or a coarse grid, or an ArcGIS image service's `exportImage`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS, the Basque Government's WCS, and Hawaii's and Illinois's image services' exports) | `files` |
+| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR` or a coarse grid, or an ArcGIS image service's `exportImage`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS, the Basque Government's WCS, and Hawaii's and Illinois's image services' exports). **By value** (a source-identifier grid, which has no overview a code survives: a mean of codes is no code): with `block`, every cell read, `block` rows at a time, a mask cell for each `block` by `block` cells (its `grain_m`), and with `values`, the property each value goes in, a mask for each value the cells hold, a mask cell in every value any of its cells holds (so a track narrower than a mask cell is drawn a cell wide); `skip`, values that are no data (GEBCO's 0, the land); `by` the property, a piece a value. `member`, a regular expression: the files of the zip at `url` whose names match it, the zip fetched whole (GDAL opens no zip by range: GEBCO's eight 90° GeoTIFFs, 96 MB); `values` without `block` stops the run | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
@@ -2085,7 +2088,9 @@ followed (D-Trust's AIA answers a 302 to a host of its own), each held to the sa
 64 KiB in 30 s at most, a root never loaded, are added with partial chains refused, so each is a
 link to one of the store's roots, never trusted by itself, the host's name checked as ever; a
 certificate refused otherwise, expired or misnamed, is refused at once, not retried; revocation
-isn't checked), the provider's 429s and 5xx retried (four tries, waiting longer each time), a
+isn't checked), the provider's 429s and 5xx retried (four tries, waiting longer each time), as is
+an answer shorter than its stated length (a connection closed early: GEBCO's zip cut short; four
+tries, then the run stops), a
 request's time limit (180 s; a block's `timeout_s`, for a server slower to make its answer), an
 answer kept in the `--cache` only once what read it went on (one the run stopped on, an error page
 or a service's error sent as a 200, is fetched afresh next run), and a limit on what one source's reads come to (`--max-gb`, 5,
@@ -2192,8 +2197,8 @@ which so has no layer of its own beside it. The layers' colours are the app's (i
 docs/steps.md §14); a `score.toml` still holding the fields that drew them as classes (`ramp`,
 `shade`, a metric's `classes` and `colours`) is read as if it didn't, and the check warns.
 
-**Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` so
-far). Errors:
+**Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` and
+`bathymetry`). Errors:
 - a file not of the shape (`<theme>/<source>.toml`, `<theme>/<source>.geojson`,
   `<theme>/score.toml`, ids lower-case letters, digits, `-` and `_`); a theme folder the app doesn't
   know, or a file's `theme` not its folder's (`ex-shape`, `ex-theme`);
@@ -2566,27 +2571,77 @@ as they are: the layers cut every source's pieces to the theme's side of the coa
 draw them (docs/steps.md §14, the cut: GeoNB's blocks hold 89,135 km² of land, the rest its
 neighbours' under the blocks).
 
-**Bathymetry and buildings** (planned) take the same folder, declaration, piece properties and
-score, with their own metrics in their own `score.toml`. Nothing in the format is the terrain's
-but its metrics' names: a piece is an outline, an availability, an extent class, metrics and what
-was read. A bathymetry piece (a survey, or a class of a composite grid's source grid):
+**Bathymetry** (task #1351; `producers/extents/bathymetry/`): the depths of the sea, the lakes and
+the rivers, in the same folder shape, declaration, piece properties and score as the terrain's;
+nothing in the format is the terrain's but its metrics' names. A piece is a survey, a composite
+grid's part made from one kind of source, or a product's cells: GEBCO's type identifier grid read
+by value gives a piece for each kind of source its cells hold,
 
-    {"piece": "tid/multibeam", "extent": "files", "availability": "open", "spacing_m": 15,
-     "method": "multibeam", "density": 0.9, "year": 2019}
+    {"piece": "tid/11", "name": "GEBCO_2026", "extent": "files", "availability": "open",
+     "spacing_m": 463.3, "measured": "multibeam", "stated": {"measured": "11"}}
 
-with `method` a word on a `values` scale (multibeam, lidar, single-beam, satellite-derived,
-interpolated), `density` the survey's share of cells holding a sounding (a `linear` scale), and
-`spacing_m` the grid's, which for a composite says little and weighs little. A buildings piece:
+Its layers are cut to the water's side of the coastline, the sea and the water layer's inland
+water (docs/steps.md §14, the cut), so a lake's or a river's depths show and the land's don't.
+Its score (`bathymetry/score.toml`; the owner's to tune), the terrain's rule that the grid decides:
 
-    {"piece": "city/2023", "extent": "mask", "availability": "open", "detail": "LoD2",
-     "completeness": 0.97, "year": 2023}
+| | Value |
+|---|---|
+| `primary` | `spacing_m`, log: 2000 m → 0, 0.1 m → 1 (a 1 arc-minute grid, 1.85 km, the coarsest declared; a bathymetric lidar's 0.5 m the finest) |
+| `within` | 1.25: 1/16 arc-minute (115 m) and 100 m, 1 arc-second (31 m) and 30 m, are one grid, where the rest decides |
+| `share` | 0.02 (the bound for these numbers is 0.0220) |
+| `measured` | weight 0.6, `values`: how the depths were measured, GEBCO's type identifier classes in IHO's terms: `multibeam`, `lidar` 1; `survey` (a survey's, its instrument not stated: EMODnet's survey data sets, GEBCO's 17) 0.85; `singlebeam` 0.7; `seismic` 0.55; `soundings` (at points: isolated soundings, a chart's) 0.5; `optical` (satellite-derived) 0.45; `compiled` (a grid made from measured and interpolated sources) 0.4; `estimated` (a grounded iceberg's draft, a float's) 0.3; `interpolated` 0.25; `contours` (digitized from a chart's) 0.2; `predicted` (from gravity) 0.1; `modelled` (from the land round it, no depth read: GLOBathy's) 0.05 |
+| `quality` | weight 0.2, linear 0 → 0, 100 → 1: the publisher's own quality index (EMODnet's `combined`) |
+| `year` | weight 0.2, linear: 1960 → 0, 2026 → 1, the year surveyed (a compilation's release year isn't one, and is left out) |
 
-with `detail` on a `values` scale (footprints, heights, LoD1, LoD2, LoD3, textured mesh). What
-they'll need that the terrain doesn't (planned with their research): a `raster` reading by value,
-a piece per class of a source-identifier grid (GEBCO's type identifier grid, EMODnet's source
-references), where the terrain's reader takes one valid-data mask a file; and, for the buildings
-the build already downloads (Overture's, docs/steps.md §7), extents of class `mask` from the
-build's own data, per source the features name.
+What it does (`producers/extents/score.py bathymetry/score.toml --examples`):
+
+| Pieces | Scores | Best |
+|---|---|---|
+| GEBCO's 15″ multibeam cell; EMODnet's 115 m composite | 0.165; 0.291 | the finer grid |
+| GMRT's 100 m multibeam of 2015; EMODnet's 115 m survey cell of quality 62 | 0.316; 0.298 | within the factor: how measured decides |
+| a 2 m bathymetric lidar of 2005; a 4 m multibeam grid of 2024 | 0.702; 0.635 | the old fine one |
+| a lake: a 1″ model from the land round it (GLOBathy's); GEBCO's interpolated 15″ cell | 0.414; 0.150 | the finer model |
+| a 10 m singlebeam survey of 1990; a 10 m satellite-derived grid of 2022 | 0.537; 0.536 | the measured one, narrowly |
+| GEBCO's cells, gravity-predicted; digitized contours | 0.147; 0.149 | the contours |
+
+**The bathymetry sources** (read 18 Nov 2026 on the M1; areas not measured):
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `gebco-2026` | 20: the worldwide 15″ grid (GEBCO_2026) by its type identifier class (10 to 17 direct, 40 to 48 indirect, 70 to 72 unknown; 0, the land, left out) | `files` | `raster` by value: the type identifier grid's eight 90° GeoTIFFs, their zip (96 MB) read whole, 24 by 24 cells a mask cell (6′, `grain_m` 11,132), at a 5 km tolerance 46.5 MB; 47 min on the M1, 17 of them work and 1.6 GB of memory (at 2′ unfinished after half an hour) |
+| `ibcao-v5` | 15: the Arctic's 100 m grid north of 64° N (IBCAO 5.2) by its type identifier class | `files` | `raster` by value: its type identifier GeoTIFF's zip (EPSG:3996, 37 MB) read whole, 100 by 100 cells a mask cell (`grain_m` 10,000), at a 5 km tolerance 4.6 MB, 39 s of work and 1.2 GB of memory on the M1 (13 min fetching) |
+| `ibcso` | 14: the Southern Ocean's 500 m grid south of 50° S (IBCSO 2025) by its type identifier class | `files` | `raster` by value: its type identifier GeoTIFF (EPSG:9354, 15 MB) read whole by range, 20 by 20 cells a mask cell (`grain_m` 10,000), at a 5 km tolerance 11 MB, 68 s and 0.87 GB of memory on the M1 from the cache (8 by 8 cells at a 4 km tolerance: 23 MB, 15 min) |
+| `gmrt` | 47: GMRT's multibeam swaths by survey year, 100 m (the publisher's "typically ~100 m") | `index` | `file`: the synthesis's swath outlines, 1,638 (a zipped shapefile, 58 MB), at a 2 km tolerance 13 MB (at 500 m 98 MB: the swaths' ragged edges); one shape's orphaned holes are read as outlines, so a hole there is drawn as data |
+| `emodnet-dtm` | 24: the European seas' 115 m DTM of 2024 by source (a survey data set, a provider's composite DTM) and quality index (`combined`, 0 to 100 in thirteenths; 0 read as not stated) | `index` | `wfs`: the consortium's layer `quality_index` of release 2024, 197,828 areas, 99 requests, 335 MB, 4 min 12 s and 1.3 GB of memory on the M1 from the cache, at a 1 km tolerance 9.4 MB (at 200 m 59 MB); the cells it names no source for, GEBCO's and IBCAO's filling, aren't drawn as EMODnet's |
+| `emodnet-hr` | 7: the providers' high-resolution DTMs EMODnet distributes, by resolution (1/32 to 1/1024 arc-minute, 58 m to 1.8 m) | `index` | `wfs`: the consortium's layer `hr_bathymetry_area`, 1,617 DTM outlines, 19 MB, to 4.0 MB |
+| `ncei-dems` | 24: NCEI's integrated topo-bathymetric DEMs by cell (CUDEM's 1/9″ and 1/3″ tiles, the Coastal Relief Model, the regional and tsunami DEMs; 1/9″ to 1′, 3.4 m to 1.85 km) | `index` | `arcgis`: the `DEM_all` image service's catalogue, 1,917 items (Category 1), 3.2 MB, to 88 KB; one cell stated in slightly different arc-seconds by different DEMs (0.111111 and 0.111111112) is two pieces of the same spacing |
+| `noaa-bluetopo` | 4: BlueTopo's delivered tiles by resolution (2, 4, 8, 16 m) | `index` | `file`: the tile scheme GeoPackage of 17 Nov, 8,689 of its 12,638 tiles stating a resolution, 6.7 MB, to 65 KB; a tile is gridded where NOAA's best surveys are and empty elsewhere |
+| `au-ausseabed` | 32: the AusSeabed Warehouse's published surveys by kind and last year (no spacing: no score) | `index` | `wfs`: the register `MARINEDATAREGISTER_ACQUISITIONS_INDEX`, its 243 published surveys of 3,295, 579 MB read (the outlines' every vertex), at a 1 km tolerance 2.6 MB (at 100 m 20 MB) |
+| `ca-chs-nonna` | 2: NONNA-10's 72,305 cells, NONNA-100's 1,220 (10 and 100 m; the guest login and the NONNA Licence) | `claimed` | `file`: the two cell indexes (zipped shapefiles, OGL-Canada), 3.1 MB, to 264 KB |
+| `fo-fodm` | 2: the Faroese 50 m model's cells measured and interpolated | `files` | `raster` by value: its source grid's zip (13.6 MB) read whole, 20 by 20 cells a mask cell (`grain_m` 1,000), 148 s and 1.0 GB of memory on the M1 |
+
+**Not obtained or not declared** (bathymetry, 18 Nov): the worldwide grids no finer than GEBCO's
+and made from what it holds, ETOPO 2022 (15″, GEBCO's bathymetry), SRTM15+, SYNBATH, SIO's and
+DTU's (15″ to 1′, predicted from gravity where unsurveyed):
+not declared, as GEBCO's predicted pieces already stand for them; GLOBathy's 1.4
+million lakes (its rasters 16.7 GB, over the 5 GB limit; its extents would be HydroLAKES' 820 MB
+of outlines, whose cost in the step isn't measured): not declared; NOAA's NOS hydrographic
+surveys' BAGs (their index states no resolution; BlueTopo grids them); EMODnet's source
+references (every record's device empty: its quality index is read instead, a quality of 0 read
+as not stated, as every metric's value at or below 0 is); the CHS's per-source detail (TECSOU,
+CATZOC: inside the downloads); and the national and local grids the regional research found
+(docs: `.claude/notes/RESEARCH-BATHY-INDEX.md`, §3's table: Germany's BSH, Denmark's DDM,
+Norway's Kartverket, the Shom's HOMONIM and Litto3D, Ireland's INFOMAR, Rijkswaterstaat, LINZ,
+AusBathyTopo, the states' and provinces' lake surveys and the Great Lakes' grids, and the rest):
+not declared yet, each a declaration of a reader the producer has, a task of their own.
+
+**Buildings** (planned) take the same format with their own metrics: a piece
+`{"piece": "city/2023", "extent": "mask", "availability": "open", "detail": "LoD2",
+"completeness": 0.97, "year": 2023}`, `detail` on a `values` scale (footprints, heights, LoD1,
+LoD2, LoD3, textured mesh), `completeness` a share; and, for the buildings the build already
+downloads (Overture's, docs/steps.md §7), extents of class `mask` from the build's own data, per
+source the features name. Not built: no `buildings/` folder, score or declaration, and the app
+knows only `terrain` and `bathymetry` (inputs::extents::THEMES).
 
 ## 7. The guards
 

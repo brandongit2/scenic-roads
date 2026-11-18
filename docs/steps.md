@@ -1006,8 +1006,8 @@ while the server is away from the NAS).
 ## 14. Data available (task #1334)
 
 The layers that colour the map by the best data any declared source has for each place, from the
-source extents (docs/inputs.md §6.11): for a theme (`terrain` first; `bathymetry` and `buildings`
-later), the **score**'s layer, first: the best piece at each place drawn at its own grid spacing
+source extents (docs/inputs.md §6.11): for a theme (`terrain` and `bathymetry`; `buildings`
+planned), the **score**'s layer, first: the best piece at each place drawn at its own grid spacing
 (the primary metric's value), and a layer per other metric. Two sets of these layers: `best`,
 the best data any declared source has; and `built`, the elevation data built into the map, each
 place holding the dataset the terrain took its heights from. **Built** (task #1347): the step
@@ -1020,7 +1020,9 @@ in the built set they enter as the build's own cut of where a dataset is used (i
 (Terrain, the rule: `Fill::Relief`, the datasets published at every zoom), whatever the datasets
 there; the built set draws the order's first with data there, so land more than ~20 km from the
 regions (a far island) shows GLO-30 where the terrain read Terrarium. Both sets are cut to the
-theme's side of the coastline (the cut, below): the terrain's layers draw nothing at sea.
+theme's side of the coastline (the cut, below): the terrain's layers draw nothing at sea, and
+bathymetry's (the best set only: the built set is the terrain's) nothing on land but its lakes and
+rivers.
 
 **The step** `available` (terrain::available; stage `finish`, a target per theme,
 `available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
@@ -1078,10 +1080,8 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   lies past the plane's edge. A row of z6 tiles is cut at once, its tiles' quadtrees made in
   parallel (rayon), their sets over the row's.
 - **The cut** (terrain::available::cut): every source's pieces are drawn only on the theme's side
-  of the coastline (`cut::SIDES`: the terrain's the land; bathymetry's, planned, the sea, the same
-  mask inverted: planned, task #1351, since the coastline's land holds every lake, so the mask
-  inverted would cut away every lake's depth, GLOBathy's too; bathymetry's side needs the water
-  layer's lakes added to the sea), so an index's coastal tiles, a 1° tile or a block drawn over the sea hold nothing
+  of the coastline (`cut::SIDES`: the terrain's the land; bathymetry's the water, below), so an
+  index's coastal tiles, a 1° tile or a block drawn over the sea hold nothing
   there (New Brunswick's GeoNB blocks: 106,396 km² as outlines, 89,135 on the land; the rest is
   its neighbours' land under the blocks). The land is the pass's coastline's (docs/inputs.md
   §6.1.7, the `regions-land` step's, by 2° cell): OSM's coastline goes round no lake, so a lake is
@@ -1091,6 +1091,21 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   up: their shared edges make no seam), a pixel kept where its centre is on the side kept; a row's
   runs become the empty set elsewhere (`cut::apply`), before the quadtree. The polar caps are cut
   alike in the pole's grid.
+  **The water's side** (bathymetry's, `Cut::sea`; task #1351) is the land's mask inverted with the
+  inland water added (`terrain::available::inland`): the coastline's land holds every lake,
+  reservoir and river, whose depths bathymetry draws. The inland water is the water layer's
+  (inputs::water, §4: its inland share), read at its finest stored zoom, z9 (512 px a tile, a pixel
+  153 m at the equator, four of z12's a side), a pixel inland water where its share is half or
+  more (`inland::LAKE`), a z9 tile not stored taking its stored ancestor's value there; its runs,
+  each four z12 pixels wide, are added to the sea's before the quadtree (`Cut::with_inland`). The
+  step reads the water layer's packs as the records name them (`inland::from_records`, positioned
+  reads of a pack's index and the tiles under the z6 tile made), and its key holds each pack's
+  content name (`idents::inland_water`: the root required, so the step waits for the water layer),
+  each z6 tile's key each z9 tile under it by its stored bytes' hash, or not stored by whether its
+  ancestor makes it water (`inland::lines`): a new water layer makes again only the z6 tiles whose
+  water moved. A lake narrower than a z9 pixel, or one the water layer draws under half a pixel,
+  is cut away; the polar caps take no inland water (the water layer ends at 85.05°), so a lake
+  past it is cut too.
 - **The polar caps** (docs/polar.md) take the same sets in each pole's grid: a root pack a pole
   (`layers/available-<theme>-<n|s>/root/0-0-0`, z0–3, a pixel 1,024 m of the grid at z3, the
   polar terrain's root's zooms), from the polygons whose boxes reach the pole's square, keyed
@@ -1232,7 +1247,7 @@ to the better-founded extent (a claimed outline losing it, whatever the ids), ea
 the piece's own spacing, no layer of the primary's own, the server's label where score.toml names
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
 piece and transparent outside it) and the click, the built set (described among the sets, its tiles at z0 and at z12 (its ancestor's part) drawing the first dataset in order over a finer one under either switch, its click in the order, a metric it doesn't state not drawn, its version naming its datasets); and `renders_the_real_pieces`, run by hand: with `SCENIC_RENDER_LAND` naming a regions-land file and
-`SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
+`SCENIC_RENDER_DIR` set it builds every real piece of `SCENIC_RENDER_THEME` (the terrain where it's unset; the sea's side reads the inland water of the water layer the records of the NAS root `SCENIC_RENDER_ROOT` name), prints the step's time, peak resident set,
 packs' bytes and tiles' sets (those over 256, the most in one), each zoom's tiles and bytes and the
 15 sources whose outlines cross the most tiles (and those no other source's crosses), and writes
 the score layer as PNGs,
@@ -1289,7 +1304,9 @@ its unit's, so the control's even axis is a log one, labelled in the unit (0.5 m
 ticks at 1, 2 and 5 times the powers of ten; the year's whole years; bare earth or surface, two
 words, is a two-stop ramp: the control has no categorical mode, so the range is fixed to the two
 words' values (its caption says so), each pixel takes one end's colour, Equalize isn't offered (it
-can't move the ends) and the highlight's slider steps from one word to the other. Each layer keeps
+can't move the ends) and the highlight's slider steps from one word to the other; bathymetry's how
+measured, twelve words (those of one value one, the server's: "lidar or multibeam"), is a ramp
+fixed from its worst word's value to its best's, a tick at each word. Each layer keeps
 its own colour map (`scales`, by layer id, a profile's like every layer's); a layer shown the first
 time takes the profile's `colours`, its palette reversed where the layer's better end is its low
 one, so the best data takes the ramp's same end on every layer (viridis's bright end by default),
