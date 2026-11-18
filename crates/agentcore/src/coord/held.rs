@@ -117,11 +117,12 @@ pub const PROCESS_FILE: &str = "requests-process";
 /// this one no longer holds never end by its word). Written once, as the process begins, never a
 /// request. A process that never begins (a test, a dry run, a job) numbers by the wall clock.
 pub fn begin(home: &std::path::Path) {
-    let p = next_process(home, wall_ms());
-    if PROCESS.set(p).is_ok() {
-        if let Err(e) = store::whole::write(&home.join(PROCESS_FILE), p.to_string().as_bytes()) {
-            eprintln!("agent: keeping its requests' process number: {e:#}");
-        }
+    // (Its folder's floor kept even if the process had begun elsewhere: a test's agents, several
+    // to a process.)
+    let here = next_process(home, wall_ms());
+    let p = (*PROCESS.get_or_init(|| here)).max(here);
+    if let Err(e) = store::whole::write(&home.join(PROCESS_FILE), p.to_string().as_bytes()) {
+        eprintln!("agent: keeping its requests' process number: {e:#}");
     }
 }
 
