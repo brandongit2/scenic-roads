@@ -394,9 +394,25 @@ pub struct Work {
     pub p_cpu_s: f64,
     /// The CPU (user and system, s) these counts are of.
     pub cpu_s: f64,
+    /// Of the run's CPU (`RunRec::cpu_s`), what these counts miss (s; none below 0): its programs'
+    /// CPU in their last quarter-second, or in one living less than one, that no sample saw (a
+    /// Python producer's helpers, a grandchild).
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub uncounted_s: f64,
     /// Its other processes seen.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub procs: u64,
+    /// The process its own counts are of, its pid and start (mach absolute time, crate::sys::Rusage's
+    /// `start`): a program run within a phase (`child`) names itself, so the job running it takes
+    /// these counts for it in place of its samples.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pid: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pid_start: u64,
+}
+
+fn is_zero_f(x: &f64) -> bool {
+    *x == 0.0
 }
 
 impl Work {
@@ -407,6 +423,16 @@ impl Work {
         self.p_cycles += r.p_cycles;
         self.p_cpu_s += r.p_cpu_ns as f64 / 1e9;
         self.cpu_s += r.cpu_ns as f64 / 1e9;
+    }
+
+    /// `w`'s counts added (not what names it).
+    fn add_work(&mut self, w: &Work) {
+        self.insn += w.insn;
+        self.cycles += w.cycles;
+        self.p_insn += w.p_insn;
+        self.p_cycles += w.p_cycles;
+        self.p_cpu_s += w.p_cpu_s;
+        self.cpu_s += w.cpu_s;
     }
 }
 
@@ -483,18 +509,15 @@ pub struct Done {
 /// A plausibility check's slack: the readings' grain, a share of the figure and seconds beside it.
 pub const CHECK_SHARE: f64 = 0.05;
 pub const CHECK_S: f64 = 1.0;
-/// How far past this Mac's measured top clock (crate::sys::top_clock) a run's cycles over its CPU
-/// may read: the clock was measured once, with other work maybe on the cores (macOS lowers a
-/// cluster's clock as more of its cores run).
-pub const CLOCK_SLACK: f64 = 1.3;
 
 /// The plausibility checks `r` fails (task #1419), each said: a record failing one is kept but the
-/// needs model doesn't learn from it, and the build page says why. `top_clock`: the clock of the
+/// needs model doesn't learn from it, and the build page says why. `top_clock`: the top clock of the
 /// Mac that ran it (crate::sys::top_clock, Hz), None where unknown (that check skipped).
 /// - Its CPU within its threads: `cpu_s` ≤ the most threads it ran on × `wall_s`.
-/// - Its instructions consistent with its CPU at its Mac's speed: counted over its whole CPU (the
-///   processes the counts saw took the CPU it took), some counted where it took CPU, and its cycles
-///   over that CPU (the cores' clock) never past `top_clock`, the performance cores' alone too.
+/// - Its instructions consistent with its CPU at its Mac's speed: never counted over more CPU than
+///   it took (what they miss, a program seen too briefly, is its own figure: `Work::uncounted_s`),
+///   some counted where it took CPU, and its cycles over that CPU (the cores' clock) never past
+///   `top_clock`, the performance cores' alone too.
 /// - Its phases summing to its run: the main thread's phases' wall time within its own, and its
 ///   phases' CPU and its CPU in no phase adding up to its CPU.
 ///
@@ -509,8 +532,8 @@ pub fn implausible(r: &RunRec, top_clock: Option<f64>) -> Vec<String> {
         }
     }
     if let (Some(w), Some(cpu)) = (r.work, r.cpu_s) {
-        if w.cpu_s < cpu * (1.0 - CHECK_SHARE) - CHECK_S {
-            out.push(format!("instructions counted over {} of its {} CPU", secs(w.cpu_s), secs(cpu)));
+        if w.cpu_s > slack(cpu) {
+            out.push(format!("instructions counted over {} CPU, past its {}", secs(w.cpu_s), secs(cpu)));
         }
         if w.cpu_s >= CHECK_S && (w.insn == 0 || w.cycles == 0) {
             out.push(format!("no instructions or cycles counted over {} CPU", secs(w.cpu_s)));
@@ -518,7 +541,7 @@ pub fn implausible(r: &RunRec, top_clock: Option<f64>) -> Vec<String> {
         if let Some(top) = top_clock {
             let ghz = |c: u64, s: f64| c as f64 / s / 1e9;
             for (what, c, s) in [("its cores", w.cycles, w.cpu_s), ("its performance cores", w.p_cycles, w.p_cpu_s)] {
-                if s >= CHECK_S && ghz(c, s) > top / 1e9 * CLOCK_SLACK {
+                if s >= CHECK_S && ghz(c, s) > top / 1e9 * (1.0 + CHECK_SHARE) {
                     out.push(format!("{what} at {:.2} GHz, past this Mac's {:.2}", ghz(c, s), top / 1e9));
                 }
             }
@@ -778,42 +801,55 @@ struct Run {
     threads_most: Option<u32>,
 }
 
-/// A job's other processes' counts as the memory sampler sees them: each running one's last, by
-/// its pid and start (a pid is used again), and those of the ones gone summed.
+/// A job's other processes' counts: each as the memory sampler last saw it, by its pid and start (a
+/// pid is used again), running or gone; and a program that wrote its own counts (`child`) taken
+/// exactly, in place of its samples.
 #[derive(Default)]
 struct Seen {
     live: std::collections::HashMap<(i32, u64), crate::sys::Rusage>,
-    gone: Work,
-    n: u64,
+    gone: std::collections::HashMap<(i32, u64), crate::sys::Rusage>,
+    exact: std::collections::HashMap<(i32, u64), Work>,
 }
 
 impl Seen {
     /// The group's processes now (`all`, crate::sys::group_rusage): those started since the run's
     /// own process (`since`, its start; never the process itself, nor the shell at its group's head
-    /// or another older one) kept as last seen, those no longer there summed as gone.
+    /// or another older one) kept as last seen, those no longer there kept as gone.
     fn saw(&mut self, all: &[(i32, crate::sys::Rusage)], me: i32, since: u64) {
         let mut now = std::collections::HashMap::with_capacity(all.len());
         for &(pid, r) in all {
             if pid != me && r.start >= since {
-                self.n += u64::from(!self.live.contains_key(&(pid, r.start)));
                 now.insert((pid, r.start), r);
             }
         }
         for (k, r) in self.live.drain() {
             if !now.contains_key(&k) {
-                self.gone.add(&r);
+                self.gone.insert(k, r);
             }
         }
         self.live = now;
     }
 
-    /// Their counts together, `procs` how many were seen.
+    /// A program's own counts (`w`, naming its pid and start), taken for it whether it was sampled
+    /// or not.
+    fn exact(&mut self, w: Work) {
+        self.exact.insert((w.pid as i32, w.pid_start), Work { pid: 0, pid_start: 0, ..w });
+    }
+
+    /// Their counts together, `procs` how many processes.
     fn total(&self) -> Work {
-        let mut w = self.gone;
-        for r in self.live.values() {
-            w.add(r);
+        let mut w = Work::default();
+        for (k, r) in self.live.iter().chain(&self.gone) {
+            if !self.exact.contains_key(k) {
+                w.add(r);
+                w.procs += 1;
+            }
         }
-        Work { procs: self.n, ..w }
+        for e in self.exact.values() {
+            w.add_work(e);
+            w.procs += 1;
+        }
+        w
     }
 }
 
@@ -1019,7 +1055,12 @@ pub fn start(kind: &str) {
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
             spans: None,
-            rus0: crate::sys::rusage(std::process::id() as i32),
+            // (A program run within a phase counts its whole life: its job takes them as its own,
+            // `Seen::exact`.)
+            rus0: crate::sys::rusage(std::process::id() as i32).map(|r| match std::env::var_os(PHASES_TO_ENV) {
+                Some(_) => crate::sys::Rusage { start: r.start, ..Default::default() },
+                None => r,
+            }),
             // (A job's own record's alone: a child program's run, or one by hand, in a group not its
             // job's, counts its own process.)
             seen: std::env::var_os(TIMINGS_ENV).map(|_| Seen::default()),
@@ -1032,8 +1073,28 @@ pub fn start(kind: &str) {
             r.spans = crate::spans::Rec::from_env(kind, r.t0);
         }
         drop(g);
+        // (A job's own run: stopped by its agent, it keeps its record, `on_term`.)
+        if std::env::var_os(TIMINGS_ENV).is_some() && std::env::var_os(PHASES_TO_ENV).is_none() {
+            crate::sys::on_terminate(on_term);
+        }
         sample_memory();
     }
+}
+
+/// A SIGTERM (or SIGINT) came: its job's agent stopping it (a cancel, agentcore's
+/// Agent::cancel_slot). The memory sampler ends the run on it (`ended_by_term`).
+static TERMED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_term(_: i32) {
+    TERMED.store(true, Ordering::Relaxed);
+}
+
+/// The job stopped by a signal (`TERMED`): its run ended as not ok (`finish`), its record kept where
+/// its agent takes it, and the process gone with the status a SIGTERM's death says (128 + 15).
+fn ended_by_term() -> ! {
+    span_event(crate::spans::event("error", "stopped by a signal (its agent's)"));
+    finish(false);
+    std::process::exit(128 + libc::SIGTERM)
 }
 
 /// Its RAYON_NUM_THREADS, where set: the threads its job started on.
@@ -1063,6 +1124,9 @@ fn sample_memory() {
                 let mut ticks = 0u64;
                 loop {
                     std::thread::sleep(MEM_EVERY);
+                    if TERMED.load(Ordering::Relaxed) {
+                        ended_by_term();
+                    }
                     ticks += 1;
                     // (Sampled while a run is timed, spans open or not: a span opening takes the last
                     // sample, at most `MEM_EVERY` old, as its first.)
@@ -1346,8 +1410,9 @@ impl Drop for Phase {
         let t_in = Instant::now();
         let waits = Waits::between(&o.w0, &waits_now());
         // Its child programs' phases (read before the lock: files).
-        let kids: Vec<PhaseRec> =
-            o.children.lock().map(|c| c.iter().flat_map(|p| take_child(p)).collect()).unwrap_or_default();
+        let (kids, works): (Vec<Vec<PhaseRec>>, Vec<Option<Work>>) =
+            o.children.lock().map(|c| c.iter().map(|p| take_child(p)).unzip()).unwrap_or_default();
+        let kids: Vec<PhaseRec> = kids.into_iter().flatten().collect();
         let mut g = run().lock().unwrap();
         let me = std::thread::current().id();
         // (The CPU so far charged to the spans, the job's in no phase too where it's the main
@@ -1410,6 +1475,10 @@ impl Drop for Phase {
                 merge_into(&mut r.accs[to].kids, k);
             }
         }
+        // (Its programs' own counts, exactly: crate::timings::Seen.)
+        if let Some(seen) = r.seen.as_mut() {
+            works.into_iter().flatten().for_each(|w| seen.exact(w));
+        }
         r.overhead_ns += t_in.elapsed().as_nanos() as u64;
     }
 }
@@ -1454,10 +1523,12 @@ pub fn count(bytes: u64, files: u64) {
 }
 
 /// Has `c`, a child program about to run within this thread's innermost phase, write its phases
-/// for that phase (`SCENIC_PHASES_TO`): they come in as the phase's sub-phases when it ends. No
-/// phase open (or no run timed): nothing.
+/// for that phase (`SCENIC_PHASES_TO`): they come in as the phase's sub-phases when it ends, and its
+/// own counts as its (`Seen::exact`). Held to the threads the job's work runs on now, whatever
+/// threads it starts (crate::control::cap_threads). No phase open (or no run timed): held alone.
 pub fn child(c: &mut std::process::Command) {
     static N: AtomicU64 = AtomicU64::new(0);
+    crate::control::cap_threads(c);
     let Some(o) = STACK.with(|s| s.borrow().last().cloned()) else {
         return;
     };
@@ -1479,9 +1550,9 @@ pub fn child(c: &mut std::process::Command) {
 }
 
 /// A child's phases from its file (gone after), top-level only (its sub-phases are in them).
-fn take_child(p: &Path) -> Vec<PhaseRec> {
+fn take_child(p: &Path) -> (Vec<PhaseRec>, Option<Work>) {
     let Ok(b) = std::fs::read(p) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     std::fs::remove_file(p).ok();
     let r: Option<RunRec> = serde_json::from_slice(&b).ok();
@@ -1490,7 +1561,8 @@ fn take_child(p: &Path) -> Vec<PhaseRec> {
         resumed(d.resumed);
         MADE.fetch_add(d.made, Ordering::Relaxed);
     }
-    r.map(|r| r.phases.into_iter().map(|p| PhaseRec { sub: Vec::new(), ..p }).collect()).unwrap_or_default()
+    let work = r.as_ref().and_then(|r| r.work).filter(|w| w.pid > 0);
+    (r.map(|r| r.phases.into_iter().map(|p| PhaseRec { sub: Vec::new(), ..p }).collect()).unwrap_or_default(), work)
 }
 
 /// The run so far as a record (`ok` as given).
@@ -1582,7 +1654,7 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         gaps: Vec::new(),
         safe_points: 0,
         safe_gap_s: None,
-        work: work_of(r),
+        work: work_of(r, cpu_s),
         peak_mb: (r.peak > 0).then_some(r.peak >> 20),
         peak_threads: r.peak_threads,
         threads_most: r.threads_most,
@@ -1609,9 +1681,10 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
     rec
 }
 
-/// What run `r`'s processes retired so far (`Work`): its own process's since it started, and its
-/// other processes' as seen; None where its own can't be read.
-fn work_of(r: &Run) -> Option<Work> {
+/// What run `r`'s processes retired so far (`Work`): its own process's since it started (named by
+/// its pid and start), and its other processes' as seen; `cpu` the run's CPU (s), what they miss of
+/// it said. None where its own can't be read.
+fn work_of(r: &Run, cpu: Option<f64>) -> Option<Work> {
     let (a, b) = (r.rus0?, crate::sys::rusage(std::process::id() as i32)?);
     let d = |x: u64, y: u64| y.saturating_sub(x);
     let own = crate::sys::Rusage {
@@ -1625,6 +1698,8 @@ fn work_of(r: &Run) -> Option<Work> {
     };
     let mut w = r.seen.as_ref().map(Seen::total).unwrap_or_default();
     w.add(&own);
+    w.uncounted_s = cpu.map_or(0.0, |c| (c - w.cpu_s).max(0.0));
+    (w.pid, w.pid_start) = (u64::from(std::process::id()), a.start);
     Some(w)
 }
 
@@ -1950,9 +2025,11 @@ pub fn blind_spots(sums: &[KindSum]) -> Vec<&KindSum> {
 
 /// Where each kind's memory peaks (`scenic pool needs --fit`): over its last `last` runs, its
 /// top-level phase that held the most (`PhaseRec::peak_mb`), with its sub-phase (a child program's
-/// own phase) that did where one says; by kind. Kinds whose runs carry no peaks are left out.
+/// own phase) that did where one says; by kind. Only runs learned from (`learnable`); kinds whose
+/// runs carry no peaks are left out.
 pub fn peak_holders(runs: &[RunRec], last: usize) -> Vec<PeakHolder> {
-    summary(runs, None, last, None)
+    let runs: Vec<RunRec> = runs.iter().filter(|r| learnable(r)).cloned().collect();
+    summary(&runs, None, last, None)
         .into_iter()
         .filter_map(|k| {
             let top = k.phases.iter().filter(|p| p.peak_mb.is_some()).max_by_key(|p| p.peak_mb)?;
@@ -3199,6 +3276,9 @@ mod tests {
         let h = peak_holders(&[r.clone(), r2.clone()], 20);
         assert_eq!(h.len(), 1);
         assert_eq!((h[0].phase.as_str(), h[0].peak_mb, h[0].runs), ("light", heavy + 10, 2));
+        // (A run failing the plausibility checks isn't one of them.)
+        let odd = RunRec { implausible: vec!["odd".into()], ..r2.clone() };
+        assert_eq!(peak_holders(&[r.clone(), odd], 20)[0].runs, 1);
         let h = peak_holders(&[r], 20);
         assert_eq!((h[0].phase.as_str(), h[0].sub.clone()), ("heavy", Some(("its program".to_string(), 123))));
         assert!(peak_text(&h).contains("within it its program"), "{}", peak_text(&h));
@@ -3330,6 +3410,7 @@ mod tests {
                 p_cpu_s: 200.0,
                 cpu_s: 299.5,
                 procs: 3,
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -3363,8 +3444,14 @@ mod tests {
         );
         // (No most said: the threads it started on.)
         one(&|r| r.threads_most = None, "past its 2 threads");
-        // (Its counts saw 200 s of its 300 s: a program went unseen.)
-        one(&|r| r.work.as_mut().unwrap().cpu_s = 200.0, "instructions counted over");
+        // (Its counts saw 200 s of its 300 s, a program unseen: said in `uncounted_s`, not failed;
+        // over 400 s, more than it took: failed.)
+        assert!(fails(&|r| {
+            let w = r.work.as_mut().unwrap();
+            (w.cpu_s, w.cycles) = (200.0, 500_000_000_000);
+        })
+        .is_empty());
+        one(&|r| r.work.as_mut().unwrap().cpu_s = 400.0, "instructions counted over 6 min 40 s CPU, past");
         one(
             &|r| {
                 let w = r.work.as_mut().unwrap();
@@ -3433,7 +3520,43 @@ mod tests {
         let mut r = RunRec { cpu_s: Some(900.0), ..clean() };
         r.stamp("done", 1, 1, &d.path().join("none"), None);
         assert_eq!((r.nas, r.done.as_ref().map(|d| d.end.as_str())), (None, Some("done")));
-        assert_eq!(r.implausible.len(), 3, "{:?}", r.implausible);
+        assert_eq!(r.implausible.len(), 2, "{:?}", r.implausible);
+    }
+
+    /// Task #1419: a job stopped by its agent's SIGTERM (a cancel) keeps its record, as a run that
+    /// didn't finish, and ends with the status the signal's death says.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_job_stopped_by_sigterm_keeps_its_record() {
+        const CHILD: &str = "SCENIC_TEST_TERM";
+        if std::env::var_os(CHILD).is_some() {
+            reset();
+            start("test");
+            let _p = phase("waiting");
+            println!("started");
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        let rec = d.path().join("run.json");
+        let mut c = store::spawn::command(std::env::current_exe().unwrap());
+        c.args(["--exact", "timings::tests::a_job_stopped_by_sigterm_keeps_its_record", "--nocapture"])
+            .env(CHILD, "1")
+            .env(TIMINGS_ENV, &rec)
+            .env_remove(PHASES_TO_ENV)
+            .stdout(std::process::Stdio::piped());
+        let mut ch = store::spawn::spawn(&mut c).unwrap();
+        let out = std::io::BufReader::new(ch.stdout.take().unwrap());
+        assert!(std::io::BufRead::lines(out).any(|l| l.is_ok_and(|l| l.contains("started"))));
+        // SAFETY: a signal to the child this test started and hasn't reaped.
+        assert_eq!(unsafe { libc::kill(ch.id() as i32, libc::SIGTERM) }, 0);
+        let st = ch.wait().unwrap();
+        assert_eq!(st.code(), Some(128 + libc::SIGTERM), "{st:?}");
+        let r: RunRec = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert!(!r.ok && r.kind == "test" && r.phases.iter().any(|p| p.name == "waiting"), "{r:?}");
     }
 
     /// A job's other processes are counted as last seen while they run, and summed once gone; the
@@ -3457,6 +3580,21 @@ mod tests {
         let w = s.total();
         assert_eq!((w.insn, w.procs), (30 + 7 + 6, 3));
         assert!((w.cpu_s - 43e-9).abs() < 1e-15);
+        // A program's own counts, written as it ended, in place of its samples (one gone, 3 at 110),
+        // and one that lived too briefly to be seen (5 at 140) added.
+        let own = |pid: u64, pid_start: u64, insn: u64| Work {
+            insn,
+            cycles: insn,
+            cpu_s: 1.0,
+            pid,
+            pid_start,
+            ..Default::default()
+        };
+        s.exact(own(3, 110, 1000));
+        s.exact(own(5, 140, 500));
+        let w = s.total();
+        assert_eq!((w.insn, w.procs), (7 + 6 + 1000 + 500, 4));
+        assert_eq!((w.pid, w.pid_start), (0, 0), "names no process");
     }
 
     /// Task #1419: a timed job's record says what its processes retired: its own process's
@@ -3514,6 +3652,30 @@ mod tests {
         assert!(w.procs >= 1, "{w:?}");
         assert!(w.insn > 1_000_000_000 && w.cycles > 1_000_000_000, "{w:?}");
         assert!(cpu > 1.8 && w.cpu_s > 1.6 && w.cpu_s <= cpu + 0.1, "{w:?} of {cpu}");
+        assert!((w.uncounted_s - (cpu - w.cpu_s).max(0.0)).abs() < 1e-9, "{w:?} of {cpu}");
+        assert_eq!(w.pid, u64::from(std::process::id()), "its own process named");
+        // A program run within a phase (`child`) that wrote its own counts: taken as they are.
+        {
+            let _p = phase("own counts");
+            let mut c = store::spawn::command("/usr/bin/true");
+            child(&mut c);
+            let to = c.get_envs().find(|(k, _)| *k == PHASES_TO_ENV).and_then(|(_, v)| v).map(PathBuf::from).unwrap();
+            let kid = RunRec {
+                kind: "x".into(),
+                work: Some(Work {
+                    insn: 7_000_000_000,
+                    cycles: 5_000_000_000,
+                    cpu_s: 0.25,
+                    pid: 4_000_000,
+                    pid_start: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            std::fs::write(&to, serde_json::to_vec(&kid).unwrap()).unwrap();
+        }
+        let w2 = snapshot(true).unwrap().work.unwrap();
+        assert!(w2.insn >= w.insn + 7_000_000_000 && w2.procs == w.procs + 1, "{w2:?} after {w:?}");
         assert!(w.p_cpu_s <= w.cpu_s + 1e-6 && w.p_insn <= w.insn, "{w:?}");
         assert!(r.peak_mb.is_some_and(|m| m > 0), "{:?}", r.peak_mb);
         assert_eq!((r.threads, r.threads_most, r.peak_threads), (Some(2), Some(5), Some(5)));

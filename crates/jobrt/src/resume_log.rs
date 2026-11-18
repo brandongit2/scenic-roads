@@ -207,8 +207,12 @@ impl Log {
             Ok(l) => {
                 if !l.done.is_empty() {
                     eprintln!("resume: {kind} {}/{}/{}: {} blocks kept by an earlier run", t.0, t.1, t.2, l.done.len());
-                    // (The work this run skips, in its timings' record: crate::timings::Done.)
-                    crate::timings::resumed(l.done.len() as u64);
+                    // (The work this run skips, in its timings' record: crate::timings::Done; once a
+                    // log, however often this process opens it again.)
+                    static COUNTED: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+                    if COUNTED.lock().unwrap_or_else(|e| e.into_inner()).insert(l.path.clone()) {
+                        crate::timings::resumed(l.done.len() as u64);
+                    }
                 }
                 Some(l)
             }
