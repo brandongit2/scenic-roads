@@ -189,7 +189,9 @@ from the first (`edit_held`).
   - **The NAS reserve** (`buildstore::room::NAS_RESERVE`, `nas_room`): `scenic nas-room <GB>` / `scenic
     nas-room off` on any Mac, one pool-wide value on the NAS (`state/pool/nas-room.json`), off by
     default; with no argument, how it stands. Apart from the Macs' targets (another disk). `bld-fetch`
-    fails when what it still has to fetch is more than the NAS's free space past it; the other steps
+    fails when what it still has to fetch is more than the NAS's free space past it; `planet-fetch`
+    is planned only when the planet fits past it, and stops before writing when it doesn't
+    (docs/inputs.md §6.9); the other steps
     writing to the NAS check no space before writing (depth, terrain and its deep packs, the OSM pass's
     upload, `fabdem-fetch`), so it doesn't bind them yet.
   - **With the mirror's reserve** (docs/macs.md, Mirror): the map server's mirror keeps the larger

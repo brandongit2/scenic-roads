@@ -356,6 +356,35 @@ fn ends_in(now: u64, left: Duration) -> u64 {
     now + left.as_millis().div_ceil(1000) as u64
 }
 
+/// Why the fetch of the planet of `date` waits for room on the NAS (docs/inputs.md §6.9): the
+/// planet's size as the last one's (inputs::planet::room, the newest complete pass `have`'s), less
+/// its part, past the NAS's free space less the owner's reserve (`scenic nas-room`, the room
+/// bld-fetch and the pyramids' fill keep too). None when it fits, or there's no planet to measure
+/// by: the fetch checks then, by the length the server gives.
+fn planet_room_short(root: &NasRoot, date: &str, have: Option<&str>) -> Option<String> {
+    let r = inputs::planet::room(root, date, have)?;
+    let free = match room::nas_room(root) {
+        Ok(f) if f >= r.left() => return None,
+        Ok(f) => f,
+        Err(e) => return Some(format!("the NAS's free space can't be read now: {e}")),
+    };
+    let fetched = if r.held > 0 { format!(", {} of it fetched", room::size(r.held)) } else { String::new() };
+    let (past, lower) = match room::nas_reserve(root).map_or(0, |t| t.bytes) {
+        0 => (String::new(), String::new()),
+        b => (
+            format!(" past the NAS reserve's {}", room::size(b)),
+            ", or the reserve is lowered or off (`scenic nas-room`)".into(),
+        ),
+    };
+    Some(format!(
+        "needs {} free on the NAS (the planet of {} is {}{fetched}; {} free{past}): it starts once the NAS has room{lower}",
+        room::size(r.left()),
+        r.by,
+        room::size(r.size),
+        room::size(free),
+    ))
+}
+
 /// The plan's state, owned by its thread (or the round, in line).
 pub(super) struct Planner {
     pub(super) o: Options,
@@ -1214,26 +1243,30 @@ impl Planner {
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
         // 1. The OSM pass, when the declared planet is newer than the last complete pass: fetched
-        // first when the NAS lacks it (inputs::planet).
+        // first when the NAS lacks it (inputs::planet), and has room for it.
         let have = self.latest_pass(root);
         let newer = match self.planet_next(root, have.as_deref(), waiting) {
             Some((date, inputs::planet::Next::Pass(planet))) => Some((planet, date)),
             Some((date, inputs::planet::Next::Fetch)) => {
-                out.push(JobSpec {
-                    id: format!("planet-fetch {date}"),
-                    what: format!("Fetching the OpenStreetMap planet of {date}"),
-                    cmd: vec![
-                        s(&self.o.bin.join("scenic-build")),
-                        "planet-fetch".into(),
-                        "--root".into(),
-                        jobs::root_arg(root),
-                        "--date".into(),
-                        date,
-                    ],
-                    needs: Needs { nas: true },
-                    restart_after_sleep: true,
-                    record: None,
-                });
+                let what = format!("Fetching the OpenStreetMap planet of {date}");
+                match planet_room_short(root, &date, have.as_deref()) {
+                    Some(why) => waiting.push(Waiting { step: Some("planet-fetch".into()), what, why }),
+                    None => out.push(JobSpec {
+                        id: format!("planet-fetch {date}"),
+                        what,
+                        cmd: vec![
+                            s(&self.o.bin.join("scenic-build")),
+                            "planet-fetch".into(),
+                            "--root".into(),
+                            jobs::root_arg(root),
+                            "--date".into(),
+                            date,
+                        ],
+                        needs: Needs { nas: true },
+                        restart_after_sleep: true,
+                        record: None,
+                    }),
+                }
                 None
             }
             _ => None,

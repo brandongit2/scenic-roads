@@ -607,10 +607,17 @@ pub fn download(url: &str, to: &Path, whole: &dyn Fn(&Path) -> bool, coming: &dy
 /// moment apart. A server answering whole (no ranges) writes `part` from its start; one whose
 /// file's length changes between answers, or is shorter than `part`, starts `part` over. Only a
 /// request that moves nothing counts against the retries (10, waiting 2 s, then twice as long
-/// each time, at most a minute), 429 and 5xx answers among them. `coming` is told the bytes held
-/// and the file's length, at most once a second.
-pub fn resume(url: &str, part: &store::nasfs::NasPath, coming: &dyn Fn(u64, u64)) -> Result<bool> {
-    NET.resume(url, part, coming)
+/// each time, at most a minute), 429 and 5xx answers among them. `room` is asked, before each
+/// answer's body is written, whether the bytes still to come (the file's length less what `part`
+/// holds) fit: its error ends it, nothing written. `coming` is told the bytes held and the file's
+/// length, at most once a second.
+pub fn resume(
+    url: &str,
+    part: &store::nasfs::NasPath,
+    room: &dyn Fn(u64) -> Result<()>,
+    coming: &dyn Fn(u64, u64),
+) -> Result<bool> {
+    NET.resume(url, part, room, coming)
 }
 
 /// How long one of `resume`'s requests receives its body before it's asked again from where it
@@ -1425,6 +1432,7 @@ mod net {
             &self,
             url: &str,
             part: &store::nasfs::NasPath,
+            room: &dyn Fn(u64) -> Result<()>,
             coming: &dyn Fn(u64, u64),
         ) -> Result<bool> {
             use std::io::Read;
@@ -1518,6 +1526,8 @@ mod net {
                         }
                     };
                     let want = total.unwrap_or(0);
+                    // (Written over from its start, the part's bytes free their room as they go.)
+                    room(want.saturating_sub(from))?;
                     let start = if append { from } else { 0 };
                     let mut o = std::fs::OpenOptions::new();
                     o.write(true).create(true);
@@ -2198,33 +2208,47 @@ mod tests {
         let fast = || net::Net::new().with_clock(store::clock::Virtual::new());
         let told = std::sync::Mutex::new(Vec::new());
         let coming = |got: u64, of: u64| told.lock().unwrap().push((got, of));
+        // (The room asked for: the bytes still to come, each answer's.)
+        let asked = std::sync::Mutex::new(Vec::new());
+        let fits = |left: u64| {
+            asked.lock().unwrap().push(left);
+            Ok(())
+        };
         // Dropped twice after 100 KB: three requests, each from the part's end.
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), 100_000, 2);
-        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert!(fast().resume(&url, &part, &fits, &coming).unwrap());
         assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
         assert_eq!(file.lock().unwrap().2, [(0, 299_999), (100_000, 299_999), (200_000, 299_999)]);
         assert_eq!(told.lock().unwrap().last(), Some(&(300_000, 300_000)));
+        assert_eq!(*asked.lock().unwrap(), [300_000, 200_000, 100_000]);
         // Whole already: one request, answered 416, nothing written.
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), usize::MAX, 0);
-        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert!(fast().resume(&url, &part, &fits, &coming).unwrap());
         assert_eq!(file.lock().unwrap().2, [(300_000, 299_999)]);
         assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
         // A run stopped part way: the rest alone.
         std::fs::write(part.unchecked_path(), &data[..123_456]).unwrap();
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), usize::MAX, 0);
-        assert!(fast().resume(&url, &part, &coming).unwrap());
+        // (No room for the rest: its error, the part as it was.)
+        let short = fast().resume(&url, &part, &|left| anyhow::bail!("no room for {left}"), &coming);
+        assert_eq!(short.unwrap_err().to_string(), "no room for 176544");
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data[..123_456]);
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), usize::MAX, 0);
+        assert!(fast().resume(&url, &part, &fits, &coming).unwrap());
         assert_eq!(file.lock().unwrap().2, [(123_456, 299_999)]);
         assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
+        assert_eq!(asked.lock().unwrap().last(), Some(&176_544));
         // A part longer than the file (another file's): started over.
         let mut long = data.clone();
         long.extend_from_slice(b"more");
         std::fs::write(part.unchecked_path(), &long).unwrap();
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), usize::MAX, 0);
-        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert!(fast().resume(&url, &part, &fits, &coming).unwrap());
         assert_eq!(file.lock().unwrap().2, [(300_004, 299_999), (0, 299_999)]);
         assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
         // The file's length changed between answers (dropped after 100 KB, the next answer held
@@ -2235,7 +2259,7 @@ mod tests {
         let url = server(file.clone(), 100_000, 1, Some(Gate { open: gate.clone(), cut: 0 }));
         let run = {
             let (url, part) = (url.clone(), part.clone());
-            std::thread::spawn(move || fast().resume(&url, &part, &|_, _| {}).unwrap())
+            std::thread::spawn(move || fast().resume(&url, &part, &|_| Ok(()), &|_, _| {}).unwrap())
         };
         store::testkit::eventually("the second request", || file.lock().unwrap().2.len() == 2);
         let other: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();

@@ -439,7 +439,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         anyhow::ensure!(p.date == date, "the declared planet is now of {}, not {date}", p.date);
         // (Its cost noted for its date, as the pass's: what the NAS budget weighs its next run by.)
         let c = cost_start("planet-fetch", &date);
-        ::inputs::planet::fetch(&root, &p, &::inputs::planet::NET, &|l| eprintln!("planet-fetch: {l}"))?;
+        ::inputs::planet::fetch(&root, &p, &|l| eprintln!("planet-fetch: {l}"))?;
         note_cost("planet-fetch", &date, c);
         return Ok(());
     }

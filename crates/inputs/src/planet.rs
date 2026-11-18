@@ -8,8 +8,10 @@
 //! (buildstore::fetch::resume: its User-Agent, 429 and 5xx answers waited out), into a part
 //! (`planet.osm.pbf.part`) that a stopped run, or the next URL, goes on from; checked against its
 //! MD5, read back from the NAS, before it takes its name (a mismatch starts the part over from the
-//! next URL). The pass then reads it (crate::osmpass): its date is the pass's, its path the pass's
-//! key, as they were before the declaration, so declaring the planet the build had rebuilt nothing.
+//! next URL). It's planned only when the NAS has room for it past the owner's reserve (`room`, by
+//! the last planet's size; the fetch checks again by the length the server gives). The pass then
+//! reads it (crate::osmpass): its date is the pass's, its path the pass's key, as they were before
+//! the declaration, so declaring the planet the build had rebuilt nothing.
 
 use crate::inputs::sources::{Data, Source, OSM_PLANET};
 use anyhow::{bail, Context, Result};
@@ -99,22 +101,49 @@ pub fn next(root: &NasRoot, p: &Planet, have: Option<&str>) -> Option<Next> {
     }
 }
 
-/// How the fetch reaches the network: a small file whole (`buildstore::fetch::get`), a large one
-/// resumed into a part (`buildstore::fetch::resume`).
-pub struct Net<'a> {
-    pub get: &'a dyn Fn(&str) -> Result<Option<Vec<u8>>>,
-    pub resume: &'a dyn Fn(&str, &NasPath, &dyn Fn(u64, u64)) -> Result<bool>,
+/// The room the fetch of the planet of a date takes on the NAS, as the plan measures it before
+/// planning the fetch (docs/inputs.md §6.9): the size of the planet of the newest complete pass
+/// `have`, which a newer planet is about (a week's planet is a fraction of a GB bigger than the
+/// last), less what the date's part holds already. None when the NAS holds no planet to measure by
+/// (a first fetch): the fetch's own check stands then (`fetch`, by the length the server gives).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Room {
+    /// The size measured: the planet of `by`'s.
+    pub size: u64,
+    pub by: String,
+    /// What the part holds.
+    pub held: u64,
 }
 
-/// The build's fetcher.
-pub const NET: Net<'static> = Net { get: &buildstore::fetch::get, resume: &buildstore::fetch::resume };
+impl Room {
+    /// The bytes still to fetch.
+    pub fn left(&self) -> u64 {
+        self.size.saturating_sub(self.held)
+    }
+}
+
+/// `Room`'s measure.
+pub fn room(root: &NasRoot, date: &str, have: Option<&str>) -> Option<Room> {
+    let by = have?;
+    let size = path(root, by).metadata().ok()?.len();
+    let held = path(root, date).with_file_name(PART).metadata().map_or(0, |m| m.len());
+    Some(Room { size, by: by.to_string(), held })
+}
+
+/// A size in GB, for the fetch's words.
+fn gb(b: u64) -> String {
+    format!("{:.1} GB", b as f64 / (1u64 << 30) as f64)
+}
 
 /// Planet `p` fetched into its place under `root` (`path`), once: nothing when it's there. Each
 /// URL in turn goes on with the part (a mirror's file is the main site's); one the server hasn't,
 /// or that fails past its retries, gives way to the next; the part whole, its MD5 is read back and
-/// checked, and a mismatch removes it, the next URL starting over. An error when no URL brought it
-/// whole and right (the part kept for the next run). `say` is told what happened.
-pub fn fetch(root: &NasRoot, p: &Planet, net: &Net, say: &dyn Fn(&str)) -> Result<()> {
+/// checked, and a mismatch removes it, the next URL starting over. Before each answer is written,
+/// the bytes still to come (the length the server gives, less the part's) must fit in the NAS's
+/// free space past the owner's reserve (`scenic nas-room`: buildstore::room::nas_room): short of
+/// it, the fetch stops there, nothing written. An error when no URL brought it whole and right
+/// (the part kept for the next run). `say` is told what happened.
+pub fn fetch(root: &NasRoot, p: &Planet, say: &dyn Fn(&str)) -> Result<()> {
     let at = path(root, &p.date);
     if at.exists() {
         say(&format!("{} is there already", at.rel()));
@@ -122,19 +151,40 @@ pub fn fetch(root: &NasRoot, p: &Planet, net: &Net, say: &dyn Fn(&str)) -> Resul
     }
     let dir = at.parent().context("the planet's folder")?;
     dir.create_dir_all().with_context(|| dir.display().to_string())?;
-    let want = md5_of(&(net.get)(&p.md5)?.with_context(|| format!("{}: none there", p.md5))?)
+    let want = md5_of(&buildstore::fetch::get(&p.md5)?.with_context(|| format!("{}: none there", p.md5))?)
         .with_context(|| format!("{}: not an MD5 file", p.md5))?;
     let part = dir.join(PART);
+    // (Set once the room fell short: every URL's file is the same, so none is tried past it.)
+    let short = std::cell::Cell::new(false);
+    let fits = |left: u64| -> Result<()> {
+        let room = buildstore::room::nas_room(root);
+        match room {
+            Ok(r) if left <= r => Ok(()),
+            Ok(r) => {
+                short.set(true);
+                bail!(
+                    "the NAS has {} free past its reserve (`scenic nas-room`): too little for the {} of the planet still to fetch",
+                    gb(r),
+                    gb(left)
+                )
+            }
+            Err(e) => {
+                short.set(true);
+                Err(anyhow::Error::from(e).context("the NAS's free space"))
+            }
+        }
+    };
     let mut failed = Vec::new();
     for u in &p.urls {
         let coming = |got: u64, of: u64| jobrt::jobs::report(got >> 20, of >> 20, "MB of the planet fetched");
-        match (net.resume)(u, &part, &coming) {
+        match buildstore::fetch::resume(u, &part, &fits, &coming) {
             Ok(true) => {}
             Ok(false) => {
                 say(&format!("{u}: the server hasn't it"));
                 failed.push(format!("{u}: none there"));
                 continue;
             }
+            Err(e) if short.get() => bail!("the planet of {} wasn't fetched: {e:#}", p.date),
             Err(e) => {
                 say(&format!("{u}: {e:#}; the next URL goes on from the part"));
                 failed.push(format!("{u}: {e:#}"));
@@ -289,7 +339,7 @@ mod tests {
         let said = std::sync::Mutex::new(Vec::<String>::new());
         let say = |s: &str| said.lock().unwrap().push(s.to_string());
         assert_eq!(next(&root, &p, None), Some(Next::Fetch));
-        fetch(&root, &p, &NET, &say).unwrap();
+        fetch(&root, &p, &say).unwrap();
         let at = path(&root, "2026-09-28");
         assert_eq!(std::fs::read(at.unchecked_path()).unwrap(), data);
         assert!(!at.with_file_name(PART).exists());
@@ -304,20 +354,57 @@ mod tests {
         assert_eq!(next(&root, &p, Some("2026-10-05")), Some(Next::Behind));
         // There already: nothing asked.
         let n = asked.lock().unwrap().len();
-        fetch(&root, &p, &NET, &|_| {}).unwrap();
+        fetch(&root, &p, &|_| {}).unwrap();
         assert_eq!(asked.lock().unwrap().len(), n);
         // A part a stopped run left: the rest alone asked.
         std::fs::remove_file(at.unchecked_path()).unwrap();
         std::fs::write(at.with_file_name(PART).unchecked_path(), &data[..400_000]).unwrap();
         let p = planet(&urls[2..], &format!("{base}/planet.pbf.md5"));
-        fetch(&root, &p, &NET, &|_| {}).unwrap();
+        fetch(&root, &p, &|_| {}).unwrap();
         assert_eq!(std::fs::read(at.unchecked_path()).unwrap(), data);
         assert_eq!(asked.lock().unwrap().last(), Some(&("/good/planet.pbf".to_string(), 400_000)));
+        // The NAS short of room for the rest, past its reserve (the test's disk: 700 kB free, a
+        // reserve of 100 kB): stopped at the first answer, nothing written, no other URL tried.
+        std::fs::remove_file(at.unchecked_path()).unwrap();
+        std::fs::write(at.with_file_name(PART).unchecked_path(), &data[..400_000]).unwrap();
+        buildstore::room::testkit::TEST_FREE.with(|c| c.set(Some(700_000)));
+        buildstore::room::set_nas_reserve(&root, Some(100_001), "a test").unwrap();
+        let n = asked.lock().unwrap().len();
+        let e = fetch(&root, &planet(&urls[1..], &p.md5), &|_| {}).unwrap_err().to_string();
+        assert!(e.contains("wasn't fetched") && e.contains("0.0 GB free past its reserve"), "{e}");
+        assert_eq!(
+            asked.lock().unwrap()[n..],
+            [("/planet.pbf.md5".to_string(), 0), ("/bad/planet.pbf".to_string(), 400_000)]
+        );
+        assert_eq!(std::fs::metadata(at.with_file_name(PART).unchecked_path()).unwrap().len(), 400_000);
+        // Room for it, just: fetched.
+        buildstore::room::set_nas_reserve(&root, Some(100_000), "a test").unwrap();
+        fetch(&root, &p, &|_| {}).unwrap();
+        assert_eq!(std::fs::read(at.unchecked_path()).unwrap(), data);
+        buildstore::room::set_nas_reserve(&root, None, "a test").unwrap();
         // No URL brings it: an error naming each, the part kept.
         std::fs::remove_file(at.unchecked_path()).unwrap();
         let p = planet(&[format!("{base}/gone/planet.pbf")], &format!("{base}/planet.pbf.md5"));
-        let e = fetch(&root, &p, &NET, &|_| {}).unwrap_err().to_string();
+        let e = fetch(&root, &p, &|_| {}).unwrap_err().to_string();
         assert!(e.contains("wasn't fetched") && e.contains("/gone/planet.pbf: none there"), "{e}");
+    }
+
+    /// The fetch's room as the plan measures it: the newest complete pass's planet's size, less the
+    /// part's; none with no pass, or its planet gone.
+    #[test]
+    fn the_fetchs_room_is_the_last_planets_size_less_the_part() {
+        let d = tempfile::tempdir().unwrap();
+        let root = NasRoot::local_for_test(d.path());
+        assert_eq!(room(&root, "2026-10-05", None), None);
+        assert_eq!(room(&root, "2026-10-05", Some("2026-09-28")), None, "its planet not there");
+        for date in ["2026-09-28", "2026-10-05"] {
+            std::fs::create_dir_all(d.path().join("sources/osm").join(date)).unwrap();
+        }
+        std::fs::write(path(&root, "2026-09-28").unchecked_path(), vec![0u8; 5000]).unwrap();
+        let r = room(&root, "2026-10-05", Some("2026-09-28")).unwrap();
+        assert_eq!((r.size, r.by.as_str(), r.held, r.left()), (5000, "2026-09-28", 0, 5000));
+        std::fs::write(path(&root, "2026-10-05").with_file_name(PART).unchecked_path(), vec![0u8; 1200]).unwrap();
+        assert_eq!(room(&root, "2026-10-05", Some("2026-09-28")).unwrap().left(), 3800);
     }
 
     /// The declaration staged (producers/sources/osm-planet.toml) pins the planet the build has

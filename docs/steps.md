@@ -19,7 +19,11 @@ makes the same bytes on every Mac.
    date; a new planet is the owner's edit of it. When the declared planet is newer than the last
    complete pass and the NAS lacks it, the lead's `planet-fetch` job (a fetch, counted by the pool's
    downloads cap) brings it once from its URLs in turn (the mirrors, then the main site) by the
-   build's fetcher (its User-Agent; 429 and 5xx answers waited out), resumably into
+   build's fetcher (its User-Agent; 429 and 5xx answers waited out). It's planned only when the
+   NAS has room for it past the owner's NAS reserve (`scenic nas-room`), by the last planet's size
+   less its part (`planet::room`; with no planet on the NAS to measure by, planned), and waits
+   otherwise, saying why in the status (`waiting`); the job checks again by the length the server
+   gives before writing, and stops short of it. It fetches resumably into
    `sources/osm/<date>/planet.osm.pbf.part`, checks it against its published MD5 (read back from
    the NAS; a mismatch starts the part over from the next URL) and names it
    `sources/osm/<date>/planet.osm.pbf`. The pass reads it there; its date and path are the pass's

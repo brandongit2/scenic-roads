@@ -1770,7 +1770,13 @@ The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs
 **How the steps read them.** The planet by `crate::planet` (`declared`, `next`): the lead's plan
 fetches the declared planet when it's newer than the last complete pass and the NAS lacks it
 (`planet-fetch`, its job the lead's own, a fetch the pool's downloads cap counts and the NAS
-budget weighs), then plans the pass of it (docs/steps.md §1); a declared planet older than the last
+budget weighs), and has room for it: the last planet's size (the newest complete pass's, a newer
+planet about its size: `planet::room`), less what its part holds, within the NAS's free space past
+the owner's NAS reserve (`scenic nas-room`, docs/building.md). Short of it, the fetch waits, its
+`waiting` saying the room it needs, the NAS's free space and the reserve (`agent::plan::planet_room_short`);
+with no planet on the NAS to measure by (a first fetch) it's planned. The fetch itself checks the
+room before each answer is written, by the length the server gives, and stops short of it, nothing
+written (`buildstore::fetch::resume`'s `room`). It then plans the pass of it (docs/steps.md §1); a declared planet older than the last
 pass is said waiting (passes only go forward), and with none declared no new pass is planned. Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage

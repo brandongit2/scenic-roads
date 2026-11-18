@@ -15919,6 +15919,40 @@ mod tests {
             .plan(&store::nasfs::NasRoot::local_for_test(&root), &Conditions::default(), &mut w)
             .iter()
             .any(|j| j.id.starts_with("osm-pass")));
+        // A newer planet declared (task #1169): its fetch only when the NAS has room for it, by
+        // the last planet's size (5 kB here) less its part, past the owner's NAS reserve; else the
+        // plan says why it waits.
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), vec![0u8; 5000]).unwrap();
+        let mut m = BTreeMap::new();
+        inputs::planet::accept_for_test(&nas, &mut m, "2026-10-05");
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
+        let fetch_or_wait = |a: &mut Agent| {
+            let mut w = Vec::new();
+            let fetch = plan_now(a, &mut w).iter().any(|j| j.id == "planet-fetch 2026-10-05");
+            let why = w.into_iter().find(|x| x.step.as_deref() == Some("planet-fetch")).map(|x| x.why);
+            (fetch, why)
+        };
+        room::TEST_FREE.with(|c| c.set(Some(4000)));
+        let (fetch, why) = fetch_or_wait(&mut a);
+        let why = why.expect("the fetch waits");
+        assert!(
+            !fetch && why.starts_with("needs 0 MB free on the NAS (the planet of 2026-09-28 is 0 MB; 0 MB free)"),
+            "{why}"
+        );
+        assert!(!why.contains("nas-room"), "no reserve: {why}");
+        // Its part holds some: the rest fits.
+        std::fs::create_dir_all(root.join("sources/osm/2026-10-05")).unwrap();
+        std::fs::write(root.join("sources/osm/2026-10-05").join(inputs::planet::PART), vec![0u8; 1000]).unwrap();
+        assert_eq!(fetch_or_wait(&mut a), (true, None));
+        // The owner's reserve kept past it.
+        room::set_nas_reserve(&nas, Some(1), "a test").unwrap();
+        let (fetch, why) = fetch_or_wait(&mut a);
+        let why = why.expect("the fetch waits for the reserve");
+        assert!(!fetch && why.contains("past the NAS reserve's") && why.contains("`scenic nas-room`"), "{why}");
+        room::set_nas_reserve(&nas, None, "a test").unwrap();
+        room::TEST_FREE.with(|c| c.set(None));
+        assert_eq!(fetch_or_wait(&mut a), (true, None));
     }
 
     /// A "none" terrain or slope z6 tile (the coverage gone from its z6 tile) is never expected the
