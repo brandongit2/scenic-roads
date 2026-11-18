@@ -1383,18 +1383,11 @@ impl Sched {
     /// controlled live); another cold start the whole Mac both (task #499 review: one that runs as
     /// many threads as the Mac has would swamp the jobs beside it).
     /// One only waiting on a worker, or leaving its cores idle, counts for none. A job held counts for
-    /// no more than the threads its lease counts (`Need::held`: task #948, a job granted 3 of 14
-    /// threads beside others counted for its measured 13 kept its Mac looking full after they ended).
+    /// the threads its lease counts (`Need::held`, what its agent says it runs on: docs/pool.md §7.1,
+    /// Threads controlled live), not its grant: task #948, a job granted 3 of 14 threads beside
+    /// others counted for its measured 13 kept its Mac looking full after they ended; a job its
+    /// agent grew counts for its threads grown.
     pub(super) fn need_cores(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
-        let (threads, busy) = self.need_cores_as_granted(step, n, total);
-        match n.held {
-            0 => (threads, busy),
-            h => (threads.min(h), busy.min(h * 10)),
-        }
-    }
-
-    /// `need_cores` as a grant would have it now, whatever its lease counts.
-    fn need_cores_as_granted(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
         let (threads, busy) = if self.the_plan.records_only(step) {
             (1, 0)
         } else if n.cold && !THREADS_HONOURED.contains(&step) {
@@ -1408,6 +1401,7 @@ impl Sched {
                 None => (1, 10),
             }
         };
+        let threads = if n.held > 0 && !self.the_plan.records_only(step) { n.held } else { threads };
         let busy = n.busy_now.unwrap_or(busy);
         (threads, if n.waits || n.idle { 0 } else { busy.min(threads * 10) })
     }
@@ -1909,7 +1903,9 @@ impl Sched {
     /// it had (its targets' cost records' `threads`, or the fewest a run's agent cut it to under way,
     /// `threads_least`: the fewest among them), their memory in the peak;
     /// the whole peak a thread, and one covered, where a target's aren't said (one more thread of a
-    /// regions check once needed about a region's worth, docs/inputs.md §4.3). Never the peak over
+    /// regions check once needed about a region's worth, docs/inputs.md §4.3); none (0) where it has
+    /// no peak yet, a cold start's, which its agent grows past no thread its grant doesn't cover
+    /// (crate::agent::threads::decide). Never the peak over
     /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
     /// than any thread of it is.
     pub(super) fn per_thread_mb<'t>(
@@ -1928,9 +1924,11 @@ impl Sched {
             })
             .collect::<Option<Vec<u32>>>()
             .and_then(|n| n.into_iter().min());
+        // (No figure, a cold start's: none a thread either, so its agent grows it past no threads
+        // its grant doesn't cover, crate::agent::threads::decide.)
         match measured {
-            Some(n) => ((peak_mb / u64::from(n)).max(1), n),
-            None => (peak_mb.max(1), 1),
+            Some(n) => (peak_mb.div_ceil(u64::from(n)), n),
+            None => (peak_mb, 1),
         }
     }
 

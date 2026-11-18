@@ -705,14 +705,13 @@ say no threads, so nothing is decided for them).
   slot's counts folder (`store::nasio::waited_in`). A frozen or stopping job measures nothing.
 - **The decision** (`Agent::tend_threads`, `threads::decide`), once a job has been watched a
   minute (`threads::EVERY`) on the threads its file says (one taking them as a target begins waits
-  for its next target to run on them): on what it kept busy while it computed, its CPU time over
-  its wall time less its waits.
-  - **Stalled** (it waited half its minute or more, `threads::STALLED`): neither grown nor cut.
-    Waiting threads say nothing of what it could keep busy: an inputs regions check stalled on the
-    NAS on 11 Nov (up to 2,748 s of waits) kept 1.35 cores busy of 3, and the rule this replaces
-    read that as "a third thread doesn't help" and held the check at 2 for over four hours, where
-    scratch runs of it kept about 6.6 of the mini's 12 cores busy.
-  - **Every thread busy** (0.9 of its threads or more, `threads::BUSY`): doubled, within the most
+  for its next target to run on them): on the cores it kept busy, its CPU time over its wall time,
+  against its threads. Not over its wall time less its waits: a wait is an instant any of its
+  threads was in a call while the others may compute, so that would count their CPU over less
+  time than they ran (4 threads, 40 % of the minute waiting, 2.4 cores busy, would read as 4 busy,
+  and be doubled).
+  - **Every thread busy** (0.9 of its threads or more, `threads::BUSY`) and under a quarter of its
+    minute waited (`threads::WAITING`): doubled, within the most
     a job may run on here (its Mac's cores less the in-use share's while the owner uses it,
     `Agent::threads_room`), the cores its Mac has free (its capacity's `cores_free`, the last
     minute's CPU, less the in-use share's, less what jobs grown before it this round took) and its
@@ -723,12 +722,19 @@ say no threads, so nothing is decided for them).
     thread where those aren't recorded; the threads covered, `Grant::thread_covers`, the more of its
     starting threads and those), within its capacity's `mem_mb` less what its jobs' grows hold
     already (`Agent::grown_mb`), and none while its Mac's memory admits no work (the brake, the
-    floor, a give-back's cool-down: `Capacity::mem_held_back`). So a grow never takes a Mac past
-    its memory floor by the same count the lead admits work by, and the memory guard stands behind
-    it. A grant of an older lead (no `thread_mb`) takes the job's whole memory a thread past the
-    threads it was granted.
+    floor, a give-back's cool-down: `Capacity::mem_held_back`). A job its lead has no memory
+    figure for (no peak: `thread_mb` 0) grows past none of the threads its grant covers. So a grow
+    never takes a Mac past its memory floor by the same count the lead admits work by, and the
+    memory guard stands behind it. A grant of an older lead (no `thread_covers`) takes the job's
+    whole memory a thread past the threads it was granted.
+    A job waiting a quarter of its minute or more is never grown, its threads all busy or not: more
+    threads would wait on the NAS with it (pacing the NAS is its budget's, §7.7).
   - **Threads left idle** (under half of them busy, `threads::IDLE`): cut to the threads that keep
-    it busy at 0.9, and one more to overlap its waits.
+    it busy at 0.9, and one more to overlap its waits, however much it waits: a thread waiting on
+    the NAS holds a core it doesn't use and adds to the NAS's load (slope-deep's batches, waiting
+    14–66 % of their time on the mini's timings, hold no idle threads). A regions check keeping 1.9
+    of its 2 threads busy with its NAS waits 1–5 % of its time (the mini's timings to 17 Nov, where
+    the rule this replaced held it at 2 for hours) is doubled.
   - Past the most it may run on (the owner back): cut to that, whatever it keeps busy.
   The gap between 0.9 and 0.5 is the hysteresis: a job cut keeps a thread past what it uses, so it
   isn't grown again at once, and a grow that didn't pay is cut back the next minute to what the job
@@ -736,14 +742,17 @@ say no threads, so nothing is decided for them).
   the rule's choices, not measures of a step, and bound no job's threads: its Mac's cores and memory
   do. The agent writes each change to the job's file and logs `agent: <job> on <n> threads (was <m>):
   <why>`; each job decided on is watched afresh. A cold start begins on its grant (a step honouring
-  its threads: one thread, so `1, 2, 4, 8` over its first minutes while it keeps them busy; another
-  the whole Mac, cut once it leaves them idle).
+  its threads: one thread, so `1, 2, 4, 8` over its first minutes while it keeps them busy and its
+  lead has a memory figure for it; another the whole Mac, cut once it leaves them idle).
 - **What the lead counts** (`Lease::threads`, `Leases::running_on`): each capacity (a member's in
-  every beat, `held::Beat::cap`, every 10 s; the lead's own each loop, `Coordinator::set_capacity`)
-  lists the jobs that say their threads (`Capacity::threads`: the threads each runs on now, those
+  every beat, `held::Beat::cap`, every 10 s, and in each ask; the lead's own each loop,
+  `Coordinator::set_capacity`, and in its own ask, `Coordinator::ask_own`, made after its agent
+  decides its jobs' threads; both noted before the ask is packed, `Shared::note_threads`) lists
+  the jobs that say their threads (`Capacity::threads`: the threads each runs on now, those
   its file says, and what it used on them since it was last decided on), and the lead counts each
   at the more of the two: a grow at once (its next target may take them), a cut once a target runs
-  on them. Its packing counts a held job at no more than that (`Need::held`) and adds what a grow
+  on them. Its packing counts a held job's cores at that (`Need::held`, `Sched::need_cores`: a
+  grown job at its threads grown, not its grant) and adds what a grow
   took past the threads its grant was admitted with (`Lease::start_threads`) and those its measure
   covers (`Sched::grown_mb`), at the same memory a thread its grant said. A job's threads may pass
   its Mac's cores while its threads wait (its busy cores fit, as a grant's do); a long target takes

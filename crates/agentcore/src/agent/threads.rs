@@ -7,20 +7,23 @@
 //! second, inputs::inputs::pace) is watched on the threads it runs on (`Watch`): its CPU time (its
 //! processes', the memory guard's sampler) and the wall time it waited on the NAS, the network and
 //! the local disk (store::nasio::waited_in, which its processes add to as they go:
-//! jobrt::timings). About once a minute (`EVERY`) it's decided again (`decide`), on what it kept busy
-//! while it computed: its CPU time over the time it didn't wait.
+//! jobrt::timings). About once a minute (`EVERY`) it's decided again (`decide`), on the cores it
+//! kept busy: its CPU time over its wall time, against its threads. (Not over the time it didn't
+//! wait: a wait is an instant any of its threads was in a call, while the others may compute, so
+//! that would count their CPU over less than the time they ran: 4 threads, 40 % of the minute
+//! waiting, 2.4 cores busy, would read as all 4 busy.)
 //!
-//! - **Stalled** (it waited `STALLED` of the minute or more): neither grown nor cut. Its threads
-//!   waiting say nothing of what it could keep busy (a regions check stalled on the NAS on 11 Nov
-//!   kept 1.35 cores busy of 3, and a rule reading that as "a third thread doesn't help" kept it at 2
-//!   for hours, where it kept 6.6 of the mini's 12 busy when the NAS answered).
-//! - **Every thread busy** (`BUSY` of its threads or more): doubled, within the cores its Mac has
-//!   free (its cores for jobs less those busy over the last minute, less what the jobs grown before
-//!   it this round took), and the memory each thread past those its grant's memory covers adds
-//!   (crate::coord::Grant::thread_mb) within what its Mac has for jobs less its jobs' growth so far;
-//!   none while its Mac's memory admits no work (the brake, the floor, a give-back's cool-down).
+//! - **Every thread busy** (`BUSY` of its threads or more) and its waits a small share of its
+//!   minute (under `WAITING`): doubled, within the cores its Mac has free (its cores for jobs less
+//!   those busy over the last minute, less what the jobs grown before it this round took), and the
+//!   memory each thread past those its grant's memory covers adds (crate::coord::Grant::thread_mb)
+//!   within what its Mac has for jobs less its jobs' growth so far; none while its Mac's memory
+//!   admits no work (the brake, the floor, a give-back's cool-down), and none past those its grant
+//!   covers while it has no memory figure (a cold start's: 0 MB a thread). A job waiting more is
+//!   never grown: more threads would wait on the NAS with it (its pacing is the NAS budget's).
 //! - **Threads left idle** (under `IDLE` of them busy): cut to the threads that keep it busy at
-//!   `BUSY`, and one more to overlap its waits.
+//!   `BUSY`, and one more to overlap its waits, however much it waits: a thread waiting on the NAS
+//!   holds a core it doesn't use and adds to the NAS's load.
 //! - Past the most its Mac lets a job run on now (its cores less the in-use share's while the owner
 //!   uses it): cut to that, whatever it keeps busy.
 //!
@@ -42,8 +45,8 @@ pub const BUSY: f64 = 0.9;
 /// The share of its threads under which a job counts as leaving threads idle, and is cut.
 pub const IDLE: f64 = 0.5;
 
-/// The share of its minute a job waited from which it counts as stalled: neither grown nor cut.
-pub const STALLED: f64 = 0.5;
+/// The share of its minute a job waited from which it's never grown.
+pub const WAITING: f64 = 0.25;
 
 /// A job watched on the threads it runs on (`Agent::watch_threads`): since when, its CPU time and
 /// wall time waited then (ns), and those threads.
@@ -71,10 +74,9 @@ impl Window {
         (self.waited_ms as f64 / self.wall_ms.max(1) as f64).min(1.0)
     }
 
-    /// The cores it kept busy while it computed: its CPU time over its wall time less its waits.
+    /// The cores it kept busy: its CPU time over its wall time.
     pub fn busy(&self) -> f64 {
-        let computing = self.wall_ms.saturating_sub(self.waited_ms).max(1);
-        self.cpu_ms as f64 / computing as f64
+        self.cpu_ms as f64 / self.wall_ms.max(1) as f64
     }
 }
 
@@ -82,7 +84,8 @@ impl Window {
 /// the in-use share's while the owner uses it), the cores free (its cores for jobs less those busy
 /// over the last minute, less the threads grown already this round), and its memory: whether its
 /// Mac admits work at all, the memory (MB) its Mac has for jobs less its jobs' growth so far, what
-/// each thread past `covers` adds to the job's (MB), and the threads its grant's memory covers.
+/// each thread past `covers` adds to the job's (MB; 0: no figure yet), and the threads its grant's
+/// memory covers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Room {
     pub most: u32,
@@ -105,21 +108,23 @@ pub fn decide(w: &Window, room: &Room) -> Decision {
     let t = w.threads.max(1);
     let most = room.most.max(1);
     let (busy, waited) = (w.busy(), w.waited());
-    let said = format!("{busy:.1} cores busy of {t} while computing, {:.0} % of its minute waited", waited * 100.0);
+    let said = format!("{busy:.1} cores busy of {t}, {:.0} % of its minute waited", waited * 100.0);
     let hold = |why: String| Decision { threads: t, why };
     if t > most {
         return Decision { threads: most, why: format!("{most} threads at most on its Mac now ({said})") };
     }
-    if waited >= STALLED {
-        return hold(format!("stalled on its waits ({said})"));
-    }
     if busy >= BUSY * f64::from(t) {
+        if waited >= WAITING {
+            return hold(format!("every thread busy, not grown while it waits ({said})"));
+        }
         let by_cores = t + room.free_cores.max(0.0).floor() as u32;
         let by_mem = if !room.mem_ok {
             t
+        } else if room.thread_mb == 0 {
+            t.max(room.covers)
         } else {
             let paid = t.max(room.covers);
-            let more = room.mem_mb / room.thread_mb.max(1);
+            let more = room.mem_mb / room.thread_mb;
             paid.saturating_add(u32::try_from(more).unwrap_or(u32::MAX))
         };
         let grown = (2 * t).min(most).min(by_cores).min(by_mem);
@@ -179,18 +184,25 @@ mod tests {
         assert_eq!(decide(&w(back, 236, 0), &roomy()).threads, back, "settled");
     }
 
-    /// The busy cores are those it kept busy while it computed: a job waiting a third of its minute
-    /// with its threads busy the rest is grown; one waiting half or more of it is stalled, neither
-    /// grown nor cut, however few cores it keeps busy (the regions check of 11 Nov: 1.35 of 3).
+    /// The busy cores are its CPU time over its wall time, waits and all: 4 threads, 40 % of the
+    /// minute waiting, 2.4 cores busy, are held (not read as 4 busy over its 36 s without a wait,
+    /// and doubled). A job waiting `WAITING` of its minute or more is never grown, its threads all
+    /// busy or not; one whose threads sit idle is cut however much it waits (slope-deep's batches
+    /// waiting on the NAS hold no idle threads).
     #[test]
-    fn a_job_stalled_on_its_waits_is_neither_grown_nor_cut() {
-        assert_eq!(decide(&w(3, 112, 20), &roomy()).threads, 6, "2.8 of 3 busy over its 40 s computing");
-        let d = decide(&w(3, 81, 40), &roomy());
-        assert_eq!(d.threads, 3, "{}", d.why);
-        assert!(d.why.starts_with("stalled"), "{}", d.why);
-        assert_eq!(decide(&w(8, 5, 59), &roomy()).threads, 8, "nearly idle, but waiting: held");
-        // (Waits past its wall time, as a job's programs' summed may be: stalled, not undefined.)
-        assert_eq!(decide(&Window { waited_ms: 90_000, ..w(4, 1, 0) }, &roomy()).threads, 4);
+    fn a_job_waiting_is_judged_on_its_cpu_over_its_minute_and_never_grown() {
+        let d = decide(&w(4, 144, 24), &roomy());
+        assert_eq!(d.threads, 4, "2.4 of 4 busy: {}", d.why);
+        assert_eq!(decide(&w(3, 170, 10), &roomy()).threads, 6, "2.8 of 3 busy, a sixth waited: grown");
+        let d = decide(&w(4, 4 * 58, 20), &roomy());
+        assert_eq!(d.threads, 4, "a third waited: {}", d.why);
+        assert!(d.why.contains("not grown while it waits"), "{}", d.why);
+        let d = decide(&w(8, 5, 59), &roomy());
+        assert_eq!(d.threads, 2, "nearly idle, waiting all its minute: cut to 2: {}", d.why);
+        assert!(d.why.starts_with("threads left idle"), "{}", d.why);
+        assert_eq!(decide(&w(3, 81, 40), &roomy()).threads, 3, "1.35 of 3 busy: held");
+        // (Waits past its wall time, as a job's programs' summed may be: a share of 1, not more.)
+        assert_eq!(decide(&Window { waited_ms: 90_000, ..w(4, 4 * 59, 0) }, &roomy()).threads, 4);
     }
 
     /// A grow stays within the cores its Mac has free, the memory each thread past those its grant
@@ -211,9 +223,14 @@ mod tests {
         assert_eq!(d.threads, 4);
         assert!(d.why.contains("memory"), "{}", d.why);
         assert_eq!(decide(&busy4, &Room { mem_ok: false, covers: 8, ..roomy() }).threads, 4, "the brake on");
+        // (No memory figure yet, a cold start's: grown within the threads its grant covers alone.)
+        let d = decide(&busy4, &Room { thread_mb: 0, covers: 2, ..roomy() });
+        assert_eq!(d.threads, 4, "{}", d.why);
+        assert!(d.why.contains("memory"), "{}", d.why);
+        assert_eq!(decide(&busy4, &Room { thread_mb: 0, covers: 6, ..roomy() }).threads, 6);
         assert_eq!(decide(&busy4, &Room { most: 5, ..roomy() }).threads, 5);
         let d = decide(&w(8, 8 * 59, 0), &Room { most: 6, ..roomy() });
         assert_eq!(d.threads, 6, "the owner back: {}", d.why);
-        assert_eq!(decide(&w(8, 1, 59), &Room { most: 6, ..roomy() }).threads, 6, "stalled or not");
+        assert_eq!(decide(&w(8, 8 * 59, 59), &Room { most: 6, ..roomy() }).threads, 6, "waiting or not");
     }
 }

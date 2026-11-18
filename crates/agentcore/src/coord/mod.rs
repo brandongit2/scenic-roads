@@ -939,6 +939,11 @@ impl Shared {
                 w.label = l.chars().take(80).collect();
             }
         }
+        // (Its jobs' threads as its ask says them, before it's packed: a grow its agent decided
+        // since its last beat is counted in this packing, `Sched::grown_mb`.)
+        if let Some(cap) = a.and_then(|a| a.cap.as_ref()) {
+            self.note_threads(worker, cap);
+        }
     }
 }
 
@@ -2150,6 +2155,11 @@ impl Coordinator {
         }
         let mut a = a.clone();
         a.worker = self.me.clone();
+        // (Its jobs' threads as its ask says them, before it's packed: its agent decides them
+        // just before it asks, after its last `set_capacity`.)
+        if let Some(c) = &a.cap {
+            s.note_threads(&self.me, c);
+        }
         // (Its capacity kept as this Mac's own, `set_capacity`, not as a worker's: said once.)
         let seen = Ask { cap: None, ..a.clone() };
         s.seen(&self.me, format!("asked for {} steps", a.can.len()), Some(&seen), now);
@@ -10657,7 +10667,7 @@ mod tests {
         controllable(&c);
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!((g.thread_mb, g.thread_covers), (g.peak_mb / 13, 13));
+        assert_eq!((g.thread_mb, g.thread_covers), (g.peak_mb.div_ceil(13), 13));
         // Begun on 13 and cut to 4 under way: its peak spread over 4 at most.
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
@@ -10666,7 +10676,7 @@ mod tests {
         }
         let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
         let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
-        assert_eq!(c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak), (peak / 4, 4));
+        assert_eq!(c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak), (peak.div_ceil(4), 4));
         // Measured at 1 thread instead: each thread past its 3 its whole peak.
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
@@ -10677,6 +10687,28 @@ mod tests {
         let s = c.shared.lock().unwrap();
         let lease = s.leases.of(g.lease).unwrap().clone();
         assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), peak), peak);
+    }
+
+    /// Task #1420: a grow its agent decided is counted by the next ask's packing, before any beat:
+    /// a member's ask and the lead's own (`ask_own`) say their jobs' threads, noted before they're
+    /// packed (`Shared::note_threads`), so a grant beside a grown job never takes the memory its
+    /// grow holds (`Sched::grown_mb`).
+    #[test]
+    fn a_grow_is_counted_by_the_next_ask_before_any_beat() {
+        let (_d, c, w, _clock) = every((0, 0));
+        controllable(&c);
+        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
+        let g = w.ask(&a).unwrap().unwrap();
+        assert_eq!(counted(&c, g.lease), g.threads);
+        let _ = w.ask(&Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a.clone() });
+        assert_eq!(counted(&c, g.lease), g.threads + 4, "a member's ask");
+        let (_d, c, _w, _clock) = every((0, 0));
+        controllable(&c);
+        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m4", "slope-hi", 30_000, 100_000) };
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
+        assert_eq!(counted(&c, g.lease), g.threads);
+        let _ = c.ask_own(&Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a }, &BTreeSet::new(), 0);
+        assert_eq!(counted(&c, g.lease), g.threads + 4, "the lead's own ask");
     }
 
     /// Task #1420, mixed versions: a member before live control beats without a capacity, or its

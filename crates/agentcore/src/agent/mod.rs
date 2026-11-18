@@ -465,7 +465,8 @@ struct Slot {
     peak_mb: Option<u64>,
     /// What each of its job's threads past those its grant's memory covers adds to its memory (MB),
     /// and those threads (crate::coord::Grant::thread_mb, `thread_covers`): what its agent reserves
-    /// for a grow (crate::agent::threads).
+    /// for a grow (crate::agent::threads; 0 MB: no figure yet, no grow past those). None: an older
+    /// lead's grant (it says no threads covered).
     thread_mb: Option<(u64, u32)>,
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
@@ -2618,7 +2619,7 @@ impl Agent {
         };
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         self.slots[k].peak_mb = Some(grant.peak_mb).filter(|&m| m > 0);
-        self.slots[k].thread_mb = Some((grant.thread_mb, grant.thread_covers)).filter(|t| t.0 > 0);
+        self.slots[k].thread_mb = Some((grant.thread_mb, grant.thread_covers)).filter(|t| t.1 > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         self.slots[k].job = Some(jobrt::jobid::JobId { epoch: grant.epoch, n: grant.lease });
         match grant {
@@ -2946,7 +2947,7 @@ impl Agent {
         }
         self.slots[k].granted = Some(g.threads).filter(|&t| t > 0);
         self.slots[k].peak_mb = Some(g.peak_mb).filter(|&m| m > 0);
-        self.slots[k].thread_mb = Some((g.thread_mb, g.thread_covers)).filter(|t| t.0 > 0);
+        self.slots[k].thread_mb = Some((g.thread_mb, g.thread_covers)).filter(|t| t.1 > 0);
         self.slots[k].reserve_mb = Some(g.disk_mb).filter(|&d| d > 0);
         Some((k, spec))
     }
@@ -7627,10 +7628,10 @@ impl Agent {
     /// What each thread of slot `k`'s job past those its grant's memory covers adds to it (MB), and
     /// those threads: its grant's (`Slot::thread_mb`), else (an older lead's grant, a job taken over
     /// from an older agent) the whole memory it counts for (`need_mb`) a thread past those it was
-    /// granted.
+    /// granted. 0 MB: no figure, so no grow past those (crate::agent::threads::decide).
     fn thread_mb(&self, k: usize) -> (u64, u32) {
         let s = &self.slots[k];
-        s.thread_mb.unwrap_or_else(|| (self.need_mb(k).max(1), s.granted.unwrap_or(1)))
+        s.thread_mb.unwrap_or_else(|| (self.need_mb(k), s.granted.unwrap_or(1)))
     }
 
     /// The memory slot `k`'s job's threads past those its grant covers hold (MB, `thread_mb`): what
@@ -7651,8 +7652,8 @@ impl Agent {
 
     /// This Mac's running jobs' threads decided again (docs/pool.md §7.1, Threads controlled live;
     /// crate::agent::threads::decide): each watched `threads::EVERY` on the threads its file says
-    /// (`watch_threads`), on what it kept busy while it computed, within the most a job may run on
-    /// here (`threads_room`), the cores its Mac has free (its capacity's, less the in-use share's
+    /// (`watch_threads`), on the cores it kept busy (its CPU time over its wall time) and its share
+    /// of it waited, within the most a job may run on here (`threads_room`), the cores its Mac has free (its capacity's, less the in-use share's
     /// while the owner uses it, less what the jobs grown before it this round took) and its Mac's
     /// memory (its capacity's for a job, `mem_mb`, less its jobs' growth, `grown_mb`, at the job's
     /// memory a thread, `thread_mb`; none while it admits no work). Each change written to the job's
@@ -11935,10 +11936,10 @@ mod tests {
 
     /// Task #1420: a running job's threads follow what it keeps busy, its agent deciding each
     /// minute (crate::agent::threads): a paced check on 2, both busy, is doubled to 4 (its file and
-    /// its count), watched afresh on them; 1 core busy of 4 for a minute, cut to 3; a minute stalled
-    /// on the NAS (its counts' wall time waited), held; every thread busy but no memory for one more
-    /// at its grant's memory a thread, held; with memory, grown within the most it may run on. Under
-    /// a minute, nothing is decided.
+    /// its count), watched afresh on them; 1 core busy of 4 for a minute, cut to 3; a minute waiting
+    /// on the NAS (its counts' wall time waited) with a tenth of a core busy, cut to 2 all the same;
+    /// every thread busy but no memory for one more at its grant's memory a thread, held; with
+    /// memory, grown within the most it may run on. Under a minute, nothing is decided.
     #[test]
     fn a_jobs_threads_follow_what_it_keeps_busy_each_minute() {
         let d = tempfile::tempdir().unwrap();
@@ -12006,24 +12007,31 @@ mod tests {
         a.tend_threads(&cond);
         assert_eq!(file(&a), 3);
         a.watch_threads(0);
-        // Stalled: 50 s of its minute waiting on the NAS, a tenth of a core busy: held.
+        // 50 s of its minute waiting on the NAS, a tenth of a core busy: its idle threads cut.
         minute(&mut a);
         waited(&a, 50 * s);
         cpu(&a, 3 * 61 * s + s / 10);
         a.tend_threads(&cond);
-        assert_eq!(file(&a), 3, "stalled: neither cut nor grown");
+        assert_eq!(file(&a), 2, "waiting and idle: cut");
+        a.watch_threads(0);
         // Every thread busy, but each past those its grant covers would take 64 GB: held.
-        a.slots[0].thread_mb = Some((64 << 10, 3));
+        a.slots[0].thread_mb = Some((64 << 10, 2));
         minute(&mut a);
-        cpu(&a, 6 * 61 * s + s / 10);
+        cpu(&a, 5 * 61 * s + s / 10);
         a.tend_threads(&cond);
-        assert_eq!(file(&a), 3, "no memory for a thread more");
+        assert_eq!(file(&a), 2, "no memory for a thread more");
+        // No memory figure (a cold start's): held at the threads its grant covers.
+        a.slots[0].thread_mb = Some((0, 2));
+        minute(&mut a);
+        cpu(&a, 7 * 61 * s + s / 10);
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 2, "no memory figure");
         // With memory for them: doubled, within the most it may run on here.
-        a.slots[0].thread_mb = Some((500, 3));
+        a.slots[0].thread_mb = Some((500, 2));
         minute(&mut a);
         cpu(&a, 9 * 61 * s + s / 10);
         a.tend_threads(&cond);
-        assert_eq!(file(&a), 6.min(a.threads_room(&cond) as u32));
+        assert_eq!(file(&a), 4.min(a.threads_room(&cond) as u32));
         if let Some(mut r) = a.slots[0].running.take() {
             r.stop(Duration::from_secs(1));
         }
