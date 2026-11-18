@@ -2704,8 +2704,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   background loop. The usual Origin rules hold.
 - **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
   time and of the bytes its phases counted as read or written (local disk, NAS and internet alike:
-  `timings::count`; the page says "I/O"), over its last 10 runs that ended well
-  (`timings::SHARES_RUNS`; the bytes' mean over the runs that counted any), largest by time first.
+  `timings::count`; the page says "I/O"), over its last 10 runs that ended well and passed the
+  plausibility checks their agents made (`timings::learnable`; docs/formats.md, Timings:
+  `implausible`; `timings::SHARES_RUNS`; the bytes' mean over the runs that counted any), largest by time first.
   The lead's status carries them as `phase_shares`, by step id (the steps table's; a leased task's
   runs, timed as "task <kind>", are its kind's: `timings::step_of`; its job's id names its kind too,
   "<kind> <unit>", so the Machines tab shows it, task #849):

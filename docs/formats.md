@@ -917,8 +917,11 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s}
+{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …]}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
+work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, procs}
+nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
+done: {end, targets, of, resumed, made}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
@@ -953,6 +956,51 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
   footprints summed, sampled every 250 ms, as the memory guard measures a job; the most over its
   spans); a phase running a program is that program's peak. Absent where it can't be read. `sub`: one level of sub-phases (a child program's phases come in here). Empty, zero and false
   fields left out.
+- A phase's compute is its `cpu_s` (its own CPU), its waits its `waits`: no other field says them.
+
+What a job needs, apart from what its Mac supplied (task #1419; absent in a record from before, and
+read as absent):
+
+- `work` (the job's, jobrt::timings::Work): the instructions and cycles its processes retired
+  (`proc_pid_rusage`'s `RUSAGE_INFO_V6`: `ri_instructions`, `ri_cycles`), of them on the performance
+  cores (`p_insn`, `p_cycles`: `ri_pinstructions`, `ri_pcycles`) and its CPU there (`p_cpu_s`:
+  `ri_user_ptime` + `ri_system_ptime`; the efficiency cores' are the rest), over `cpu_s` of CPU. Its
+  own process's exactly, from its start to its end; in a job's own record its group's other
+  processes started since (its programs, their helpers: a Python producer's ImageMagick, `procs` of
+  them) as the memory sampler last saw each, four times a second: one that ends between two samples
+  counts to the last, one living less than a sample isn't seen (a reaped child's counts end with
+  it: only its times reach its parent). So `work.cpu_s` against the run's `cpu_s` says what the
+  counts miss. A macOS without V6 is read at V4: no performance-core split.
+- `peak_mb`: the most memory its process group held over the whole run (sampled as a phase's,
+  in a phase or not); `peak_threads`: the threads its work ran on as that was sampled
+  (jobrt::control::threads_now: the target's grant under way, else a paced job's allowance, else
+  `threads`); `threads_most`: the most it ran on. Its input's size is its targets' cost lines'
+  (`costs.jsonl`'s `sizes`).
+- `nas` (its agent's, from the job's counts folder as it ended, store::nasio: every process of the
+  job): `read_b` the bytes read through the NAS share (`ReadBytes`; its uploads' read-backs among
+  them, `read_back_b`), `held_b` those of NAS files it read that this Mac's page cache held, so the
+  NAS served none (a whole copy's resident part, store::nasfs's `copy_counter`), `wrote_b`, and the
+  files opened for reading, made, listed (entries), statted and deleted. Asked of the NAS:
+  `read_b + held_b`, whichever answered (a warm cache isn't a small need); served: `read_b`, where a
+  streaming read that the share's own client cache answers is counted as served (not measured).
+- `done`: `end` (its agent's: `done`, `paused`, `failed`, `interrupted`; only `done` did its whole
+  job, the others' figures are a part's), `targets` it finished of the `of` it was given (its
+  agent's, as the history's end says them), `resumed` the blocks or pieces it found kept by an
+  earlier run's resume log (jobrt::resume_log: the work a resume skips) and `made` those it made and
+  kept (the job's, a child program's taken in). A cancelled job's run is never taken: its agent
+  stops it and keeps no record of it.
+- `implausible`: the plausibility checks it failed as its agent took it (jobrt::timings::implausible),
+  each a sentence; such a record is kept, never learned from (the phase shares, `learnable`), and
+  the build page's job view says why. Each check within 5 % and 1 s of its figure (the readings'
+  grain, `CHECK_SHARE`, `CHECK_S`):
+  - its CPU within its threads: `cpu_s` ≤ `threads_most` (else `threads`) × `wall_s`;
+  - its instructions consistent with its CPU at its Mac's speed: counted over its whole CPU
+    (`work.cpu_s` against `cpu_s`), some counted where it took CPU, and its cycles over that CPU,
+    the performance cores' too, at most 1.3 × the Mac's top clock (`CLOCK_SLACK`; jobrt::sys::top_clock:
+    the performance cores' cycles over their time while a thread of the agent's spins 0.2 s at the
+    user-interactive QoS, once a process);
+  - its phases summing to its run: the main thread's phases' wall within `wall_s`, and its phases'
+    CPU and `untimed_cpu_s` adding up to `cpu_s`.
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,

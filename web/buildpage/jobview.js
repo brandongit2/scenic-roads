@@ -68,17 +68,25 @@ export function timeWords(mode, origin, end) {
 }
 
 /** A record's figures (jobrt::timings::RunRec): wall and CPU (s), the cores busy (CPU over wall),
- * its peak memory (MB: the most of its phases', a sub-phase's too), its threads, its wait on the NAS
- * and the network (s, the main thread's top-level phases'); null without a record. */
+ * its peak memory (MB: the run's, else the most of its phases', a sub-phase's too), its threads, its
+ * wait on the NAS and the network (s, the main thread's top-level phases'); what it retired (task
+ * #1419, docs/formats.md, Timings: instructions, instructions a cycle, the clock in GHz, the share of
+ * its CPU on performance cores, the CPU the counts are of), its NAS bytes asked and served, the work
+ * it did, the checks it failed; null without a record. */
 export function recordFigures(rec) {
   if (!rec) return null;
   const all = (ps) => (ps || []).flatMap((p) => [p, ...all(p.sub)]);
   const peaks = all(rec.phases).map((p) => p.peak_mb || 0);
   const main = (rec.phases || []).filter((p) => !p.background);
   const wait = (k) => main.reduce((s, p) => s + (p.waits?.[k] || 0), 0);
+  const w = rec.work, nas = rec.nas;
   return {
     wall: rec.wall_s ?? null, cpu: rec.cpu_s ?? null, cores: rec.wall_s > 0 && rec.cpu_s != null ? rec.cpu_s / rec.wall_s : null,
-    peak: peaks.length && Math.max(...peaks) > 0 ? Math.max(...peaks) : null, threads: rec.threads ?? null, nas: wait("nas_s"), net: wait("net_s"),
+    peak: rec.peak_mb ?? (peaks.length && Math.max(...peaks) > 0 ? Math.max(...peaks) : null), threads: rec.threads ?? null, nas: wait("nas_s"), net: wait("net_s"),
+    insn: w?.insn ?? null, ipc: w?.cycles > 0 ? w.insn / w.cycles : null, ghz: w?.cpu_s > 0 ? w.cycles / w.cpu_s / 1e9 : null,
+    pShare: w?.cpu_s > 0 ? w.p_cpu_s / w.cpu_s : null, counted: w?.cpu_s ?? null,
+    asked: nas ? nas.read_b + (nas.held_b || 0) : null, served: nas ? nas.read_b : null,
+    done: rec.done ?? null, implausible: rec.implausible || [],
   };
 }
 
@@ -91,11 +99,12 @@ export function median(xs) {
 }
 
 /** A step's medians over its records `runs` (`/api/timings`' `runs`, the kind's last), job `job`'s own
- * left out: {n, wall, cpu, cores, peak, threads, nas, net}. */
+ * left out, and those failing the plausibility checks (`implausible`, never learned from):
+ * {n, wall, cpu, cores, peak, threads, nas, net, insn}. */
 export function stepMedians(runs, job) {
-  const fs = (runs || []).filter((r) => r.job !== job).map(recordFigures);
+  const fs = (runs || []).filter((r) => r.job !== job && !(r.implausible || []).length).map(recordFigures);
   const of = (k) => median(fs.map((f) => f[k]));
-  return { n: fs.length, wall: of("wall"), cpu: of("cpu"), cores: of("cores"), peak: of("peak"), threads: of("threads"), nas: of("nas"), net: of("net") };
+  return { n: fs.length, wall: of("wall"), cpu: of("cpu"), cores: of("cores"), peak: of("peak"), threads: of("threads"), nas: of("nas"), net: of("net"), insn: of("insn") };
 }
 
 /** How job view `v` (`GET /api/job/<id>`) ended and why: {state: running|ok|failed|ended|unknown,

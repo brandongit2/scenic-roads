@@ -1,7 +1,9 @@
 // A job's page (task #1105; docs/pipeline.md §5, A job's page), at the build page's job/<id>: one
 // job run as the lead keeps it (`GET /api/job/<id>`, docs/formats.md, Job spans).
 //   Left, fixed: what it is (step, targets, Mac, job id and lease, app), what it held and used
-//   (threads granted, cores busy, peak memory, its NAS weight), when and how it ended and why, its
+//   (threads granted, cores busy, peak memory, what it retired, its NAS bytes asked and served, the
+//   work it did, the plausibility checks its record failed, its NAS weight), when and how it ended
+//   and why, its
 //   figures beside its step's medians (`/api/timings`), the other runs of its targets and the jobs
 //   beside it on its Mac (the history's: `runs`, `beside`).
 //   Main: its spans on a timeline (timeline.js, the schedule's; laid out by runlanes.js, the dev
@@ -120,11 +122,14 @@ function side(f, out) {
       ["app", v.app || (v.legacy ? "not recorded" : "not recorded (its agent's app is older)")],
     ])),
     sec("What it held and used", kv([
-      ["threads", fig?.threads ?? f.end?.threads ?? null, "Granted: RAYON_NUM_THREADS, the cores its grant held"],
+      ["threads", fig?.threads != null && v.record?.threads_most > fig.threads ? `${fig.threads}, up to ${v.record.threads_most}` : fig?.threads ?? f.end?.threads ?? null, "Granted: RAYON_NUM_THREADS as it started, and the most its targets' grants (or a paced job's allowance) gave it"],
       ["cores busy", fig?.cores != null ? `${fx(fig.cores)} (${dur(fig.cpu)} CPU)` : v.running ? "when it ends (its record)" : "no record", "Its CPU over its wall time, its children's too"],
-      ["peak memory", fig?.peak != null ? mb(fig.peak) : v.running ? "when it ends" : "no record", "The most its process group held in any phase (physical footprints, every 250 ms)"],
+      ["peak memory", fig?.peak != null ? `${mb(fig.peak)}${v.record?.peak_threads ? ` at ${plural(v.record.peak_threads, "thread")}` : ""}` : v.running ? "when it ends" : "no record", "The most its process group held over its run (physical footprints, every 250 ms), and the threads its work ran on then"],
+      ["retired", fig?.insn != null ? `${fig.insn >= 1e12 ? `${fx(fig.insn / 1e12, 2)} T` : `${fx(fig.insn / 1e9)} G`} instructions, ${fx(fig.ipc, 2)} a cycle at ${fx(fig.ghz, 2)} GHz; ${Math.round(fig.pShare * 100)}% of its CPU on performance cores` : null, `What its processes retired over ${fig?.counted != null ? dur(fig.counted) : "–"} of CPU: its own exactly, its programs as sampled four times a second (task #1419)`],
+      ["NAS asked", fig?.asked != null ? `${bytes(fig.asked)} read, ${bytes(fig.served)} of it served by the NAS${v.record.nas.wrote_b ? `; ${bytes(v.record.nas.wrote_b)} written` : ""}` : null, "The NAS files' bytes it read, whichever answered, and those read through the share (the rest this Mac's page cache held)"],
+      ["work done", fig?.done ? `${fig.done.of ? `${n(fig.done.targets)} of ${n(fig.done.of)} targets` : "no targets"}${fig.done.end && fig.done.end !== "done" ? `, ${fig.done.end}: a part's figures` : ""}${fig.done.resumed ? `; ${n(fig.done.resumed)} blocks resumed, ${n(fig.done.made || 0)} made` : ""}` : null, "The targets it finished, how it ended, and the blocks a resumed run took from an earlier one"],
       ["NAS weight", "not recorded", "The lead weighs a running job's NAS share from its beats (coord::sched job_weight); nothing keeps the weight it was granted under"],
-    ])),
+    ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null),
     sec("When and how", kv([
       ["started", f.t0 != null ? clockText(f.t0, { date: true }) : "–"],
       ["took", f.t0 != null && end != null ? `${dur(end - f.t0)}${v.running ? " so far" : ""}` : "–"],

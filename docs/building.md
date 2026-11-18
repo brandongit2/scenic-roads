@@ -366,7 +366,13 @@ from the first (`edit_held`).
   is said (`scenic timings` marks its CPU/wall `~` past a tenth, `UNSURE_MARK`). Each phase keeps the most memory the job held
   while it was open (`peak_mb`, sampled four times a second over the job's process group), shown in
   the log's table and as `scenic timings`' peak column; `scenic pool needs --fit` ends with each
-  step's heaviest phase over its last 20 timed runs (`timings::peak_holders`). The record
+  step's heaviest phase over its last 20 timed runs (`timings::peak_holders`). A run also keeps
+  what it needed apart from what its Mac supplied (task #1419): the instructions and cycles its
+  processes retired, the performance cores' apart (`work`), its peak with the threads then, its NAS
+  bytes asked apart from those the NAS served, and the work it did (how it ended, its targets, a
+  resume's skipped blocks); its agent checks each record (CPU within its threads, instructions
+  consistent with its CPU at its Mac's clock, phases summing to the run) and keeps one that fails
+  unlearned from, said on the build page's job view. The record
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).
