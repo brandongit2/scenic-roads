@@ -65,6 +65,33 @@ fn a_name_freed_and_taken_again_leaves_the_queue() {
     assert_eq!(back.len(), q.len());
 }
 
+/// An upload the records hold only in their pending (replaced in the manifest, not yet checked) is
+/// never queued: not as the batch frees it, nor as a save drops it from the manifest; once a save's
+/// pending leaves it too (checked, or unpended by the `gc` job), it is queued then.
+#[test]
+fn a_records_saves_pending_only_name_is_never_queued() {
+    let d = tempfile::tempdir().unwrap();
+    let m1 = map(1, &[("a", "a.1.pack")]);
+    let q = GcQueue::default();
+    q.open(d.path(), &m1).unwrap();
+    let pending = |seq: u64, manifest: &[(&str, &str)], p: &[&str]| Records {
+        pending: p.iter().map(|n| n.to_string()).collect(),
+        ..records(seq, manifest)
+    };
+    super::records(&q, &pending(1, &[("a", "a.1.pack")], &["a.1.pack"]), T0);
+    // (a rebuilt: the map frees a.1, the records' manifest no longer names it, their pending still does.)
+    let (b2, _) = to(&m1, &[("a", "a.2.pack")], 2);
+    q.batch(&b2, T0 + 10);
+    super::records(&q, &pending(2, &[("a", "a.2.pack")], &["a.1.pack", "a.2.pack"]), T0 + 10);
+    assert!(q.queued("a.1.pack").is_none(), "the records' pending holds it");
+    let h = Holders { cursors: &BTreeMap::new(), oldest_lease: None, now: T0 + 10 * GRACE_S };
+    assert!(q.due(&h).is_empty(), "nothing due: {:?}", q.due(&h));
+    // (Checked: out of the pending, queued from that save.)
+    super::records(&q, &pending(3, &[("a", "a.2.pack")], &[]), T0 + 20);
+    assert_eq!(q.queued("a.1.pack"), Some(Queued { seq: 2, at: T0 + 20 }));
+    assert!(q.queued("a.2.pack").is_none(), "the manifest names it");
+}
+
 fn q_map(m: &Map, b: &Batch) -> Map {
     m.apply(b).unwrap()
 }

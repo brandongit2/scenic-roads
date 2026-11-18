@@ -665,16 +665,18 @@ impl Mac {
     /// Its job `j`'s hand-off: its targets' files reused as its brief named them (refused when GC
     /// removed one under its lease); else its units built with a new key, now and then a prune, one that
     /// writes outside its step's outputs too (refused by every lead), or a flaky one (refused by
-    /// the lead of an odd epoch). Its uploads are none of the records' pending: checked as they
-    /// land, the `gc` job's check and unpending (crate::agent::gc::verify_pending, drop_names) not
-    /// modelled. (Pending, the records would hold every file a later build replaced from GC for
-    /// good.)
+    /// the lead of an odd epoch). Its uploads pending and checked at once: checked as they land,
+    /// the `gc` job's check and unpending (crate::agent::gc::verify_pending, drop_names) not
+    /// modelled. (Left pending, the records would hold every file a later build replaced from GC
+    /// for good.)
     fn entry(&mut self, j: &Job, now: u64) -> Entry {
         self.jobs += 1;
         let (k, n) = (self.k, self.jobs);
         let ts = &j.targets;
         let built = |key: &str| Handoff {
             changes: ts.iter().map(|t| (logical(t), Some(content(t, key)))).collect(),
+            pending: ts.iter().map(|t| content(t, key)).collect(),
+            checked: ts.iter().map(|t| content(t, key)).collect(),
             done: Some((STEP.into(), ts.iter().map(|t| (t.clone(), key.to_string())).collect())),
             ..Default::default()
         };
