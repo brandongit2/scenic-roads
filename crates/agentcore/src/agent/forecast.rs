@@ -856,9 +856,10 @@ pub struct ToCome {
     pub runs: Runs,
 }
 
-/// Whether `t` names a tile ("z/x/y", codecs::tile::TileId::parse), as the page's `tileOf`.
+/// Whether `t` names a tile ("z/x/y", codecs::tile::TileId::parse; not its dash form), as the
+/// page's `tileOf`.
 fn is_tile(t: &str) -> bool {
-    codecs::tile::TileId::parse(t).is_some()
+    t.contains('/') && codecs::tile::TileId::parse(t).is_some()
 }
 
 impl ToCome {

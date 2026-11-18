@@ -7,6 +7,7 @@
 //!
 //! `<root>`: the build's root (its records and stores, read only).
 
+use anyhow::Context;
 use terrain::terrain_pack::RawSource;
 
 fn mb() -> u64 {
@@ -24,9 +25,8 @@ fn main() -> anyhow::Result<()> {
     let ts: Vec<(u8, u32, u32)> = tiles
         .iter()
         .map(|t| {
-            let v: Vec<u32> = t.split('/').map(|v| v.parse()).collect::<Result<_, _>>()?;
-            anyhow::ensure!(v.len() == 3, "{t}: not z/x/y");
-            Ok((v[0] as u8, v[1], v[2]))
+            let u = codecs::tile::TileId::parse(t).with_context(|| format!("{t}: not z/x/y"))?;
+            Ok((u.z, u.x, u.y))
         })
         .collect::<anyhow::Result<_>>()?;
     let z = ts.first().map_or(0, |t| t.0);

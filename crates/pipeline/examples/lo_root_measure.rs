@@ -10,6 +10,8 @@
 //!
 //! usage: cargo run -p pipeline --example lo_root_measure -- <root> <raw cache dir> <max MB> <3/x/y>
 
+use anyhow::Context;
+
 fn mb() -> u64 {
     jobrt::sys::footprint().unwrap_or(0) / 1_000_000
 }
@@ -20,9 +22,8 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("usage: lo_root_measure <root> <raw cache dir> <max MB> <3/x/y>")
     };
     jobrt::sys::footprint_guard("lo_root_measure", max.parse()?);
-    let q: Vec<u32> = q.split('/').map(|v| v.parse()).collect::<Result<_, _>>()?;
-    anyhow::ensure!(q.len() == 3 && q[0] == 3, "a z3 tile");
-    let q = (q[1], q[2]);
+    let q = codecs::tile::TileId::parse(q).filter(|u| u.z == 3).context("a z3 tile")?;
+    let q = (q.x, q.y);
     let nas = store::nasfs::NasRoot::from_arg(root);
     let scratch = std::path::Path::new(raw).join("scratch");
     let out = buildstore::out::Out::unbound(&nas, &scratch)?;

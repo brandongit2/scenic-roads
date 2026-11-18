@@ -785,12 +785,12 @@ fn parse_line(l: &str) -> Option<(u64, u64)> {
         return Some((NO_TILE, 0));
     }
     let (zxy, h) = l.split_once(' ')?;
-    let mut it = zxy.split('/');
-    let (z, x, y) = (it.next()?.parse::<u8>().ok()?, it.next()?.parse::<u32>().ok()?, it.next()?.parse::<u32>().ok()?);
-    if it.next().is_some() || h.len() != 16 || !roadcore::archive::valid_tile(z, x, y) {
+    // (A dash form, or any other text, isn't written back the same: `Kept::of` keeps it as text.)
+    let u = codecs::tile::TileId::parse(zxy)?;
+    if h.len() != 16 {
         return None;
     }
-    Some((roadcore::archive::tile_key(z, x, y), u64::from_str_radix(h, 16).ok()?))
+    Some((u.key(), u64::from_str_radix(h, 16).ok()?))
 }
 
 /// A tile's line (`parse_line`) onto `s`.
@@ -1256,6 +1256,7 @@ mod tests {
             "abc",
             "6/1/1 00000000000000FF",
             "06/1/1 00000000000000ff",
+            "6-1-1 00000000000000ff",
             "6/1/1 ff",
             "1/2/0 00000000000000ff",
             "6/1/1 00000000000000ff\n",
