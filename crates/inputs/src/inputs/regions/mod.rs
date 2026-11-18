@@ -698,7 +698,8 @@ impl Checks for Regions {
     }
 
     fn keep_in(&self, scratch: &std::path::Path) {
-        let id = jobrt::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION}"), UNIT, &[]);
+        let id =
+            jobrt::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION} pieces {}", kept::FORMAT), UNIT, &[]);
         self.kept.open(scratch, &id, jobrt::resume_log::on());
     }
 

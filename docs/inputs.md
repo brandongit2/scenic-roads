@@ -764,8 +764,7 @@ Mac's server (§6.1.9).
 - **Progress:** a resolve counts its steps as it goes (`regions::progress`, task #1145): the regions
   without water, the land and the water (by region, the one under way by its cells), the lakes, the
   coast's cells, splits and fills, each region's area, the hand-outs (by region, the one under way by
-  the cells of the unions of the members it hands to and of its stretches: a large stretch, or a
-  hand-out to a folder of many regions, had said nothing for an hour), the slivers (by region, the
+  the cells of the unions of the members it hands to and of its stretches), the slivers (by region, the
   one under way by its stretches), the 200-nmi zones, the cover check's every cell, the gaps' land and
   shares, the fills, the rest inside the zones, the fit's every cell, the regions stored. Each step
   is an equal share of the resolve (a step the folder doesn't take passed over), its items done of

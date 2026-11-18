@@ -1015,8 +1015,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         } else {
             standing(folder, &g, id, &members, &mut out.problems)
         };
-        // (Counted by cell, the units' unions' and the stretches' (task #1423): a region's hand-out
-        // with a large stretch, or to a folder of many regions, had said nothing for an hour.)
+        // (Counted by cell, the units' unions' and the stretches': a large stretch, or a hand-out to
+        // a folder of many regions, says how far it is as it goes.)
         let comps = components(&mine);
         let joined: Vec<(&String, Vec<&TArea>)> = units
             .iter()

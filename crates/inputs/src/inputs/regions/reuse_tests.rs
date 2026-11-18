@@ -214,3 +214,39 @@ fn the_other_passes_outline_sets_are_in_the_keys() {
     m.insert("sources/osm/2026-08-31/outlines".into(), "o0".into());
     assert_ne!(crate::inputs::check_key(&r, &root, &l, &none, &m).unwrap(), k);
 }
+
+/// A problem and a warning, as a resolution says them.
+fn said() -> Vec<resolve::Problem> {
+    let p = |warning: bool, check: &'static str, n: &str| resolve::Problem {
+        warning,
+        check,
+        about: vec![n.into(), "b".into()],
+        found: vec!["overlap-settled".into()],
+        files: vec![format!("{n}.toml")],
+        message: format!("{n}: said"),
+    };
+    vec![p(false, "rg-ref", "a"), p(true, "rg-cover", "c")]
+}
+
+/// The memo's outcome read back says what was said, word for word, in order, each problem's level
+/// kept (a warning stays a warning).
+#[test]
+fn a_recorded_outcome_says_the_same_problems() {
+    let out = resolve::Outcome { problems: said(), ..Default::default() };
+    let r = Recorded::of("k", &out);
+    let m = serde_json::to_value(Memo { fmt: 1, outcomes: vec![r] }).unwrap();
+    let back: Memo = serde_json::from_value(m).unwrap();
+    assert_eq!(back.outcomes[0].problems(), out.problems);
+}
+
+/// A kept piece's problems read back with their level (a warning stays a warning).
+#[test]
+fn a_kept_piece_keeps_a_problems_level() {
+    let r: std::result::Result<(), Vec<resolve::Problem>> = Err(said());
+    let mut p = jobrt::resume_log::Put::default();
+    kept::result(&mut p, &r, |_, _| {});
+    let mut g = jobrt::resume_log::Get(&p.0);
+    let back = kept::get_result(&mut g, |_| Ok(())).unwrap();
+    g.end().unwrap();
+    assert_eq!(back, r);
+}

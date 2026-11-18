@@ -16,6 +16,10 @@ use jobrt::resume_log::{BlockId, Get, Pieces, Put};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// The pieces' format, in their log's identity (`Regions::keep_in`): a log of another format is
+/// another identity's, never read. 2: a problem's level (`warning`) kept with it.
+pub const FORMAT: u32 = 2;
+
 /// The stages a piece is of (its block's first number).
 pub const RESOLVED: u8 = 1;
 pub const LAND: u8 = 2;
@@ -151,6 +155,7 @@ fn get_strs(g: &mut Get) -> Result<Vec<String>> {
 pub fn problems(p: &mut Put, v: &[Problem]) {
     p.u64(v.len() as u64);
     for x in v {
+        p.u8(x.warning.into());
         p.bytes(x.check.as_bytes());
         strs(p, &x.about);
         strs(p, &x.found);
@@ -162,8 +167,13 @@ pub fn problems(p: &mut Put, v: &[Problem]) {
 pub fn get_problems(g: &mut Get) -> Result<Vec<Problem>> {
     (0..g.count(40)?)
         .map(|_| {
+            let warning = match g.u8()? {
+                0 => false,
+                1 => true,
+                t => anyhow::bail!("a problem's level tagged {t}"),
+            };
             Ok(Problem {
-                warning: false,
+                warning,
                 check: check_name(&String::from_utf8(g.bytes()?)?),
                 about: get_strs(g)?,
                 found: get_strs(g)?,
