@@ -2794,7 +2794,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   list cut to its first four): the work left a Mac could take waiting behind other work or an
   input, with its wait ("the work left waits: slope-hi: …"); on a member, the steps left only the
   lead runs; the waits of no step ("waiting: Building: the build's records can't be read now", on
-  a member "the lead waits: …"); and only with none of these, as the verdict's "Nothing to build",
+  a member "the lead waits: …"; a lead whose first plan since it started isn't made yet, as after
+  its restart into an update, "waiting: The plan: the first plan since the agent started is being
+  made: …", `flags::first_plan`); and only with none of these, as the verdict's "Nothing to build",
   "the plan is complete: no job is left to offer"; never a memory or disk figure. An ask refused
   before any packing (the lead moving, the build paused, an older app) lets the refusal go: it
   was of offers that ask wasn't weighed against), shown while the refusal itself is younger than two minutes

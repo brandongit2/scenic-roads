@@ -385,6 +385,19 @@ pub fn nothing_words(
     }
 }
 
+/// The wait of a lead whose plan's thread hasn't made its first plan since the agent started
+/// (`made`: the last plan's number, crate::agent::plan::PlanView's `n`, 0 for none): its
+/// coordinator offers nothing until then (the restart into an update: a first plan takes ~5 min on
+/// the Mac mini), which is no plan complete (`nothing_words`, task #1445: a job paused for the
+/// restart looked dropped). None on a member (`plans` false) and once a plan is made.
+pub fn first_plan(plans: bool, made: u64) -> Option<Waiting> {
+    (plans && made == 0).then(|| Waiting {
+        step: None,
+        what: "The plan".into(),
+        why: "the first plan since the agent started is being made: its work is offered once it is".into(),
+    })
+}
+
 /// The plan's waits of work a Mac could take (any Mac's step; the lead's own too on the lead): each
 /// "<step> <why>", and where its wait names another step that waits too, that one's after it.
 fn held_back(the_plan: &dyn crate::agent::seam::Plan, waiting: &[Waiting], lead: bool) -> Vec<String> {
@@ -636,6 +649,24 @@ mod tests {
         assert_eq!(nothing_words(plan, &[], false, Some(away)), away);
         let w = nothing_words(plan, &waits[..1], false, Some(away));
         assert!(w.starts_with(&format!("{away}; the work left waits: slope-hi")), "{w}");
+    }
+
+    /// Task #1445: the lead restarted into an update, its first plan not made yet: its coordinator
+    /// offers nothing, said as the plan being made, never as complete (the jobs paused for the
+    /// restart go on from that plan); nothing on a member, nor once a plan is made.
+    #[test]
+    fn a_lead_before_its_first_plan_says_so_not_complete() {
+        let plan = crate::agent::seam::for_tests();
+        let w = first_plan(true, 0).expect("no plan yet");
+        let said = nothing_words(plan, std::slice::from_ref(&w), true, None);
+        assert_eq!(
+            said,
+            "waiting: The plan: the first plan since the agent started is being made: its work is offered once it is"
+        );
+        let said = nothing_words(plan, std::slice::from_ref(&w), false, None);
+        assert!(said.starts_with("the lead waits: The plan: the first plan"), "{said}");
+        assert!(first_plan(false, 0).is_none(), "a member plans nothing");
+        assert!(first_plan(true, 1_795_009_103_855).is_none(), "a plan made");
     }
 
     /// Nothing free, but work of a shared step held behind another step that waits too (4 Nov:

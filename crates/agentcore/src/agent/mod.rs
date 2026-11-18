@@ -4578,6 +4578,8 @@ impl Agent {
         let view = self.tell_plan(root.as_ref(), &c, ended);
         if let Some(why) = self.plan.stalled(&self.o.home) {
             waiting.push(Waiting { step: None, what: "The plan".into(), why });
+        } else {
+            waiting.extend(flags::first_plan(self.plan.plans(), view.n));
         }
         // (The jobs granted this round, each with the slot it was granted into and its plan's number.)
         let mut granted: Vec<(usize, JobSpec, u64)> = Vec::new();
