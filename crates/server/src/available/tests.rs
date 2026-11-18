@@ -240,8 +240,8 @@ fn each_layer_carries_its_value() {
     // (Words of one value are one: bathymetry's lidar and multibeam.)
     let bathymetry = include_bytes!("../../../../producers/extents/bathymetry/score.toml");
     let b = theme_of(&BTreeMap::from([("bathymetry/score.toml".to_string(), bathymetry.to_vec())]));
-    let d = b.described("bathymetry", &["best"]);
-    let measured = d["layers"].as_array().unwrap().iter().find(|l| l["id"] == "measured").unwrap();
+    let bd = b.described("bathymetry", &["best"]);
+    let measured = bd["layers"].as_array().unwrap().iter().find(|l| l["id"] == "measured").unwrap();
     let words = measured["words"].as_array().unwrap();
     assert_eq!(words.last().unwrap(), &json!({"value": 1.0, "label": "lidar or multibeam"}));
     assert_eq!(words.len(), 12);
