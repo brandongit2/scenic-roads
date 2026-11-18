@@ -3,7 +3,7 @@
 //! it): this Mac's own agent's status (the lead's `status.json`, a member's `helper.json`, the
 //! fresher), and on a member the lead's line as the lead's last beat answer carried it
 //! (crate::coord::beats::LEAD_VIEW: the build's state in a line, its pause, when the lead last
-//! answered); the running job's log; and this Mac's hold and its ask (Scenic.app's Reply:
+//! answered); the running job's log; and this Mac's hold ask (Scenic.app's Reply:
 //! tools/status/main.swift).
 
 use crate::coord::beats::LeadView;
@@ -24,12 +24,10 @@ pub fn status(home: &Path, now: u64) -> serde_json::Value {
     let job = status["jobs"][0]["id"].as_str();
     let log =
         job.map(|id| home.join("logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string());
-    // This Mac paused alone (jobrt::control::Hold, task #224), as its agent keeps it, and its ask
-    // while the agent hasn't taken it up.
-    let held_here = jobrt::control::read_hold(home).held;
+    // This Mac's ask to pause alone or go on (jobrt::control::HoldRequest, task #224) while the
+    // agent hasn't taken it up; its hold's stage is the status's (`hold`).
     let hold_asked = home.join(jobrt::control::HOLD_REQUEST).exists();
-    // (`local`: always, for a menu bar before docs/roles.md step 5, which requires it.)
-    let mut out = serde_json::json!({"status": status, "local": true, "now": now, "log": log, "held_here": held_here, "hold_asked": hold_asked});
+    let mut out = serde_json::json!({"status": status, "now": now, "log": log, "hold_asked": hold_asked});
     if is_member {
         out["lead"] = serde_json::to_value(LeadView::read(home).unwrap_or_default()).unwrap_or_default();
     }

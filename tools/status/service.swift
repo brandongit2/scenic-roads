@@ -724,13 +724,12 @@ func selfTest(_ dir: String) -> Never {
         let got = (try? JSONSerialization.jsonObject(with: clearRequestJSON(by: "the menu bar on m1", at: 1700000000, deep: deep))) as? NSDictionary
         check("the clear ask's file as scenic writes it (\(f))", want != nil && want == got)
     }
-    // The status as the agent serves it (task #846: agent/asks.rs said_status writes the same
-    // file): a Mac paused alone with three jobs finishing, printed as said, every job shown.
+    // The status as the agent serves it (agent/asks.rs said_status writes the same file): a Mac paused alone with three jobs finishing, printed as said, every job shown.
     let said = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
     let ownSaid = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { d in (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["status"] }.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { try? JSONDecoder().decode(Own.self, from: $0) }
     check("the agent's status reads (status-said.json)", said?.status != nil && ownSaid?.hold != nil)
     check("this Mac's memory said as its agent says it, the brake first (task #932)", ownSaid?.memory?.brake != nil && ownSaid?.memory?.said.hasPrefix("Memory brake: macOS's memory pressure is at warning.") == true)
-    check("out of touch: the agent's threshold", outOfTouch(said) == 600 && outOfTouch(nil) == outOfTouchDefault)
+    check("out of touch: the agent's threshold", said?.status?.out_of_touch_s == 600 && ownSaid?.out_of_touch_s == 600)
     let (kind, line) = classify(said)
     check("the lead's state: its verdict, printed", kind == .paused && line.hasPrefix("Pausing: 3 jobs"))
     let here = state(said, own: ownSaid)
@@ -760,19 +759,6 @@ func selfTest(_ dir: String) -> Never {
         check("a member under the threshold, or out of touch, never said stuck (\(key))", !memberPrinted.contains { $0.hasPrefix("m6: loop") || $0.hasPrefix("m7: loop") })
     }
     check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing for the map)") } && printed.contains { $0.contains("outlines: done") })
-    // The same status from an agent before #846 (a rollout: the lead updated last): its verdict,
-    // stage and counts worked out from the older fields, never "older app".
-    func strip(_ v: Any) -> Any {
-        if let d = v as? [String: Any] { return d.filter { !["verdict", "hold", "counts", "count", "finished", "out_of_touch_s", "loop_stuck_s"].contains($0.key) }.mapValues(strip) }
-        if let a = v as? [Any] { return a.map(strip) }
-        return v
-    }
-    let old = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) }.flatMap { try? JSONSerialization.data(withJSONObject: strip($0)) }.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
-    let (oldKind, oldLine) = classify(old)
-    check("an older lead's state from its older fields", old?.status?.verdict == nil && oldKind == .paused && oldLine.hasPrefix("Paused (from the menu bar on m1)") && outOfTouch(old) == outOfTouchDefault)
-    let oldPrinted = lines(old, oldLine).map(\.text)
-    check("an older agent's loop never said stuck", !oldPrinted.contains { $0.contains("loop stuck") })
-    check("an older lead's counts from its older fields", oldPrinted.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles") } && oldPrinted.contains { $0.contains("outlines: done") } && oldPrinted.contains { $0.contains("unit: 1,234 of 2,000 z6 tiles") })
     // A job's progress noun, sent as "unit" until task #858's follow-up and as "counted_in" after.
     let byUnit = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "unit": "z6 tiles"}"#.utf8))
     let byNoun = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "counted_in": "parts", "eta_s": 60}"#.utf8))
@@ -789,7 +775,7 @@ func selfTest(_ dir: String) -> Never {
         return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
     }
     // The lead's own: the build as its agent says it (`build`, the line its members are told:
-    // lead-view-said.json's), else (an older agent) its verdict, as above.
+    // lead-view-said.json's), else its verdict, as above.
     let leadBuild = (leadView?["lead"] as? [String: Any])?["said"]
     let withBuild = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }.flatMap { d -> Reply? in
         var d = d, st = d["status"] as? [String: Any] ?? [:]

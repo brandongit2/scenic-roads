@@ -60,23 +60,14 @@ func fetchReply(timeout: TimeInterval = 10) -> Reply? {
     guard p.terminationStatus == 0 else { return nil }
     return try? JSONDecoder().decode(Reply.self, from: data)
 }
-/// Without a heartbeat for this long, a Mac counts as out of touch (asleep, off, away, or its
-/// agent stuck): the agent's own threshold, served in its status (`out_of_touch_s`, task #846:
-/// crates/agentcore/src/pool/beat.rs OUT_OF_TOUCH_S), this from an agent before it.
-let outOfTouchDefault = 600
-
-/// The out-of-touch threshold of an answer's status.
-func outOfTouch(_ r: Reply?) -> Int { r?.status?.out_of_touch_s ?? outOfTouchDefault }
-
 // What `scenic menu` answers (crates/agentcore/src/menu.rs): this Mac's agent's status
 // (crates/agentcore/src/agent/mod.rs Status), and on a member its lead's line.
 struct Reply: Decodable {
     let status: Status?
     let now: Int
     let log: String?
-    /// This Mac paused alone (crates/jobrt/src/control.rs Hold, task #224), and its ask while
-    /// the agent hasn't taken it up (servers from #224 on).
-    let held_here: HeldInfo?
+    /// This Mac's ask to pause alone or go on (crates/jobrt/src/control.rs HoldRequest, task #224),
+    /// while the agent hasn't taken it up.
     let hold_asked: Bool?
     /// A member's: the lead's line as the lead's last beat answer carried it (docs/roles.md §3.4;
     /// none on the lead, and from a `scenic menu` before it).
@@ -122,12 +113,6 @@ func buildPause(_ r: Reply?) -> PauseInfo? {
     return r?.status?.pause
 }
 
-/// One Mac paused alone (crates/jobrt/src/control.rs Hold): who asked, since when.
-struct HeldInfo: Decodable {
-    let by: String
-    let at: Int
-}
-
 struct Status: Decodable {
     let host: String
     let app: String?
@@ -164,39 +149,20 @@ struct Status: Decodable {
     var allJobs: [Job] { jobs ?? [] }
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
-    /// Its Mac's own pause's stage, its state in a word and a line, and the out-of-touch threshold,
-    /// as its agent says them (task #846: crates/agentcore/src/agent/mod.rs Status::say); the menu
-    /// prints them, working none of them out.
+    /// Its Mac's own pause's stage (none while it isn't paused alone nor asked to), its state in a
+    /// word and a line, and the out-of-touch threshold (a heartbeat older is out of touch: asleep,
+    /// off, away, or its agent stuck), as its agent says them (crates/agentcore/src/agent/mod.rs
+    /// Status::say); the menu prints them, working none of them out.
     let hold: HoldStage?
-    let verdict: Verdict?
+    let verdict: Verdict
     /// The lead's: the build in a line, a member building counting as building (Status::build_said,
-    /// the line its members are told); none from an older agent.
+    /// the line its members are told); none on a Mac that doesn't lead.
     let build: Verdict?
-    let out_of_touch_s: Int?
-    /// This Mac paused alone (task #224): what an agent before #846 says of its hold.
-    let held: HeldInfo?
+    let out_of_touch_s: Int
     /// Its loop's round's age, the threshold past which it's stuck, the phase it's in: `loopStuck`.
     let loop_age_s: Int?
     let loop_stuck_s: Int?
     let loop_phase: String?
-
-    /// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked
-    /// out from its older fields as crates/agentcore/src/agent/mod.rs Status::verdict_of does.
-    var said: Verdict {
-        if let v = verdict { return v }
-        let jobs = allJobs
-        let n = { (k: Int) in "\(k) job\(k == 1 ? "" : "s")" }
-        if let h = held { return Verdict(state: jobs.contains { $0.paused == nil } ? "pausing" : "paused", said: "Paused (from \(h.by)); the other Macs go on") }
-        if jobs.contains(where: { $0.paused == nil && $0.pausing == nil }) { return Verdict(state: "building", said: jobs.count == 1 ? "Building: \(jobs[0].what)" : "Building: \(n(jobs.count))") }
-        let stopping = jobs.filter { $0.paused == nil && $0.pausing != nil }.count
-        if stopping > 0 { return Verdict(state: "stopping", said: "Pausing: \(n(stopping)) finishing what \(stopping == 1 ? "it's" : "they're") on") }
-        if let p = jobs.first(where: { $0.paused != nil })?.paused { return Verdict(state: "frozen", said: "Paused: \(p)") }
-        if let p = pause { return Verdict(state: "paused", said: "Paused with the build (from \(p.by))") }
-        if let w = waiting.first(where: { $0.why.contains("failed") }) { return Verdict(state: "failed", said: "Failed: \(w.what)") }
-        if let d = recent.first, !d.ok { return Verdict(state: "failed", said: "Failed: \(d.what)") }
-        if let w = waiting.first { return Verdict(state: "waiting", said: "Waiting: \(w.what)") }
-        return Verdict(state: "idle", said: "Nothing to build")
-    }
 }
 
 /// An ask the lead refused (crates/agentcore/src/agent/answered.rs Answered): what was asked, when,
@@ -297,13 +263,13 @@ struct Own: Decodable {
     let caches: Caches?
     /// This Mac in the pool, while it's on (crates/agentcore/src/agent/mod.rs PoolView).
     let pool: OwnPool?
-    /// This Mac's own pause's stage and the out-of-touch threshold (task #846).
+    /// This Mac's own pause's stage and the out-of-touch threshold.
     let hold: HoldStage?
-    let out_of_touch_s: Int?
+    let out_of_touch_s: Int
     /// This Mac's memory against its floor, as its agent says it (task #932).
     let memory: OwnMemory?
 
-    init(host: String, app: String? = nil, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?, memory: OwnMemory? = nil) {
+    init(host: String, app: String? = nil, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int, memory: OwnMemory? = nil) {
         (self.host, self.app, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s, self.memory) = (host, app, beat, caches, pool, hold, out_of_touch_s, memory)
     }
 
@@ -319,7 +285,7 @@ struct Own: Decodable {
         caches = try c.decodeIfPresent(Caches.self, forKey: .caches)
         pool = try? c.decodeIfPresent(OwnPool.self, forKey: .pool)
         hold = try c.decodeIfPresent(HoldStage.self, forKey: .hold)
-        out_of_touch_s = try c.decodeIfPresent(Int.self, forKey: .out_of_touch_s)
+        out_of_touch_s = try c.decode(Int.self, forKey: .out_of_touch_s)
         memory = try? c.decodeIfPresent(OwnMemory.self, forKey: .memory)
     }
 }
@@ -507,70 +473,34 @@ func loopStuck(age: Int?, limit: Int?, phase: String?, beat: Int, now: Int) -> S
     return "loop stuck \(duration(age))\(phase.map { ", in \($0)" } ?? "")"
 }
 
-/// A stage of the build to the end (docs/pipeline.md §4; agents before it: a group of steps): its
-/// targets done of total (total unknown until an earlier step makes it) in its noun, or
-/// how many are left; its steps' lines (`items`, agents from 2026-10-17 on); its jobs left by name
-/// (`next`, the first the one under way), and why it waits or which Mac is on it (`note`).
+/// A stage of the build to the end (docs/pipeline.md §4): its steps' lines (`items`); its jobs
+/// left by name (`next`, the first the one under way), and why it waits or which Mac is on it
+/// (`note`).
 struct StageLine: Decodable {
     let what: String
     let steps: [String]
-    let done: Int?
-    let total: Int?
-    let left: Int?
     let items: [Item]?
     let next: [String]?
     let note: String?
     /// Which of its jobs a member may do: "all", or the parts by name.
     let shared: String?
 
-    /// Its counts in words and whether it's done, as the agent says them (build.rs Line::said, task
-    /// #846: the build page and `scenic status` say the same).
+    /// Its counts in words and whether it's done, as the agent says them (crates/agentcore/src/agent/
+    /// progress.rs Line::said: the build page and `scenic status` say the same).
     let counts: [String]?
-    let finished: Bool?
-    /// (An agent's before #846, a rollout's: worked out from the older fields as build.rs Line
-    /// `finished` and `counts` do.)
-    var isDone: Bool { finished ?? (left == 0 || (left == nil && total.map { (done ?? 0) >= $0 } == true)) }
-    var said: [String] {
-        if let c = counts { return c }
-        var out: [String] = []
-        var nouns: [String] = []
-        let items = self.items ?? []
-        for i in items where !nouns.contains(i.noun) {
-            nouns.append(i.noun)
-            let of = items.filter { $0.noun == i.noun }
-            if of.contains(where: { $0.total != nil }) {
-                if of.allSatisfy({ $0.total != nil }) {
-                    let t = of.reduce(0) { $0 + ($1.total ?? 0) }
-                    if t > 0 || out.isEmpty { out.append("\(commas(of.reduce(0) { $0 + ($1.done ?? 0) })) of \(commas(t)) \(i.noun)s") }
-                } else { out.append("\(i.noun)s to come") }
-            } else if of.allSatisfy({ $0.left != nil }) {
-                let l = of.reduce(0) { $0 + ($1.left ?? 0) }
-                if l > 0 { out.append("\(commas(l)) \(i.noun)\(l == 1 ? "" : "s") left") }
-            } else { out.append("\(i.noun)s to come") }
-        }
-        return out.isEmpty ? [isDone ? "done" : "to come"] : out
-    }
+    let finished: Bool
+    var said: [String] { counts ?? [] }
 }
 
-/// A step's line of a stage (docs/pipeline.md §4): its targets done of total, or left.
+/// A step's line of a stage (docs/pipeline.md §4).
 struct Item: Decodable {
-    /// Its step's id, the name it's shown by (task #659), and the noun its targets are counted in.
+    /// Its step's id, the name it's shown by (task #659).
     let step: String
-    let noun: String
-    let done: Int?
-    let total: Int?
-    let left: Int?
-    /// Its count in words and whether it's done, as the agent says them (build.rs Item, task #846).
+    /// Its count in words and whether it's done, as the agent says them (crates/agentcore/src/agent/
+    /// progress.rs Item).
     let count: String?
-    let finished: Bool?
-    /// (An agent's before #846, a rollout's: worked out as build.rs Item::count does.)
-    var isDone: Bool { finished ?? (left == 0) }
-    var said: String {
-        if let c = count { return c }
-        if let t = total, t > 0 { return "\(commas(done ?? 0)) of \(commas(t)) \(noun)s" }
-        if let l = left { return l == 0 ? "done" : "\(commas(l)) \(noun)\(l == 1 ? "" : "s") left" }
-        return "to come"
-    }
+    let finished: Bool
+    var said: String { count ?? "" }
 }
 
 struct JobProgress: Decodable {
@@ -617,7 +547,7 @@ struct Job: Decodable {
     /// Its parts, in order (a job of more than one says them), and the one it's on.
     let parts: [String]?
     let part: Int?
-    /// Its slot (0: the first; an older agent's: none).
+    /// Its slot (0: the first; none: its place in the list stands for it).
     let slot: Int?
 }
 
@@ -709,12 +639,14 @@ func lowerFirst(_ s: String) -> String {
     return f.lowercased() + s.dropFirst()
 }
 
-/// The members heard from lately (one not heard from for `outOfTouch` is left out).
+/// The members heard from lately (one not heard from for its status's out-of-touch threshold is
+/// left out).
 func freshMembers(_ r: Reply) -> [Member] {
-    (r.status?.memberList ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
+    guard let s = r.status else { return [] }
+    return s.memberList.filter { r.now - $0.beat <= s.out_of_touch_s }
 }
 
-/// The icon's kind for a state as an agent words it (task #846).
+/// The icon's kind for a state as an agent words it.
 func kindOf(_ state: String) -> Kind {
     switch state {
     case "building": return .building
@@ -727,17 +659,17 @@ func kindOf(_ state: String) -> Kind {
 
 /// The state, with a line saying it: this Mac's own while it builds; on a member, else, the build
 /// as its lead last said it (docs/roles.md §3.4); on the lead, the build as it says it
-/// (`Status.build`: its members' lines say the same), else (an older agent) its own word.
+/// (`Status.build`: its members' lines say the same), else (a Mac that doesn't lead) its own word.
 func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "No status: this Mac's `scenic menu` didn't answer") }
     guard let s = r.status else { return (.unknown, "No status from this Mac's agent (is it running?)") }
-    if r.now - s.beat > outOfTouch(r) { return (.outOfTouch, "This Mac's agent out of touch since \(clock(s.beat))") }
-    let v = s.said
+    if r.now - s.beat > s.out_of_touch_s { return (.outOfTouch, "This Mac's agent out of touch since \(clock(s.beat))") }
+    let v = s.verdict
     let kind = kindOf(v.state)
     if let lv = r.lead {
         if kind == .building { return (kind, clip(v.said)) }
         guard lv.at > 0 else { return (.unknown, "No word from the lead yet") }
-        if r.now - lv.at > outOfTouch(r) { return (.outOfTouch, clip("Lead\(lv.lead.map { " (\($0.host))" } ?? "") out of touch since \(clock(lv.at))")) }
+        if r.now - lv.at > s.out_of_touch_s { return (.outOfTouch, clip("Lead\(lv.lead.map { " (\($0.host))" } ?? "") out of touch since \(clock(lv.at))")) }
         guard let l = lv.lead else { return (kind, clip(v.said)) }
         return (kindOf(l.said.state), clip(l.said.said))
     }
@@ -751,13 +683,11 @@ func classify(_ r: Reply?) -> (Kind, String) {
 func state(_ r: Reply?, own: Own?) -> (Kind, String) {
     let now = r?.now ?? Int(Date().timeIntervalSince1970)
     // (This Mac paused alone, task #224: what this Mac does, whatever the pool's state, #628; its
-    // stage as its agent says it, #846: asked, pausing while its jobs finish, paused, resuming.)
-    if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let h = o.hold {
+    // stage as its agent says it: asked, pausing while its jobs finish, paused, resuming.)
+    if let o = own, now - o.beat <= o.out_of_touch_s, let h = o.hold {
         return (h.stage == "paused" ? .pausedHere : .paused, clip(h.said))
     }
-    // (An agent's before #846, a rollout's: its hold alone.)
-    if own?.hold == nil, r?.held_here != nil { return (.pausedHere, "This Mac is paused; the other Macs go on") }
-    if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let a = o.pool?.lead?.alert { return (.problem, a) }
+    if let o = own, now - o.beat <= o.out_of_touch_s, let a = o.pool?.lead?.alert { return (.problem, a) }
     return classify(r)
 }
 
@@ -773,9 +703,7 @@ struct Line {
     var fraction: Double = 0
 }
 
-/// "12,345".
-/// "12,345", whatever the Mac's locale: a count as the agent says it (build.rs grouped), for an
-/// older agent's counts worked out here.
+/// "12,345", whatever the Mac's locale.
 func commas(_ v: Int) -> String {
     let s = String(v)
     return s.enumerated().map { i, c in i > 0 && (s.count - i) % 3 == 0 ? ",\(c)" : "\(c)" }.joined()
@@ -816,7 +744,7 @@ func holdRequestJSON(_ held: Bool, by: String, at: Int) -> Data {
 }
 
 /// The menu's items for this Mac paused alone (`scenic pause --here`, task #224): the ask while the
-/// agent hasn't taken it up, then its stage as the agent says it (task #846: pausing with each job
+/// agent hasn't taken it up, then its stage as the agent says it (pausing with each job
 /// finishing, paused since when, resuming) and Resume this Mac, else Pause this Mac. `held`: what
 /// pressing it asks (pause: true, resume: false), nil for a line only.
 func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: String)] {
@@ -826,10 +754,8 @@ func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: Str
     if let h = h {
         out.append((clip(h.said, 90) + (h.stage == "paused" ? " since \(clock(h.since ?? 0))" : ""), nil, ""))
         for j in h.finishing ?? [] { out.append(("    finishing \(j)", nil, "")) }
-    } else if let held = r?.held_here {
-        out.append(("Paused since \(clock(held.at)) (from \(clip(held.by, 40)))", nil, ""))
     }
-    if h?.pause ?? (r?.held_here != nil) {
+    if h?.pause == true {
         out.append(("Resume this Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
     } else {
         out.append(("Pause this Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work (the lead goes on granting the others' work); the other Macs go on building"))
@@ -843,7 +769,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the build page and the map say it).
-    if let f = s.forecast, r.now - s.beat <= outOfTouch(r) {
+    if let f = s.forecast, r.now - s.beat <= s.out_of_touch_s {
         var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
         out.append(Line(text: t, style: .small))
@@ -869,7 +795,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     for a in s.refused ?? [] {
         out.append(Line(text: "The lead refused this Mac's ask to \(a.what) (\(clock(a.at))): \(a.refused ?? "no reason given") · Dismiss it on the build page", style: .plain))
     }
-    // Every running job, slot by slot (task #846: a Mac runs up to six).
+    // Every running job, slot by slot (a Mac runs up to six).
     let jobs = s.allJobs
     for (i, j) in jobs.enumerated() {
         out.append(Line(text: jobs.count > 1 ? "Slot \((j.slot ?? i) + 1): \(j.what)" : j.what, style: .plain))
@@ -916,7 +842,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     }
     // A Mac's loop stuck (task #899), this Mac's and (on the lead) each member's.
     // (This Mac's only while it's heard from: an out-of-touch agent's said once, above.)
-    let here = r.now - s.beat <= outOfTouch(r) ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
+    let here = r.now - s.beat <= s.out_of_touch_s ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
     for (host, stuck) in here + freshMembers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
         if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
@@ -931,12 +857,12 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
         let now = s.allJobs.map { String($0.id.split(separator: " ").first ?? "") }
-        let finished = steps.filter(\.isDone).count
+        let finished = steps.filter(\.finished).count
         out.append(Line(text: "", style: .separator))
-        let legend = steps.contains { !$0.isDone && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
+        let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
         out.append(Line(text: "To the end: \(finished) of \(steps.count) stages done\(legend)", style: .header))
         for st in steps {
-            if st.isDone {
+            if st.finished {
                 out.append(Line(text: "✓ \(st.what)", style: .stepDone))
                 continue
             }
@@ -947,7 +873,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             // Its steps, each the same: done, under way or to come, its count in its noun.
             for it in st.items ?? [] {
                 let here = now.contains(it.step)
-                out.append(Line(text: "      \(it.isDone ? "✓" : here ? "▸" : "○") \(it.step): \(it.said)", style: .small))
+                out.append(Line(text: "      \(it.finished ? "✓" : here ? "▸" : "○") \(it.step): \(it.said)", style: .small))
             }
             // (Only some of its jobs: which.)
             if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ any Mac can take its \(sh)", style: .small)) }
@@ -1159,7 +1085,7 @@ func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled
     if asked { return [("Clearing the build caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "", false)] }
     return [false, true].map { deep in
         let title = (deep ? "Clear caches deeply" : "Clear the build caches") + (c.clearable(deep: deep).map { " (\(gb($0)))" } ?? "")
-        if now - own.beat > (own.out_of_touch_s ?? outOfTouchDefault) { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
+        if now - own.beat > own.out_of_touch_s { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
         if let why = c.why_not { return (title, false, "Not now: \(why)", deep) }
         if let n = c.clearable(deep: deep), n < 50 << 20 { return (title, false, "They hold nothing now", deep) }
         let what = deep
