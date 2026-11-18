@@ -1010,7 +1010,8 @@ read as absent):
   slow read, or the bytes they received since its first quick read, whichever is more). Against the
   SMB session's own received bytes (18 Nov, the M4 under load 12-120): cold files read through
   within 0.02 %; 75 warm reads of a 105 MB file (7.9 GB) counted 1-2 MB the NAS's against 87 KB
-  sent (a cached read held up past the bound counts its own bytes, not a run after it); warm then
+  sent (a cached read held up past the bound counts its own bytes, not a run after it, for a reader
+  quicker than the links; a slower one, up to the read-ahead's reach); warm then
   cold, exact or a MB short (a run's first quick read its links' stated rate doesn't cover counts
   as the cache's); cold for 55 MB then warm for 38 MB, 64-85 MB counted against 58 MB sent (its
   warm part while the links' rate and other traffic left room). Not counted: the whole pages the NAS sends for a

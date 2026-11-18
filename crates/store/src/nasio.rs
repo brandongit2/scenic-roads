@@ -58,7 +58,8 @@
 //! they received (summed) since its first quick read, whichever is more (a Wi-Fi's stated rate was
 //! below what it carried: 45-58 MB/s stated against 61-71 MB/s streamed). So a cached read held up
 //! past the bound on a loaded Mac (1.4 ms for a MB against 0.77) counts its own bytes and not a
-//! run after it. A run's first quick read the stated rate doesn't cover is the cache's, the run
+//! run after it, for a reader quicker than the links (a slower one, up to the read-ahead's
+//! reach). A run's first quick read the stated rate doesn't cover is the cache's, the run
 //! kept for one more (its received bytes are counted from that read on); a second ends it.
 //! Against the truth (the M4 under load 12-120, 18 Nov): cold files of 98-129 MB read through
 //! counted within 0.02 %; 75 warm reads of a 105 MB file, 7.9 GB, counted 1-2 MB the NAS's (a held-up
@@ -521,27 +522,37 @@ fn link() -> Link {
             return Link::default();
         }
         let b = &buf_bytes(&buf)[..len.min(buf.len() * 8)];
-        let (mut bits, mut received, mut at) = (0u64, 0u64, 0usize);
-        let want = libc::IFF_UP | libc::IFF_RUNNING;
+        let (mut each, mut at) = (Vec::new(), 0usize);
         while at + std::mem::size_of::<libc::if_msghdr2>() <= b.len() {
             // SAFETY: a message header within `b` (read unaligned: messages are packed one after another).
             let m: libc::if_msghdr2 = unsafe { std::ptr::read_unaligned(b[at..].as_ptr().cast()) };
             if m.ifm_msglen == 0 {
                 break;
             }
-            if i32::from(m.ifm_type) == libc::RTM_IFINFO2
-                && m.ifm_flags & want == want
-                && m.ifm_flags & libc::IFF_LOOPBACK == 0
-            {
-                bits += m.ifm_data.ifi_baudrate;
-                received += m.ifm_data.ifi_ibytes;
+            if i32::from(m.ifm_type) == libc::RTM_IFINFO2 {
+                each.push((m.ifm_flags, m.ifm_data.ifi_baudrate, m.ifm_data.ifi_ibytes));
             }
             at += usize::from(m.ifm_msglen);
         }
-        Link { rate: (bits > 0).then_some(bits / 8), received: Some(received) }
+        links_of(&each)
     }
     #[cfg(not(target_os = "macos"))]
     Link::default()
+}
+
+/// The links of interfaces `each` (their flags, rate in bits a second, bytes received): the up,
+/// running, physical ones' (a rate of their own: not a tunnel, Tailscale's utun, whose traffic its
+/// physical link carries and counts again, nor AWDL's or a bridge's, rate 0), loopback left out.
+fn links_of(each: &[(i32, u64, u64)]) -> Link {
+    let want = libc::IFF_UP | libc::IFF_RUNNING;
+    let (mut bits, mut received) = (0u64, 0u64);
+    for &(flags, baud, ibytes) in each {
+        if flags & want == want && flags & libc::IFF_LOOPBACK == 0 && baud > 0 {
+            bits += baud;
+            received += ibytes;
+        }
+    }
+    Link { rate: (bits > 0).then_some(bits / 8), received: Some(received) }
 }
 
 /// `w`'s bytes.
@@ -1090,7 +1101,20 @@ mod tests {
             assert!(!far.read(read_ahead(), 2 * mb, us(200), us(200)), "past the read-ahead's reach");
         }
         let here = link();
-        assert!(here.rate.is_none_or(|b| b > 0) && here.received.is_some_and(|r| r > 0), "{here:?}");
+        assert!(here.rate.is_none_or(|b| b > 0) && here.received.is_some(), "{here:?}");
+        // (The physical links alone: a tunnel's (utun, rate 0) bytes are its link's again, AWDL's
+        // aren't the share's; loopback and a down one not at all.)
+        let up = libc::IFF_UP | libc::IFF_RUNNING;
+        let each = [
+            (up, 1_000_000_000, 500),
+            (up, 0, 300),
+            (up | libc::IFF_LOOPBACK, 0, 9000),
+            (up | libc::IFF_LOOPBACK, 1_000_000_000, 9000),
+            (libc::IFF_UP, 800_000_000, 70),
+            (up, 600_000_000, 200),
+        ];
+        assert_eq!(links_of(&each), Link { rate: Some(200_000_000), received: Some(700) });
+        assert_eq!(links_of(&[(up, 0, 300)]), Link { rate: None, received: Some(0) });
         let (r, h, l) = (get(Count::ReadBytes), own_held(), get(Count::Local));
         let f = Reads::default();
         f.read(0, 3000, ms(10));
