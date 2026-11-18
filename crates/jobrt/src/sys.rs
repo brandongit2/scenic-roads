@@ -473,41 +473,82 @@ fn mach_ns() -> impl Fn(u64) -> u64 {
     move |t| (t as u128 * numer / denom) as u64
 }
 
-/// This Mac's performance cores' clock at full tilt (cycles a CPU-second, Hz), measured once a
-/// process (`Rusage`'s performance-core cycles over their time while a thread of its own spins at
-/// the user-interactive QoS, which macOS runs on them, till 0.2 s of their CPU or 2 s by the clock): what a job's cycles over its CPU
-/// time can't pass (crate::timings::implausible). Other threads of the process running meanwhile
-/// count in at their own clock, which only lowers it. None where it can't be measured (no split,
-/// another platform).
+/// This Mac's performance cores' top clock (Hz): the highest of the frequencies its power manager
+/// may set them to (`table_clock`), else, where the table can't be read, measured (`spun_clock`).
+/// What a job's cycles over its CPU time can't pass (crate::timings::implausible). Read once a
+/// process, on the first call (an `ioreg` run, or a thread's spin): a caller that mustn't wait
+/// starts it on a thread of its own (`top_clock_soon`) and reads `top_clock_now`.
 pub fn top_clock() -> Option<f64> {
-    static CLOCK: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
-    *CLOCK.get_or_init(|| {
-        std::thread::Builder::new()
-            .name("top-clock".into())
-            .spawn(|| {
-                interactive();
-                let me = std::process::id() as i32;
-                let a = rusage(me)?;
-                // (Till 0.2 s on the performance cores, or 2 s by the clock on a Mac too busy to give
-                // them: then 50 ms of them at least.)
-                let t = std::time::Instant::now();
-                let mut x = 0u64;
-                let mut b = a;
-                while b.p_cpu_ns.saturating_sub(a.p_cpu_ns) < 200_000_000
-                    && t.elapsed() < std::time::Duration::from_secs(2)
-                {
-                    for i in 0..100_000u64 {
-                        x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
-                    }
-                    b = rusage(me)?;
+    *TOP_CLOCK.get_or_init(|| table_clock().or_else(spun_clock))
+}
+
+static TOP_CLOCK: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+
+/// `top_clock` read on a thread of its own, from now (the agent's start).
+pub fn top_clock_soon() {
+    std::thread::Builder::new().name("top-clock".into()).spawn(top_clock).ok();
+}
+
+/// `top_clock` if it has been read; None while it's being read (or never was).
+pub fn top_clock_now() -> Option<f64> {
+    TOP_CLOCK.get().copied().flatten()
+}
+
+/// The performance cores' top clock from IOKit's power manager (`ioreg -r -n pmgr`: its
+/// `voltage-states5-sram`, the performance cluster's states; `parse_top_clock`); None where there's
+/// no such table (another platform, a Mac without it).
+fn table_clock() -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = store::spawn::command("/usr/sbin/ioreg");
+        c.args(["-r", "-n", "pmgr", "-d", "1"]);
+        let o = store::spawn::output(&mut c).ok()?;
+        parse_top_clock(&String::from_utf8_lossy(&o.stdout))
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The highest frequency in `ioreg`'s `voltage-states5-sram` (`<hex>`: pairs of little-endian u32s,
+/// each a frequency and its voltage), in Hz. The M1 generation says Hz (the M1 Pro's last, 3228
+/// MHz), later ones kHz (the M4 Pro's last, 4512000; the M6's, 4788000): a value under 10^8, no
+/// core's clock in Hz, is read as kHz.
+pub fn parse_top_clock(ioreg: &str) -> Option<f64> {
+    let (_, rest) = ioreg.split_once("\"voltage-states5-sram\" = <")?;
+    let hex = &rest[..rest.find('>')?];
+    let b: Vec<u8> =
+        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+    let top = b.chunks_exact(8).map(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]])).max().filter(|&f| f > 0)?;
+    Some(if top < 100_000_000 { f64::from(top) * 1e3 } else { f64::from(top) })
+}
+
+/// The performance cores' clock measured (`Rusage`'s performance-core cycles over their time while a
+/// thread of its own spins at the user-interactive QoS, which macOS runs on them, till 0.2 s of
+/// their CPU or 2 s by the clock): the cluster's clock as it is then, which other work on its cores
+/// may lower. None where it can't be measured (no split, another platform).
+fn spun_clock() -> Option<f64> {
+    std::thread::Builder::new()
+        .name("top-clock-spin".into())
+        .spawn(|| {
+            interactive();
+            let me = std::process::id() as i32;
+            let a = rusage(me)?;
+            let t = std::time::Instant::now();
+            let mut x = 0u64;
+            let mut b = a;
+            while b.p_cpu_ns.saturating_sub(a.p_cpu_ns) < 200_000_000 && t.elapsed() < std::time::Duration::from_secs(2)
+            {
+                for i in 0..100_000u64 {
+                    x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
                 }
-                let (cyc, ns) = (b.p_cycles.saturating_sub(a.p_cycles), b.p_cpu_ns.saturating_sub(a.p_cpu_ns));
-                (ns >= 50_000_000).then(|| cyc as f64 / (ns as f64 / 1e9))
-            })
-            .ok()
-            .and_then(|h| h.join().ok())
-            .flatten()
-    })
+                b = rusage(me)?;
+            }
+            let (cyc, ns) = (b.p_cycles.saturating_sub(a.p_cycles), b.p_cpu_ns.saturating_sub(a.p_cpu_ns));
+            (ns >= 50_000_000).then(|| cyc as f64 / (ns as f64 / 1e9))
+        })
+        .ok()
+        .and_then(|h| h.join().ok())
+        .flatten()
 }
 
 /// This thread at the user-interactive QoS (macOS runs it on a performance core).
@@ -1075,12 +1116,14 @@ pub fn group_peak() -> u64 {
 }
 
 /// The osmium program, found in Homebrew's folder first (task #916: from inputs::osmpass, which
-/// re-exports it).
+/// re-exports it), its pool held to the threads the job's work runs on (crate::control::cap_threads:
+/// `OSMIUM_POOL_THREADS`; it takes every core without it). Every osmium a job runs is started here.
 pub fn osmium() -> Command {
     let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
     // (Looked up by the PATH it's given: store::spawn.)
     let mut c = store::spawn::command_in("osmium", std::ffi::OsStr::new(&path));
     c.env("PATH", path);
+    crate::control::cap_threads(&mut c);
     c
 }
 
@@ -1290,5 +1333,41 @@ mod tests {
         drop(c.stdin.take());
         c.wait().unwrap();
         assert!(with >= me + (190 << 20), "{with} vs {me}");
+    }
+
+    /// Task #1419: the rusage reader agrees with what the system says otherwise of this process:
+    /// its CPU with getrusage's (both read after a spin, the same counters), its peak at least its
+    /// footprint, its start with its start time, and some instructions and cycles retired.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_rusage_reader_agrees_with_getrusage() {
+        let mut x = 0u64;
+        for i in 0..50_000_000u64 {
+            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(i));
+        }
+        let me = std::process::id() as i32;
+        let r = rusage(me).unwrap();
+        // SAFETY: getrusage fills the struct it's given.
+        let mut g: libc::rusage = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut g) }, 0);
+        let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1000;
+        let cpu = tv(g.ru_utime) + tv(g.ru_stime);
+        // (getrusage read after: as much or a little more, every thread's here.)
+        assert!(r.cpu_ns <= cpu + 1_000_000 && cpu - r.cpu_ns.min(cpu) < 50_000_000, "{} vs {cpu}", r.cpu_ns);
+        assert!(r.cpu_ns > 10_000_000 && r.p_cpu_ns <= r.cpu_ns, "{r:?}");
+        assert!(r.insn > 50_000_000 && r.cycles > 0 && r.p_insn <= r.insn && r.p_cycles <= r.cycles, "{r:?}");
+        assert!(r.footprint > 0 && r.peak >= r.footprint, "{r:?}");
+        // (Its start, mach absolute time, as seconds since the epoch: now less the time since.)
+        #[allow(deprecated)]
+        let since = mach_ns()(unsafe { libc::mach_absolute_time() }.saturating_sub(r.start));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let start = now.saturating_sub(since / 1_000_000_000);
+        assert!(start.abs_diff(process_start(me).unwrap()) <= 2, "{start} vs {:?}", process_start(me));
+        // (The top clock, from the power manager's table where it's there.)
+        let ioreg = r#"| |   "voltage-states5-sram" = <0046c32300030000005f67c0ef030000>"#;
+        assert_eq!(parse_top_clock(ioreg), Some(3_228_000_000.0));
+        let khz = r#""voltage-states5-sram" = <e0391300160300004017460096030000>"#;
+        assert_eq!(parse_top_clock(khz), Some(4_593_472_000.0));
+        assert_eq!(parse_top_clock("no table"), None);
     }
 }
