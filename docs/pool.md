@@ -1843,7 +1843,9 @@ starts) never plans: it grants from the last plan. One stall threshold holds the
 sampled by `/usr/bin/sample` for 5 s into `plan-stall-sample-<UTC date>-<time>Z.txt` in the agent's
 folder (once per plan; the newest five kept; never two at once; a sampler still running at 300 s is
 killed), and the status says "planning has taken N min so far" while it lasts, grants going on from
-the last plan meanwhile. The round names each phase as it enters it and logs one that took 10 s or
+the last plan meanwhile; with no plan made since the agent started (after its restart into an
+update) there is none, and the log and the status say "the first plan since the agent started has
+taken N min so far (in "<phase>"): its work is offered once it's made" (`flags::FIRST_PLAN_OFFERS`). The round names each phase as it enters it and logs one that took 10 s or
 more as it ends, but the wait between rounds ("the loop's phase \"the grants: the starts\" took 12 s");
 the plan's thread does the same with its own phases ("the plan's phase \"build::plan\" took …"), each
 part's kept apart (`nasread::LOOP`, `nasread::PLAN`), so a plan's phase never ends or stretches the
@@ -2795,8 +2797,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   input, with its wait ("the work left waits: slope-hi: …"); on a member, the steps left only the
   lead runs; the waits of no step ("waiting: Building: the build's records can't be read now", on
   a member "the lead waits: …"; a lead whose first plan since it started isn't made yet, as after
-  its restart into an update, "waiting: The plan: the first plan since the agent started is being
-  made: …", `flags::first_plan`); and only with none of these, as the verdict's "Nothing to build",
+  its restart into an update, with the NAS there, "waiting: The plan: the first plan since the
+  agent started is being made: its work is offered once it's made", `flags::first_plan`, or past
+  `beat::LOOP_STUCK` the stall's words for that first plan, `plan::Handle::stalled`); and only with none of these, as the verdict's "Nothing to build",
   "the plan is complete: no job is left to offer"; never a memory or disk figure. An ask refused
   before any packing (the lead moving, the build paused, an older app) lets the refusal go: it
   was of offers that ask wasn't weighed against), shown while the refusal itself is younger than two minutes

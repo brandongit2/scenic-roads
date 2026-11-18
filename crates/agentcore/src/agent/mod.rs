@@ -4578,8 +4578,8 @@ impl Agent {
         let view = self.tell_plan(root.as_ref(), &c, ended);
         if let Some(why) = self.plan.stalled(&self.o.home) {
             waiting.push(Waiting { step: None, what: "The plan".into(), why });
-        } else {
-            waiting.extend(flags::first_plan(self.plan.plans(), view.n));
+        } else if self.leads() && root.is_some() {
+            waiting.extend(flags::first_plan(view.n));
         }
         // (The jobs granted this round, each with the slot it was granted into and its plan's number.)
         let mut granted: Vec<(usize, JobSpec, u64)> = Vec::new();
@@ -11071,6 +11071,51 @@ mod tests {
         assert!(a.plan.busy(), "the 3-min plan ended early");
         assert_eq!(a.plan.view.get().n, n);
         a.stop_jobs("the test");
+        a.plan.stop(Duration::ZERO);
+    }
+
+    /// Task #1445, the lead of 18 Nov restarted into an update: its first plan under way on
+    /// **plan**'s thread (the slow-plan fake), none made since it started, so its coordinator offers
+    /// nothing. Its status says the first plan is being made, never the plan complete; past
+    /// `beat::LOOP_STUCK` (the first took 296 s on the mini), that first plan's minutes and phase,
+    /// its work offered once it's made: there is no last plan to grant from.
+    #[test]
+    fn a_lead_before_its_first_plan_says_it_is_being_made() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        a.planner().slow_plan = Some(PLAN_LONG);
+        a.plan.spawn();
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        // (The round's status: its wait of the plan, and what a Mac offered nothing is told.)
+        let said = |a: &mut Agent| {
+            a.round().unwrap();
+            let st = read_status(Some(&r), &a.o.home).unwrap();
+            let plan: Vec<String> = st.waiting.iter().filter(|w| w.what == "The plan").map(|w| w.why.clone()).collect();
+            (plan, flags::nothing_words(a.o.the_plan, &st.waiting, true, None))
+        };
+        store::testkit::eventually("the first plan under way", || {
+            a.round().unwrap();
+            a.plan.busy()
+        });
+        assert_eq!(a.plan.view.get().n, 0, "no plan made yet");
+        let (plan, words) = said(&mut a);
+        assert_eq!(
+            plan,
+            ["the first plan since the agent started is being made: its work is offered once it's made"],
+            "{words}"
+        );
+        assert!(!words.contains("complete"), "{words}");
+        // Past the stall threshold, still none made.
+        a.plan.began_ago(crate::agent::beat::LOOP_STUCK.as_secs() + 60);
+        let (plan, words) = said(&mut a);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        assert!(
+            plan[0].starts_with("the first plan since the agent started has taken 6 min so far (in \""),
+            "{plan:?}"
+        );
+        assert!(plan[0].ends_with("\"): its work is offered once it's made"), "{plan:?}");
+        assert!(!words.contains("complete") && !words.contains("last plan"), "{words}");
+        assert_eq!(a.plan.view.get().n, 0);
         a.plan.stop(Duration::ZERO);
     }
 

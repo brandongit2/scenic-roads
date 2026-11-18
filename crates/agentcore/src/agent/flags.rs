@@ -385,16 +385,21 @@ pub fn nothing_words(
     }
 }
 
-/// The wait of a lead whose plan's thread hasn't made its first plan since the agent started
-/// (`made`: the last plan's number, crate::agent::plan::PlanView's `n`, 0 for none): its
-/// coordinator offers nothing until then (the restart into an update: a first plan takes ~5 min on
-/// the Mac mini), which is no plan complete (`nothing_words`, task #1445: a job paused for the
-/// restart looked dropped). None on a member (`plans` false) and once a plan is made.
-pub fn first_plan(plans: bool, made: u64) -> Option<Waiting> {
-    (plans && made == 0).then(|| Waiting {
+/// What a lead with no plan made since the agent started offers: nothing until its first plan is
+/// made (the restart into an update: the first took 296 s on the Mac mini, 18 Nov), said so, never
+/// as the plan complete (`nothing_words`, task #1445: a job paused for the restart looked dropped).
+/// The words' end, `first_plan`'s and a first plan's stall's (crate::agent::plan::Handle::stalled).
+pub const FIRST_PLAN_OFFERS: &str = "its work is offered once it's made";
+
+/// The wait of the lead's round while no plan is made since the agent started (`made`: the last
+/// plan's number, crate::agent::plan::PlanView's `n`, 0 for none); None once one is. Its caller
+/// adds it on the lead with the NAS there (a look without it plans nothing), when the plan isn't
+/// stalled (that one's words say the first plan's minutes).
+pub fn first_plan(made: u64) -> Option<Waiting> {
+    (made == 0).then(|| Waiting {
         step: None,
         what: "The plan".into(),
-        why: "the first plan since the agent started is being made: its work is offered once it is".into(),
+        why: format!("the first plan since the agent started is being made: {FIRST_PLAN_OFFERS}"),
     })
 }
 
@@ -653,20 +658,19 @@ mod tests {
 
     /// Task #1445: the lead restarted into an update, its first plan not made yet: its coordinator
     /// offers nothing, said as the plan being made, never as complete (the jobs paused for the
-    /// restart go on from that plan); nothing on a member, nor once a plan is made.
+    /// restart go on from that plan); nothing once a plan is made.
     #[test]
     fn a_lead_before_its_first_plan_says_so_not_complete() {
         let plan = crate::agent::seam::for_tests();
-        let w = first_plan(true, 0).expect("no plan yet");
+        let w = first_plan(0).expect("no plan yet");
         let said = nothing_words(plan, std::slice::from_ref(&w), true, None);
         assert_eq!(
             said,
-            "waiting: The plan: the first plan since the agent started is being made: its work is offered once it is"
+            "waiting: The plan: the first plan since the agent started is being made: its work is offered once it's made"
         );
         let said = nothing_words(plan, std::slice::from_ref(&w), false, None);
         assert!(said.starts_with("the lead waits: The plan: the first plan"), "{said}");
-        assert!(first_plan(false, 0).is_none(), "a member plans nothing");
-        assert!(first_plan(true, 1_795_009_103_855).is_none(), "a plan made");
+        assert!(first_plan(1_795_009_103_855).is_none(), "a plan made");
     }
 
     /// Nothing free, but work of a shared step held behind another step that waits too (4 Nov:

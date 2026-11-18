@@ -248,7 +248,10 @@ impl Handle {
     }
 
     /// A plan running past `beat::LOOP_STUCK`: logged with its phase and the process sampled,
-    /// once a plan (decision 4); its words for the status while it lasts.
+    /// once a plan (decision 4); its words for the status while it lasts. Grants go on from the
+    /// last plan meanwhile; with none made since the agent started (the view's `n` 0) there is
+    /// none, and it's said as the first plan, whose work is offered once it's made
+    /// (flags::FIRST_PLAN_OFFERS).
     pub fn stalled(&self, home: &Path) -> Option<String> {
         let since = self.stall.since.load(Ordering::SeqCst);
         let now = now_s();
@@ -256,20 +259,26 @@ impl Handle {
             return None;
         }
         let phase = *self.phase.get();
+        let first = self.view.get().n == 0;
+        let (log, said, then) = if first {
+            let w = "the first plan since the agent started";
+            (w, w, super::flags::FIRST_PLAN_OFFERS)
+        } else {
+            ("the plan", "planning", "grants go on from the last plan")
+        };
         if self.stall.said.swap(since, Ordering::SeqCst) != since {
-            eprintln!(
-                "agent: {} the plan has run {} s, in \"{phase}\"; grants go on from the last plan",
-                nasread::clock(now),
-                now - since
-            );
+            eprintln!("agent: {} {log} has run {} s, in \"{phase}\"; {then}", nasread::clock(now), now - since);
             if !buildstore::out::testing() {
                 sample_self(Path::new("/usr/bin/sample"), home, now);
             }
         }
-        Some(format!(
-            "planning has taken {} min so far (in \"{phase}\"): grants go on from the last plan",
-            (now - since) / 60
-        ))
+        Some(format!("{said} has taken {} min so far (in \"{phase}\"): {then}", (now - since) / 60))
+    }
+
+    /// The plan under way as if it began `secs` ago (a test's: a plan past `beat::LOOP_STUCK`).
+    #[cfg(test)]
+    pub fn began_ago(&self, secs: u64) {
+        self.stall.since.store(now_s().saturating_sub(secs), Ordering::SeqCst);
     }
 
     /// The thread told to stop, and waited for `wait` at most (a plan on a hung share may not end).
