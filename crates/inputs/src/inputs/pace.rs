@@ -1,21 +1,18 @@
-//! How many threads a check runs (docs/inputs.md §4.3, Threads): its job's grant now, which its lead
-//! raises as cores free up and lowers when they are wanted (docs/pool.md §7.1, Threads re-granted).
+//! How many threads a check runs (docs/inputs.md §4.3, Threads): its job's threads now, which its
+//! agent grows while they're all kept busy and cuts while they're left idle (docs/pool.md §7.1,
+//! Threads controlled live).
 //!
-//! A check lasts hours, one target: its job's grant is taken as it changes, not as a target begins
-//! (jobrt::control::on_grant). The agent keeps a file (jobrt::control::THREADS_ENV, replaced whole by
-//! jobrt::control::grant, so a read never meets it emptied and falls back to every core) with the
-//! threads the job may use at the moment, and the check's pools are as wide as `width`, their tasks each
-//! taking a `permit` for as long as they run: no more tasks run at once than the file says,
-//! whichever threads the pool has. A change is seen within `POLL`.
+//! A check lasts hours, one target: its job's threads are taken as they change, not as a target
+//! begins (jobrt::control::on_grant). The agent keeps a file (jobrt::control::THREADS_ENV, replaced
+//! whole by jobrt::control::grant, so a read never meets it emptied and falls back to every core)
+//! with the threads the job may use at the moment, and the check's pools are as wide as `width`
+//! (the Mac's cores), their tasks each taking a `permit` for as long as they run: no more tasks run
+//! at once than the file says, whichever threads the pool has. A change is seen within `POLL`.
 
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-/// The most threads a check is ever allowed: the regions' work held four at once before (each
-/// operation's memory grows with its region), and the lead placed the check with memory for its grant.
-pub const MOST: usize = 8;
 
 /// How often the file is read again, and how long a task waits for a permit before looking again.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -68,7 +65,7 @@ impl Pace {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .and_then(|t| t.trim().parse::<usize>().ok())
             .unwrap_or(self.fallback)
-            .clamp(1, MOST);
+            .max(1);
     }
 
     /// The threads allowed now.
@@ -118,10 +115,11 @@ pub fn cores() -> usize {
     std::thread::available_parallelism().map_or(4, |n| n.get())
 }
 
-/// How wide a check's pool is: the cores up to `MOST` (a hand run's `SCENIC_REGIONS_THREADS` says
-/// otherwise); `permit` holds the tasks running to the threads allowed.
+/// How wide a check's pool is: the Mac's cores (a hand run's `SCENIC_REGIONS_THREADS` says
+/// otherwise), so its agent may grow it to any of them; `permit` holds the tasks running to the
+/// threads allowed.
 pub fn width() -> usize {
-    std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores().min(MOST)).max(1)
+    std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores()).max(1)
 }
 
 /// `f` on each of `items`, in order, in parallel: each task under a permit, so no more run at once
@@ -129,17 +127,26 @@ pub fn width() -> usize {
 /// that thread, within the permit's budget: a permit's holder never waits on a task that needs one,
 /// and a nested operation no other thread can take beyond what is allowed.
 pub fn par_map<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
-    use rayon::prelude::*;
-    if HELD.with(|h| h.get()) > 0 {
-        return items.into_iter().map(f).collect();
+    global().par_map(items, f)
+}
+
+impl Pace {
+    /// `par_map` under this pace's permits: each task takes one as it starts, so an operation under
+    /// way follows the file as it changes (more tasks at once after a raise, fewer after a cut, as
+    /// the tasks running end).
+    pub fn par_map<I: Send, R: Send>(&self, items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
+        use rayon::prelude::*;
+        if HELD.with(|h| h.get()) > 0 {
+            return items.into_iter().map(f).collect();
+        }
+        items
+            .into_par_iter()
+            .map(|x| {
+                let _turn = self.permit();
+                f(x)
+            })
+            .collect()
     }
-    items
-        .into_par_iter()
-        .map(|x| {
-            let _turn = permit();
-            f(x)
-        })
-        .collect()
 }
 
 /// A pool `width` wide for a check's parallel work (the process's own, `RAYON_NUM_THREADS`, is the
@@ -180,11 +187,11 @@ mod tests {
         assert_eq!(Pace::new(Some(f), 6).allowed(), 6);
         assert_eq!(Pace::new(Some("/nonexistent/threads".into()), 6).allowed(), 6);
         assert_eq!(Pace::new(None, 6).allowed(), 6);
-        // (At least one, at most MOST.)
+        // (At least one; as many as it says past that.)
         let (_d, f) = file("0");
         assert_eq!(Pace::new(Some(f), 6).allowed(), 1);
-        let (_d, f) = file("99");
-        assert_eq!(Pace::new(Some(f), 6).allowed(), MOST);
+        let (_d, f) = file("12");
+        assert_eq!(Pace::new(Some(f), 6).allowed(), 12);
     }
 
     #[test]
@@ -227,6 +234,46 @@ mod tests {
             release_tx.send(()).unwrap();
             hold.join().unwrap();
         });
+    }
+
+    /// Task #1420: one long operation under way (a regions check's one target) follows its file as
+    /// its agent changes it: on 1 at first, as many as 4 at once once raised, 2 at most once cut.
+    #[test]
+    fn an_operation_under_way_follows_its_file_up_and_down() {
+        let (_d, f) = file("1");
+        let pace = Pace::new(Some(f.clone()), 1);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let t0 = Instant::now();
+        let now = AtomicUsize::new(0);
+        // (Each task: when it began (ms) and how many ran with it.)
+        let seen: Vec<(u128, usize)> = std::thread::scope(|s| {
+            let writer = s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(1200));
+                std::fs::write(&f, "4").unwrap();
+                std::thread::sleep(Duration::from_millis(1800));
+                std::fs::write(&f, "2").unwrap();
+            });
+            let out = pool.install(|| {
+                pace.par_map((0..2000).collect(), |_: usize| {
+                    if t0.elapsed() > Duration::from_millis(5000) {
+                        return (0, 0);
+                    }
+                    let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                    let at = t0.elapsed().as_millis();
+                    std::thread::sleep(Duration::from_millis(20));
+                    now.fetch_sub(1, Ordering::SeqCst);
+                    (at, n)
+                })
+            });
+            writer.join().unwrap();
+            out
+        });
+        let most =
+            |from: u128, to: u128| seen.iter().filter(|(at, n)| *n > 0 && (from..to).contains(at)).map(|s| s.1).max();
+        assert_eq!(most(0, 1100), Some(1), "on 1 at first");
+        assert_eq!(most(2300, 3000), Some(4), "raised: 4 at once, the pool's every thread");
+        assert!(most(4100, 5000).is_some_and(|n| n <= 2), "cut: 2 at most, {:?}", most(4100, 5000));
+        assert_eq!(pace.active(), 0);
     }
 
     #[test]

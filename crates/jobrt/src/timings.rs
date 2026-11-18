@@ -44,7 +44,10 @@
 //!   the Python twin, dem/timings.py, measures them the same way). No phase is classed by hand.
 //! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
-//!   cleared as it ends; the agent shows it under the job (agentcore::agent::jobs::Live).
+//!   cleared as it ends; the agent shows it under the job (agentcore::agent::jobs::Live). The wall
+//!   time waited on the NAS, the network and the disk so far is added there too, once a second by
+//!   the memory sampler and as the run ends (store::nasio::add_waited, `say_waited`): its agent's
+//!   live thread control reads its computing from it (agentcore::agent::threads).
 //! - Spans (task #1104): where `SCENIC_SPANS` says, each span as it closes, with its start and end,
 //!   the waits as intervals and the job's events, written once a second by the memory sampler
 //!   (crate::spans): the job's timeline, which these totals sum.
@@ -794,9 +797,10 @@ fn sample_memory() {
                     if !on() {
                         continue;
                     }
-                    // (Its spans written every `SPANS_EVERY` ticks.)
+                    // (Its spans written, and its waits said, every `SPANS_EVERY` ticks.)
                     if ticks % SPANS_EVERY == 0 {
                         spans_tick(false);
+                        say_waited();
                     }
                     let Some(v) = crate::sys::group_footprint() else { continue };
                     LAST_MEM.store(v, Ordering::Relaxed);
@@ -816,6 +820,21 @@ fn sample_memory() {
 
 /// The memory sampler's ticks between two writes of the spans (a second).
 const SPANS_EVERY: u64 = 4;
+
+/// The wall time waited on the NAS, the network and the local disk so far (ns: store::waits' kinds
+/// before other work's, by the wall clock), as last added to the job's counts file.
+static WAITED_SAID: AtomicU64 = AtomicU64::new(0);
+
+/// The wall time waited since last said added to the job's counts file (store::nasio::add_waited),
+/// where its agent reads it live to tell its computing from its waiting (agentcore::agent::threads).
+/// Waits on other work (store::waits::On::Other: a join, a condition) aren't counted: the threads
+/// waited for may be computing.
+fn say_waited() {
+    let t = store::waits::totals();
+    let now: u64 = t[..store::waits::On::Other as usize].iter().sum();
+    let was = WAITED_SAID.fetch_max(now, Ordering::Relaxed);
+    store::nasio::add_waited(now.saturating_sub(was));
+}
 
 /// The run's spans written (crate::spans::Rec::tick): those that can't merge any more, the waits,
 /// the events and the open spans to say; every one, the open spans cut where they are, when
@@ -1308,6 +1327,7 @@ pub fn finish(ok: bool) {
         span_event(crate::spans::Ev { ok: Some(ok), ..crate::spans::event("end", "") });
         spans_tick(true);
     }
+    say_waited();
     let rec = {
         let mut g = run().lock().unwrap();
         let Some(r) = g.as_mut().filter(|r| !r.finished) else {
@@ -2263,6 +2283,24 @@ pub fn reset() {
 
 #[cfg(test)]
 mod tests {
+    /// The wall time a job waits on the NAS is added to its counts file as said (`say_waited`), the
+    /// time since last said and no more.
+    #[test]
+    fn the_wall_time_waited_is_said_in_the_counts_file() {
+        store::waits::enable();
+        super::say_waited();
+        let before = store::nasio::own_waited();
+        {
+            let _g = store::waits::nas();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        super::say_waited();
+        let after = store::nasio::own_waited();
+        assert!(after >= before + 35_000_000, "{before} then {after}");
+        super::say_waited();
+        assert!(store::nasio::own_waited() < after + 20_000_000, "said once");
+    }
+
     use super::*;
 
     #[test]

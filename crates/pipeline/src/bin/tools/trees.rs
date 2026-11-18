@@ -60,12 +60,12 @@ fn need<'a, T>(v: &'a Option<T>, k: &str) -> Result<&'a T> {
 
 fn run(a: &Trees) -> Result<()> {
     // (Threads as many as said, else rayon's. Its blocks in a job told its grant (jobrt::control::
-    // THREADS_ENV's file named) get a pool as wide as pace allows, under permits: as many at once
+    // THREADS_ENV's file named) get a pool as wide as the Mac's cores, under permits: as many at once
     // as the file says now (inputs::inputs::pace). Assembling takes no permits: as said.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = a.workers {
         let paced = !(a.assemble || a.assemble_lo) && std::env::var_os(jobrt::control::THREADS_ENV).is_some();
-        let wide = if paced { ::inputs::inputs::pace::cores().min(::inputs::inputs::pace::MOST) } else { 1 };
+        let wide = if paced { ::inputs::inputs::pace::cores() } else { 1 };
         pool = pool.num_threads(w.max(wide).max(1));
     }
     let pool = pool.build().ok();
