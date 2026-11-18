@@ -139,8 +139,8 @@ its settings at its own port (CORS).
 Built (step 5). `scenic menu` (`agentcore::menu`) reads this Mac's disk alone: its own agent's
 status (the fresher of `status.json` and `helper.json`: a file left from a part this Mac had
 before is the staler), and on a member the lead's line, which the beat's answer carries
-(`held::Answer::lead`, `LeadLine`: the lead's Mac and app, the build in a line, the build's pause,
-the flags) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
+(`held::Answer::lead`, `LeadLine`: `host`, `app`, `said` (the build in a line), `pause` and
+`flags`) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
 the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer with no line;
 written outside the registry's lock and not synced: a slow disk never holds up the beats, and a
 line lost to a crash is said again at the next answer). The build in a line is the lead's agent's
@@ -257,10 +257,8 @@ Each step ships alone and keeps the build running; each ends with its tests.
    Mac), its `--root`, the lead's status shown in a member's menu with the member put in its
    `helpers` (`here`), a member's own status standing in for a lead unheard with the lead's last
    checklist copied in, the reply's "via the NAS" (`local`, still written for a menu bar before
-   this step), the agent's `lead_all_new` read of the NAS; `LEAD_STATUS` moved to
-   `crate::agent` (the server reads it). Also fixed: `scenic menu`'s log path took the old
-   `job` field, which an all-new pool no longer writes (no Open the build log); now the first of
-   `jobs`. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
+   this step); `LEAD_STATUS` moved to `crate::agent` (the server reads it). `scenic menu`'s log
+   path is the first of `jobs`'s. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
 6. *Built.* **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file` (the agent's own
    `timings.jsonl` and the broker's `coord/` files, `workers-token` and `journal/` among them, in
    the kept list; a restarted member's two-day-old leftovers removed, a newer one and the kept

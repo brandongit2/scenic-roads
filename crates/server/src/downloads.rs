@@ -1206,8 +1206,8 @@ fn of_contents<'a>(cat: &Catalogue, contents: impl IntoIterator<Item = &'a str>)
 /// Keeps the mirror (store::mirror) on its own thread: every minute, or as soon as the downloads
 /// change, it lets go of what no download wants and copies what they do, while the NAS is reachable
 /// (from home or not); a new catalogue or a change of the downloads has it plan again at once. A new
-/// catalogue copies nothing by itself (module doc). While the build runs (the lead's heartbeat on the
-/// NAS says a job runs), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't
+/// catalogue copies nothing by itself (module doc). While the build runs (the lead's status, asked of
+/// its coordinator, has a job running: `Data::agent_busy`), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't
 /// deleted (store::mirror). Between copies it works out the pieces' sizes (for the panel's
 /// sizes), those of what's downloaded first. Each round with the NAS it tells the lead its cursor
 /// (`lead`, crate::maplog::MirrorLink: none for a server of a `--root`).

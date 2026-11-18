@@ -852,7 +852,7 @@ impl Data {
 
     /// Whether the lead is running a job (its heartbeat, fresh, with a job that isn't paused).
     pub fn agent_busy(&self) -> bool {
-        runs(&self.lead_status(), 600, &["job"])
+        runs(&self.lead_status(), 600)
     }
 
     /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
@@ -1003,17 +1003,19 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Whether heartbeat `v` beat in the last `fresh_s` seconds with a job in one of `slots` ("job";
-/// the second slot's, "beside") that isn't paused.
-fn runs(v: &serde_json::Value, fresh_s: u64, slots: &[&str]) -> bool {
-    runs_at(v, fresh_s, slots, unix_now())
+/// Whether heartbeat `v` beat in the last `fresh_s` seconds with a job in its `jobs` (any slot's)
+/// that isn't paused.
+fn runs(v: &serde_json::Value, fresh_s: u64) -> bool {
+    runs_at(v, fresh_s, unix_now())
 }
 
 /// `runs` at `now` (unix seconds).
-fn runs_at(v: &serde_json::Value, fresh_s: u64, slots: &[&str], now: u64) -> bool {
+fn runs_at(v: &serde_json::Value, fresh_s: u64, now: u64) -> bool {
     let fresh = v.get("beat").and_then(|b| b.as_u64()).is_some_and(|b| now.saturating_sub(b) < fresh_s);
     fresh
-        && slots.iter().any(|k| v.get(*k).is_some_and(|j| !j.is_null() && j.get("paused").is_none_or(|p| p.is_null())))
+        && v.get("jobs")
+            .and_then(|j| j.as_array())
+            .is_some_and(|jobs| jobs.iter().any(|j| j.get("paused").is_none_or(|p| p.is_null())))
 }
 
 #[cfg(test)]
@@ -1022,23 +1024,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_heartbeat_runs_a_job_while_fresh_in_the_slots_asked() {
+    fn a_heartbeat_runs_a_job_while_fresh_with_one_not_paused() {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        // A job in either slot asked; not a paused one, none, or a stale beat.
-        let both = ["job", "beside"];
-        assert!(runs_at(&json!({"beat": now, "job": null, "beside": {"id": "lo"}}), 120, &both, now));
-        assert!(!runs_at(
-            &json!({"beat": now, "job": {"id": "pack 6/52/27", "paused": "the user asked"}}),
-            120,
-            &both,
-            now
-        ));
-        assert!(!runs_at(&json!({"beat": now, "job": null}), 120, &both, now));
-        assert!(!runs_at(&json!({"beat": now - 600, "job": {"id": "pack 6/52/27"}}), 120, &both, now));
-        // The NAS's heartbeat (the lead's, read by every Mac): the first slot, fresh for ten
-        // minutes.
-        assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));
-        assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));
+        // A job in any slot; not when every one is paused, there's none, or the beat is stale.
+        let paused = json!({"id": "pack 6/52/27", "slot": 0, "paused": "the user asked"});
+        assert!(runs_at(&json!({"beat": now, "jobs": [paused, {"id": "lo 3/1/1", "slot": 1}]}), 120, now));
+        assert!(!runs_at(&json!({"beat": now, "jobs": [paused]}), 120, now));
+        assert!(!runs_at(&json!({"beat": now}), 120, now));
+        assert!(!runs_at(&json!({"beat": now - 600, "jobs": [{"id": "pack 6/52/27", "slot": 0}]}), 120, now));
+        // The lead's status, fresh for ten minutes.
+        assert!(runs_at(&json!({"beat": now - 300, "jobs": [{"id": "pack 6/52/27", "slot": 0}]}), 600, now));
     }
 
     /// Task #449: a tile's landmark points read from the marks job's bundle of every tile (from the

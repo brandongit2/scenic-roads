@@ -21,7 +21,7 @@ pub fn status(home: &Path, now: u64) -> serde_json::Value {
     let (lead, member) = (read("status.json"), read("helper.json"));
     let is_member = beat(&member) > beat(&lead);
     let status = if is_member { member } else { lead }.unwrap_or(serde_json::Value::Null);
-    let job = status["jobs"][0]["id"].as_str().or(status["job"]["id"].as_str());
+    let job = status["jobs"][0]["id"].as_str();
     let log =
         job.map(|id| home.join("logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string());
     // This Mac paused alone (jobrt::control::Hold, task #224), as its agent keeps it, and its ask
