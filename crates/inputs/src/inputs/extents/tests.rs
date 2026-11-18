@@ -1681,13 +1681,17 @@ const REAL_BATHYMETRY: [(&str, &[u8]); 49] = [
 #[test]
 fn the_real_bathymetry_files_are_taken() {
     let (files, warnings) = real_files("bathymetry", &REAL_BATHYMETRY);
-    assert_eq!(warnings, Vec::<String>::new());
+    // (Only LINZ's depth models, whose bounding boxes claim open sea, state no extent: of class unknown.)
+    assert_eq!(
+        warnings,
+        ["bathymetry/nz-linz.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere"]
+    );
     // GEBCO's pieces a kind of source its type identifier grid holds, each from the file's cells.
     let c = Extents.file("bathymetry/gebco-2026.geojson", &files["bathymetry/gebco-2026.geojson"]);
     assert_eq!(c.facts["classes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["files"]);
     // Each national or local grid by what its extent stands on: the Faroes' and Denmark's source
     // grids, the German model's coverages, AusBathyTopo's type identifier grid and Shom's WMS layers
-    // are the data's own (`files`); LINZ's depth models, a layer's bounding box, are claimed.
+    // are the data's own (`files`); LINZ's depth models, which have no outline without a key, are not drawn.
     let classes = |f: &str| {
         Extents.file(&format!("bathymetry/{f}.geojson"), &files[&format!("bathymetry/{f}.geojson")]).facts["classes"]
             .clone()
@@ -1695,7 +1699,7 @@ fn the_real_bathymetry_files_are_taken() {
     assert_eq!(classes("dk-ddm"), serde_json::json!({"files": 8}));
     assert_eq!(classes("de-bsh"), serde_json::json!({"files": 1}));
     assert_eq!(classes("fr-shom-homonim"), serde_json::json!({"files": 4}));
-    assert_eq!(classes("nz-linz"), serde_json::json!({"claimed": 35, "index": 1}));
+    assert_eq!(classes("nz-linz"), serde_json::json!({"index": 1, "unknown": 1}));
     assert_eq!(classes("nl-rijkswaterstaat"), serde_json::json!({"index": 1, "service": 1}));
     // The bathymetry's score: its guarantee holds, its primary the grid's spacing.
     let s = score(REAL_BATHYMETRY[0].1).unwrap();

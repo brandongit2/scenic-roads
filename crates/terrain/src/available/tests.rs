@@ -520,10 +520,10 @@ fn an_ancestors_bits_follow_the_water_layers_rule() {
     for (k, v) in c.inland.iter_mut().enumerate() {
         *v = f32::from(((k * 7 + k / 512 * 3) % 256) as u8) / 255.0;
     }
+    let mut lakes = [0, 0];
     for z in [8u8, 6, 3, 0] {
         let (bits, d) = (Lakes::of(&c, z), 9 - z);
         let (x0, y0) = (5u32 << d, 3u32 << d);
-        let mut lakes = 0;
         for j in (0..1u32 << d).step_by(1 + (1 << d) / 37) {
             for i in (0..1u32 << d).step_by(1 + (1 << d) / 41) {
                 let stored = |a: u8, x: u32, y: u32| -> anyhow::Result<Option<inputs::water::Cov>> {
@@ -531,11 +531,11 @@ fn an_ancestors_bits_follow_the_water_layers_rule() {
                 };
                 let (_, inland) = inputs::water::uniform_from_ancestor(9, x0 + i, y0 + j, &stored).unwrap().unwrap();
                 assert_eq!(bits.at(i, j), inland >= LAKE, "z{z} tile {i}, {j}");
-                lakes += usize::from(inland >= LAKE);
+                lakes[usize::from(inland >= LAKE)] += 1;
             }
         }
-        assert!(lakes > 0, "z{z}: lakes among the tiles checked");
     }
+    assert!(lakes[0] > 50 && lakes[1] > 50, "lakes and not among the tiles checked: {lakes:?}");
 }
 
 #[test]
