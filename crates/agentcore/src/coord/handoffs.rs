@@ -132,7 +132,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let h = Handoffs::default();
         assert!(h.put(entry(A, 1)).is_err(), "no store: not taken");
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         h.attach(&store);
         let k = h.put(entry(A, 1)).unwrap();
         assert_eq!(h.put(entry(A, 1)).unwrap(), k, "posted twice: taken once");
@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(h.answer(A, &[k.clone(), "2026-10-06/7-9".into()]), (vec![], vec!["2026-10-06/7-9".to_string()]));
         store.stop();
         // (A new process: read back from its store.)
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let h = Handoffs::default();
         h.attach(&store);
         assert_eq!(h.taken().len(), 1);
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(h.answer(A, std::slice::from_ref(&k)), (vec![], vec![k.clone()]));
         assert!(store.wait(store.last(), crate::pool::store::DURABLE_WAIT));
         store.stop();
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let h = Handoffs::default();
         h.attach(&store);
         assert!(h.taken().is_empty(), "out of the store once merged");

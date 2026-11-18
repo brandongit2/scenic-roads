@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+use store::clock::Clock;
 use store::seglog::{self, Appender};
 
 /// The documents: key → value.
@@ -101,19 +102,33 @@ pub struct Store {
     work: Condvar,
     /// Wakes those waiting for `durable`.
     done: Condvar,
+    /// What its waits time (`open`).
+    clock: Arc<dyn Clock>,
     /// The writer's pace (a test's lower).
     compact_bytes: u64,
     compact_age: Duration,
+    /// How long its writer waits before each write (`WRITER_LAG`'s as it opened).
+    #[cfg(test)]
+    lag: Duration,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's writer slowed: each store opened on this thread waits this long before each write,
+    /// as a Mac under load might (the pool's simulator's check that a run is its seed's alone).
+    pub(crate) static WRITER_LAG: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
 impl Store {
     /// The store in `dir` (made, empty, if missing): its snapshot and log replayed, its epoch bumped
-    /// and durable, its writer started.
-    pub fn open(dir: &Path) -> Result<Arc<Store>> {
-        Store::open_with(dir, COMPACT_BYTES, COMPACT_AGE)
+    /// and durable, its writer started. Its waits (`wait`, `stop`) are on `clock`, its
+    /// coordinator's: a test's virtual clock, which stands still while it waits, waits as long as
+    /// the writer takes (the pool's simulator: what its leads answer never the machine's load's).
+    pub fn open(dir: &Path, clock: Arc<dyn Clock>) -> Result<Arc<Store>> {
+        Store::open_with(dir, clock, COMPACT_BYTES, COMPACT_AGE)
     }
 
-    pub fn open_with(dir: &Path, compact_bytes: u64, compact_age: Duration) -> Result<Arc<Store>> {
+    fn open_with(dir: &Path, clock: Arc<dyn Clock>, compact_bytes: u64, compact_age: Duration) -> Result<Arc<Store>> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let mut state: Snapshot = match std::fs::read(dir.join(SNAPSHOT)) {
             Ok(b) => serde_json::from_slice(&b).with_context(|| format!("{}", dir.join(SNAPSHOT).display()))?,
@@ -147,8 +162,11 @@ impl Store {
             }),
             work: Condvar::new(),
             done: Condvar::new(),
+            clock,
             compact_bytes,
             compact_age,
+            #[cfg(test)]
+            lag: WRITER_LAG.get(),
         });
         let w = Arc::downgrade(&s);
         std::thread::Builder::new()
@@ -184,12 +202,13 @@ impl Store {
         l.seq
     }
 
-    /// Waits until change `seq` is on disk, at most `within`: false past it (or stopped).
+    /// Waits until change `seq` is on disk, at most `within` by its clock: false past it (or
+    /// stopped).
     pub fn wait(&self, seq: u64, within: Duration) -> bool {
-        let until = Instant::now() + within;
+        let until = self.clock.now() + within;
         let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
         while m.durable < seq {
-            let left = until.saturating_duration_since(Instant::now());
+            let left = until.saturating_duration_since(self.clock.now());
             if left.is_zero() || m.stop {
                 return false;
             }
@@ -227,13 +246,14 @@ impl Store {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).compactions
     }
 
-    /// Writes what's pending and stops the writer (what's submitted after is in memory alone). A
-    /// store stopped already (or killed) has no writer to wait for.
+    /// Writes what's pending (within `DURABLE_WAIT` by its clock) and stops the writer (what's
+    /// submitted after is in memory alone). A store stopped already (or killed) has no writer to
+    /// wait for.
     pub fn stop(&self) {
         let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
-        let until = Instant::now() + DURABLE_WAIT;
+        let until = self.clock.now() + DURABLE_WAIT;
         while !m.stop && m.durable < m.state.seq && m.failed.is_none() {
-            let left = until.saturating_duration_since(Instant::now());
+            let left = until.saturating_duration_since(self.clock.now());
             if left.is_zero() {
                 break;
             }
@@ -282,6 +302,8 @@ fn write_loop(store: std::sync::Weak<Store>, mut open: Appender) {
             let (bytes, n) = (std::mem::take(&mut m.pending), std::mem::take(&mut m.pending_n));
             (bytes, n, m.state.seq, due.then(|| m.state.clone()))
         };
+        #[cfg(test)]
+        std::thread::sleep(s.lag);
         let compacted = snap.is_some();
         let wrote = match snap {
             // (The snapshot holds every change pending: their lines aren't written.)
@@ -355,7 +377,7 @@ mod tests {
     #[test]
     fn a_restart_replays_the_store_and_bumps_the_epoch() {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::open(d.path()).unwrap();
+        let s = Store::open(d.path(), ::store::clock::real()).unwrap();
         assert_eq!(s.epoch(), 1);
         for i in 0..50 {
             s.submit(set(&format!("lease/{i}"), json!(i)), Vec::new());
@@ -366,7 +388,7 @@ mod tests {
         let before = s.snapshot().docs;
         s.stop();
         drop(s);
-        let back = Store::open(d.path()).unwrap();
+        let back = Store::open(d.path(), ::store::clock::real()).unwrap();
         assert_eq!(back.snapshot().docs, before);
         assert_eq!(back.epoch(), 2);
     }
@@ -376,7 +398,7 @@ mod tests {
     #[test]
     fn store_recovers_after_a_torn_append() {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::open(d.path()).unwrap();
+        let s = Store::open(d.path(), ::store::clock::real()).unwrap();
         put(&s, "a", json!(1));
         put(&s, "b", json!(2));
         s.kill();
@@ -384,13 +406,13 @@ mod tests {
         let seg = *seglog::segments(d.path()).unwrap().last().unwrap();
         let path = d.path().join(seglog::segment_name(seg));
         std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(br#"{"seq":9,"set":{"c""#).unwrap();
-        let back = Store::open(d.path()).unwrap();
+        let back = Store::open(d.path(), ::store::clock::real()).unwrap();
         let docs = back.snapshot().docs;
         assert_eq!(docs, [("a".to_string(), json!(1)), ("b".to_string(), json!(2))].into());
         put(&back, "c", json!(3));
         back.stop();
         drop(back);
-        assert_eq!(Store::open(d.path()).unwrap().snapshot().docs.get("c"), Some(&json!(3)));
+        assert_eq!(Store::open(d.path(), ::store::clock::real()).unwrap().snapshot().docs.get("c"), Some(&json!(3)));
     }
 
     /// A kill mid-write: a change answered (`wait` true) is there after the restart; one not
@@ -399,7 +421,7 @@ mod tests {
     #[test]
     fn a_kill_before_the_fsync_loses_only_the_unanswered() {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::open(d.path()).unwrap();
+        let s = Store::open(d.path(), ::store::clock::real()).unwrap();
         put(&s, "a", json!(1));
         // (The writer held off: the change stays pending.)
         let held = s.m.lock().unwrap();
@@ -410,7 +432,7 @@ mod tests {
         s.kill();
         let answered = s.wait(n, Duration::from_millis(1));
         drop(s);
-        let docs = Store::open(d.path()).unwrap().snapshot().docs;
+        let docs = Store::open(d.path(), ::store::clock::real()).unwrap().snapshot().docs;
         assert!(docs.contains_key("b") || !answered, "answered, so on disk");
         assert_eq!(docs.get("a"), Some(&json!(1)));
     }
@@ -420,7 +442,7 @@ mod tests {
     #[test]
     fn store_compaction_crash_between_snapshot_and_log() {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::open_with(d.path(), 1 << 30, COMPACT_AGE).unwrap();
+        let s = Store::open_with(d.path(), ::store::clock::real(), 1 << 30, COMPACT_AGE).unwrap();
         for i in 0..20 {
             put(&s, &format!("k{i}"), json!(i));
         }
@@ -431,13 +453,13 @@ mod tests {
         drop(s);
         // (The compaction's snapshot written, its segments not yet removed, nor the next begun.)
         seglog::write_durable(&d.path().join(SNAPSHOT), &serde_json::to_vec(&want).unwrap()).unwrap();
-        let back = Store::open(d.path()).unwrap();
+        let back = Store::open(d.path(), ::store::clock::real()).unwrap();
         assert_eq!(back.snapshot().docs, want.docs);
         assert_eq!(back.epoch(), want.epoch + 1);
         put(&back, "k5", json!(5));
         back.stop();
         drop(back);
-        let again = Store::open(d.path()).unwrap().snapshot();
+        let again = Store::open(d.path(), ::store::clock::real()).unwrap().snapshot();
         assert_eq!(again.docs.get("k5"), Some(&json!(5)));
         assert_eq!(again.docs.get("k3"), Some(&json!("changed")));
         assert!(!again.docs.contains_key("k4"));
@@ -447,7 +469,7 @@ mod tests {
     #[test]
     fn the_log_compacts_past_its_size() {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::open_with(d.path(), 2000, COMPACT_AGE).unwrap();
+        let s = Store::open_with(d.path(), ::store::clock::real(), 2000, COMPACT_AGE).unwrap();
         for i in 0..200 {
             put(&s, &format!("lease/{i}"), json!({ "worker": "m1", "n": i }));
         }
@@ -456,6 +478,6 @@ mod tests {
         let want = s.snapshot().docs;
         s.stop();
         drop(s);
-        assert_eq!(Store::open(d.path()).unwrap().snapshot().docs, want);
+        assert_eq!(Store::open(d.path(), ::store::clock::real()).unwrap().snapshot().docs, want);
     }
 }

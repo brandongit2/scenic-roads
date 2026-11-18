@@ -190,6 +190,9 @@ struct Cfg {
     /// Mac 1 asleep for seven hours (`NAP_S`), its map server unheard past GC's cursor TTL
     /// (store::map::gc::CURSOR_TTL_S): how its nap begins (None: no nap).
     nap: Option<Nap>,
+    /// Each lead's store's writer this much slower before each write (ms; crate::pool::store's
+    /// `WRITER_LAG`): a Mac under load. A run is the same with it as without.
+    lag_ms: u64,
 }
 
 /// How mac1's nap (`Cfg::nap`) begins.
@@ -228,6 +231,7 @@ impl Cfg {
             crashes: false,
             macs: 0,
             nap: None,
+            lag_ms: 0,
         }
     }
 
@@ -1001,7 +1005,12 @@ impl World {
             });
         }
         let store = c.shared.lock().unwrap().keep.store().cloned();
-        let before = store.as_ref().map(|s| (s.last(), log_len(&self.macs[to].dir)));
+        // (Its log as long as its changes so far make it: what its agent's own calls submitted,
+        // unanswered, written first, not what its writer's pace has reached.)
+        let before = store.as_ref().map(|s| {
+            s.wait(s.last(), crate::pool::store::DURABLE_WAIT);
+            (s.last(), log_len(&self.macs[to].dir))
+        });
         let r = match c.call(path, body, &host(from)) {
             Ok(r) => r,
             Err(e) => (400, serde_json::json!({ "error": format!("{e:#}") })),
@@ -2166,13 +2175,40 @@ fn a_share_failing_reads_now_and_then_leaves_a_lead_through_thousands_of_schedul
     check_flaky(var("POOL_SIM_SEEDS", 2000));
 }
 
+/// Seed `seed` run with `cfg`, then again with its leads' stores' writers slowed (`Cfg::lag_ms`),
+/// as on a loaded Mac: how the second run went otherwise (None: the same events, wrongs and counts).
+fn runs_differently(seed: u64, cfg: Cfg) -> Option<String> {
+    let (a, b) = (run(seed, cfg, true), run(seed, Cfg { lag_ms: 1, ..cfg }, true));
+    if a.trace.len() < 20 || a.counts.get("steps").is_none_or(|&n| n < 500) {
+        return Some(format!("seed {seed}: {} events, {:?}", a.trace.len(), a.counts));
+    }
+    if (&a.trace, &a.wrong, &a.counts) == (&b.trace, &b.wrong, &b.counts) {
+        return None;
+    }
+    let i = a.trace.iter().zip(&b.trace).position(|(x, y)| x != y).unwrap_or(a.trace.len().min(b.trace.len()));
+    let near = |t: &[String]| t[i.saturating_sub(2)..(i + 1).min(t.len())].join("\n");
+    let counts: Vec<_> = a.counts.iter().filter(|(k, v)| b.counts.get(*k) != Some(v)).collect();
+    Some(format!(
+        "seed {seed}: its events from the {i}th:\n{}\nslowed:\n{}\nwrong: {:?} / {:?}\ncounts not the same: {counts:?}",
+        near(&a.trace),
+        near(&b.trace),
+        a.wrong,
+        b.wrong
+    ))
+}
+
 #[test]
 fn a_seed_runs_the_same_every_time() {
-    for seed in [11, 12, 13] {
-        let (a, b) = (run(seed, Cfg::all(seed), true), run(seed, Cfg::all(seed), true));
-        assert!(a.trace.len() > 20 && a.counts["steps"] > 500, "{} events, {:?}", a.trace.len(), a.counts);
-        assert_eq!(a.trace, b.trace);
-        assert_eq!(a.wrong, b.wrong);
+    // `runs_differently`'s second run beside other seeds' runs (`run_all`'s, on every core): a run
+    // is its seed's alone, not what else its process runs nor the machine's pace (task #1443: seed
+    // 62 mixed, beside the thousands of schedules, measured its lead's log before the writer had
+    // written what the lead's own agent had submitted, and its kill cut the log elsewhere).
+    for (seed, cfg) in [(11, Cfg::all(11)), (12, Cfg::all(12)), (13, Cfg::all(13)), (62, Cfg::mixed(62))] {
+        let differs = std::thread::scope(|s| {
+            s.spawn(|| run_all(20_000..20_016, Cfg::mixed));
+            runs_differently(seed, cfg)
+        });
+        assert!(differs.is_none(), "{}", differs.unwrap_or_default());
     }
 }
 
@@ -2219,15 +2255,11 @@ fn the_knobs_one_at_a_time() {
 #[test]
 #[ignore]
 fn every_seed_runs_the_same_every_time() {
-    // #repro: POOL_SIM_SEEDS seeds (400), each run twice: the same events, wrongs and counts.
+    // #repro: POOL_SIM_SEEDS mixed seeds (400), each run twice, the second slowed
+    // (`runs_differently`): the same events, wrongs and counts.
     let n = var("POOL_SIM_SEEDS", 400);
-    let differ: Vec<u64> = (0..n)
-        .filter(|&seed| {
-            let (a, b) = (run(seed, Cfg::mixed(seed), true), run(seed, Cfg::mixed(seed), true));
-            a.trace != b.trace || a.wrong != b.wrong || a.counts != b.counts
-        })
-        .collect();
-    assert!(differ.is_empty(), "{} of {n} seeds ran differently: {differ:?}", differ.len());
+    let differ: Vec<String> = (0..n).filter_map(|seed| runs_differently(seed, Cfg::mixed(seed))).collect();
+    assert!(differ.is_empty(), "{} of {n} seeds ran differently:\n{}", differ.len(), differ.join("\n\n"));
 }
 
 #[test]

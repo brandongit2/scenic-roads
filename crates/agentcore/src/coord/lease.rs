@@ -262,10 +262,6 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
 /// When a job began at unix second `at` (0: not said) began on this process's clock, `unix` being
 /// `now`: None when not said or not before now (its grant then).
 fn began_by_wall(at: u64, unix: u64, now: Instant) -> Option<Instant> {
@@ -394,7 +390,7 @@ impl Leases {
         if let Some(s) = saved.and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
             l.next = l.next.max(s.next);
             (l.holds, l.cancelled) = (s.holds, s.cancelled);
-            let unix = unix_now();
+            let unix = wall.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             for mut x in s.leases {
                 (x.granted, x.deadline, x.unconfirmed) = (now, now + ttl, true);
                 x.began = began_by_wall(x.granted_at, unix, now);
@@ -428,16 +424,15 @@ impl Leases {
     }
 
     /// Takes the jobs' leases of `snapshot` (its store's, as a restart opens it), each live for a
-    /// whole `ttl` from `now` (its worker beats again once it reaches this one), in place of those
-    /// it had; ids go on from the highest it knew or is given.
-    pub fn restore(&mut self, v: &serde_json::Value, now: Instant) -> anyhow::Result<usize> {
+    /// whole `ttl` from `now` (`unix` by the coordinator's wall clock: when each job began, from its
+    /// grant's), in place of those it had; ids go on from the highest it knew or is given.
+    pub fn restore(&mut self, v: &serde_json::Value, now: Instant, unix: u64) -> anyhow::Result<usize> {
         let s: Saved = serde_json::from_value(v.clone())?;
         self.by_id.clear();
         self.cancels.clear();
         self.next = self.next.max(s.next);
         (self.holds, self.cancelled) = (s.holds, s.cancelled);
         let n = s.leases.len();
-        let unix = unix_now();
         for mut x in s.leases {
             (x.granted, x.deadline, x.unconfirmed) = (now, now + self.ttl, true);
             x.began = began_by_wall(x.granted_at, unix, now);
@@ -603,14 +598,16 @@ impl Leases {
         self.next = self.next.max(n.saturating_add(1));
     }
 
+    /// `grant_at`, now by the wall clock.
+    #[cfg(test)]
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
-        self.grant_at(worker, work, now, unix_now())
+        self.grant_at(worker, work, now, tests::unix_now())
     }
 
-    /// `grant`, for job run `job` (its own lease lapsed or lost while it ran on: crate::agent's hold
-    /// again), which keeps its id (`Lease::job`).
-    pub fn grant_for(&mut self, worker: &str, work: Work, now: Instant, job: jobrt::jobid::JobId) -> u64 {
-        let id = self.grant(worker, work, now);
+    /// `grant_at`, for job run `job` (its own lease lapsed or lost while it ran on: crate::agent's
+    /// hold again), which keeps its id (`Lease::job`).
+    pub fn grant_for(&mut self, worker: &str, work: Work, now: Instant, unix: u64, job: jobrt::jobid::JobId) -> u64 {
+        let id = self.grant_at(worker, work, now, unix);
         if let Some(l) = self.by_id.get_mut(&id) {
             l.job = Some(job);
         }
@@ -626,7 +623,8 @@ impl Leases {
         }
     }
 
-    /// `grant`, its `granted_at` the unix second given (the scheduler's clock, crate::coord::sched).
+    /// A lease of `work` for `worker` from `now`, its `granted_at` the unix second given (its
+    /// coordinator's clock, as crate::coord::sched's).
     pub fn grant_at(&mut self, worker: &str, work: Work, now: Instant, granted_at: u64) -> u64 {
         let id = self.next;
         self.next += 1;
@@ -993,6 +991,11 @@ fn parse_line(line: &str) -> Option<(f64, f64, &str)> {
 mod tests {
     use super::*;
 
+    /// The wall clock now (unix s): a test's leases' (`Leases::grant`).
+    pub(super) fn unix_now() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    }
+
     #[test]
     fn held_leases_outlast_their_beats() {
         // While the build is paused every lease is held, beats or not: none lapses, whatever time
@@ -1087,7 +1090,7 @@ mod tests {
         kept["leases"] = each.into_iter().map(|x| x.1).collect();
         let t3 = t2 + Duration::from_secs(5000);
         let mut back = Leases::new(Duration::from_secs(600));
-        back.restore(&kept, t3).unwrap();
+        back.restore(&kept, t3, unix_now()).unwrap();
         assert_eq!(
             back.all(t3).iter().map(|x| (x.id, x.worker.as_str())).collect::<Vec<_>>(),
             [(a, "m1")],
@@ -1126,7 +1129,7 @@ mod tests {
         kept["leases"][0]["granted_at"] = (x.granted_at - 600).into();
         let t1 = t0 + s(100);
         let mut back = Leases::new(s(600));
-        back.restore(&kept, t1).unwrap();
+        back.restore(&kept, t1, unix_now()).unwrap();
         let y = back.of(a).unwrap();
         assert!(y.taken_up() && (s(600)..s(602)).contains(&y.ran(t1)), "{:?}", y.ran(t1));
         // Its beats then: its run as its job says, its part under way from its first beat.
@@ -1169,7 +1172,7 @@ mod tests {
         let (mut kept, each) = l.kept();
         kept["leases"] = each.into_iter().map(|x| x.1).collect();
         let mut back = Leases::new(Duration::from_secs(600));
-        back.restore(&kept, far).unwrap();
+        back.restore(&kept, far, unix_now()).unwrap();
         assert!(back.of(a).unwrap().unconfirmed);
         let (gone, _) = back.word("m1", &BTreeSet::new(), None, far, grace);
         assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [a]);
@@ -1189,7 +1192,7 @@ mod tests {
         assert!(a.of(old).is_none(), "ended");
         assert!(a.of(other).is_some(), "another target's, lapsed, kept as before");
         let mut b = Leases::new(Duration::from_secs(600));
-        b.restore(&a.snapshot(), t1).unwrap();
+        b.restore(&a.snapshot(), t1, unix_now()).unwrap();
         let live: Vec<u64> = b.live(t1).map(|l| l.id).collect();
         assert!(live.contains(&new) && !live.contains(&old), "{live:?}");
     }
@@ -1212,12 +1215,12 @@ mod tests {
         let t1 = t0 + Duration::from_secs(900);
         let mut b = Leases::new(Duration::from_secs(600));
         b.epoch = 5;
-        assert_eq!(b.restore(&snap, t1).unwrap(), 1);
+        assert_eq!(b.restore(&snap, t1, unix_now()).unwrap(), 1);
         assert!(b.get(id, "m1", t1).is_some() && b.held("unit", t1).contains("6/1/1"));
         assert_eq!((b.of(id).unwrap().epoch, b.of(id).unwrap().granted_at), (4, l.granted_at));
         let mine = b.grant("m4", job(&[("6/2/2", "k2")]), t1);
         assert!(mine > id && b.of(mine).unwrap().epoch == 5);
-        assert!(b.restore(&serde_json::json!({"leases": 3}), t1).is_err());
+        assert!(b.restore(&serde_json::json!({"leases": 3}), t1, unix_now()).is_err());
     }
 
     /// Task #1103: a job run's id is unique across a restart, its leases taken up keeping theirs; and
@@ -1234,7 +1237,7 @@ mod tests {
         let after = a.grant("m2", job(&[("6/1/2", "k2")]), t0);
         let mut b = Leases::load(None, ttl, t0, wall - Duration::from_secs(60));
         b.epoch = 5;
-        b.restore(&a.snapshot(), t0).unwrap();
+        b.restore(&a.snapshot(), t0, unix_now()).unwrap();
         let mine = b.grant("m4", job(&[("6/2/2", "k3")]), t0);
         assert!(mine > after, "past every lease taken up");
         assert_eq!(b.job_of(mine).unwrap().to_string(), format!("5-{mine}"));
@@ -1255,11 +1258,11 @@ mod tests {
         a.epoch = 7;
         let first = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
         let run = a.job_of(first).unwrap();
-        let again = a.grant_for("m1", job(&[("6/1/1", "k1")]), t0, run);
+        let again = a.grant_for("m1", job(&[("6/1/1", "k1")]), t0, unix_now(), run);
         assert!(again > first);
         assert_eq!(a.job_of(again), Some(run));
         let mut b = Leases::new(Duration::from_secs(600));
-        b.restore(&a.snapshot(), t0).unwrap();
+        b.restore(&a.snapshot(), t0, unix_now()).unwrap();
         assert_eq!(b.job_of(again), Some(run));
     }
 

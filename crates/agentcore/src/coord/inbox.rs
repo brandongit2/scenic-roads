@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn a_post_is_in_the_store_and_taken_once() {
         let d = tempfile::tempdir().unwrap();
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let i = Inbox::open(&d.path().join("inbox.json"));
         assert!(i.put(A, vec![(5, serde_json::json!({"Leads": 3}))]).is_err(), "no store: not taken");
         i.attach(&store);
@@ -154,7 +154,7 @@ mod tests {
         assert!(store.wait(store.last(), crate::pool::store::DURABLE_WAIT));
         store.stop();
         // (A new process: read back from its store, each once.)
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let again = Inbox::open(&d.path().join("inbox.json"));
         again.attach(&store);
         assert_eq!(again.held()[A].iter().map(|(n, _)| *n).collect::<Vec<_>>(), [5, 7]);
@@ -164,7 +164,7 @@ mod tests {
         assert!(again.held().is_empty());
         assert!(again.put("someone", vec![]).is_err());
         store.stop();
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let third = Inbox::open(&d.path().join("inbox.json"));
         third.attach(&store);
         assert!(third.held().is_empty(), "what was read is gone from the store");
@@ -177,7 +177,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let old = d.path().join("inbox.json");
         std::fs::write(&old, serde_json::to_vec(&serde_json::json!({ A: [[3, {"Leads": 1}]] })).unwrap()).unwrap();
-        let store = Store::open(&d.path().join("store")).unwrap();
+        let store = Store::open(&d.path().join("store"), ::store::clock::real()).unwrap();
         let i = Inbox::open(&old);
         i.attach(&store);
         assert!(!old.exists());

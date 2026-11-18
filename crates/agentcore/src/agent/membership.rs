@@ -155,7 +155,7 @@ fn own_epochs(dir: &Path) -> Option<Epochs> {
     if !cfg!(test) {
         return None;
     }
-    let s = crate::pool::store::Store::open(&dir.join("test-epochs")).ok()?;
+    let s = crate::pool::store::Store::open(&dir.join("test-epochs"), ::store::clock::real()).ok()?;
     Some(Arc::new(move || Ok(s.epoch())))
 }
 

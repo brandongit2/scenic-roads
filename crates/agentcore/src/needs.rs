@@ -2505,7 +2505,7 @@ mod tests {
             return;
         };
         let dir = std::path::Path::new(&dir);
-        let store = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        let store = crate::pool::store::Store::open(&dir.join("store"), ::store::clock::real()).unwrap();
         let loaded = crate::coord::kept::Loaded::of(&store.snapshot().docs);
         store.stop();
         let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();

@@ -2066,9 +2066,10 @@ impl Coordinator {
             return None;
         }
         let work = Work::Job { step: step.to_string(), targets: targets.to_vec() };
+        let unix = s.wall_s();
         let id = match job {
-            Some(j) => s.leases.grant_for(&self.me, work, now, j),
-            None => s.leases.grant(&self.me, work, now),
+            Some(j) => s.leases.grant_for(&self.me, work, now, unix, j),
+            None => s.leases.grant_at(&self.me, work, now, unix),
         };
         s.save_leases();
         Some(id)
@@ -3376,11 +3377,12 @@ impl Coordinator {
         }
         let dir = s.dir.join("store");
         let found = crate::pool::store::Store::exists(&dir);
-        let store = crate::pool::store::Store::open(&dir)?;
+        let store = crate::pool::store::Store::open(&dir, s.clock.clone())?;
         let loaded = kept::Loaded::of(&store.snapshot().docs);
         if found {
             let now = s.now();
-            s.leases.restore(&loaded.leases, now)?;
+            let unix = s.wall_s();
+            s.leases.restore(&loaded.leases, now, unix)?;
             for l in s.leases.drop_where(|l| l.worker == self.me) {
                 eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
             }
@@ -4502,8 +4504,9 @@ fn route(
                 if !o.targets.iter().any(|(t, _, _)| held.contains(t)) {
                     let pick: Vec<(String, String)> =
                         o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
-                    let lease =
-                        s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                    let work = Work::Job { step: o.step.clone(), targets: pick.clone() };
+                    let unix = s.wall_s();
+                    let lease = s.leases.grant_at(&a.worker, work, now, unix);
                     s.leases.asked(lease, a.sent);
                     s.leases.set_threads(lease, ask_cores(&a));
                     s.save_leases();
@@ -4568,7 +4571,8 @@ fn route(
                 None => s.tasks.pick(&a.worker, &a.can, a.mem_mb),
             };
             if let Some(id) = picked {
-                let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
+                let unix = s.wall_s();
+                let lease = s.leases.grant_at(&a.worker, Work::Task { id }, now, unix);
                 // (Its id taken for good: kept, so no lease after a restart has it.)
                 s.save_leases();
                 let plan = s.plan;
@@ -12926,7 +12930,7 @@ mod tests {
     fn a_document_no_code_keeps_is_deleted_as_the_store_opens() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("coord");
-        let s = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        let s = crate::pool::store::Store::open(&dir.join("store"), store::clock::real()).unwrap();
         let seq = s.submit(
             [("map-head".to_string(), serde_json::json!(2717)), ("settings".to_string(), serde_json::json!({}))].into(),
             Vec::new(),
@@ -12937,7 +12941,7 @@ mod tests {
         let (c, _) = start_for_test(&dir, "m4", "");
         c.stop();
         drop(c);
-        let s = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        let s = crate::pool::store::Store::open(&dir.join("store"), store::clock::real()).unwrap();
         assert_eq!((s.doc("map-head"), s.doc("settings")), (None, Some(serde_json::json!({}))));
     }
 
