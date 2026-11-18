@@ -578,9 +578,10 @@ it (`tiles::Fit`):
   while a hole in the zones' water by a coast, a lagoon or a creek they stop short of, is a gap);
 - `rest-in-zone`: the open sea's part inside a 200-nmi zone (any of Marine Regions' zones with
   its internal waters) in a cell: a zone no region's water names;
-- `stray`: a region with land's stretch of water (its area less its land, joined across the cells'
-  edges) touching none of its land, at a point inside it, naming the region and those round it; a
-  region of water alone (a waters region, the rest) has no land for its water to touch.
+- `stray`: a region with land's stretch of water (its area less its land and its lakes, joined
+  across the cells' edges) touching none of its land, at a point inside it, naming the region and
+  those round it; its lakes are its outline's, wherever their shores are, and a region of water
+  alone (a waters region, the rest) has no land for its water to touch.
 
 The region whose water is `rest` takes the open sea; without one, the open sea is a gap too. So
 where the sources disagree by construction (the coastline against the zones' outlines past
@@ -939,7 +940,7 @@ All errors; ids `rg-<check>.<hash16>`. `rg-cover`'s ids are its regions' and its
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`, each past `HAIR_KM2` (0.1 km²): a place in two regions (`overlap`), a stretch in no region but the open sea (`gap`), the open sea's part inside a zone (`rest-in-zone`), a region's water touching none of its land (`stray`); §6.1.3 "Land and water" |
+| `rg-cover` | with `cover = "earth"`, each past `HAIR_KM2` (0.1 km²): a place in two regions (`overlap`), a stretch in no region but the open sea (`gap`), the open sea's part inside a zone (`rest-in-zone`), a region's water but its lakes touching none of its land (`stray`); §6.1.3 "Land and water" |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.
