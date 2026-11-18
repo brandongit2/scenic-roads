@@ -1882,22 +1882,14 @@ mod tests {
             slot: Some(k),
             live: None,
         };
-        // (The lead on the new wire; its member on the old one, its jobs not saying their slots.)
-        let with = |host: &str, n: usize, all_new: bool| {
-            let mut st = agent::Status { host: host.into(), ..Default::default() };
-            st.set_jobs((0..n).map(job).collect(), all_new);
-            if !all_new {
-                st.jobs.clear();
-                for j in st.job.iter_mut().chain(st.beside.iter_mut()).chain(st.more.iter_mut()) {
-                    j.slot = None;
-                }
-            }
-            st
+        let with = |host: &str, n: usize| agent::Status {
+            host: host.into(),
+            jobs: (0..n).map(job).collect(),
+            ..Default::default()
         };
         for n in 0..=4 {
-            let mut st = with("m4", n, true);
-            assert!(st.job.is_none() && st.beside.is_none() && st.more.is_empty(), "the old fields not written");
-            st.members = vec![with("m1", 4 - n, false)];
+            let mut st = with("m4", n);
+            st.members = vec![with("m1", 4 - n)];
             st.capacity = vec![("m4".into(), agentcore::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
             st.packing = [("m1".to_string(), "cores: 0 of 8 left".to_string())].into();
             st.nas_share = [("m4".to_string(), 250), ("m1 #2".to_string(), 100)].into();
@@ -1931,7 +1923,7 @@ mod tests {
         let mut fourth = job(3);
         fourth.tail = "tail line".into();
         let mut st = agent::Status { host: "m4".into(), ..Default::default() };
-        st.set_jobs(vec![job(0), fourth], true);
+        st.jobs = vec![job(0), fourth];
         let l = macs_lines(&st).join("\n");
         assert!(l.contains("slot 1: job 0") && l.contains("slot 4: job 3") && !l.contains("slot 2:"), "{l}");
         assert!(l.contains("        tail line"), "{l}");

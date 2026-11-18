@@ -5,8 +5,7 @@
 //! (`pick_own`), the packing by measured memory, disk and cores (crate::needs), cold starts by their
 //! provisional need, one at a time on a Mac and never-measured steps alone, the NAS budget
 //! (jobrt::budget::nas: its weights and limits, the aged reservations, quiet steps, the downloads'
-//! cap, the gate on the NAS's own load), the mixed-version hold (one job an ask while a member runs
-//! an older app) and placement (crate::agent::placement).
+//! cap, the gate on the NAS's own load) and placement (crate::agent::placement).
 //!
 //! It's pure: `Sched::pack` decides from its state (`Sched`), the ask and a clock it's handed
 //! (`Clock`), and changes nothing but its state (the leases it grants, the targets' waits on the
@@ -93,8 +92,6 @@ pub enum Rule {
     Empty,
     /// The NAS budget: targets it would take waiting for the NAS's room.
     Nas,
-    /// One job at a time while a member runs an older app.
-    OldApp,
 }
 
 impl Rule {
@@ -111,7 +108,6 @@ impl Rule {
             Rule::Away => "work for other Macs",
             Rule::Empty => "no job ready",
             Rule::Nas => "the NAS budget",
-            Rule::OldApp => "an older app",
         }
     }
 
@@ -1670,10 +1666,8 @@ impl Sched {
         // what's owed of them.)
         let mut copies = Copies::of(a, lead, &caches);
         copies.take("", owed);
-        // (The jobs it may be granted: one to an ask without a capacity (an older app's), and to
-        // every ask while any member around is on one (`old_member`); else as many as it wants.)
-        let old = if a.cap.is_none() { Some(a.worker.clone()) } else { self.old_member(now) };
-        let want = if old.is_some() { 1 } else { a.want.max(1) };
+        // (The jobs it may be granted: as many as it wants, one at least.)
+        let want = a.want.max(1);
         // (A cold job of the lead's own that can't go beside its jobs (`own_cold_waits`): nothing
         // more until they end; then it, before any other work, so the work offered doesn't starve
         // it. Once they've ended, if it still can't be granted (its disk, say), the other offers
@@ -1897,11 +1891,7 @@ impl Sched {
             }
             by_threads = by_threads.saturating_sub(threads);
         }
-        let why = why.filter(|_| grants.len() < want).or_else(|| {
-            old.filter(|_| a.want > grants.len() && !grants.is_empty()).map(|w| {
-                held_by(Rule::OldApp, format!("one job at a time: {w} runs an older app (its asks say no capacity); packing waits for every member on the new one"))
-            })
-        });
+        let why = why.filter(|_| grants.len() < want);
         (grants, why)
     }
 
@@ -2054,17 +2044,6 @@ impl Sched {
             job: o.job.clone(),
             sized,
         }
-    }
-
-    /// A member around on an older app (its last ask said no capacity, `Ask::cap`), the first by name; None when every one reports the new app. While there's
-    /// one, every ask is granted one job (`pack`) and the old wire is still written
-    /// (`crate::agent::Status::all_new`).
-    pub(super) fn old_member(&self, now: Instant) -> Option<String> {
-        self.workers
-            .iter()
-            .filter(|(_, w)| w.kind == "native" && now.saturating_duration_since(w.seen) < AROUND)
-            .find(|(_, w)| w.ask.is_some() && w.old)
-            .map(|(n, _)| n.clone())
     }
 
     /// Whether the lead's own planned job of offer `o` (`Offer::job`) is open to `a`'s worker: its
@@ -2684,12 +2663,10 @@ pub struct Leased {
     pub busy_tenths: Option<u32>,
 }
 
-/// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`),
-/// and the ages of its last request and ask.
+/// A worker's last ask (`State::workers`): the ask, and the ages of its last request and ask.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Asked {
     pub ask: Ask,
-    pub old: bool,
     pub seen_s: u64,
     pub asked_s: Option<u64>,
 }
@@ -2731,9 +2708,7 @@ impl Sched {
             workers: self
                 .workers
                 .values()
-                .filter_map(|w| {
-                    Some(Asked { ask: w.ask.clone()?, old: w.old, seen_s: age(w.seen), asked_s: w.asked.map(age) })
-                })
+                .filter_map(|w| Some(Asked { ask: w.ask.clone()?, seen_s: age(w.seen), asked_s: w.asked.map(age) }))
                 .collect(),
             costs: self.costs.clone(),
             floors: self.floors.clone(),
@@ -2801,7 +2776,6 @@ impl Sched {
                         app: a.app.clone(),
                         cap: a.cap.clone(),
                         ask: Some(a.clone()),
-                        old: w.old,
                         seen: ago(now, w.seen_s),
                         asked: w.asked_s.map(|x| ago(now, x)),
                         what: String::new(),

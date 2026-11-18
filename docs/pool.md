@@ -450,25 +450,11 @@ two minutes, `CAP_FRESH_S`: a busy member asks nothing, so its figures go stale)
 `scenic status` and the build page show it per Mac (§10, Each Mac's jobs). Placement reads
 only its `cores`, and `kept_cores` while `in_use` (the threads granted, below). It rides the ask, not the heartbeat: the coordinator places at ask time, and the
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
-coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
-`cap`, and a newer one takes an ask without it (an older agent's) as before.
-
-**Mixed versions** (task #247). An ask without a capacity is an older app's, which runs one job at
-a time: the coordinator grants it one job, whatever it wants. A member whose last ask said no
-capacity (`Coordinator::old_member`; the lead's own agent never counts) turns packing off for the
-whole pool: while one is around (heard within two minutes), every ask is granted one job, its
-refusal saying `one job at a time: <member> runs an older app …`. Once every member around reports
-the new app (`Coordinator::all_new`), packing is on: there's no switch. The old wire is written
-only while it isn't: the heartbeat's jobs are `jobs` (every slot's, each with its `slot`), and the
-old fields an older reader takes (`job`, the first slot's; `beside`, the second's; `more`, the
-rest) are written beside them only while the lead's coordinator says a member runs an older app
-(the heartbeat's `all_new` false; a member takes it from its lead's heartbeat, read once a minute,
-an older lead's saying none); likewise an ask's `limit_mb`, which its capacity's limit replaces
-(`coord::ask_limit` reads either). Readers (`Status::jobs`, the build page, the menu bar app) take
-`jobs`, else the old fields; a job not saying its slot (an older agent's) has its place in the
-list. An agent on another app than the lead's still gets nothing (409) until they match (docs/building.md
-§2, The same app): so a mixed pool is one whose coordinator doesn't check apps (a development
-build) or a member waiting for its update.
+coordinator doesn't read heartbeats. Every field has a serde default: an ask without `cap` is
+packed by its own fields (`mem_mb`, `disk_mb`, `cores`), and the most its Mac's jobs could hold
+(`coord::ask_limit`) is its capacity's `limit_mb` alone. The heartbeat's jobs are `jobs` (every
+slot's, each with its `slot`). An agent on another app than the lead's gets nothing (409) until
+they match (docs/building.md §2, The same app).
 
 **Disk reservations** (task #242). Each job granted carries the disk it's measured to take
 (`Grant::disk_mb`: its targets' disks summed, or the 90th percentile of the disk its step's last
@@ -760,11 +746,8 @@ say no threads, so nothing is decided for them).
   while: a paced job's tasks under way when its file shrinks keep their threads until each ends,
   and a job's work outside its targets (its start, its last uploads' landing) runs on its process's
   pool, as wide as its starting grant.
-- **Mixed versions.** An older member's beat carries no capacity, and an older agent's capacity no
-  job threads: its jobs are counted at their grant. A lead before live control decides re-grants
-  of its own and answers them in its beats' answers, which a member on this app reads past (it
-  decides its jobs' threads itself); a capacity says every field of its jobs' threads, as such a
-  lead reads them all. An older job (adopted from an older app) says no waits: it reads as never
+- **A beat without a capacity**, or a capacity without its jobs' threads: its jobs are counted at
+  their grant. A job adopted from the app before an update says no waits: it reads as never
   waiting.
 - **Why not shorter batches.** Capping a job's length by its predicted time, so its threads are
   decided as each starts, pays a job's start on every batch: on the coordinator's timings (2,683
@@ -1107,8 +1090,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
   doubling each time, as a member's failed work is.
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
-  start (`want`); while every member reports the new app (§7.1, Mixed versions; else one each) the
-  coordinator grants up to that many in one answer (`Grant::more`, each its own
+  start (`want`); the coordinator grants up to that many in one answer (`Grant::more`, each its own
   lease), packed in plan order into the ask's room: each after the first the Mac holds must fit,
   by its measures (memory, disk, and cores: `needs::Book::cores`, §7.1;
   cores not said count as one thread) or a cold start's provisional need (§7.7), within
@@ -1541,9 +1523,7 @@ process; a lead whose coordinator failed to start restarts once its first slot i
 pool told it, `journaled: false`) into its own hand-offs (`Run::drain`); every member drains,
 once a process, the jobs a process of its ran out of the pool and left in its outbox untold
 (`Run::drain_outbox`). A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
-point like any member (docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
-holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
-the new app (`all_new`) for its members' heartbeats.
+point like any member (docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity.
 
 **A lease names its slot** (task #863): granted to a Mac (a member asks as one, the lead holds
 its own under its name), it says which slot runs its job once that slot does: the lead's loop by

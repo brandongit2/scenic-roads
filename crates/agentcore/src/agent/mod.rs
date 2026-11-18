@@ -879,23 +879,9 @@ pub struct Status {
     pub started: u64,
     pub conditions: Conditions,
     /// Its running jobs, every slot's in slot order (each says its slot: `JobView::slot`). Read
-    /// them through `Status::jobs`, which takes an older agent's from the fields below.
+    /// them through `Status::jobs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<JobView>,
-    /// Every member of the pool reports the new app (its asks carry `Ask::cap`), as its lead's
-    /// coordinator last said (`Coordinator::all_new`): packing several jobs per member is on, and
-    /// the old fields below are no longer written. False from an older agent.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all_new: bool,
-    /// The old wire's jobs (an older reader's): the first slot's, the second's beside it and the
-    /// rest. Written only while the pool isn't all on the new app (`all_new`); read through
-    /// `Status::jobs`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job: Option<JobView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub beside: Option<JobView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub more: Vec<JobView>,
     /// SCENIC_TEST_DISK_EXTRA_MB when set (MB counted free past what the disk has): a test's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_disk_extra_mb: Option<u64>,
@@ -1150,7 +1136,7 @@ pub struct JobView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
     /// Its slot (0: the first; `slot_worker`): slots may be sparse, so not its place in the list.
-    /// None from an older agent: its place in the list (`Status::jobs`' order) stands for it.
+    /// None: its place in the list (`Status::jobs`' order) stands for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<usize>,
     /// What it's doing now: its phase, its target, its bytes (jobs::Live).
@@ -1172,15 +1158,9 @@ impl Status {
         }
     }
 
-    /// Its running jobs, each with its slot: `jobs`, else an older agent's old fields (`job`,
-    /// `beside`, `more`) in order; a job not saying its slot (an older agent's) has its place.
+    /// Its running jobs, each with its slot (a job not saying its slot has its place in the list).
     pub fn jobs(&self) -> Vec<JobView> {
-        let all: Vec<&JobView> = if self.jobs.is_empty() {
-            self.job.iter().chain(self.beside.iter()).chain(self.more.iter()).collect()
-        } else {
-            self.jobs.iter().collect()
-        };
-        all.into_iter().enumerate().map(|(i, j)| JobView { slot: Some(j.slot.unwrap_or(i)), ..j.clone() }).collect()
+        self.jobs.iter().enumerate().map(|(i, j)| JobView { slot: Some(j.slot.unwrap_or(i)), ..j.clone() }).collect()
     }
 
     /// Its hold (`state`, `held`), the hold's stage (`hold`: the ask waiting, `asked`; `resuming`,
@@ -1266,19 +1246,6 @@ impl Status {
             }
             None => own,
         }
-    }
-
-    /// Sets its jobs (`views`, each with its slot), and the old fields too unless `all_new`.
-    pub fn set_jobs(&mut self, views: Vec<JobView>, all_new: bool) {
-        self.all_new = all_new;
-        (self.job, self.beside, self.more) = (None, None, Vec::new());
-        if !all_new {
-            let at = |k: usize| views.iter().find(|j| j.slot == Some(k)).cloned();
-            self.job = at(0);
-            self.beside = at(1);
-            self.more = views.iter().filter(|j| j.slot.is_some_and(|k| k >= SLOTS)).cloned().collect();
-        }
-        self.jobs = views;
     }
 }
 
@@ -2526,8 +2493,6 @@ impl Agent {
             });
             return Vec::new();
         }
-        // (The old field for the limit only while a member of the pool is on an older app: its capacity says it.)
-        let all_new = self.all_new();
         let ask = crate::coord::Ask {
             kind: "native".into(),
             label: Some(format!("{} (member)", self.host)),
@@ -2536,7 +2501,6 @@ impl Agent {
             mem_mb: self.build_room(),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
-            limit_mb: Some(self.jobs_ceiling()).filter(|&l| l > 0 && !all_new),
             // (Its free space now and, with a target, what its caches can free, less the owner's
             // target and its jobs' reservations: `disk_room`.)
             disk_mb: Some(self.disk_room() >> 20),
@@ -2859,7 +2823,6 @@ impl Agent {
             mem_mb: self.build_room(),
             cores: mac_cores(),
             app: Some(self.app.clone()),
-            limit_mb: Some(self.jobs_ceiling()).filter(|&l| l > 0 && !co.all_new()),
             disk_mb: (!alone).then(|| self.disk_room() >> 20),
             cap: Some(self.capacity(c)),
             want: if alone { 1 } else { want(self.job_slots(), self.running_jobs()) },
@@ -4741,7 +4704,6 @@ impl Agent {
         annotate(&mut checklist, &now_steps, &members, &waiting);
         let checklist: Vec<progress::Line> = checklist.into_iter().map(|l| l.said(self.o.the_plan)).collect();
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
-        let all_new = self.all_new();
         let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
         let packing = self
             .coord
@@ -4834,7 +4796,7 @@ impl Agent {
             ..Default::default()
         };
         nasread::phase("the status");
-        status.set_jobs(views, all_new);
+        status.jobs = views;
         let hold = self.hold();
         status.say(jobrt::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
         // (The build in a line, for the members' menu bars: in the lead's beat answers; and what
@@ -5863,7 +5825,7 @@ impl Agent {
 
     /// The most this Mac's jobs could hold together (MB): its memory less its floor, nothing else
     /// on it; 0 while its memory is unknown. A target that takes more alone is held from it
-    /// (plan's `guard_holds`), and the lead's reckoning of the most any Mac has (`Ask::limit_mb`).
+    /// (plan's `guard_holds`), and the lead's reckoning of the most any Mac has (`Capacity::limit_mb`).
     fn jobs_ceiling(&self) -> u64 {
         self.mem_total().saturating_sub(self.mem_floor_mb())
     }
@@ -6485,20 +6447,6 @@ impl Agent {
         };
         v.said = memguard::words(&v);
         v
-    }
-
-    /// Whether every member of the pool reports the new app (`Status::all_new`): the lead's
-    /// coordinator's word (`Coordinator::all_new`); a member's, its lead's last beat answer's
-    /// (`held::LeadLine::all_new`; an older lead's, or none yet, says no). No coordinator and no
-    /// pool: true.
-    fn all_new(&self) -> bool {
-        if let Some(c) = self.coord.as_ref() {
-            return c.all_new();
-        }
-        if self.leads() {
-            return true;
-        }
-        self.beats.as_ref().and_then(|b| b.lead_view().lead).is_some_and(|l| l.all_new)
     }
 
     /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
@@ -10806,26 +10754,23 @@ mod tests {
     /// The loop's view as a job runs: what the beat says a pause finishes.
     fn a_job_running(a: &mut Agent) {
         let mut v = a.beat.view.get().as_ref().clone().unwrap();
-        v.status.set_jobs(
-            vec![JobView {
-                job: None,
-                id: "unit 6/1/2".into(),
-                what: "z6 tile 6/1/2".into(),
-                started: now_s(),
-                paused: None,
-                pausing: None,
-                tail: String::new(),
-                parts: Vec::new(),
-                part: None,
-                progress: None,
-                mem_mb: None,
-                threads: None,
-                waiting: None,
-                slot: Some(0),
-                live: None,
-            }],
-            true,
-        );
+        v.status.jobs = vec![JobView {
+            job: None,
+            id: "unit 6/1/2".into(),
+            what: "z6 tile 6/1/2".into(),
+            started: now_s(),
+            paused: None,
+            pausing: None,
+            tail: String::new(),
+            parts: Vec::new(),
+            part: None,
+            progress: None,
+            mem_mb: None,
+            threads: None,
+            waiting: None,
+            slot: Some(0),
+            live: None,
+        }];
         a.beat.publish(v);
         // (Published again after each round's `publish_jobs`, which knows no fake job: a hold
         // control took up in between found no job to drain. Told here as `try_start` tells a job
@@ -13421,7 +13366,7 @@ mod tests {
             label: Some("big (member)".into()),
             can: vec!["terrain-hi".into()],
             mem_mb: 30 << 10,
-            limit_mb: Some(42 << 10),
+            cap: Some(crate::coord::Capacity { limit_mb: 42 << 10, ..Default::default() }),
             ..Default::default()
         });
         let h = a.planner().guard_holds(&works);
@@ -16430,7 +16375,7 @@ mod tests {
         };
         let member = Status {
             host: "m1".into(),
-            job: Some(JobView {
+            jobs: vec![JobView {
                 job: None,
                 id: "unit 6/1/2".into(),
                 what: String::new(),
@@ -16446,7 +16391,7 @@ mod tests {
                 waiting: None,
                 slot: Some(0),
                 live: None,
-            }),
+            }],
             ..Default::default()
         };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];

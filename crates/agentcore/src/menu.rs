@@ -82,7 +82,7 @@ mod tests {
     /// One beat of the member's loop: its status (`jobs` its running job).
     fn publish(h: &mut Handle, to: &ToLead, d: &Path, jobs: Vec<crate::agent::JobView>) {
         let mut status = Status { host: "m1".into(), beat: now_s(), ..Default::default() };
-        status.set_jobs(jobs, true);
+        status.jobs = jobs;
         h.publish(LoopView {
             status,
             local: d.join("member/helper.json"),
@@ -111,10 +111,7 @@ mod tests {
         assert_eq!(m["lead"]["lead"]["host"], "mini");
         assert_eq!(serde_json::from_value::<Verdict>(m["lead"]["lead"]["said"].clone()).unwrap(), said);
         assert_eq!(m["lead"]["lead"]["pause"]["by"], "the build page");
-        assert_eq!(m["lead"]["lead"]["all_new"], true, "nobody old around");
         assert!(now_s() - m["lead"]["at"].as_u64().unwrap() < 60);
-        // (The member's agent's all_new is the lead's word: crate::agent's `all_new`.)
-        assert!(to.beats.lead_view().lead.is_some_and(|l| l.all_new));
         c.stop();
     }
 
@@ -176,7 +173,6 @@ mod tests {
             app: "2026-10-30".into(),
             said,
             pause: Some(pause),
-            all_new: true,
             flags: vec![crate::agent::flags::Flag {
                 kind: "idle".into(),
                 mac: "m1".into(),

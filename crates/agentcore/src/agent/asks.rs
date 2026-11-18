@@ -477,7 +477,7 @@ pub(crate) mod tests {
     pub fn said_status() -> Status {
         use crate::agent::progress::{Item, Line};
         let mut st = Status { host: "m1".into(), app: "2026-10-30".into(), beat: 1_700_000_000, ..Default::default() };
-        st.set_jobs(vec![job("unit 6/1/2", 0), job("pack 6/1/1", 1), job("unit 6/1/3", 2)], true);
+        st.jobs = vec![job("unit 6/1/2", 0), job("pack 6/1/1", 1), job("unit 6/1/3", 2)];
         st.checklist = vec![Line {
             id: "roads".into(),
             what: "roads".into(),
@@ -618,7 +618,7 @@ pub(crate) mod tests {
         control::tell(&chan, control::Say::Run).unwrap();
         c.jobs.set(vec![super::super::slots::JobRef::on_chan(chan.clone())]);
         let mut st = Status { host: "m1".into(), beat: 1, ..Default::default() };
-        st.set_jobs(vec![job("unit 6/1/2", 0)], true);
+        st.jobs = vec![job("unit 6/1/2", 0)];
         let local = home.join("status.json");
         beat.publish(super::super::beat::LoopView {
             status: st,

@@ -76,10 +76,6 @@ from the first (`edit_held`).
   point, or while the memory brake acts (critical, or on with the Mac below its floor) freezes one at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
   the first has its own scratch (`scratch-<k>/`), record and threads, and is a worker of its own in
   the history ("<host> #<k>"); the status has every slot's job in `jobs`, each with its slot.
-  Several jobs per Mac only while every member reports the new app (its asks carry a capacity):
-  a member on an older app is granted one job at a time and holds every Mac to one meanwhile, the
-  old status fields (`job`, `beside`, `more`) written for it until it updates (docs/pool.md §7.1,
-  Mixed versions).
 - **A newly installed app:** nothing new starts and every running job is asked to stop at its next
   safe point (what it finished kept); once every slot is free the agent exits and the launcher
   starts the new one. A job reaching no safe point in time is left running then, and the new agent

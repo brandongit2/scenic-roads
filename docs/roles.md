@@ -69,7 +69,6 @@ thread spent ~10 % serializing mail (`Side::save_mail`).
 | Regions' states (`region-states` thread, `build::region_states`) | yes | the busy core on the M1; 0.7–131 s a run | **drop** on members (#871 steps 6–7 take its output out of the status; this stops computing it) |
 | Terrain pack indexes (`tiles::TerrainTiles`, `agent/pack-idx/`) | yes, for the regions' states | 555 MB each; 358 s of SMB reads on the M1 | **drop** with the regions' states, if no job path reads it (verified in step 2) |
 | Regions loaded for the status (`load_regions` in the member's branch) | yes, each `plan_due` | 24 KB in `helper.json` | **drop** (#871 6–7) |
-| `all_new` (the lead's `state/status.json` read each minute) | yes | one NAS read a minute | **move**: in the beat's answer (done, #878) |
 | Build page on the member's port: `pageview` (lead's files every 12 s, history, the forecast run locally), `cataloguesview`, `builtview`, region steps | yes, kept warm by the menu bar's `/api/swarm` ask every 50 s | 1.6 MB `pageview-waits.json` written each read; forecast 5–6 s a run | **move**: the lead serves the page; the member's port redirects (§3.3) |
 | `scenic menu` (every 5 s: the lead's `state/status.json` from the NAS when the member's own isn't fresh) | yes | one NAS read each 5 s | **move**: the lead's summary over HTTP (§3.4) |
 | Inputs watch, gate's listing, redo, answers seeding, GC, backup, catalogues, publishing, forecast, coordinator, map log | no (lead only: `!o.helper`, `LEAD_ONLY`, `keeps_publishing`) | — | already lead only; the per-service checks become the role (§1) |
@@ -141,17 +140,15 @@ Built (step 5). `scenic menu` (`agentcore::menu`) reads this Mac's disk alone: i
 status (the fresher of `status.json` and `helper.json`: a file left from a part this Mac had
 before is the staler), and on a member the lead's line, which the beat's answer carries
 (`held::Answer::lead`, `LeadLine`: the lead's Mac and app, the build in a line, the build's pause,
-`all_new`) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
+the flags) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
 the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer with no line;
 written outside the registry's lock and not synced: a slow disk never holds up the beats, and a
 line lost to a crash is said again at the next answer). The build in a line is the lead's agent's
 (`Status::build_said`, handed its coordinator each loop: `Coordinator::set_said`, and kept in its
 own status as `build`, said again at each beat): its own verdict, or while it builds nothing and the build isn't paused,
-"Building on <member>; the lead: …" for a member in touch with a job running; the pause and
-`all_new` are the coordinator's at each answer. The lead's contact isn't in it: the member reaches
-the lead by the contact it has, and the menu needs only the lead's name. A member's agent takes
-`all_new` from the same line (it read the lead's `state/status.json` on the NAS each minute). No
-NAS read in the menu path.
+"Building on <member>; the lead: …" for a member in touch with a job running; the pause is the
+coordinator's at each answer. The lead's contact isn't in it: the member reaches the lead by the
+contact it has, and the menu needs only the lead's name. No NAS read in the menu path.
 
 The menu bar (tools/status) shows on a member its own state while it builds, else the lead's
 line, or "Lead (<name>) out of touch since <time>" when the lead hasn't answered for the
@@ -203,7 +200,7 @@ All by HTTP from the lead's coordinator (docs/coordination.md §5.1):
 | --- | --- |
 | Work | `/work/ask`, `/work/beat`, `/work/done`; its leases by its beat (`POST /pool/beat`); hand-offs by `/pool/handoff` |
 | Its jobs to come (caches) | `/api/tocome` |
-| `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, step 5 here) |
+| The pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, step 5 here) |
 | Holds and settings | `/pool/hold`, `/pool/settings`, this Mac's in the beat's answer |
 | The build page | a 307 to the lead (§3.3) |
 | The records brief (jobs' `Out`, the view, `--expect-same`) | `GET /pool/brief` |

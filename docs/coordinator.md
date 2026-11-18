@@ -257,9 +257,7 @@ Common rules:
   A job runs its step's one command; a task runs as `scenic run-task`.
 - **A Mac's slots past the first** (docs/building.md §2, Jobs at once) each appear as a worker of their own
   ("<host> #<k>"); a Mac's agent asks once for as many jobs as it has slots free, and is granted
-  them together (docs/pool.md §7.2, Packing). An agent on an older app (its ask carries no
-  capacity) is granted one job at a time, and while one is around every Mac is (docs/pool.md §7.1,
-  Mixed versions).
+  them together (docs/pool.md §7.2, Packing).
 - **Planned:** the jobs' own work as tasks too.
 
 ## 9. Security

@@ -363,10 +363,6 @@ pub struct Worker {
     /// Its last ask, for why it gets no work (`/api/swarm`).
     #[serde(skip)]
     pub ask: Option<Ask>,
-    /// Its last ask said no capacity (`Ask::cap`): an agent on an older app (`old_member`). Never
-    /// the lead's own agent, whose capacity is kept apart (`Coordinator::ask_own`).
-    #[serde(skip)]
-    pub old: bool,
     #[serde(skip)]
     pub seen: Instant,
     /// When it last asked for work.
@@ -919,7 +915,6 @@ impl Shared {
             app: None,
             cap: None,
             ask: None,
-            old: false,
             seen: now,
             asked: None,
             what: String::new(),
@@ -932,7 +927,6 @@ impl Shared {
             (w.kind, w.can, w.mem_mb, w.cores, w.app) =
                 (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone());
             w.cap = a.cap.clone();
-            w.old = a.cap.is_none();
             w.ask = Some(a.clone());
             w.asked = Some(now);
             if let Some(l) = &a.label {
@@ -1042,30 +1036,24 @@ pub struct Ask {
     /// The app it runs (an agent's, jobrt::sys::app_version).
     #[serde(default)]
     pub app: Option<String>,
-    /// The most its Mac's jobs could hold together (MB: its memory less its memory floor, nothing
-    /// else on it: crate::agent's `jobs_ceiling`), for the lead's reckoning of the most any Mac in
-    /// the pool has (an older worker says none).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit_mb: Option<u64>,
     /// The disk it has room for a job on (MB: its free space and what its caches can free, less
     /// the owner's room target), measured as it asks: it's offered only targets
-    /// whose measured disk fits (`pick_every`). An older worker says none.
+    /// whose measured disk fits (`pick_every`). None: not said (the lead's own ask while it runs
+    /// nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_mb: Option<u64>,
-    /// Its whole Mac's capacity now (Ask v2, `Capacity`); the fields above still filled for an
-    /// older coordinator, which ignores this. None: an older agent.
+    /// Its whole Mac's capacity now (`Capacity`). None: not said, its room the fields above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<Capacity>,
     /// The jobs it would start now (its free slots). The lead grants up to that many at once
-    /// (`Grant::more`); an older agent's ask (none), one.
+    /// (`Grant::more`); none said, one.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub want: usize,
 }
 
-/// The most `a`'s Mac's jobs could hold, as it says (MB): its capacity's, else the old field (`Ask::limit_mb`, an
-/// older agent's, or a newer one's while the pool isn't all on the new app); None when neither says.
+/// The most `a`'s Mac's jobs could hold, as its capacity says (MB); None when it doesn't.
 pub fn ask_limit(a: &Ask) -> Option<u64> {
-    a.cap.as_ref().map(|c| c.limit_mb).filter(|&l| l > 0).or(a.limit_mb)
+    a.cap.as_ref().map(|c| c.limit_mb).filter(|&l| l > 0)
 }
 
 fn is_zero_usize(n: &usize) -> bool {
@@ -2164,9 +2152,6 @@ impl Coordinator {
         // (Its capacity kept as this Mac's own, `set_capacity`, not as a worker's: said once.)
         let seen = Ask { cap: None, ..a.clone() };
         s.seen(&self.me, format!("asked for {} steps", a.can.len()), Some(&seen), now);
-        if let Some(w) = s.workers.get_mut(&self.me) {
-            w.old = false;
-        }
         let same_plan = s.plan == plan;
         let offers: Vec<Offer> = s
             .offers
@@ -2326,15 +2311,6 @@ impl Coordinator {
             s.note_threads(&self.me, c);
         }
         s.own_cap = cap;
-    }
-
-    /// Whether every member around reports the new app (its asks carry a capacity): packing
-    /// several jobs per member on, and the old wire's fields no longer written
-    /// (crate::agent::Status::all_new). False while any is on an older app (`old_member`).
-    pub fn all_new(&self) -> bool {
-        let s = self.shared.lock().unwrap();
-        let now = s.now();
-        s.old_member(now).is_none()
     }
 
     /// Each member's capacity as last said: this Mac's own first (`set_capacity`), then each worker
@@ -8088,10 +8064,9 @@ mod tests {
             job: None,
         };
         c.offer("p", vec![o(&[("6/1/1", 2500)], 1)]);
-        let can = |mem: u64| Ask { can: vec!["peaks".into()], limit_mb: Some(12 << 10), ..ask(mem) };
+        let can = |mem: u64| Ask { can: vec!["peaks".into()], ..ask(mem) };
         let f = |mb: u64, alone: bool| Floor { mb, alone, v: 0 };
         let g = w.ask(&can(4096)).unwrap().unwrap();
-        assert_eq!(c.largest_limit(), Some(12 << 10), "its Mac's limit, as it says");
         // Stopped past its Mac's limit: given back with what it held, the floor of its target (not
         // another's, nor a target of no lease of it).
         w.give_back_with(
@@ -10336,45 +10311,20 @@ mod tests {
         assert_eq!(all_granted(&w, &a).len(), 6);
     }
 
-    /// A mixed-version pool (task #247): an older app's ask (no capacity, one slot) is granted one
-    /// job; while it's around, every ask is granted one, the refusal saying why; once it asks with
-    /// a capacity (the new app), packing is on again. The old field for the limit stands in for a
-    /// capacity's.
+    /// An ask without a capacity packs as one with (no pool-wide hold); the most any Mac's jobs
+    /// could hold is its capacity's limit, as its asks say it.
     #[test]
-    fn a_mixed_version_pool_grants_one_job_each_until_every_member_runs_the_new_app() {
+    fn an_ask_without_a_capacity_packs_and_the_largest_limit_is_a_capacitys() {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 8, Some(2));
-        // (The lead's own asks (m4, in process), on the new app; the member m1 over HTTP.)
-        let own = |c: &Coordinator, want: usize| -> usize {
-            let a = Ask { want, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
-            c.ask_own(&a, &BTreeSet::new(), 0).map_or(0, |g| 1 + g.more.len())
-        };
-        assert!(c.all_new(), "nobody old around");
-        // An older app's ask: no capacity, no want; one job, and it works.
-        let old = Ask { cap: None, want: 0, limit_mb: Some(12 << 10), ..every_ask("m1", "slope-hi", 64_000, 100_000) };
-        assert_eq!(all_granted(&w, &old).len(), 1, "an older app's ask: one job");
-        assert!(!c.all_new(), "an older app around");
-        assert_eq!(c.largest_limit(), Some(12 << 10), "its old field's limit read");
-        // Even wanting more, an ask without a capacity is granted one.
-        assert_eq!(all_granted(&w, &Ask { want: 3, ..old.clone() }).len(), 1);
-        // The lead's own, while the old member is around: one, and why.
-        assert_eq!(own(&c, 3), 1, "packing off while a member is on an older app");
-        let why = c.refusals().get("m4").cloned().unwrap_or_default();
-        assert!(why.contains("m1 runs an older app"), "{why}");
-        assert!(!c.all_new(), "the lead's own never counts as old");
-        // The member updated: its asks carry a capacity; packing on again.
-        let updated = Ask {
-            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, ..Default::default() }),
-            ..old.clone()
-        };
-        assert_eq!(all_granted(&w, &Ask { want: 2, ..updated.clone() }).len(), 2, "packing on for the member");
-        assert!(c.all_new(), "every member on the new app");
-        assert_eq!(own(&c, 2), 2, "packing on for the lead");
-        // A capacity's limit read over the old field's.
+        let bare = Ask { cap: None, want: 3, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &bare).len(), 3);
+        assert_eq!(c.largest_limit(), None, "no capacity said");
+        let own = Ask { want: 2, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
+        assert_eq!(c.ask_own(&own, &BTreeSet::new(), 0).map_or(0, |g| 1 + g.more.len()), 2, "the lead's own packs too");
         let capped = Ask {
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, limit_mb: 20 << 10, ..Default::default() }),
-            limit_mb: None,
-            ..updated
+            ..bare
         };
         let _ = all_granted(&w, &capped);
         assert_eq!(c.largest_limit(), Some(20 << 10));

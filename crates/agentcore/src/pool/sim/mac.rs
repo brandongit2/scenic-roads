@@ -552,7 +552,6 @@ impl Mac {
             can: vec![STEP.into()],
             mem_mb: MEM_MB,
             cores: CORES,
-            limit_mb: Some(MEM_MB),
             disk_mb: Some(DISK_MB),
             cap: Some(cap),
             want: usize::from(running == 0),

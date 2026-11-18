@@ -133,13 +133,8 @@ struct Status: Decodable {
     let app: String?
     let beat: Int
     let conditions: Conditions
-    /// Its running jobs in slot order (agents from 2026-10-18 on); an older agent's, the old
-    /// fields below (its first slot's, its second's beside it, the rest), which a newer one writes
-    /// only while a Mac of the pool runs an older app. Read through `allJobs`.
+    /// Its running jobs in slot order (none while it runs none). Read through `allJobs`.
     let jobs: [Job]?
-    let job: Job?
-    let beside: Job?
-    let more: [Job]?
     let waiting: [Waiting]
     let recent: [Done]
     let built: [String: Built]?
@@ -165,8 +160,8 @@ struct Status: Decodable {
     /// (crates/agentcore/src/agent/answered.rs; agents from task #922 on).
     let refused: [RefusedAsk]?
 
-    /// Its running jobs, every slot's in order (`jobs`, else the old fields).
-    var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
+    /// Its running jobs, every slot's in order.
+    var allJobs: [Job] { jobs ?? [] }
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
     /// Its Mac's own pause's stage, its state in a word and a line, and the out-of-touch threshold,
@@ -491,11 +486,9 @@ struct PauseInfo: Decodable {
 struct Member: Decodable {
     let host: String
     let beat: Int
-    /// Its running jobs (a newer agent's), else its first slot's (`job`).
+    /// Its running jobs, every slot's (none while it runs none).
     let jobs: [Job]?
-    let job: Job?
-    /// Its running jobs, every slot's (an older agent's: its first).
-    var allJobs: [Job] { jobs ?? (job.map { [$0] } ?? []) }
+    var allJobs: [Job] { jobs ?? [] }
     /// Its loop's round's age, the threshold past which it's stuck, the phase it's in: `loopStuck`.
     let loop_age_s: Int?
     let loop_stuck_s: Int?

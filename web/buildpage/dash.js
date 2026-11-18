@@ -183,9 +183,9 @@ function model(sw) {
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// A Mac's jobs, every slot's in order (crate::agent::Status::jobs: its `jobs`, else an older
-// agent's job, beside, more), each with its slot (an older agent's says none: its place).
-const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.more || [])].filter(Boolean)).map((j, i) => ({ ...j, slot: j.slot ?? i }));
+// A Mac's jobs, every slot's in order (crate::agent::Status::jobs), each with its slot (none said:
+// its place).
+const jobsOf = (st) => (st.jobs || []).map((j, i) => ({ ...j, slot: j.slot ?? i }));
 // What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity).
 
 // ---- The verdict --------------------------------------------------------------------------------

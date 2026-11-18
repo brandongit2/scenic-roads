@@ -625,7 +625,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 can: cfg.steps.iter().map(|s| s.name.to_string()).collect(),
                 mem_mb: limit(0),
                 cores: m.cores,
-                limit_mb: Some(limit(0)),
                 // (As the agent asks: alone, for one job, its disk not bounded; else its disk room.)
                 disk_mb: (!alone).then_some(cap.disk_mb),
                 cap: Some(cap),
@@ -696,7 +695,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     // cores, its free disk now; what its jobs leave free in `cap`.)
                     mem_mb: limit(k),
                     cores: m.cores,
-                    limit_mb: Some(limit(k)),
                     disk_mb: Some(disk_mb),
                     cap: Some(cap),
                     // (As the agent asks: its slots free.)

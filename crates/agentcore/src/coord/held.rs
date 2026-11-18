@@ -181,9 +181,8 @@ pub struct Reach {
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
-/// agent says it (`agent::Status::build_said`), the build's pause, and whether every member is on
-/// the new app (`Coordinator::all_new`), and what needs a look (the lead's status's flags,
-/// crate::agent::flags).
+/// agent says it (`agent::Status::build_said`), the build's pause, and what needs a look (the lead's
+/// status's flags, crate::agent::flags).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LeadLine {
     pub host: String,
@@ -191,8 +190,6 @@ pub struct LeadLine {
     pub said: crate::agent::Verdict,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause: Option<jobrt::control::Pause>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all_new: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<crate::agent::flags::Flag>,
 }
@@ -338,8 +335,7 @@ fn owes(s: &mut Shared, b: &Beat) {
 /// The lead's line for its members' menu bars (`Answer::lead`): None until its agent says it.
 fn lead_line(s: &Shared) -> Option<LeadLine> {
     let (host, said, flags) = s.said.clone()?;
-    let all_new = s.old_member(s.now()).is_none();
-    Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new, flags })
+    Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), flags })
 }
 
 /// The owner's release of `member`'s jobs' leases (`scenic pool release`: that Mac is gone for

@@ -484,16 +484,13 @@ func runningJobs(serviceRunning: Bool) -> [RunningJob] {
     guard serviceRunning else { return [] }
     struct File: Decodable {
         let beat: Int
-        /// Its jobs (agents from 2026-10-18 on), else the old fields.
+        /// Its jobs (none while it runs none).
         let jobs: [Job]?
-        let job: Job?
-        let beside: Job?
-        let more: [Job]?
     }
     let dir = home.appendingPathComponent("agent")
     let files = ["status.json", "helper.json"].compactMap { (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(File.self, from: $0) } }
     guard let f = files.max(by: { $0.beat < $1.beat }), Int(Date().timeIntervalSince1970) - f.beat < 6 * 60 else { return [] }
-    return (f.jobs ?? ([f.job, f.beside].compactMap { $0 } + (f.more ?? []))).map {
+    return (f.jobs ?? []).map {
         let words = $0.id.split(separator: " ")
         return RunningJob(what: $0.what, step: String(words.first ?? ""), left: $0.progress?.eta_s, target: words.count == 2 ? String(words[1]) : nil)
     }
