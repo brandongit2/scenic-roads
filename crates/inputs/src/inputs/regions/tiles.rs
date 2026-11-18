@@ -1890,8 +1890,9 @@ pub struct Fit {
 /// these between regions whose definitions meet exactly (`geom::snapping`: i_overlay snaps each
 /// operation's points within a few units of E7): measured on the whole input once its definitions
 /// were fixed (task #1427), the largest such residue, between Chilean waters and Magallanes (one
-/// takes the other away by name), was 0.0093 km² summed over the cells, in pieces of at most
-/// 0.00003 km², under a tenth of this. A real disagreement smaller than it passes too.
+/// takes the other away by name), was 0.0093 km² summed over the cells, and the largest piece
+/// 0.0015 km² (Malaysia and Singapore's split by nearest coast on a 100 m grid), under a tenth of
+/// this. A real disagreement smaller than it passes too.
 pub const HAIR_KM2: f64 = 0.1;
 
 #[derive(Debug, Default)]
