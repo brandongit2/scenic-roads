@@ -1556,6 +1556,9 @@ pub struct Agent {
     /// How long a job draining is given to reach a safe point (`DRAIN_GRACE`; a test's own, so no
     /// test dates an `Instant` back past the Mac's uptime).
     grace: Duration,
+    /// Time a test adds to how long each job has been watched on its threads (`watched_for`; zero
+    /// but in a test, so none dates an `Instant` back past the Mac's uptime).
+    watch_ahead: Duration,
     /// The owner's disk room target (room::Target), read each loop from the agent's folder; the
     /// last freeing toward it started (the target, and when, unix seconds); and the last time a
     /// job's room-making fell short of it (the target and the room it was after, and when): the
@@ -2066,6 +2069,7 @@ impl Agent {
             slots: Slots::default(),
             free_set: None,
             grace: DRAIN_GRACE,
+            watch_ahead: Duration::ZERO,
             room_target: None,
             in_use_share: None,
             mem_floor: None,
@@ -5778,7 +5782,7 @@ impl Agent {
                         lease: n,
                         threads: w.threads,
                         cpu_ms: self.sampler.cpu_ns(k).unwrap_or(w.cpu_ns).saturating_sub(w.cpu_ns) / 1_000_000,
-                        ran_ms: w.since.elapsed().as_millis() as u64,
+                        ran_ms: self.watched_for(&w).as_millis() as u64,
                         granted: r.threads as u32,
                         most: self.threads_room(c) as u32,
                     });
@@ -7639,6 +7643,12 @@ impl Agent {
         per * on.saturating_sub(u64::from(covers))
     }
 
+    /// How long a job has been watched on its threads (`threads::Watch::since`, and a test's
+    /// `watch_ahead`).
+    fn watched_for(&self, w: &threads::Watch) -> Duration {
+        w.since.elapsed() + self.watch_ahead
+    }
+
     /// This Mac's running jobs' threads decided again (docs/pool.md §7.1, Threads controlled live;
     /// crate::agent::threads::decide): each watched `threads::EVERY` on the threads its file says
     /// (`watch_threads`), on what it kept busy while it computed, within the most a job may run on
@@ -7652,7 +7662,7 @@ impl Agent {
         let due: Vec<usize> = (0..self.slots.len())
             .filter(|&k| {
                 self.slots[k].running.as_ref().is_some_and(|r| {
-                    r.watch.is_some_and(|w| w.threads as usize == r.threads && w.since.elapsed() >= threads::EVERY)
+                    r.watch.is_some_and(|w| w.threads as usize == r.threads && self.watched_for(&w) >= threads::EVERY)
                 })
             })
             .collect();
@@ -7669,11 +7679,12 @@ impl Agent {
             let cpu = self.sampler.cpu_ns(k).unwrap_or(0);
             let waited = store::nasio::waited_in(&self.nas_counts_path(k)).unwrap_or(0);
             let before = self.grown_mb(k);
+            let ahead = self.watch_ahead;
             let Some(r) = self.slots[k].running.as_mut() else { continue };
             let Some(w) = r.watch else { continue };
             let window = threads::Window {
                 threads: w.threads,
-                wall_ms: w.since.elapsed().as_millis() as u64,
+                wall_ms: (w.since.elapsed() + ahead).as_millis() as u64,
                 cpu_ms: cpu.saturating_sub(w.cpu_ns) / 1_000_000,
                 waited_ms: waited.saturating_sub(w.waited_ns) / 1_000_000,
             };
@@ -11971,8 +11982,8 @@ mod tests {
         };
         // (A minute past on its threads now.)
         let minute = |a: &mut Agent| {
-            let w = a.slots[0].running.as_mut().unwrap().watch.as_mut().unwrap();
-            w.since = Instant::now() - Duration::from_secs(61);
+            a.slots[0].running.as_mut().unwrap().watch.as_mut().unwrap().since = Instant::now();
+            a.watch_ahead = Duration::from_secs(61);
         };
         let file = |a: &Agent| std::fs::read_to_string(a.threads_path(0)).unwrap().trim().parse::<u32>().unwrap();
         let s = 1_000_000_000u64;
