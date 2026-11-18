@@ -1967,8 +1967,8 @@ Where each known data source really has data, and how good it is there: the inpu
 "data available" layers (docs/steps.md §14), which colour every place by the best data any source
 has for it. The map's regions play no part in it, and no source is assumed to cover the planet: the
 worldwide models are sources like any other, and a place no declared source covers has no data.
-One format serves three **themes**, each with its own metrics and score: `terrain` and
-`bathymetry` (built here), and `buildings` (planned).
+One format serves three **themes**, each with its own metrics and score: `terrain`,
+`bathymetry` and `buildings`.
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 tables at this section's end (`producers/extents/`), and the unit `extents` that checks them
@@ -1979,8 +1979,10 @@ Caribbean's, Oceania's, Africa's, the polar south's and the worldwide models not
 (task #1350's third run); the step `available` that draws the pieces' tiles, and the server's
 score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the built set, the elevation datasets each where the terrain used it, drawn from the build's own masks (the step `available-built`, task #1349); the bathymetry theme: its score, its
 declarations and pieces (below), the `raster` reader by value, and its layers cut to the sea's side
-with the inland water (task #1351). Planned: `piece.dataset` (extents from the build's own data;
-task #1403); the buildings theme (below). Task #1334.
+with the inland water (task #1351); the buildings theme: its score (a primary of words), its
+declarations and pieces, the `overture` method, whose pieces of class `mask` the step draws from
+the build's own copy of Overture's buildings, and its layers cut to the land (below; task #1438).
+Planned: `piece.dataset` (the terrain's extents from the build's own data; task #1403). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1992,6 +1994,7 @@ inputs/extents/
     <source>.toml       a source: its description, availability, and how each piece's extent is found
     <source>.geojson    its pieces, made by producers/extents/extents.py from the declaration
   bathymetry/           the same three kinds of file
+  buildings/            the same three kinds of file
 ```
 
 **A piece** is a source's extent with one set of metrics: the area where the source's data has the
@@ -2000,7 +2003,8 @@ data has (a national lidar programme: one per project; a worldwide model: one). 
 FeatureCollection, a feature per piece (RFC 7946: WGS 84, exteriors counter-clockwise and holes
 clockwise, cut at the antimeridian, a polygon holding a pole closed along its 90° parallel), its
 geometry a MultiPolygon, or `null` for a piece whose extent isn't known (drawn nowhere, so on no
-click; named in the sources' list). Its properties:
+click; named in the sources' list) or whose mask the step draws from the build's own data (an
+`overture` block's, class `mask`). Its properties:
 
 | Property | Meaning |
 |---|---|
@@ -2023,7 +2027,7 @@ records which it got:
 
 | Class | The extent is | For |
 |---|---|---|
-| `mask` | where the build's own copy of the data has valid values | data the build has downloaded (§6.8's datasets): every piece of the built set (docs/steps.md §14, `available-built`), and a source's piece naming the dataset that holds its files (`dataset`), there (planned, task #1403) |
+| `mask` | where the build's own copy of the data has valid values | data the build has downloaded: every piece of the built set (§6.8's datasets; docs/steps.md §14, `available-built`); the buildings' pieces of Overture's datasets (an `overture` block, from the build's normalized buildings); and a source's piece naming the elevation dataset that holds its files (`dataset`), there (planned, task #1403) |
 | `files` | the files' own bounds and valid-data masks, read from their headers and coarsest overviews by range request | a source that downloads directly, whose files are few enough to open each |
 | `index` | the publisher's list of its files: a tile index, STAC items, a directory listing of georeferenced names | a source that downloads directly, with too many files to open |
 | `service` | the publisher's footprint service: project or survey outlines | a source that downloads directly, with no per-file index |
@@ -2047,7 +2051,7 @@ area; otherwise the piece is `none`, listed and not drawn.
 
 | Field | Meaning |
 |---|---|
-| `theme` | `terrain` or `bathymetry`, its folder's |
+| `theme` | `terrain`, `bathymetry` or `buildings`, its folder's |
 | `availability` | the source's, as above; a piece block may say its own |
 | `[[piece]]` | one or more blocks, each a way of finding extents and the metrics of what it finds |
 | `piece.id` | the block's name, the first part of its pieces' ids |
@@ -2061,7 +2065,8 @@ area; otherwise the piece is `none`, listed and not drawn.
 | `piece.tolerance_m` | the simplification, default 50 |
 | `piece.timeout_s` | a request's time limit, default 180: a server that makes its answer on request and takes longer (Bulgaria's WCS, 2 to 5 minutes) |
 | `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, `text`, the last year a name holds, alone or opening a compact date, `20240315`, or ending a span in two digits, `2011-12`, not a date's month, or `yymmdd`, six-digit dates of the 2000s alone or as a span, the last taken; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS), `pattern` (a regular expression whose first group is the part of the field holding the value, read as the other keys say: a file path naming its grid's cell, IGAC's `…\MDT1_05148000_20230103` with `'MDT(\d+)_\d+_\d{8}\s*$'`; no match, no value); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another), its last one may be a constant, the value where none gives one (PST-A's 1 m grid's tiles stating no cell: `[{field = "risoluzion"}, 1.0]`). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
-| `piece.dataset` | planned (docs/steps.md §14, task #1403): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
+| `piece.dataset`, `piece.holds`, `piece.share` | an `overture` block's (the buildings): the Overture dataset whose buildings it counts, as the release names its sources (`OpenStreetMap`, `Microsoft ML Buildings`, …); what they hold, `footprints`, `storeys` (a floor count and no height) or `heights` (`inputs::extents::HOLDS`); and the share of a cell's buildings they must be, 0 to 1, for the cell to hold the piece (below, the `overture` method) |
+| `piece.dataset` | of another method: planned (docs/steps.md §14, task #1403), the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
 a new source of a kind it knows is a new declaration, no code):
@@ -2076,6 +2081,7 @@ a new source of a kind it knows is a new declaration, no code):
 | `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder; with `links`, each zip's a page links, FABDEM's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
 | `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR` or a coarse grid, or an ArcGIS image service's `exportImage`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS, the Basque Government's WCS, and Hawaii's and Illinois's image services' exports). **By value** (a source-identifier grid, which has no overview a code survives: a mean of codes is no code): with `block`, every cell read, `block` rows at a time, a mask cell for each `block` by `block` cells (its `grain_m`), and with `values`, the property each value goes in, a mask for each value the cells hold, a mask cell in every value any of its cells holds (so a track narrower than a mask cell is drawn a cell wide); `skip`, values that are no data (GEBCO's 0, the land); `by` the property, a piece a value. `member`, a regular expression: the files of the zip at `url` whose names match it, the zip fetched whole (GDAL opens no zip by range: GEBCO's eight 90° GeoTIFFs, 96 MB); `values` without `block` stops the run | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
+| `overture` | nothing: a piece with no geometry in its file (its `read` the block's `dataset`, `holds`, `share` and grain, z14 tiles), whose extent the step `available` draws from the build's own normalized buildings (docs/steps.md §14, the masks; `bld::bld::extents`): the z14 tiles (2.4 km at the equator) where the buildings of `dataset` holding what it `holds` are at least `share` of the tile's buildings, and at least one; building parts not counted. A building's footprint is OpenStreetMap's where OSM gave it (its OSM id), else its record's dataset's; its height the dataset Overture names for it; its storeys (floors, no height) its footprint's dataset's | `mask` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
 verified against Mozilla's trust store (certifi's: the system's file lacks roots some publishers chain
@@ -2116,7 +2122,8 @@ sheets become 17 outlines, 246 KB. Tests: `producers/extents/test_extents.py`.
 factor `within`, the others' `share`, and a table per metric with its `label`, `unit`, scale and
 (but the primary, which takes none) `weight`, the metric's value from 0 at `worst` to 1 at `best`
 (`scale = "log"`: by the logarithm; `"linear"`), clamped, or a `values` table instead, a word's
-value from 0 to 1. The primary's scale is `log` (the guarantee below is a factor). The primary metric decides,
+value from 0 to 1. The primary's scale is `log` (the guarantee below is a factor), or `values`
+(the buildings' `detail`: a word, no `within`, pieces of the same word tying). The primary metric decides,
 the others only break near-ties (the owner, 13 Nov: for the terrain, a finer grid always wins,
 whatever its kind or age):
 
@@ -2140,7 +2147,9 @@ score, stated or not.
 ln(worst ÷ best), the primary's least step that counts, against the rest's whole range, 0 to 1
 (each value and `unstated` in it): `score.py` and the server refuse a `score.toml` where it
 doesn't, or whose `unstated` is outside 0 to 1, and `test_extents.py` tries it on 20,000 random
-pairs of pieces and at its edge. The
+pairs of pieces and at its edge. For a primary of `values`: a piece of a better word scores higher,
+whatever either states of the rest, where (1 − share) × k > share, k the least gap between two of
+its words' values (`Score::bound_values`, `score.py`'s `least_step`). The
 terrain's, as proposed (the owner's to tune):
 
 | | Value |
@@ -2175,7 +2184,7 @@ factor. Only a piece stating none of them is put at the middle.
 
 **The best piece at a place** (`Score::best`, `score.py`'s `best`; the layers' piece and the
 click's order, docs/steps.md §14): of the pieces there, those whose primary ties the finest's
-(within the factor `within` of it); of them, those of the best availability in the order `score.toml`'s
+(within the factor `within` of it; for a primary of words, the same word); of them, those of the best availability in the order `score.toml`'s
 `availability` lists (each of `open`, `login`, `paid`, `closed` once, best first); of those, the
 best score; of equal scores, the one whose extent is the better founded, in the classes' order
 (`mask`, `files`, `index`, `service`, `claimed`, then `unknown`: `inputs::extents::class_rank`);
@@ -2195,15 +2204,17 @@ which so has no layer of its own beside it. The layers' colours are the app's (i
 docs/steps.md §14); a `score.toml` still holding the fields that drew them as classes (`ramp`,
 `shade`, a metric's `classes` and `colours`) is read as if it didn't, and the check warns.
 
-**Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` and
-`bathymetry`). Errors:
+**Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain`,
+`bathymetry` and `buildings`). Errors:
 - a file not of the shape (`<theme>/<source>.toml`, `<theme>/<source>.geojson`,
   `<theme>/score.toml`, ids lower-case letters, digits, `-` and `_`); a theme folder the app doesn't
   know, or a file's `theme` not its folder's (`ex-shape`, `ex-theme`);
 - a declaration's description fields wrong (§5.1, `ex-desc`), or its own (`ex-decl`): an unknown
   method or availability (a block's own, or the declaration's: one of them is required); a class a
   block's method can't have (a method that fixes its class takes that or `claimed`; `arcgis`,
-  `wfs` and `file` say `index`, `service` or `claimed`; `none`'s is `unknown`, with its `why`); no
+  `wfs` and `file` say `index`, `service` or `claimed`; `none`'s is `unknown`, with its `why`); an
+  `overture` block without its `dataset`, a `holds` not one of `footprints`, `storeys`, `heights`,
+  or a `share` not from 0 to 1; no
   `[[piece]]` block, a block without its `id`, two of one id; `by` not a list, `name` not one of
   `by`; `tolerance_m` not positive; `filter` not a table of lists; a metric's reading not of its
   shape (a `field`; `scale` positive, `index` from 0, `date` one of `epoch-ms`, `iso`, `year`,
@@ -2213,7 +2224,7 @@ docs/steps.md §14); a `score.toml` still holding the fields that drew them as c
   isn't a list of readings each naming its block's `piece` and `method` (`ex-pieces`); pieces
   without `piece`, `extent` (a class) and `availability`, a `name` not a string, a `stated` not a
   table of strings, a geometry that isn't a MultiPolygon, or a geometry where the class is
-  `unknown` and none where it isn't (`ex-piece`); invalid geometry (`ex-geom`): a position not two
+  `unknown` and none where it isn't `unknown` or `mask` (`ex-piece`); invalid geometry (`ex-geom`): a position not two
   numbers, a longitude outside ±180° or a latitude outside ±90°, a ring not closed, of fewer than
   four positions, of no area or crossing itself, an exterior wound clockwise or a hole
   counter-clockwise (RFC 7946), an edge stepping more than half a turn of longitude (not cut at
@@ -2223,10 +2234,13 @@ docs/steps.md §14); a `score.toml` still holding the fields that drew them as c
 - a `.geojson` without its declaration (`ex-pair`), or not made from it as it is: the blocks its
   `read` names aren't the declaration's, a piece's id doesn't start with one of them, or a
   piece isn't of its block's class (its method's or the one it says; `claimed` where it says so or
-  its availability isn't `open`), availability or constant metrics (`ex-made`);
+  its availability isn't `open`), availability or constant metrics, or an `overture` block's
+  reading doesn't say its `dataset`, `holds` and `share` (the step draws the mask by the reading:
+  docs/steps.md §14) (`ex-made`);
 - a `score.toml` not of its shape (above: an unknown field, no `primary` among its metrics, the
-  primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
-  or breaking the guarantee, `unstated` not from 0 to 1, a metric without its `label`, a scale whose `worst` = `best` or a log
+  primary not on a log scale or of `values`, or with a weight, a log primary's `within` missing or
+  not above 1, a `within` for a primary of `values`, or one of fewer than two values, `share` not
+  from 0 to under 1 or breaking the guarantee, `unstated` not from 0 to 1, a metric without its `label`, a scale whose `worst` = `best` or a log
   scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
   negative, a `label` not a name, an `availability` not each of the four ids once: `ex-score`); a
   theme with no `score.toml` (`ex-noscore`);
@@ -2240,8 +2254,8 @@ Warnings: a declaration with no `.geojson` yet (`ex-nopieces`); pieces of class 
 or `colours`: `ex-retired`). A source's two files are held together. Facts read at check time: a `.geojson`'s
 pieces, by class and availability, and its box (`pieces`, `classes`, `availability`, `box`); a
 declaration's `theme`, `availability` and `blocks`; a score's `primary` and `metrics`. Tests:
-crate::inputs::extents's, with the real files of `producers/extents/terrain/` taken with no
-error.
+crate::inputs::extents's, with the real files of `producers/extents/terrain/`, `bathymetry/` and
+`buildings/` taken with no error.
 
 **The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026; the worldwide
 models, ArcticDEM's mosaic, BC, Wales, France and Luxembourg the same outlines as on 12 Nov; North
@@ -2633,13 +2647,53 @@ Norway's Kartverket, the Shom's HOMONIM and Litto3D, Ireland's INFOMAR, Rijkswat
 AusBathyTopo, the states' and provinces' lake surveys and the Great Lakes' grids, and the rest):
 not declared yet, each a declaration of a reader the producer has, a task of their own.
 
-**Buildings** (planned) take the same format with their own metrics: a piece
-`{"piece": "city/2023", "extent": "mask", "availability": "open", "detail": "LoD2",
-"completeness": 0.97, "year": 2023}`, `detail` on a `values` scale (footprints, heights, LoD1,
-LoD2, LoD3, textured mesh), `completeness` a share; and, for the buildings the build already
-downloads (Overture's, docs/steps.md §7), extents of class `mask` from the build's own data, per
-source the features name. Not built: no `buildings/` folder, score or declaration, and the app
-knows only `terrain` and `bathymetry` (inputs::extents::THEMES).
+**Buildings** (task #1438; `producers/extents/buildings/`): what is known of each place's
+buildings, in the same folder shape, declaration, piece properties and score. A piece is a
+source's buildings of one detail: a city's LoD2 model, a country's footprints with heights, or
+one of Overture's datasets as the build holds it,
+
+    {"piece": "osm-heights", "extent": "mask", "availability": "open", "detail": "heights",
+     "measured": "mapped"}   (its geometry null: the step draws it)
+
+Its layers are cut to the land (docs/steps.md §14, the cut). Its score (`buildings/score.toml`;
+the owner's list of #1334, the owner's to tune): what is there decides, as the grid's spacing
+decides the terrain's; how the heights were found, how complete and how recent only break ties
+between pieces of the same detail.
+
+| | Value |
+|---|---|
+| `primary` | `detail`, `values`: `footprints` 0, `storeys` (a floor count, no height) 0.25, `heights` (a height a building: an attribute, or an LoD1 block model) and `lod1` 0.5, `lod2` (roof shapes) 0.75, `lod3` 0.9, `mesh` (a textured mesh) 1. No `within`: pieces of the same word tie |
+| `share` | 0.05 (the bound for these values, their least gap 0.1, is 0.0909) |
+| `measured` | weight 0.5, `values`: how the heights were found, `lidar` 1, `photogrammetry` 0.9, `survey` (a cadastre's or register's) 0.8, `mapped` (volunteers', OSM's tags) 0.6, `estimated` (a model's per building: Microsoft's, 3D-GloBFP's) 0.3, `gridded` (an area's average put on its buildings: GHSL's) 0.1 |
+| `completeness` | weight 0.3, linear 0 → 0, 100 → 1: the share of the piece's buildings that hold its detail, in %, as the publisher or the research states it |
+| `year` | weight 0.2, linear: 2000 → 0, 2026 → 1, the year captured |
+
+What it does (`producers/extents/score.py buildings/score.toml --examples`):
+
+| Pieces | Scores | Best |
+|---|---|---|
+| Overture's OSM heights (80 % of buildings, 2026); a city's LoD2 of 2015 | 0.512; 0.741 | the LoD2: the better detail |
+| an LoD1 model from lidar, every building, of 2024; a city's LoD2 of 2010 from photogrammetry | 0.524; 0.750 | the LoD2 |
+| Microsoft's estimated heights; the USGS's lidar heights (both 2024) | 0.499; 0.524 | the lidar's: the same detail, how measured decides |
+| OSM's storeys; footprints alone | 0.267; 0.025 | the storeys |
+| GHSL's gridded heights of 2018; OSM's mapped ones | 0.488; 0.505 | the mapped ones |
+
+**The buildings' sources** (read 18 Nov 2026 on the M1, 5 min 19 s from no cache, 1.7 GB of
+memory; from `.claude/notes/RESEARCH-BUILDINGS-*.md`, its index's §2 table): 167 declarations,
+176 pieces.
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `overture` | 10: OpenStreetMap's footprints, storeys and heights; Microsoft ML Buildings' footprints and heights; Google Open Buildings' footprints; Esri Community Maps' footprints and heights; the USGS Lidar's heights; the IGN's (España) footprints. Footprints at `share` 0 (a cell holds them where it has one), storeys and heights at 0.5 (half the cell's buildings or more) | `mask` | `overture`: the build's normalized buildings (`work/bld/6-x-y`, the pinned release's, docs/buildings3d.md §3.1), z14 cells: only where the build holds buildings (its coverage), not all Overture has |
+| 82 claimed sources | 1 each | `claimed` | `file`: the areas their publishers state, as Natural Earth's 1:10m admin-1 areas (v5.1.2) draw them, filtered by ISO 3166-2 code or country (a state's or province's model, a Land's LoD2, a country's register: Germany's 16 Länder, Canada's, Australia's and the US states' programmes, Spain's cadastre, the Netherlands' 3D BAG, …); Bogotá by its name (Natural Earth codes it as Cundinamarca) |
+| 68 claimed sources | 1 each | `claimed` | `file`: a city's boundary as OpenStreetMap maps it, read from Nominatim's `lookup` by its relation ids (the boundaries found once by Nominatim's search; a source of several cities, all their ids): the cities' LoD2 and LoD3 models, meshes and height layers |
+| `3d-globfp`, `ghs-obat`, `globalbuildingatlas`; `google-open-buildings-25d` | 1 each | `claimed` | `file`: the world's land (Natural Earth's land polygons), the worldwide models of estimated or gridded heights; the countries Google's 2.5D heights cover (Natural Earth's countries, by subregion) |
+| 12 sources | 1 each | `unknown` | `none`: their areas aren't stated as one or not drawn apart: Japan's PLATEAU (306 city units), the NGA's 133 US cities, Poland's LoD2 counties, Texas's StratMap counties, SEMCOG's seven counties, Montreal's 6 boroughs, Mexico City's 10 alcaldías, Sardinia's urban centres, five French cities' models, Umeå's tile, GRID3's 25 countries, NRCan's lidar-derived buildings |
+
+Every claimed extent is the publisher's or the research's statement, not checked against the
+data. **Not declared yet** (18 Nov): the 12 above have no extent; their areas (PLATEAU's units,
+the counties' and boroughs' boundaries, NRCan's GeoParquet row groups' boxes) are each a reading of
+their own, a task each.
 
 ## 7. The guards
 
@@ -2740,7 +2794,7 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 
   | In the repository | On the NAS | The NAS folder is |
   |---|---|---|
-  | `producers/extents/terrain/`, `producers/extents/bathymetry/` | `inputs/extents/terrain/`, `inputs/extents/bathymetry/` | the repository's whole: a file only on the NAS is drift |
+  | `producers/extents/terrain/`, `producers/extents/bathymetry/`, `producers/extents/buildings/` | `inputs/extents/terrain/`, `inputs/extents/bathymetry/`, `inputs/extents/buildings/` | the repository's whole: a file only on the NAS is drift |
   | `producers/sources/`, `producers/depth/declarations/`, `producers/geoid/declarations/` | `inputs/sources/` | shared: the NAS's own files (the depth grids' indexes, made there) are counted, not drift |
   | `producers/elevation/`, `producers/elevation/1m/` | `inputs/elevation/` | shared (HRDEM's, 3DEP's and GSI's declarations are the NAS's own) |
   | `producers/how/<box>/` (each folder holding a README) | `inputs/<box>/how/` | shared: the notes beside them |

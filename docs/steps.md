@@ -1006,8 +1006,8 @@ while the server is away from the NAS).
 ## 14. Data available (task #1334)
 
 The layers that colour the map by the best data any declared source has for each place, from the
-source extents (docs/inputs.md §6.11): for a theme (`terrain` and `bathymetry`; `buildings`
-planned), the **score**'s layer, first: the best piece at each place drawn at its own grid spacing
+source extents (docs/inputs.md §6.11): for a theme (`terrain`, `bathymetry` and `buildings`),
+the **score**'s layer, first: the best piece at each place drawn at its own grid spacing
 (the primary metric's value), and a layer per other metric. Two sets of these layers: `best`,
 the best data any declared source has; and `built`, the elevation data built into the map, each
 place holding the dataset the terrain took its heights from. **Built** (task #1347): the step
@@ -1022,18 +1022,21 @@ there; the built set draws the order's first with data there, so land more than 
 regions (a far island) shows GLO-30 where the terrain read Terrarium. Both sets are cut to the
 theme's side of the coastline (the cut, below): the terrain's layers draw nothing at sea, and
 bathymetry's (the best set only: the built set is the terrain's) nothing on land but its lakes and
-rivers.
+rivers, the buildings' (the best set only) nothing at sea.
 
 **The step** `available` (terrain::available; stage `finish`, a target per theme,
 `available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
 base packs' header extents, `codecs::extents`, `state/build/extents.json`). It reads the accepted
 `extents` unit through the accessor (the theme's `.geojson` files: its pieces, those with an
 extent) and the pass's coastline's land (`sources/osm/<date>/regions-land`, the pass `--pass`
-names, copied to the job's scratch folder), and nothing else. Its key is its version
+names, copied to the job's scratch folder), and, for the buildings, the build's normalized
+buildings (`work/bld/6-x-y`, below, the masks), and nothing else. Its key is its version
 (`terrain::available::KEY_V`), each of the theme's `.geojson` files by its keyed digest
 (`idents::extents_pieces`, from the index the planner reads, `theplan::key_inputs`'
 `extents:<theme>`) and the land by content (`idents::pass_land`: required, so the step waits for
-the pass's `regions-land`); never `score.toml` nor a declaration: the tiles hold which pieces are
+the pass's `regions-land`), and the buildings' each normalized file by its content name
+(`idents::overture_work`); never `score.toml` (a declaration only as its pieces' `.geojson` holds
+it: an `overture` block's dataset, holds and share are in its `read`): the tiles hold which pieces are
 where, never a score or a metric, so tuning a weight builds nothing again.
 - **Pixels hold piece sets, by a palette per tile** (docs/formats.md, Data available): Web
   Mercator tiles of 256 px, z0 to z12 (a pixel 38 m at the equator); a pixel's value is an index
@@ -1113,6 +1116,25 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   projection (the square is far from it: what the polygon holds there doesn't change). ArcticDEM's
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
+- **The masks** (the buildings; task #1438): a piece of an `overture` block (docs/inputs.md §6.11)
+  has no outline in its file; the step draws it from the build's own copy of Overture's buildings,
+  the normalized files (`work/bld/6-x-y`, docs/buildings3d.md §3.1; `bld::bld::extents`): its cells
+  are the z14 tiles (a block of the file each; 64 z12 pixels a side, 2.4 km at the equator) where
+  the buildings of its dataset holding what it holds are at least its share of the tile's
+  buildings, and at least one (a building's footprint OSM's where it has an OSM id, else its
+  record's dataset; its height the dataset Overture names for it; parts not counted). Each file
+  is read whole, a run of blocks at a time (32 MB at most, `READ_RUN`), its tags alone decoded
+  (`work::Tags`: no geometry), the files in parallel; the cells are kept by z6 tile as row runs
+  (`terrain::available::mask`: 256 rows of runs a z6 tile). The step's record
+  (`work/available-buildings/masks`, `BLDMASK1`) holds each file's cells by its content name, for
+  the mask pieces as their readings say them (a digest of the pieces' dataset, holds and share,
+  and `MASKS_V`): a run reads only the files the record doesn't name, and writes the record of the
+  current files alone; a record unreadable or of other pieces reads every file again. The cells
+  are added to each row's runs before the cut (`mask::add`), so a mask is cut to the land like an
+  outline; a z6 tile's key names each mask's digest of its cells there, so a file moved makes
+  again only its own z6 tile. The masks stop where the build holds buildings: its coverage, not
+  all Overture has. The polar caps take no mask. The step also prints the buildings of a dataset
+  and kind no block declares (what a declaration could add).
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
   On the 13,783 pieces with an extent of 18 Nov (producers/extents/terrain/, every region's
   sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, cut to the
@@ -1157,8 +1179,8 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   `the_pieces_are_cut_to_the_land`: a small coast over four cells, a bay closed off in it, an island,
   two sources' outlines over sea and land: the sea under them empty, the land kept, a z12 tile on the
   land across the cells' corner not stored, nothing moved making nothing, the coast moved in two
-  cells making again only the z6 tile meeting them, and the sea's side kept instead when inverted);
-  codecs::available's (the format, the layers' names and packs); the server's below.
+  cells making again only the z6 tile meeting them, and the sea's side kept instead when inverted); the masks, `a_mask_is_drawn_from_its_cells_beside_the_outlines`: a mask's cells drawn beside an outline and cut to the land, a moved cell making again only its z6 tile;
+  bld::bld::extents's (a cell holding a piece by its buildings' share, a record unreadable or of other pieces read again, the pieces' readings, a file's blocks read in runs; `measures_the_real_step`, the real step by hand, below); codecs::available's (the format, the layers' names and packs); the server's below.
 
 **The step** `available-built` (terrain::available::built; stage `finish`, one world target,
 `available-built-terrain`, while the build takes its terrain from the elevation datasets, recorded
