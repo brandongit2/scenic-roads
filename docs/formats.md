@@ -346,9 +346,9 @@ tile grown by a sixteenth).
 
 **Normalized buildings** (`work/bld/6-<x>-<y>.<h>.sect`, in the manifest, not served): every
 building and part of the pinned Overture release whose centroid is in the z6 tile, underground ones
-left out (`bldprep`). Meta: `{"fmt": 1, "tile": "6/x/y", "release", "buildings", "parts", "srcs",
+left out (`bldprep`). Meta: `{"fmt": 2, "tile": "6/x/y", "release", "buildings", "parts", "srcs",
 "classes", "subtypes", "roofs", "ghsl": "R2023A", "read"}`: the counts; the sorted string lists the
-codes index (0 none, k the k-th: height source datasets, classes, subtypes, roof shapes); `read`,
+codes index (0 none, k the k-th: datasets, classes, subtypes, roof shapes); `read`,
 what was read (`files`: [name, ETag, [row groups]], `ghsl`, `rows`).
 
 | Section | Record | Notes |
@@ -366,7 +366,7 @@ shape (`u8` codes), flags (`u8`: 1 a part; 2 a building whose parts are drawn: `
 non-underground part naming it read in the tile or 0.02° around), the height's dataset (`u8` into
 `srcs`: the source whose property is `/properties/height`, else the footprint's), GHSL ANBH at the
 centroid (`u16` dm, 0 none), the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way, 2 << 62
-a relation, or'ed with the id; 0 none).
+a relation, or'ed with the id; 0 none), the footprint's dataset (`u8` into `srcs`: the first source with no property, the geometry's; 0 where none is; fmt 2, `BLDPREP_V` 3; a file of fmt 1 is refused).
 
 **The sources' indexes** (written by `bld-fetch`, `bld::bld::fetch`, beside the downloads,
 outside the manifest, as Python's `json` wrote them;

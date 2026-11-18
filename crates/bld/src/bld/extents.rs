@@ -2,25 +2,31 @@
 //! (docs/steps.md §14, extent class `mask`; docs/inputs.md §6.11, the `overture` method): a piece
 //! per Overture dataset and what its buildings hold (`holds`: footprints, storeys or heights),
 //! whose cells are the z14 tiles of the normalized files (`work/bld/6-x-y`, crate::bld::work, a
-//! block per z14 tile) where those buildings are at least the block's `share` of the cell's
-//! buildings, and at least one.
+//! block per z14 tile) the cells' rule gives it.
 //!
 //! A record's kind, from the columns the files keep (crate::bld::work::Tags; building parts left
-//! out):
-//! - its **footprint's dataset**: OpenStreetMap where OSM gave the footprint (its OSM id), else
-//!   its `hsrc` (the footprint's dataset where no source gave it a height; else the height's,
-//!   which for a footprint and height of one source is the same);
-//! - **heights**: a height (`h`), counted for the height's dataset (`hsrc`);
-//! - **storeys**: floors and no height, counted for the footprint's dataset;
-//! - **footprints**: every building, counted for the footprint's dataset.
+//! out): its **footprint**, counted for the footprint's dataset (`fsrc`); a **height** (`h`),
+//! counted for the height's dataset (`hsrc`); **storeys** (floors and no height), counted for the
+//! footprint's dataset.
+//!
+//! **The cells' rule** ([`credit`]), a cell's buildings counted:
+//! - **footprints:** the cell is the footprints' piece of the dataset holding the most of its
+//!   buildings (ties to the dataset first by name), and no other's: a stray building gives its
+//!   dataset nothing;
+//! - **heights:** where half its buildings or more have a height ([`HELD`]), the cell is the
+//!   heights' piece of each dataset holding a quarter or more of those heights ([`CREDITED`]): two
+//!   datasets of 44 % each both have it;
+//! - **storeys:** likewise, of the buildings with floors and no height.
 //!
 //! The step's record of what it read (codecs::available::masks_logical: each file's content name
 //! and its pieces' cells, for the pieces declared as they are) is read first, and only the files
 //! it doesn't name are read: a file is read whole, a run of blocks at a time
-//! ([`READ_RUN`]), its geometry left unread. The record holds the current files alone.
+//! ([`READ_RUN`]), its geometry left unread. The record holds the current files alone. A file of
+//! an older format (one `bldprep` hasn't made again yet: work::FMT) is left out and counted.
 
 use anyhow::{bail, ensure, Context, Result};
 use buildstore::out::Out;
+use inputs::inputs::extents::{MaskBlock, HOLDS};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use terrain::available::mask::{Mask, MaskTile, CELLS, MASK_Z};
@@ -28,24 +34,26 @@ use terrain::available::mask::{Mask, MaskTile, CELLS, MASK_Z};
 use super::work::{flag, IndexEntry, Meta, Tags, WorkFile};
 
 /// What the record holds: bumped with a change to how a file's cells are found (every file read
-/// again).
-pub const MASKS_V: u32 = 1;
+/// again). (2: the footprint's own dataset, and the cells' rule.)
+pub const MASKS_V: u32 = 2;
+
+/// The share of a cell's buildings that must hold heights (or storeys) for the cell to have them.
+pub const HELD: f64 = 0.5;
+
+/// The share of a cell's height-holding (or storey-holding) buildings a dataset must hold to be
+/// credited with them there.
+pub const CREDITED: f64 = 0.25;
 
 /// The most stored bytes read at once from a file's blocks (a run of whole blocks; one block
 /// larger is read alone): few reads over the NAS, little held.
 pub const READ_RUN: usize = 32 << 20;
 
-/// The dataset OSM's footprints are (Overture's name for it).
-pub const OSM: &str = "OpenStreetMap";
-
-/// A mask piece as its declaration's `overture` block says it (inputs::inputs::extents::Overture):
-/// its id (`<source>/<piece>`), its dataset, what it holds and its share.
+/// A mask piece: its id (`<source>/<piece>`) and its `overture` block's reading
+/// (inputs::inputs::extents::MaskBlock).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spec {
     pub id: String,
-    pub dataset: String,
-    pub holds: String,
-    pub share: f64,
+    pub block: MaskBlock,
 }
 
 /// The mask pieces of source `source`: its `.geojson`'s pieces of an `overture` block, each by the
@@ -60,8 +68,7 @@ pub fn specs(source: &str, pieces: &[u8]) -> Result<Vec<Spec>> {
     for p in &s.pieces {
         if let Some(o) = s.overture.get(p.id.split('/').next().unwrap_or("")) {
             ensure!(p.extent == "mask", "{source}/{}: an overture block's piece of class {}", p.id, p.extent);
-            let (dataset, holds) = (o.dataset.clone(), o.holds.clone());
-            out.push(Spec { id: format!("{source}/{}", p.id), dataset, holds, share: o.share });
+            out.push(Spec { id: format!("{source}/{}", p.id), block: o.clone() });
         }
     }
     Ok(out)
@@ -71,9 +78,11 @@ pub fn specs(source: &str, pieces: &[u8]) -> Result<Vec<Spec>> {
 #[derive(Debug, Default)]
 pub struct Masks {
     pub masks: Vec<Mask>,
-    /// The normalized files read, and those whose cells the record held.
+    /// The normalized files read, those whose cells the record held, and those of an older format
+    /// left out.
     pub read: usize,
     pub kept: usize,
+    pub older: usize,
     /// The buildings read of a (holds, dataset) no spec names: what a declaration could add.
     pub undeclared: BTreeMap<(String, String), u64>,
 }
@@ -112,26 +121,35 @@ pub fn masks(out: &mut Out, theme: &str, specs: &[Spec], report: &(dyn Fn(u64, u
     let todo: Vec<&((u32, u32), String)> = files.iter().filter(|(_, c)| !old.contains_key(c)).collect();
     let done = std::sync::atomic::AtomicU64::new(0);
     let n = todo.len() as u64;
-    let read: Vec<(String, FileCells, BTreeMap<(String, String), u64>)> = todo
+    type Read = (String, Option<(FileCells, BTreeMap<(String, String), u64>)>);
+    let read: Vec<Read> = todo
         .par_iter()
         .map(|((x, y), c)| {
-            let (cells, undeclared) = read_file(&out.path(c), (*x, *y), specs)
+            let got = read_file(&out.path(c), (*x, *y), specs)
                 .with_context(|| format!("the buildings of 6/{x}/{y} ({c})"))?;
             report(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, n);
-            Ok((c.clone(), cells, undeclared))
+            Ok((c.clone(), got))
         })
         .collect::<Result<_>>()?;
-    let mut made = Masks { read: read.len(), kept: files.len() - read.len(), ..Default::default() };
-    for (c, cells, u) in read {
+    let mut made = Masks { kept: files.len() - read.len(), ..Default::default() };
+    // (A file of an older format isn't recorded: it's left out until `bldprep` makes it again.)
+    let mut older = std::collections::HashSet::new();
+    for (c, got) in read {
+        let Some((cells, u)) = got else {
+            older.insert(c);
+            continue;
+        };
+        made.read += 1;
         old.insert(c, cells);
         for (k, v) in u {
             *made.undeclared.entry(k).or_default() += v;
         }
     }
+    made.older = older.len();
     // (The record of the current files alone, in their order; the masks from it.)
     let mut rec: Vec<(&str, (u32, u32), &FileCells)> = Vec::with_capacity(files.len());
     let mut masks: Vec<Mask> = specs.iter().map(|s| Mask { id: s.id.clone(), tiles: BTreeMap::new() }).collect();
-    for (t, c) in &files {
+    for (t, c) in files.iter().filter(|(_, c)| !older.contains(c)) {
         let cells = &old[c];
         rec.push((c.as_str(), *t, cells));
         for (k, m) in cells {
@@ -155,25 +173,44 @@ fn tile_of(l: &str) -> Option<(u32, u32)> {
 
 /// The specs as the record holds them: a file's cells stand for these alone.
 fn specs_digest(specs: &[Spec]) -> String {
-    let mut t = format!("masks {MASKS_V} {MASK_Z}\n");
+    let mut t = format!("masks {MASKS_V} {MASK_Z} {HELD} {CREDITED}\n");
     for s in specs {
-        t.push_str(&format!("{}\t{}\t{}\t{}\n", s.id, s.dataset, s.holds, s.share));
+        t.push_str(&format!("{}\t{}\t{}\n", s.id, s.block.dataset, s.block.holds));
     }
     store::naming::hash16(t.as_bytes())
 }
 
-/// A file's cells of `specs`, and the buildings read of a (holds, dataset) none names.
+/// The datasets (codes) a cell credits with what `HOLDS[h]` names, by the cells' rule (the module's
+/// doc), from its buildings' counts by dataset code (`count[code][h]`; code 0, no dataset, counted
+/// but never credited) and its buildings (`all`).
+pub fn credit(count: &[[u32; 3]], all: u32, h: usize) -> Vec<u8> {
+    if h == FOOTPRINTS {
+        // (The plurality; the first code, the first by name, of equals.)
+        let best = count.iter().enumerate().fold((0usize, 0u32), |b, (c, n)| if n[h] > b.1 { (c, n[h]) } else { b });
+        return if best.0 != 0 && best.1 > 0 { vec![best.0 as u8] } else { Vec::new() };
+    }
+    let total: u32 = count.iter().map(|n| n[h]).sum();
+    if total == 0 || f64::from(total) < HELD * f64::from(all) {
+        return Vec::new();
+    }
+    (1..count.len())
+        .filter(|&c| count[c][h] > 0 && f64::from(count[c][h]) >= CREDITED * f64::from(total))
+        .map(|c| c as u8)
+        .collect()
+}
+
+/// A file's cells of `specs`, and the buildings read of a (holds, dataset) none names; None for a
+/// file of an older format.
 fn read_file(
     path: &store::nasfs::NasPath,
     t: (u32, u32),
     specs: &[Spec],
-) -> Result<(FileCells, BTreeMap<(String, String), u64>)> {
-    let f = WorkFile::open(path)?;
+) -> Result<Option<(FileCells, BTreeMap<(String, String), u64>)>> {
+    let Some(f) = WorkFile::open_current(path)? else { return Ok(None) };
     ensure!(f.meta.tile == format!("6/{}/{}", t.0, t.1), "a file of tile {}", f.meta.tile);
     // (Each spec's dataset as the file's code: 0 where the file holds none of it.)
     let code = |d: &str| f.meta.srcs.iter().position(|s| s == d).map_or(0, |i| i as u8 + 1);
-    let want: Vec<(u8, usize)> = specs.iter().map(|s| (code(&s.dataset), holds_index(&s.holds))).collect();
-    let osm = code(OSM);
+    let want: Vec<(u8, usize)> = specs.iter().map(|s| (code(&s.block.dataset), holds_index(&s.block.holds))).collect();
     // (By spec, by row: the cells held.)
     let mut rows: Vec<Vec<Vec<u16>>> = vec![vec![Vec::new(); CELLS as usize]; specs.len()];
     let codes = f.meta.srcs.len() + 1;
@@ -186,7 +223,7 @@ fn read_file(
             let raw = zstd::decode_all(z).context("a building block's zstd")?;
             let b = Tags::of(&raw)?;
             ensure!(b.n == e.count as usize, "a building block holds {} records, its index says {}", b.n, e.count);
-            // (Per holds, per dataset code: the buildings; and the cell's buildings.)
+            // (Per dataset code, per holds: the buildings; and the cell's buildings.)
             let mut count = vec![[0u32; 3]; codes];
             let mut all = 0u32;
             for i in 0..b.n {
@@ -194,13 +231,13 @@ fn read_file(
                     continue;
                 }
                 all += 1;
-                ensure!(usize::from(b.hsrc(i)) < codes, "a dataset code {} past the file's {}", b.hsrc(i), codes - 1);
-                let foot = if b.osm(i) != 0 && osm != 0 { osm } else { b.hsrc(i) };
-                count[usize::from(foot)][FOOTPRINTS] += 1;
+                let (fs, hs) = (usize::from(b.fsrc(i)), usize::from(b.hsrc(i)));
+                ensure!(fs < codes && hs < codes, "a dataset code {} past the file's {}", fs.max(hs), codes - 1);
+                count[fs][FOOTPRINTS] += 1;
                 if b.h(i) > 0 {
-                    count[usize::from(b.hsrc(i))][HEIGHTS] += 1;
+                    count[hs][HEIGHTS] += 1;
                 } else if b.f(i) > 0 {
-                    count[usize::from(foot)][STOREYS] += 1;
+                    count[fs][STOREYS] += 1;
                 }
             }
             if all == 0 {
@@ -209,10 +246,12 @@ fn read_file(
             let (_, x14, y14) = roadcore::archive::tile_zxy(e.key);
             ensure!((x14 / CELLS, y14 / CELLS) == t, "a block of z14 tile {x14}/{y14} outside the file's tile");
             let (cx, cy) = ((x14 % CELLS) as u16, (y14 % CELLS) as usize);
-            for (k, (d, h)) in want.iter().enumerate() {
-                let got = count[usize::from(*d)][*h];
-                if *d != 0 && got > 0 && f64::from(got) >= specs[k].share * f64::from(all) {
-                    rows[k][cy].push(cx);
+            for h in [FOOTPRINTS, STOREYS, HEIGHTS] {
+                let credited = credit(&count, all, h);
+                for (k, (d, wh)) in want.iter().enumerate() {
+                    if *wh == h && *d != 0 && credited.contains(d) {
+                        rows[k][cy].push(cx);
+                    }
                 }
             }
             for (d, c) in count.iter().enumerate().skip(1) {
@@ -231,7 +270,7 @@ fn read_file(
         .map(|(k, r)| (k, MaskTile::of(&r.into_iter().map(row_runs).collect::<Vec<_>>())))
         .filter(|(_, m)| !m.is_empty())
         .collect();
-    Ok((cells, undeclared))
+    Ok(Some((cells, undeclared)))
 }
 
 /// A row's cells as runs [a, b), sorted, cells side by side one run.
@@ -248,14 +287,12 @@ pub fn row_runs(mut cells: Vec<u16>) -> Vec<(u16, u16)> {
     out
 }
 
+/// inputs::inputs::extents::HOLDS's indexes (its order: footprints, storeys, heights).
 const FOOTPRINTS: usize = 0;
 const STOREYS: usize = 1;
 const HEIGHTS: usize = 2;
-/// inputs::inputs::extents::HOLDS, by index.
-const HOLDS: [&str; 3] = ["footprints", "storeys", "heights"];
-const _: () = assert!(HOLDS.len() == inputs::inputs::extents::HOLDS.len());
 
-/// A `holds` word's index (one the unit took: HOLDS).
+/// A `holds` word's index in HOLDS (one the unit took).
 fn holds_index(h: &str) -> usize {
     HOLDS.iter().position(|w| *w == h).unwrap_or(FOOTPRINTS)
 }

@@ -1,7 +1,7 @@
 //! A z6 tile's normalized buildings (`work/bld/6-<x>-<y>.<h>.sect`, RDSECT v1; docs/formats.md):
 //! what `bldprep` writes and `bldtiles` reads, a z14 tile's records at a time.
 //!
-//! Meta: `{"fmt": 1, "tile": "6/x/y", "release", "buildings", "parts", "srcs", "classes",
+//! Meta: `{"fmt": 2, "tile": "6/x/y", "release", "buildings", "parts", "srcs", "classes",
 //! "subtypes", "roofs", "ghsl": "R2023A", "read"}`: the counts, the strings the records' codes
 //! index (code 0: none; code k: the list's k-th, each list sorted), and what was read.
 //!
@@ -18,6 +18,10 @@ use store::sect::SectReader;
 
 /// The blocks' zstd level (fixed: the same bytes everywhere, docs/building.md §2).
 pub const ZSTD_LEVEL: i32 = 9;
+
+/// The files' format, their meta's `fmt` (2: each record's footprint's dataset, `fsrc`, after its
+/// OSM id; a file of another is refused, and made again by `bldprep`: crate::bld::BLDPREP_V).
+pub const FMT: u32 = 2;
 
 /// A block's place: its z14 tile key, where it is in `blocks`, its length and its records.
 #[repr(C)]
@@ -79,6 +83,8 @@ pub struct Block {
     pub ghsl: Vec<u16>,
     /// The OSM way or relation that gave the footprint ([`osm`]; 0: not OSM's).
     pub osm: Vec<u64>,
+    /// The footprint's dataset (into `srcs`): the source Overture names for the record's geometry.
+    pub fsrc: Vec<u8>,
     /// Per record, its first polygon; per polygon, its first ring; per ring, its first vertex
     /// (from the counts: [`Block::index`]).
     pub poly0: Vec<u32>,
@@ -151,7 +157,7 @@ impl Block {
 
     /// The block's bytes before compression: counts (records, polygons, rings, vertices), then
     /// each column (centroids, areas, polygons per record, rings per polygon, vertices per ring,
-    /// vertices, h, m, f, mf, class, subtype, roof, flags, hsrc, ghsl, osm), little-endian.
+    /// vertices, h, m, f, mf, class, subtype, roof, flags, hsrc, ghsl, osm, fsrc), little-endian.
     pub fn encode(&self) -> Vec<u8> {
         let n = self.len();
         let mut out = Vec::with_capacity(16 + n * 40 + self.verts.len() * 8);
@@ -183,6 +189,7 @@ impl Block {
         }
         out.extend_from_slice(bytemuck::cast_slice(&self.ghsl));
         out.extend_from_slice(bytemuck::cast_slice(&self.osm));
+        out.extend_from_slice(&self.fsrc);
         out
     }
 
@@ -227,6 +234,7 @@ impl Block {
         k.hsrc = c.vec(n)?;
         k.ghsl = c.vec(n)?;
         k.osm = c.vec(n)?;
+        k.fsrc = c.vec(n)?;
         ensure!(c.at == b.len(), "a building block has {} bytes too many", b.len() - c.at);
         k.index();
         Ok(k)
@@ -272,14 +280,25 @@ pub struct WorkFile {
 impl WorkFile {
     pub fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<WorkFile> {
         let path = path.into();
+        let shown = path.display().to_string();
+        Self::open_current(path)?
+            .with_context(|| format!("{shown}: normalized buildings of an older fmt (this reads {FMT})"))
+    }
+
+    /// The file at `path`, or None where it's of an older format (one `bldprep` makes again).
+    pub fn open_current<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Option<WorkFile>> {
+        let path = path.into();
         let f = path.open_plain().with_context(|| format!("open {}", path.display()))?;
         let r = SectReader::open(f).with_context(|| format!("read {}", path.display()))?;
         let meta: Meta =
             serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: its meta", path.display()))?;
-        ensure!(meta.fmt == 1, "{}: normalized buildings fmt {} (this reads 1)", path.display(), meta.fmt);
+        if meta.fmt < FMT {
+            return Ok(None);
+        }
+        ensure!(meta.fmt == FMT, "{}: normalized buildings fmt {} (this reads {FMT})", path.display(), meta.fmt);
         let index: Vec<IndexEntry> = r.read_pod("index")?;
         ensure!(index.windows(2).all(|w| w[0].key < w[1].key), "{}: its index isn't sorted", path.display());
-        Ok(WorkFile { r, meta, index })
+        Ok(Some(WorkFile { r, meta, index }))
     }
 
     /// The block of the z14 tile `key`, if it has one.
@@ -312,14 +331,14 @@ impl WorkFile {
 
 /// A block's columns that tell what each record holds, read in place without its geometry (the
 /// data-available masks', crate::bld::extents): its records' heights, floors, flags, heights'
-/// datasets and OSM ids, as `Block::encode` lays them out.
+/// and footprints' datasets, as `Block::encode` lays them out.
 pub struct Tags<'a> {
     pub n: usize,
     h: &'a [u8],
     f: &'a [u8],
     flags: &'a [u8],
     hsrc: &'a [u8],
-    osm: &'a [u8],
+    fsrc: &'a [u8],
 }
 
 impl<'a> Tags<'a> {
@@ -330,15 +349,15 @@ impl<'a> Tags<'a> {
         // (Centroids, areas, polygons per record; rings per polygon, vertices per ring; vertices.)
         let geometry = 16 * n + 4 * np + 4 * nr + 8 * nv;
         let at = c.at + geometry;
-        let need = at + 2 * n + 2 * n + 7 * n + 2 * n + 8 * n;
+        let need = at + 2 * n + 2 * n + 7 * n + 2 * n + 8 * n + n;
         ensure!(b.len() == need, "a building block of {} bytes, its counts say {need}", b.len());
         let col = |from: usize, w: usize| &b[from..from + w * n];
         let h = col(at, 2);
         let f = col(at + 4 * n, 1);
         let flags = col(at + 9 * n, 1);
         let hsrc = col(at + 10 * n, 1);
-        let osm = col(at + 13 * n, 8);
-        Ok(Tags { n, h, f, flags, hsrc, osm })
+        let fsrc = col(at + 21 * n, 1);
+        Ok(Tags { n, h, f, flags, hsrc, fsrc })
     }
 
     /// Record `i`'s height, decimetres (0: none).
@@ -361,9 +380,9 @@ impl<'a> Tags<'a> {
         self.hsrc[i]
     }
 
-    /// Record `i`'s OSM id ([`osm`]; 0: not OSM's footprint).
-    pub fn osm(&self, i: usize) -> u64 {
-        u64::from_le_bytes(self.osm[8 * i..8 * i + 8].try_into().expect("eight bytes"))
+    /// Record `i`'s footprint's dataset (a code into the meta's `srcs`).
+    pub fn fsrc(&self, i: usize) -> u8 {
+        self.fsrc[i]
     }
 }
 
@@ -431,6 +450,7 @@ mod tests {
             hsrc: vec![1, 2],
             ghsl: vec![0, 215],
             osm: vec![osm::WAY | 123, 0],
+            fsrc: vec![1, 2],
             ..Default::default()
         };
         b.index();
@@ -456,8 +476,8 @@ mod tests {
         assert_eq!(t.n, 2);
         for i in 0..2 {
             assert_eq!(
-                (t.h(i), t.f(i), t.flags(i), t.hsrc(i), t.osm(i)),
-                (b.h[i], b.f[i], b.flags[i], b.hsrc[i], b.osm[i])
+                (t.h(i), t.f(i), t.flags(i), t.hsrc(i), t.fsrc(i)),
+                (b.h[i], b.f[i], b.flags[i], b.hsrc[i], b.fsrc[i])
             );
         }
         assert!(Tags::of(&e[..e.len() - 1]).is_err());
@@ -470,7 +490,7 @@ mod tests {
         let p = d.path().join("w.sect");
         let b = sample();
         let z = zstd::bulk::compress(&b.encode(), ZSTD_LEVEL).unwrap();
-        let meta = Meta { fmt: 1, tile: "6/1/2".into(), srcs: vec!["OpenStreetMap".into()], ..Default::default() };
+        let meta = Meta { fmt: FMT, tile: "6/1/2".into(), srcs: vec!["OpenStreetMap".into()], ..Default::default() };
         write(&p, &meta, &mut vec![Ok((5u64, z.clone(), 2u32)), Ok((9u64, z, 2u32))].into_iter()).unwrap();
         let w = WorkFile::open(&p).unwrap();
         assert_eq!(w.meta.tile, "6/1/2");

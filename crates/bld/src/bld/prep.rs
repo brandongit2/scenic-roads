@@ -298,6 +298,7 @@ struct Row {
     hsrc: u16,
     ghsl: u16,
     osm: u64,
+    fsrc: u16,
 }
 
 /// A z6 tile's records as read, column by column.
@@ -327,6 +328,7 @@ pub struct Prepped {
     hsrc: Vec<u16>,
     ghsl: Vec<u16>,
     osm: Vec<u64>,
+    fsrc: Vec<u16>,
     /// The building of every part drawn (in T or a neighbour: not underground, its geometry read).
     parents: Vec<u128>,
     classes: Strings,
@@ -510,6 +512,7 @@ impl Prepped {
                     hsrc: code(&ds, hs),
                     ghsl: ghsl.at(cen),
                     osm,
+                    fsrc: code(&ds, fds[i]),
                 }))
             })
             .collect();
@@ -563,6 +566,7 @@ impl Prepped {
         self.hsrc.push(r.hsrc);
         self.ghsl.push(r.ghsl);
         self.osm.push(r.osm);
+        self.fsrc.push(r.fsrc);
     }
 
     pub fn len(&self) -> usize {
@@ -612,6 +616,7 @@ impl Prepped {
             b.hsrc.push(remap[3][self.hsrc[i] as usize]);
             b.ghsl.push(self.ghsl[i]);
             b.osm.push(self.osm[i]);
+            b.fsrc.push(remap[3][self.fsrc[i] as usize]);
         }
         b
     }
@@ -646,7 +651,7 @@ impl Prepped {
             }
         }
         let meta = Meta {
-            fmt: 1,
+            fmt: super::work::FMT,
             tile: t.slash(),
             release: release.to_string(),
             buildings: nb,

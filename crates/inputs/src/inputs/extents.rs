@@ -618,14 +618,14 @@ pub struct Block {
     pub overture: Option<MaskBlock>,
 }
 
-/// What an `overture` block's piece holds: the cells (z14 tiles) where, of the build's own copy of
-/// Overture's buildings, those of `dataset` with what it `holds` (HOLDS) are at least `share` of
-/// the cell's buildings, and at least one (bld::bld::extents).
+/// What an `overture` block's piece is: the buildings of `dataset` holding what it `holds` (HOLDS),
+/// drawn where the build's own copy of Overture's buildings gives that dataset a cell (a z14 tile)
+/// by the cells' rule (bld::bld::extents: footprints the plurality's; heights and storeys each
+/// dataset's of a quarter or more of a cell where half the buildings hold them).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaskBlock {
     pub dataset: String,
     pub holds: String,
-    pub share: f64,
 }
 
 impl Block {
@@ -791,12 +791,6 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
             if !b.get("holds").and_then(|v| v.as_str()).is_some_and(|h| HOLDS.contains(&h)) {
                 bad.push(format!("piece {id}: an overture block's `holds` is one of {}", HOLDS.join(", ")));
             }
-            if !b.get("share").and_then(num).is_some_and(|x| (0.0..=1.0).contains(&x)) {
-                bad.push(format!(
-                    "piece {id}: an overture block's `share` (of a cell's buildings, for the cell to hold the piece) \
-                     is a number from 0 to 1"
-                ));
-            }
         }
         let by: Option<Vec<&str>> = match b.get("by") {
             None => Some(Vec::new()),
@@ -865,7 +859,6 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
         let overture = (method == "overture").then(|| MaskBlock {
             dataset: b.get("dataset").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             holds: b.get("holds").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            share: b.get("share").and_then(num).unwrap_or(0.0),
         });
         blocks.push(Block { id, extent, availability: piece_avail, metrics, overture });
     }
@@ -902,7 +895,7 @@ pub struct Summary {
     pub read: Vec<String>,
     /// Why its `read` isn't the list of the blocks' readings.
     pub read_bad: Option<String>,
-    /// Its `overture` blocks' readings, by block id: the dataset, holds and share its mask pieces
+    /// Its `overture` blocks' readings, by block id: the dataset and holds its mask pieces
     /// are drawn by (the step reads them here, so they're in its key).
     pub overture: BTreeMap<String, MaskBlock>,
     pub pieces: Vec<Piece>,
@@ -1046,11 +1039,8 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
                         // (An `overture` block's reading: what its mask pieces are drawn from.)
                         if m == "overture" {
                             let text = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-                            let share = r.get("share").and_then(Value::as_f64).unwrap_or(f64::NAN);
-                            s.overture.insert(
-                                p.to_string(),
-                                MaskBlock { dataset: text("dataset"), holds: text("holds"), share },
-                            );
+                            s.overture
+                                .insert(p.to_string(), MaskBlock { dataset: text("dataset"), holds: text("holds") });
                         }
                     }
                     _ => s.read_bad = Some("a reading in `read` without its block's `piece` and `method`".into()),
@@ -1441,7 +1431,7 @@ impl Checks for Extents {
                 }
                 for b in &d.blocks {
                     if b.overture.is_some() && s.overture.get(&b.id) != b.overture.as_ref() {
-                        why.push(format!("its reading of {} isn't the block's dataset, holds and share", b.id));
+                        why.push(format!("its reading of {} isn't the block's dataset and holds", b.id));
                     }
                 }
                 let strays: Vec<(usize, String, String)> = s

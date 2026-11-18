@@ -889,10 +889,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 })?;
                 if !specs.is_empty() {
                     eprintln!(
-                        "available {theme}: {} mask pieces; {} files read, {} as the record had them",
+                        "available {theme}: {} mask pieces; {} files read, {} as the record had them, {} of an older format left out (bldprep makes them again)",
                         specs.len(),
                         m.read,
-                        m.kept
+                        m.kept,
+                        m.older
                     );
                 }
                 for ((holds, dataset), n) in &m.undeclared {

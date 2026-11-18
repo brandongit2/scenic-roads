@@ -518,7 +518,7 @@ fn a_words_primary_and_its_guarantee() {
 }
 
 /// An `overture` block: its pieces of class mask, drawn by the build (no geometry in the file), each
-/// naming its dataset, what it holds and its share of a cell's buildings.
+/// naming its dataset and what it holds.
 #[test]
 fn an_overture_block() {
     const OVERTURE: &str = r#"name = "Overture buildings"
@@ -532,23 +532,17 @@ id = "osm-heights"
 method = "overture"
 dataset = "OpenStreetMap"
 holds = "heights"
-share = 0.5
 [piece.metrics]
 detail = "heights"
 "#;
     assert!(checks_of("buildings/overture.toml", OVERTURE.as_bytes()).is_empty());
     let d = declaration(OVERTURE.as_bytes()).unwrap();
     assert_eq!(d.blocks[0].extent, "mask");
-    assert_eq!(
-        d.blocks[0].overture,
-        Some(MaskBlock { dataset: "OpenStreetMap".into(), holds: "heights".into(), share: 0.5 })
-    );
+    assert_eq!(d.blocks[0].overture, Some(MaskBlock { dataset: "OpenStreetMap".into(), holds: "heights".into() }));
     for (from, to) in [
         ("dataset = \"OpenStreetMap\"\n", ""),
         ("dataset = \"OpenStreetMap\"", "dataset = \" \""),
         ("holds = \"heights\"", "holds = \"roofs\""),
-        ("share = 0.5", "share = 1.5"),
-        ("share = 0.5\n", ""),
         ("method = \"overture\"", "method = \"overture\"\nclass = \"index\""),
     ] {
         let bad = OVERTURE.replacen(from, to, 1);
@@ -560,21 +554,21 @@ detail = "heights"
         );
     }
     // Its file: the piece with no geometry, of class mask (another class with none is refused), its
-    // reading the block's dataset, holds and share (another's isn't made from the block).
-    let file = |extent: &str, share: &str| {
+    // reading the block's dataset and holds (another's isn't made from the block).
+    let file = |extent: &str, holds: &str| {
         let f = feature(
             &format!(r#""piece":"osm-heights","extent":"{extent}","availability":"open","detail":"heights""#),
             "null",
         );
         format!(
-            r#"{{"type":"FeatureCollection","source":"overture","theme":"buildings","read":[{{"piece":"osm-heights","method":"overture","dataset":"OpenStreetMap","holds":"heights","share":{share}}}],"features":[{f}]}}"#
+            r#"{{"type":"FeatureCollection","source":"overture","theme":"buildings","read":[{{"piece":"osm-heights","method":"overture","dataset":"OpenStreetMap","holds":"{holds}"}}],"features":[{f}]}}"#
         )
     };
-    assert!(checks_of("buildings/overture.geojson", file("mask", "0.5").as_bytes()).is_empty());
-    assert!(!checks_of("buildings/overture.geojson", file("index", "0.5").as_bytes()).is_empty());
+    assert!(checks_of("buildings/overture.geojson", file("mask", "heights").as_bytes()).is_empty());
+    assert!(!checks_of("buildings/overture.geojson", file("index", "heights").as_bytes()).is_empty());
     let score = include_bytes!("../../../../../producers/extents/buildings/score.toml");
-    let made = |share: &str| {
-        let g = file("mask", share);
+    let made = |holds: &str| {
+        let g = file("mask", holds);
         let fs = whole_of(&[
             ("buildings/score.toml", score),
             ("buildings/overture.toml", OVERTURE.as_bytes()),
@@ -582,8 +576,8 @@ detail = "heights"
         ]);
         fs.iter().map(|f| f.check().to_string()).collect::<Vec<_>>()
     };
-    assert_eq!(made("0.5"), Vec::<String>::new());
-    assert_eq!(made("0.25"), [MADE]);
+    assert_eq!(made("heights"), Vec::<String>::new());
+    assert_eq!(made("storeys"), [MADE]);
 }
 
 #[test]
@@ -2120,7 +2114,7 @@ fn the_real_buildings_files_are_taken() {
     // (Only the sources whose extent isn't stated warn: of class unknown.)
     assert!(warnings.iter().all(|w| w.contains("of class unknown")), "{warnings:#?}");
     let c = Extents.file("buildings/overture.geojson", &files["buildings/overture.geojson"]);
-    assert_eq!(c.facts["classes"], serde_json::json!({"mask": 16}));
+    assert_eq!(c.facts["classes"], serde_json::json!({"mask": 15}));
     let s = score(REAL_BUILDINGS[0].1).unwrap();
     assert_eq!((s.primary.as_str(), s.within), ("detail", None));
 }

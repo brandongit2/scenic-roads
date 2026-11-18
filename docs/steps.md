@@ -1036,7 +1036,7 @@ buildings (`work/bld/6-x-y`, below, the masks), and nothing else. Its key is its
 `extents:<theme>`) and the land by content (`idents::pass_land`: required, so the step waits for
 the pass's `regions-land`), and the buildings' each normalized file by its content name
 (`idents::overture_work`); never `score.toml` (a declaration only as its pieces' `.geojson` holds
-it: an `overture` block's dataset, holds and share are in its `read`): the tiles hold which pieces are
+it: an `overture` block's dataset and holds are in its `read`): the tiles hold which pieces are
 where, never a score or a metric, so tuning a weight builds nothing again.
 - **Pixels hold piece sets, by a palette per tile** (docs/formats.md, Data available): Web
   Mercator tiles of 256 px, z0 to z12 (a pixel 38 m at the equator); a pixel's value is an index
@@ -1119,16 +1119,20 @@ where, never a score or a metric, so tuning a weight builds nothing again.
 - **The masks** (the buildings; task #1438): a piece of an `overture` block (docs/inputs.md §6.11)
   has no outline in its file; the step draws it from the build's own copy of Overture's buildings,
   the normalized files (`work/bld/6-x-y`, docs/buildings3d.md §3.1; `bld::bld::extents`): its cells
-  are the z14 tiles (a block of the file each; 64 z12 pixels a side, 2.4 km at the equator) where
-  the buildings of its dataset holding what it holds are at least its share of the tile's
-  buildings, and at least one (a building's footprint OSM's where it has an OSM id, else its
-  record's dataset; its height the dataset Overture names for it; parts not counted). Each file
+  are the z14 tiles (a block of the file each; 64 z12 pixels a side, 2.4 km at the equator) the
+  cells' rule (docs/inputs.md §6.11, the `overture` method) credits to its dataset for what it
+  holds: footprints to the dataset holding the most of the tile's buildings (a tie to the first by
+  name); heights where at least half the tile's buildings have one (`HELD`), to each dataset
+  holding at least a quarter of those (`CREDITED`); storeys the same way. A building's footprint
+  is its footprint's dataset's (the file's `fsrc`, docs/formats.md), its height the dataset
+  Overture names for its height; parts not counted. A file of an older format (no `fsrc`) is left
+  out, counted and not recorded, until bldprep makes it again (`work::WorkFile::open_current`). Each file
   is read whole, a run of blocks at a time (32 MB at most, `READ_RUN`), its tags alone decoded
   (`work::Tags`: no geometry), the files in parallel; the cells are kept by z6 tile as row runs
   (`terrain::available::mask`: 256 rows of runs a z6 tile). The step's record
   (`work/available-buildings/masks`, `BLDMASK1`) holds each file's cells by its content name, for
-  the mask pieces as their readings say them (a digest of the pieces' dataset, holds and share,
-  and `MASKS_V`): a run reads only the files the record doesn't name, and writes the record of the
+  the mask pieces as their readings say them (a digest of the pieces' dataset and holds, the rule's
+  `HELD` and `CREDITED`, and `MASKS_V`): a run reads only the files the record doesn't name, and writes the record of the
   current files alone; a record unreadable or of other pieces reads every file again. The cells
   are added to each row's runs before the cut (`mask::add`), so a mask is cut to the land like an
   outline; a z6 tile's key names each mask's digest of its cells there, so a file moved makes
@@ -1141,7 +1145,9 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   1,270 z6 tiles each), its record 8.1 MB; a run again with no file moved 0.2 s; the layers' build
   of the 154 outlines and 16 masks 98 s, 2,106,136 tiles in 1,617 packs of 1.25 GB; the whole
   1,121 s, a peak resident set of 4.86 GB (2.41 GB footprint). The reading is the NAS's bytes, so
-  a file of the build moved costs its own read alone.
+  a file of the build moved costs its own read alone. That was the rule before `fsrc` (a share a
+  piece, files of fmt 1): `BLDPREP_V` 3 makes every normalized file again, and the step isn't
+  measured on them yet (its reading the same, a byte more a building).
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
   On the 13,783 pieces with an extent of 18 Nov (producers/extents/terrain/, every region's
   sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, cut to the
@@ -1187,7 +1193,7 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   two sources' outlines over sea and land: the sea under them empty, the land kept, a z12 tile on the
   land across the cells' corner not stored, nothing moved making nothing, the coast moved in two
   cells making again only the z6 tile meeting them, and the sea's side kept instead when inverted); the masks, `a_mask_is_drawn_from_its_cells_beside_the_outlines`: a mask's cells drawn beside an outline and cut to the land, a moved cell making again only its z6 tile;
-  bld::bld::extents's (a cell holding a piece by its buildings' share, a record unreadable or of other pieces read again, the pieces' readings, a file's blocks read in runs; `measures_the_real_step`, the real step by hand, below); codecs::available's (the format, the layers' names and packs); the server's below.
+  bld::bld::extents's (the cells' rule, `the_cells_rule`: Houston's two datasets of 44 % each both credited with heights, a stray building giving no dataset the footprints; a cell holding a piece by its buildings, a file of an older format left out, a record unreadable or of other pieces read again, the pieces' readings, a file's blocks read in runs; `measures_the_real_step`, the real step by hand, below); codecs::available's (the format, the layers' names and packs); the server's below.
 
 **The step** `available-built` (terrain::available::built; stage `finish`, one world target,
 `available-built-terrain`, while the build takes its terrain from the elevation datasets, recorded

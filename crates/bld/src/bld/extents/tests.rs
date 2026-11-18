@@ -1,5 +1,5 @@
 use super::*;
-use crate::bld::work::{osm, Block, ZSTD_LEVEL};
+use crate::bld::work::{Block, FMT, ZSTD_LEVEL};
 use std::path::Path;
 use store::nasfs::NasRoot;
 
@@ -7,8 +7,8 @@ fn out(root: &Path) -> Out {
     Out::unbound(&NasRoot::local_for_test(root), &root.join("scratch")).unwrap()
 }
 
-/// A building of a block: its height (dm), floors, flags, dataset code and OSM id.
-type Rec = (u16, u8, u8, u8, u64);
+/// A building of a block: its height (dm), floors, flags, height's dataset code and footprint's.
+type Rec = (u16, u8, u8, u8, u8);
 
 /// A block of `recs`, each a triangle.
 fn block(recs: &[Rec]) -> Vec<u8> {
@@ -30,18 +30,19 @@ fn block(recs: &[Rec]) -> Vec<u8> {
         flags: recs.iter().map(|r| r.2).collect(),
         hsrc: recs.iter().map(|r| r.3).collect(),
         ghsl: vec![0; n],
-        osm: recs.iter().map(|r| r.4).collect(),
+        osm: vec![0; n],
+        fsrc: recs.iter().map(|r| r.4).collect(),
         ..Default::default()
     };
     b.index();
     zstd::bulk::compress(&b.encode(), ZSTD_LEVEL).unwrap()
 }
 
-/// Z6 tile (x, y)'s normalized file holding `blocks` ((column, row) of its z14 cells, records), its
-/// datasets `srcs`, put in the records under its logical name.
-fn put(o: &mut Out, dir: &Path, (x, y): (u32, u32), srcs: &[&str], blocks: &[((u32, u32), Vec<Rec>)]) {
+/// Z6 tile (x, y)'s normalized file of format `fmt` holding `blocks` ((column, row) of its z14
+/// cells, records), its datasets `srcs`, put in the records under its logical name.
+fn put_fmt(o: &mut Out, dir: &Path, (x, y): (u32, u32), fmt: u32, srcs: &[&str], blocks: &[((u32, u32), Vec<Rec>)]) {
     let meta = Meta {
-        fmt: 1,
+        fmt,
         tile: format!("6/{x}/{y}"),
         srcs: srcs.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
@@ -53,21 +54,30 @@ fn put(o: &mut Out, dir: &Path, (x, y): (u32, u32), srcs: &[&str], blocks: &[((u
         })
         .collect();
     bs.sort_by_key(|b| b.0);
-    let p = dir.join(format!("w-{x}-{y}.sect"));
+    let p = dir.join(format!("w-{x}-{y}-{fmt}.sect"));
     crate::bld::work::write(&p, &meta, &mut bs.into_iter().map(Ok)).unwrap();
     o.put_file(&crate::bld::work_logical(x, y), "sect", &p).unwrap();
 }
 
-fn spec(id: &str, dataset: &str, holds: &str, share: f64) -> Spec {
-    Spec { id: format!("overture/{id}"), dataset: dataset.into(), holds: holds.into(), share }
+fn put(o: &mut Out, dir: &Path, t: (u32, u32), srcs: &[&str], blocks: &[((u32, u32), Vec<Rec>)]) {
+    put_fmt(o, dir, t, FMT, srcs, blocks)
 }
 
-fn specs4() -> Vec<Spec> {
+const OSM: &str = "OpenStreetMap";
+const MS: &str = "Microsoft ML Buildings";
+const ESRI: &str = "Esri Community Maps";
+
+fn spec(id: &str, dataset: &str, holds: &str) -> Spec {
+    Spec { id: format!("overture/{id}"), block: MaskBlock { dataset: dataset.into(), holds: holds.into() } }
+}
+
+fn specs5() -> Vec<Spec> {
     vec![
-        spec("osm", OSM, "footprints", 0.0),
-        spec("osm-heights", OSM, "heights", 0.5),
-        spec("osm-storeys", OSM, "storeys", 0.5),
-        spec("ms", "Microsoft ML Buildings", "footprints", 0.0),
+        spec("osm", OSM, "footprints"),
+        spec("osm-heights", OSM, "heights"),
+        spec("osm-storeys", OSM, "storeys"),
+        spec("ms", MS, "footprints"),
+        spec("esri-heights", ESRI, "heights"),
     ]
 }
 
@@ -79,44 +89,73 @@ fn cells(m: &Mask, t: (u32, u32)) -> Vec<(u16, u16)> {
         .collect()
 }
 
+/// The cells' rule: footprints the plurality's (ties to the first code), never a stray
+/// building's; heights where half the buildings have one, each dataset of a quarter of them.
+#[test]
+fn the_cells_rule() {
+    let fp = |n: &[u32]| n.iter().map(|&k| [k, 0, 0]).collect::<Vec<_>>();
+    // (Code 0, no dataset: counted, never credited.)
+    assert_eq!(credit(&fp(&[0, 1, 10]), 11, FOOTPRINTS), [2]);
+    assert_eq!(credit(&fp(&[0, 3, 3]), 6, FOOTPRINTS), [1]);
+    assert_eq!(credit(&fp(&[5, 3, 1]), 9, FOOTPRINTS), Vec::<u8>::new());
+    let ht = |n: &[u32]| n.iter().map(|&k| [0, 0, k]).collect::<Vec<_>>();
+    // Houston: two datasets' heights on 44 % of the buildings each: both.
+    assert_eq!(credit(&ht(&[0, 44, 44]), 100, HEIGHTS), [1, 2]);
+    // Under half the buildings with heights: none; a dataset under a quarter of them: not it.
+    assert_eq!(credit(&ht(&[0, 30, 5]), 100, HEIGHTS), Vec::<u8>::new());
+    assert_eq!(credit(&ht(&[0, 50, 10]), 100, HEIGHTS), [1]);
+    assert_eq!(credit(&ht(&[0, 0, 0]), 0, HEIGHTS), Vec::<u8>::new());
+    let st = |n: &[u32]| n.iter().map(|&k| [0, k, 0]).collect::<Vec<_>>();
+    assert_eq!(credit(&st(&[0, 3, 2]), 6, STOREYS), [1, 2]);
+    // HOLDS's order, as these indexes take it.
+    assert_eq!([HOLDS[FOOTPRINTS], HOLDS[STOREYS], HOLDS[HEIGHTS]], ["footprints", "storeys", "heights"]);
+}
+
 #[test]
 fn a_cell_holds_a_piece_by_its_buildings() {
     let d = tempfile::tempdir().unwrap();
     let mut o = out(d.path());
-    let ms = "Microsoft ML Buildings";
     // (Codes: 1 Esri, 2 Microsoft, 3 OSM.)
-    let srcs = ["Esri Community Maps", ms, OSM];
-    let way = osm::WAY | 7;
+    let srcs = [ESRI, MS, OSM];
     put(
         &mut o,
         d.path(),
         (33, 22),
         &srcs,
         &[
-            // OSM's footprints with OSM's heights on two of three: heights held (2/3 ≥ 0.5).
-            ((5, 1), vec![(120, 0, 0, 3, way), (90, 0, 0, 3, way), (0, 0, 0, 3, way)]),
-            // One OSM height of three, two Microsoft footprints: OSM's footprints, not its heights.
-            ((6, 1), vec![(120, 0, 0, 3, way), (0, 0, 0, 2, 0), (0, 0, 0, 2, 0)]),
+            // OSM's footprints with OSM's heights on two of three: heights held (2/3 ≥ 1/2).
+            ((5, 1), vec![(120, 0, 0, 3, 3), (90, 0, 0, 3, 3), (0, 0, 0, 3, 3)]),
+            // One OSM building with a height, two Microsoft footprints: Microsoft's footprints,
+            // no heights (1/3).
+            ((6, 1), vec![(120, 0, 0, 3, 3), (0, 0, 0, 2, 2), (0, 0, 0, 2, 2)]),
             // OSM's storeys on both (no height); a part not counted.
-            ((7, 1), vec![(0, 4, 0, 3, way), (0, 2, 0, 3, way), (0, 0, flag::PART, 3, way)]),
-            // An OSM footprint whose height is Esri's: OSM's footprint, Esri's height (undeclared).
-            ((200, 9), vec![(150, 0, 0, 1, way)]),
+            ((7, 1), vec![(0, 4, 0, 3, 3), (0, 2, 0, 3, 3), (0, 0, flag::PART, 3, 3)]),
+            // Houston: OSM's heights on four, Esri's on four Microsoft footprints, one with none:
+            // both datasets' heights, Microsoft's footprints (5 of 9).
+            ((8, 1), [vec![(100, 0, 0, 3, 3); 4], vec![(100, 0, 0, 1, 2); 4], vec![(0, 0, 0, 2, 2)]].concat()),
+            // A stray OSM building among ten Microsoft ones: Microsoft's alone.
+            ((9, 1), [vec![(0, 0, 0, 2, 2); 10], vec![(0, 0, 0, 3, 3)]].concat()),
+            // An OSM footprint whose height is Esri's: OSM's footprint, Esri's height.
+            ((200, 9), vec![(150, 0, 0, 1, 3)]),
             // Only parts: no buildings.
-            ((201, 9), vec![(0, 0, flag::PART, 3, way)]),
+            ((201, 9), vec![(0, 0, flag::PART, 3, 3)]),
+            // A tie of Esri's and Microsoft's footprints: Esri's (first by name), undeclared.
+            ((202, 9), vec![(0, 0, 0, 1, 1), (0, 0, 0, 2, 2)]),
         ],
     );
-    let s = specs4();
+    let s = specs5();
     let m = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
-    assert_eq!((m.read, m.kept), (1, 0));
+    assert_eq!((m.read, m.kept, m.older), (1, 0, 0));
     let t = (33, 22);
-    assert_eq!(cells(&m.masks[0], t), [(5, 1), (6, 1), (7, 1), (200, 9)]);
-    assert_eq!(cells(&m.masks[1], t), [(5, 1)]);
+    assert_eq!(cells(&m.masks[0], t), [(5, 1), (7, 1), (200, 9)]);
+    assert_eq!(cells(&m.masks[1], t), [(5, 1), (8, 1)]);
     assert_eq!(cells(&m.masks[2], t), [(7, 1)]);
-    assert_eq!(cells(&m.masks[3], t), [(6, 1)]);
+    assert_eq!(cells(&m.masks[3], t), [(6, 1), (8, 1), (9, 1)]);
+    assert_eq!(cells(&m.masks[4], t), [(8, 1), (200, 9)]);
     // Side by side, one run.
-    assert_eq!(m.masks[0].tiles[&t].row(1), [(5, 8)]);
-    assert_eq!(m.undeclared.get(&("heights".into(), "Esri Community Maps".into())), Some(&1));
-    assert_eq!(m.undeclared.get(&("storeys".into(), OSM.into())), None);
+    assert_eq!(m.masks[3].tiles[&t].row(1), [(6, 7), (8, 10)]);
+    assert_eq!(m.undeclared.get(&("footprints".into(), ESRI.into())), Some(&1));
+    assert_eq!(m.undeclared.get(&("heights".into(), MS.into())), None);
     // Again: the record's cells, nothing read, the same masks and the same record.
     let rec = o.get(&codecs::available::masks_logical("buildings")).unwrap().to_string();
     let m2 = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
@@ -126,25 +165,29 @@ fn a_cell_holds_a_piece_by_its_buildings() {
     }
     assert_eq!(o.get(&codecs::available::masks_logical("buildings")).unwrap(), rec);
     // A second file: it alone read; its masks beside the first's.
-    put(&mut o, d.path(), (34, 22), &srcs, &[((0, 0), vec![(0, 0, 0, 2, 0)])]);
+    put(&mut o, d.path(), (34, 22), &srcs, &[((0, 0), vec![(0, 0, 0, 2, 2)])]);
     let m3 = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
     assert_eq!((m3.read, m3.kept), (1, 1));
     assert_eq!(cells(&m3.masks[3], (34, 22)), [(0, 0)]);
-    assert_eq!(cells(&m3.masks[3], t), [(6, 1)]);
-    // A share changed: every file read again; a piece gone from a file's cells.
-    let mut s2 = specs4();
-    s2[1].share = 0.9;
+    assert_eq!(cells(&m3.masks[3], t), [(6, 1), (8, 1), (9, 1)]);
+    // A spec changed: every file read again.
+    let mut s2 = specs5();
+    s2[1].block.holds = "storeys".into();
     let m4 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
     assert_eq!((m4.read, m4.kept), (2, 0));
-    assert!(cells(&m4.masks[1], t).is_empty() && !m4.masks[1].tiles.contains_key(&t));
+    assert_eq!(cells(&m4.masks[1], t), [(7, 1)]);
+    // A file of an older format: left out, not recorded, its tile in no mask.
+    put_fmt(&mut o, d.path(), (34, 22), FMT - 1, &srcs, &[((0, 0), vec![(0, 0, 0, 2, 2)])]);
+    let m5 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
+    assert_eq!((m5.read, m5.kept, m5.older), (0, 1, 1));
+    assert!(!m5.masks[3].tiles.contains_key(&(34, 22)));
     // A file gone: its tile gone from the masks and the record.
     o.remove(&crate::bld::work_logical(34, 22));
-    let m5 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
-    assert_eq!((m5.read, m5.kept), (0, 1));
-    assert!(!m5.masks[3].tiles.contains_key(&(34, 22)));
+    let m6 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
+    assert_eq!((m6.read, m6.kept, m6.older), (0, 1, 0));
     // No mask piece: nothing read, the record gone.
-    let m6 = masks(&mut o, "buildings", &[], &|_, _| {}).unwrap();
-    assert!(m6.masks.is_empty() && m6.read == 0 && m6.kept == 0);
+    let m7 = masks(&mut o, "buildings", &[], &|_, _| {}).unwrap();
+    assert!(m7.masks.is_empty() && m7.read == 0 && m7.kept == 0);
     assert!(o.get(&codecs::available::masks_logical("buildings")).is_none());
 }
 
@@ -152,8 +195,8 @@ fn a_cell_holds_a_piece_by_its_buildings() {
 fn a_record_unreadable_or_of_other_specs_is_read_again() {
     let d = tempfile::tempdir().unwrap();
     let mut o = out(d.path());
-    put(&mut o, d.path(), (10, 20), &[OSM], &[((3, 4), vec![(0, 0, 0, 1, osm::WAY | 1)])]);
-    let s = specs4();
+    put(&mut o, d.path(), (10, 20), &[OSM], &[((3, 4), vec![(0, 0, 0, 1, 1)])]);
+    let s = specs5();
     masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
     let l = codecs::available::masks_logical("buildings");
     let b = o.path(o.get(&l).unwrap()).read().unwrap();
@@ -167,17 +210,16 @@ fn a_record_unreadable_or_of_other_specs_is_read_again() {
     assert_eq!((m.read, m.kept), (1, 0));
     assert_eq!(cells(&m.masks[0], (10, 20)), [(3, 4)]);
 }
-
 #[test]
 fn specs_come_from_the_overture_blocks_readings() {
     let pieces = br#"{"type": "FeatureCollection", "source": "overture", "theme": "buildings",
         "read": [{"piece": "osm-heights", "method": "overture", "dataset": "OpenStreetMap", "holds": "heights",
-        "share": 0.5, "grain": "z14 tiles"}, {"piece": "city", "method": "file"}],
+        "grain": "z14 tiles"}, {"piece": "city", "method": "file"}],
         "features": [{"type": "Feature", "geometry": null, "properties": {"piece": "osm-heights", "extent": "mask",
         "availability": "open", "detail": "heights"}}, {"type": "Feature", "geometry": null, "properties":
         {"piece": "city", "extent": "unknown", "availability": "open", "detail": "lod2"}}]}"#;
     let s = specs("overture", pieces).unwrap();
-    assert_eq!(s, [spec("osm-heights", OSM, "heights", 0.5)]);
+    assert_eq!(s, [spec("osm-heights", OSM, "heights")]);
     // An overture block's piece of another class, or a file that isn't one of pieces: refused.
     let square = r#"{"type": "MultiPolygon", "coordinates": [[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]]}"#;
     let other = String::from_utf8(pieces.to_vec())
@@ -241,7 +283,7 @@ fn measures_the_real_step() {
     let files = o.manifest.len();
     let t = std::time::Instant::now();
     let m = masks(&mut o, "buildings", &specs_all, &|_, _| {}).unwrap();
-    eprintln!("masks: {} files ({} read, {} kept) in {:.1?}", files, m.read, m.kept, t.elapsed());
+    eprintln!("masks: {} files ({} read, {} kept, {} older) in {:.1?}", files, m.read, m.kept, m.older, t.elapsed());
     for k in &m.masks {
         eprintln!("  {}: {} z6 tiles", k.id, k.tiles.len());
     }
