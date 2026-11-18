@@ -2092,8 +2092,8 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap();
         assert_eq!(dr.retired, 2);
-        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
-        assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
+        let p: buildstore::pending::Pending = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.iter().collect::<Vec<_>>(), [rail]);
         let m: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(m.keys().collect::<Vec<_>>(), ["global/legacyx/ferries", "global/railfreq"]);
     }
@@ -2283,8 +2283,8 @@ mod tests {
             drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap().unpended,
             1
         );
-        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
-        assert_eq!(p.keys().collect::<Vec<_>>(), [now, copy], "the copy the accepted index lists stays for the check");
+        let p: buildstore::pending::Pending = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.iter().collect::<Vec<_>>(), [now, copy], "the copy the accepted index lists stays for the check");
         assert_eq!(
             drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap(),
             Dropped::default(),
@@ -2329,8 +2329,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "a dry run writes nothing");
         let v = verify_pending(super::super::seam::for_tests(), &nas, &s, &["sh", "-c"], at, false).unwrap();
         assert_eq!((v.ok, v.bad), (2, vec![short.to_string(), gone.to_string()]));
-        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
-        assert_eq!(p.keys().collect::<Vec<_>>(), [short, gone]);
+        let p: buildstore::pending::Pending = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.iter().collect::<Vec<_>>(), [short, gone]);
         assert!(root.join(good).exists() && root.join(short).exists());
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
@@ -2370,7 +2370,7 @@ mod tests {
         .unwrap();
         assert_eq!((v.ok, v.bad.len()), (n, 0));
         assert_eq!(YIELD_CHECKS.get() - before, 2, "a safe point after each of its two batches");
-        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        let p: buildstore::pending::Pending = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert!(p.is_empty(), "{p:?}");
     }
 
