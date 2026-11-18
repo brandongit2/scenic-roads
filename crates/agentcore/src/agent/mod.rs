@@ -17785,7 +17785,6 @@ mod membership_tests {
             "coord",
             "coord/jobs-token",
             "coord/page",
-            "coord/history.jsonl",
             "coord/workers-token",
             "coord/journal",
         ];

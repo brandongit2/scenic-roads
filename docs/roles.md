@@ -162,7 +162,7 @@ Any click on the item, left or right, opens the menu; nothing else opens.
 
 Built (step 6). At a member's start (and when an unknown role is learnt a member's), the agent
 removes what only a lead writes and what no code writes any more (on both laptops, 6 Nov), each
-last written a day ago or more (a folder by its newest entry), so nothing a process of the Mac
+last written a day ago or more (a week for the history file; a folder by its newest entry), so nothing a process of the Mac
 still writes goes (`room::member_leftovers`, `room::drop_member_leftovers`, by name:
 `room::is_member_leftover`):
 - the lead's: `status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`,
@@ -176,12 +176,14 @@ still writes goes (`room::member_leftovers`, `room::drop_member_leftovers`, by n
 - written by nothing since the code that wrote them went: `loop-stall-sample-*.txt` (the loop
   watchdog, cut by #871 step 6), `round.json` (the map update's old name, #209) and
   `battery-floor.moved`.
+- `coord/history.jsonl`, which a member's broker has not written since #1160 (the file an older
+  app left, or the one a lead's coordinator wrote before the Mac handed over), last written a
+  week ago or more, not a day (the history's own span).
 A whole write cut off (`helper.json.<host>.<pid>.<n>.tmp`, five on each laptop on 6 Nov) is not in
 the list: `store::whole::write` sweeps its folder's day-old ones itself, hourly.
 
 Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, `page`,
-`history.jsonl` where the Mac once led (a member's broker keeps its history in memory alone, its
-agent noting its tasks to the lead: docs/coordination.md decision 4), `workers-token` (the pool's, copied in by
+`workers-token` (the pool's, copied in by
 `membership::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
 broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
 its own jobs' timings there (`take_timings`, crates/agentcore/src/agent/mod.rs), which `scenic`
@@ -262,7 +264,9 @@ Each step ships alone and keeps the build running; each ends with its tests.
 6. *Built.* **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file` (the agent's own
    `timings.jsonl` and the broker's `coord/` files, `workers-token` and `journal/` among them, in
    the kept list; a restarted member's two-day-old leftovers removed, a newer one and the kept
-   stay), `room::tests::member_leftovers_go_by_name_and_age`. Saves ~1.1 GB of disk on each laptop
+   stay), `room::tests::member_leftovers_go_by_name_and_age`,
+   `room::tests::member_history_leftover_goes_a_week_stale` (a week-old `coord/history.jsonl` goes, a
+   six-day-old one stays; task #1364). Saves ~1.1 GB of disk on each laptop
    (`backups/`; §8.1). As built: it also touches coord (a broker reads and writes none of the
    lead's files in its folder: without that its start wrote the jobs' disks and fills back each
    time they were removed). Cut: a broker's read of the folder's leases (and its dropping their job
