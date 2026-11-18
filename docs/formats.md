@@ -926,7 +926,7 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …]}
+{v: 3, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …]}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
@@ -939,8 +939,11 @@ done: {end, targets, of, resumed, made}
   6/32/24", task #849). `job`: its run's job id (below, Job ids: `SCENIC_JOB`, else stamped by its
   agent and by the lead as they keep it; absent before task #1103 and for a job of no lease).
   `host`: the Mac. `start`: unix seconds.
-- `v`: 2 since task #1116 (a phase's `cpu_s` its own work's); 1 before (a phase's `cpu_s` the
-  process's while it was open, so an `overlapped` phase's counts other threads' work too).
+- `v`: 3 since task #1450 (`nas.read_b` what the NAS served, every read told by its time, below);
+  2 since task #1116 (a phase's `cpu_s` its own work's; its `nas.read_b`, from task #1419, every byte
+  read through the share but a whole copy's cached part); 1 before (a phase's `cpu_s` the process's
+  while it was open, so an `overlapped` phase's counts other threads' work too). A reader of
+  `nas.read_b` takes v 3's alone.
 - `cpu_s`: user + system, the process's and its finished children's. `untimed_cpu_s` (v 2): of
   it, the CPU in no phase; the top-level phases' `cpu_s` (the `background` ones' too) and it add up
   to `cpu_s`. `threads`:
@@ -994,12 +997,23 @@ read as absent):
   program it starts (jobrt::sys::osmium, jobrt::timings::child). Its input's size is its targets' cost lines'
   (`costs.jsonl`'s `sizes`).
 - `nas` (its agent's, from the job's counts folder as it ended, store::nasio: every process of the
-  job): `read_b` the bytes read through the NAS share (`ReadBytes`; its uploads' read-backs among
-  them, `read_back_b`), `held_b` those of NAS files it read that this Mac's page cache held, so the
-  NAS served none (a whole copy's resident part, store::nasfs's `copy_counter`), `wrote_b`, and the
-  files opened for reading, made, listed (entries), statted and deleted. Asked of the NAS:
-  `read_b + held_b`, whichever answered (a warm cache isn't a small need); served: `read_b`, where a
-  streaming read that the share's own client cache answers is counted as served (not measured).
+  job): `read_b` the bytes the NAS served (`ReadBytes`; its uploads' read-backs among them,
+  `read_back_b`), `held_b` those of NAS files it read that this Mac's page cache held, so the NAS
+  served none, `wrote_b`, and the files opened for reading, made, listed (entries), statted and
+  deleted. Asked of the NAS: `read_b + held_b`, whichever answered (a warm cache isn't a small
+  need); served: `read_b`. Every read (a stream's, a range's, a whole read's, a copy's) is told one
+  or the other by its own time (store::nasio::Reads, task #1450): quicker than 0.25 ms plus its
+  bytes at 2 GB/s, this Mac's cache's (its 1 MB reads measured at 0.36 ms at most, the NAS's at 9 ms
+  or more; a 4 KB read 5 µs against the NAS's 0.8 ms), and a quick read following one the NAS
+  answered, within the kernel's read-ahead reach, the NAS's (what the kernel read ahead for it).
+  Against the SMB session's own received bytes (18 Nov, the M4): within 0.1 % on files read cold,
+  warm, warm then cold, and at random; two errors, both counting more: a file cold at its start
+  and warm after, read through, is counted the NAS's from its first slow read on (at most the
+  read-ahead's reach, `kern.speculative_prefetch_max`, 192 MB on the M4), and a read held up past
+  the bound by a loaded Mac counts the NAS's. Not counted: the whole pages the NAS sends for a small
+  read (a 4 KB read moves about 20 KB, a 64 KB one about 80 KB). What chunk 4's pacing (#1417) can
+  take from it: `read_b` over the run is at least what the NAS sent for the job's reads but their
+  pages' rounding, never a cache's answer counted as the NAS's beyond those two.
 - `done`: `end` (its agent's: `done`, `paused`, `failed`, `interrupted`, `cancelled`; only `done` did its whole
   job, the others' figures are a part's), `targets` it finished of the `of` it was given (its
   agent's, as the history's end says them), `resumed` the blocks or pieces it found kept by an

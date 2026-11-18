@@ -52,7 +52,7 @@ impl Blobs {
         copied: std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>,
     ) -> io::Result<PathBuf> {
         let local = self.path_of(content);
-        // (Raw: crate::sys::copy_data's copy, its bytes counted as they're read, crate::nasfs's
+        // (Raw: crate::sys::copy_data_timed's copy, its bytes counted as they're read, crate::nasfs's
         // `copy_counter`, the file opened by its caller: tests/nas_access.rs.)
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
@@ -69,8 +69,8 @@ impl Blobs {
                         move |m| {
                             let mut count = crate::nasfs::copy_counter();
                             let want = fs::metadata(&s)?.len();
-                            let (n, _) = crate::sys::copy_data_held(&s, &t, &mut |k, h| {
-                                count(k, h);
+                            let n = crate::sys::copy_data_timed(&s, &t, &mut |k, took| {
+                                count(k, took);
                                 m.add(k);
                                 copied(k, want);
                             })?;

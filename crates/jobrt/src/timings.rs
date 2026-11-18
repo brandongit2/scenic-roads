@@ -80,9 +80,10 @@ pub const JOB_NAME_ENV: &str = "SCENIC_JOB_NAME";
 pub const JOB_ENV: &str = "SCENIC_JOB";
 /// Where a child program writes its phases, for the phase that ran it.
 pub const PHASES_TO_ENV: &str = "SCENIC_PHASES_TO";
-/// The record's version: 2 since task #1116 (a phase's CPU its own; 1: the process's while it was
-/// open).
-pub const VERSION: u32 = 2;
+/// The record's version: 3 since task #1450 (`nas.read_b` the bytes the NAS served, each read told
+/// by its time, store::nasio::Reads; 2: every byte read through the share but a whole copy's
+/// cached part); 2 since task #1116 (a phase's CPU its own; 1: the process's while it was open).
+pub const VERSION: u32 = 3;
 
 /// A phase's wall time by what the job waited on while it was open, measured (store::waits): by
 /// the job's wall clock, so the waits never sum past the phase's wall time; the rest is computing.
@@ -441,11 +442,11 @@ impl Work {
 }
 
 /// A job's NAS traffic, all its processes' (store::nasio's counts, its counts folder summed):
-/// `read_b` the bytes read through the NAS share (`ReadBytes`, its uploads' read-backs among them:
+/// `read_b` the bytes the NAS served (`ReadBytes`, its uploads' read-backs among them:
 /// `read_back_b`), `held_b` the bytes of NAS files it read that this Mac's page cache held, so the
-/// NAS served none of them (`held`: a whole copy's resident part). What it asked of the NAS is
-/// `read_b + held_b`, whichever answered (a warm cache isn't a small need); what the NAS served,
-/// `read_b`, where a streaming read the share's own cache answered counts as served (not measured).
+/// NAS served none of them (`held`), each read told one or the other by its time (store::nasio::
+/// Reads, from record version 3). What it asked of the NAS is `read_b + held_b`, whichever
+/// answered (a warm cache isn't a small need); what the NAS served, `read_b`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Nas {
     #[serde(default)]

@@ -238,10 +238,12 @@ mod tests {
         let l = Local::new(&store::nasfs::NasRoot::local_for_test(&nas), &cache, 0);
         let outside = d.path().join("elsewhere.tar");
         assert_eq!(at(l.path(&store::nasfs::NasPath::local_for_test(&outside))), outside);
-        let read = store::nasio::get(store::nasio::Count::ReadBytes);
+        // (Asked of the NAS: its bytes the NAS's or, just written here, this Mac's cache's.)
+        let asked = || store::nasio::get(store::nasio::Count::ReadBytes) + store::nasio::own_held();
+        let read = asked();
         let got = at(l.path(&nr.join(name)));
         assert_eq!(got, cache.join("blobs").join(name));
-        assert!(store::nasio::get(store::nasio::Count::ReadBytes) - read >= 4096, "the copy counted as read");
+        assert!(asked() - read >= 4096, "the copy counted as read");
         assert_eq!(std::fs::read(&got).unwrap(), vec![5u8; 4096]);
         assert_eq!(held(&cache), 4096);
         // (A stored GeoTIFF's copy is its terrain job's, not the shared cache's.)

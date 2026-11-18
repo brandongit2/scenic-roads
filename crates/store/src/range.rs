@@ -144,6 +144,8 @@ pub struct PooledFile {
     file: std::sync::Mutex<Option<(Arc<File>, u64)>>,
     /// (For its errors and Debug.)
     shown: PathBuf,
+    /// Its reads, counted the NAS's or this Mac's cache's.
+    reads: crate::nasio::Reads,
 }
 
 /// The most a PooledFile reads in one pool operation.
@@ -156,7 +158,7 @@ impl PooledFile {
     pub fn new(path: crate::nasfs::NasPath, pool: Arc<IoPool>) -> Self {
         let shown = path.unchecked_path();
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Self { path, pool, id, file: std::sync::Mutex::new(None), shown }
+        Self { path, pool, id, file: std::sync::Mutex::new(None), shown, reads: crate::nasio::Reads::default() }
     }
 
     /// Opens `path` through the pool now (open and fstat in one trip; counted there).
@@ -195,7 +197,7 @@ impl PooledFile {
     fn read_piece(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         let (f, flen) = self.handle(false)?;
         check_range(flen, off, len)?;
-        let b = match self.pool.read_at(&f, off, len) {
+        let (b, took) = match self.pool.read_at(&f, off, len) {
             Err(IoError::Io(_)) => {
                 let (f, _) = self.handle(true)?;
                 self.pool.read_at(&f, off, len)
@@ -207,7 +209,7 @@ impl PooledFile {
             }
             r => r,
         }?;
-        crate::nasio::read(len as u64);
+        self.reads.read(off, len as u64, took);
         Ok(b)
     }
 
@@ -289,10 +291,13 @@ fn open_bounded(path: &Path) -> io::Result<(File, u64, bool)> {
     })
 }
 
-/// A PlainFile's descriptor (None: closed, `plain_open_cap`'s) and when it was read last.
+/// A PlainFile's descriptor (None: closed, `plain_open_cap`'s), when it was read last, and its
+/// reads (counted the NAS's or this Mac's cache's, its descriptors' alike: the kernel reads ahead
+/// by the file, not the descriptor).
 struct Slot {
     file: std::sync::Mutex<Option<Arc<File>>>,
     used: std::sync::atomic::AtomicU64,
+    reads: crate::nasio::Reads,
 }
 
 /// The PlainFiles with a descriptor open, the order of their reads by `CLOCK`.
@@ -389,6 +394,7 @@ impl PlainFile {
         let slot = Arc::new(Slot {
             file: std::sync::Mutex::new(Some(Arc::new(file))),
             used: std::sync::atomic::AtomicU64::new(tick()),
+            reads: crate::nasio::Reads::default(),
         });
         register(&slot);
         Ok(Self {
@@ -401,9 +407,9 @@ impl PlainFile {
         })
     }
 
-    /// One positioned read of `len` bytes at `off` of `f`: on the NAS, a crate::deadline call (the
-    /// struct's doc), its descriptor let go past its deadline.
-    fn read_once(&self, f: Arc<File>, off: u64, len: usize) -> io::Result<Vec<u8>> {
+    /// One positioned read of `len` bytes at `off` of `f`, and the time the read itself took: on
+    /// the NAS, a crate::deadline call (the struct's doc), its descriptor let go past its deadline.
+    fn read_once(&self, f: Arc<File>, off: u64, len: usize) -> io::Result<(Vec<u8>, std::time::Duration)> {
         use crate::sys::PosIo;
         #[cfg(test)]
         {
@@ -415,7 +421,8 @@ impl PlainFile {
         }
         let read = move |f: &File| {
             let mut b = vec![0u8; len];
-            f.read_exact_at(&mut b, off).map(|_| b)
+            let t = std::time::Instant::now();
+            f.read_exact_at(&mut b, off).map(|_| (b, t.elapsed()))
         };
         if self.local {
             return read(&f);
@@ -512,7 +519,7 @@ impl RangeRead for PlainFile {
             }
             r => r,
         };
-        let b = r.map_err(|e| {
+        let (b, took) = r.map_err(|e| {
             if crate::aimd::nas_congested(&e) {
                 turn.as_mut().map(crate::aimd::Slot::congested);
             }
@@ -524,7 +531,7 @@ impl RangeRead for PlainFile {
         if self.local {
             count_local(len as u64);
         } else {
-            crate::nasio::read(len as u64);
+            self.slot.reads.read(off, len as u64, took);
         }
         Ok(b)
     }

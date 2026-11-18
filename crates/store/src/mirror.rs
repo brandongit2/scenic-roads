@@ -265,7 +265,7 @@ impl RangeRead for NasFile {
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         crate::range::check_range(self.len, off, len)?;
-        self.pool.read_at_timeout(&self.file, off, len, self.timeout)
+        self.pool.read_at_timeout(&self.file, off, len, self.timeout).map(|(b, _)| b)
     }
 }
 
@@ -830,7 +830,7 @@ impl Mirror {
             }
             let n = (size - have).min(CHUNK) as usize;
             let buf = match pool.read_at_timeout(&file, have, n, timeout) {
-                Ok(b) => b,
+                Ok((b, _)) => b,
                 Err(IoError::Offline | IoError::Timeout) => {
                     out.sync_all()?;
                     return Ok(Some(Copy::Offline));

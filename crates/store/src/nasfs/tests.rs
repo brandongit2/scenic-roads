@@ -118,8 +118,10 @@ fn every_operation_is_counted() {
     r.join("x/a.json").write_whole(b"12345").unwrap();
     r.join("x/b.json").write(b"123").unwrap();
     assert!(d(Count::WroteBytes) >= 8 && d(Count::Creates) >= 2);
+    // (Its bytes the NAS's or, just written here, this Mac's cache's: asked either way.)
+    let held = nasio::own_held();
     assert_eq!(r.join("x/a.json").read().unwrap(), b"12345");
-    assert!(d(Count::ReadBytes) >= 5 && d(Count::Files) >= 1);
+    assert!(d(Count::ReadBytes) + (nasio::own_held() - held) >= 5 && d(Count::Files) >= 1);
     let stats = d(Count::Stats);
     assert!(r.join("x/a.json").exists());
     assert!(d(Count::Stats) > stats);
@@ -129,12 +131,12 @@ fn every_operation_is_counted() {
     assert!(d(Count::Deletes) >= 1);
 }
 
-/// A file copied whole while this Mac's page cache holds it (one just written) counts as read
-/// here (`Local`), not from the NAS, task #939, and as NAS bytes held here (`held`: asked of the
-/// NAS all the same, task #1419); the copy's file is counted as opened all the same.
+/// A file copied whole while this Mac's page cache holds it (one just written): each read told the
+/// NAS's or the cache's by its time (task #1450; the cache's counted read here, `Local`, task #939,
+/// and NAS bytes held here, `held`, task #1419); the copy's file is counted as opened.
 #[cfg(unix)]
 #[test]
-fn a_copy_the_page_cache_answers_is_read_here() {
+fn a_copys_reads_are_each_told_the_nas_or_the_caches() {
     let (d, r) = root();
     let n = 3 << 20;
     r.join("p.pack").write(vec![5u8; n]).unwrap();
@@ -145,8 +147,11 @@ fn a_copy_the_page_cache_answers_is_read_here() {
     let grew = |c: Count| nasio::own()[c as usize] - at[c as usize];
     assert_eq!(r.join("p.pack").copy_data_to_local(&to.join("a")).unwrap(), n as u64);
     assert_eq!(r.join("p.pack").copy_to_local(&to.join("b")).unwrap(), n as u64);
-    assert!(grew(Count::Local) >= 2 * n as u64, "{} local", grew(Count::Local));
-    assert!(nasio::own_held() - held >= 2 * n as u64, "held here");
+    // (Which answered is each read's time's, nasio's test: a read here held up past the bound by a
+    // loaded Mac counts the NAS's, so only that each byte is told one or the other is asserted.)
+    let held = nasio::own_held() - held;
+    assert!(grew(Count::ReadBytes) + held >= 2 * n as u64, "every byte asked");
+    assert!(grew(Count::Local) >= held, "{} local, {held} held", grew(Count::Local));
     assert!(grew(Count::Files) >= 2);
 }
 

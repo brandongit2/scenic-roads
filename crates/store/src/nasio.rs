@@ -3,8 +3,7 @@
 //! (an upload's read-backs among them, and apart too: `ReadBack`) and written, files opened for
 //! reading, files made, folder entries listed, files statted and deleted), and beside it the bytes
 //! read from this Mac's own disk (`Local`: crate::range's mapped and local files, crate::cachefile's
-//! reads, and the part of a NAS file copied whole that this Mac's page cache held, crate::nasfs)
-//! and the GeoTIFFs opened. The one per-process counter set: a build target's input measures
+//! reads, and the NAS reads this Mac's page cache answered, `Reads`) and the GeoTIFFs opened. The one per-process counter set: a build target's input measures
 //! (buildstore::costin) are its deltas.
 //!
 //! A job's processes count into files of their own on the agent's disk, so the agent sees a job's
@@ -39,10 +38,28 @@
 //! threads: its live thread control). An older file (shorter) says none.
 //!
 //! After it, the bytes of NAS files this process read that this Mac's page cache held, so the NAS
-//! served none of them (`held`: a whole copy's resident part, crate::nasfs's `copy_counter`, which
-//! counts them as `Local` too): with `ReadBytes`, what the job asked of the NAS whichever answered
-//! (task #1419). Summed, folded and taken as the wall time waited is (`held_in`); an older file says
-//! none.
+//! served none of them (`held`, counted as `Local` too; every NAS read is told one or the other by
+//! its time, `Reads`, task #1450): with `ReadBytes`, what the job asked of the NAS whichever
+//! answered (task #1419). Summed, folded and taken as the wall time waited is (`held_in`); an older
+//! file says none.
+//!
+//! **Which answered** (`Reads`, task #1450, measured 18 Nov against the SMB session's own received
+//! bytes, `smbutil multichannel`): a read this Mac's cache answers takes microseconds (a 4 KB read
+//! 1-5 µs, 64 KB up to 0.13 ms, 1 MB up to 0.36 ms, 4 MB up to 0.94 ms on the M4 and the mini), the
+//! NAS's never under a round trip (0.6 ms pinged from the wired mini, 0.8 ms its quickest 4 KB read;
+//! 4-7 ms on the MacBooks' Wi-Fi), so a read quicker than `cached`'s bound is the cache's. Its time
+//! alone misses the kernel's read-ahead: past a sequential read the kernel fetches on ahead, and
+//! the reads after it come from the cache though the NAS served them for this very reader (a cold
+//! 53 MB file read 1 MB at a time: 44 of its 51 reads under 0.5 ms). So a quick read following one
+//! the NAS answered (where it ended, within a page: as the kernel's own read-ahead tells a
+//! sequential read) is the NAS's too, while within the kernel's read-ahead reach of the last slow
+//! one (`kern.speculative_prefetch_max`). Against the truth: a cold or a warm file read through,
+//! one warm at its start and cold after, random reads of a file part warm: within 0.1 % of the
+//! bytes asked (the wire carries whole pages, so a 4 KB read moves about 20 KB and a 64 KB one
+//! about 80 KB: not counted); a file cold at its start and warm after, read through in one run, is
+//! counted the NAS's from its first slow read to the read-ahead's reach (a 46 MB file half warm:
+//! all of it counted, the NAS sending half), never less. No call of its own: two clock reads and a
+//! lock a read.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,7 +74,7 @@ pub const BASE: &str = "base";
 /// What is counted, by its place in a counts file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Count {
-    /// Bytes read from the NAS.
+    /// Bytes the NAS served (`Reads`: not those this Mac's cache answered).
     ReadBytes = 0,
     /// Files opened on the NAS for reading.
     Files = 1,
@@ -68,8 +85,7 @@ pub enum Count {
     Listed = 4,
     Stats = 5,
     Deletes = 6,
-    /// Bytes read from this Mac's own disk, or from its page cache's copy of a NAS file copied
-    /// whole (crate::nasfs's copies, crate::sys::resident).
+    /// Bytes read from this Mac's own disk, or of a NAS file from its page cache (`Reads`).
     Local = 7,
     /// GeoTIFFs opened.
     Tiffs = 8,
@@ -309,7 +325,8 @@ pub fn own_waited() -> u64 {
     file().waited.load(Ordering::Relaxed)
 }
 
-/// `n` bytes of a NAS file read here that this Mac's page cache held (no NAS read: `held`).
+/// `n` bytes of a NAS file read here that this Mac's page cache held (no NAS read: `held`; `Reads`
+/// counts them `Local` too).
 pub fn held(n: u64) {
     if n > 0 {
         file().held.fetch_add(n, Ordering::Relaxed);
@@ -327,9 +344,104 @@ pub fn opened(path: &Path, bytes: u64, ms: u64) {
     note(Kind::Read, path, bytes, ms);
 }
 
-/// `n` bytes read from the NAS.
+/// `n` bytes the NAS served (a reader's are told by `Reads`).
 pub fn read(n: u64) {
     add(Count::ReadBytes, n);
+}
+
+/// The quickest a NAS read of no bytes is answered, and the rate past it: a read quicker than
+/// `CACHED_US` µs plus its bytes at `CACHED_RATE` bytes a second was this Mac's cache's (`cached`;
+/// the module's doc: the cache's 1 MB reads take up to 0.36 ms, the bound 0.77 ms, the NAS's at
+/// least 9 ms on 1 GbE).
+pub const CACHED_US: u64 = 250;
+pub const CACHED_RATE: u64 = 2_000_000_000;
+
+/// Whether a NAS read of `n` bytes taking `took` (its call's own time) was answered by this Mac's
+/// page cache (the module's doc, Which answered).
+pub fn cached(n: u64, took: std::time::Duration) -> bool {
+    took.as_nanos() < u128::from(CACHED_US) * 1000 + u128::from(n) * 1_000_000_000 / u128::from(CACHED_RATE)
+}
+
+/// One NAS file's reads, in the order they're made (one per open file, copy or whole read; its
+/// readers' threads may share it): each told the NAS's (`ReadBytes`) or this Mac's cache's (`held`
+/// and `Local`) by its time, a quick read following one the NAS answered the NAS's too while within
+/// the kernel's read-ahead reach (the module's doc, Which answered).
+#[derive(Debug, Default)]
+pub struct Reads(std::sync::Mutex<Run>);
+
+/// Where a file's last read ended, and, while its run is the NAS's, the bytes read since its last
+/// read the NAS answered.
+#[derive(Debug, Default)]
+struct Run {
+    end: Option<u64>,
+    nas_since: Option<u64>,
+}
+
+impl Reads {
+    /// A read of `n` bytes at `off` that took `took` (its call's own time: not a wait for a turn or
+    /// a thread), counted.
+    pub fn read(&self, off: u64, n: u64, took: std::time::Duration) {
+        if n == 0 {
+            return;
+        }
+        if self.nas(off, n, took) {
+            read(n);
+        } else {
+            add(Count::Local, n);
+            held(n);
+        }
+    }
+
+    /// Whether that read was the NAS's.
+    fn nas(&self, off: u64, n: u64, took: std::time::Duration) -> bool {
+        let mut r = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let follows = r.end.is_some_and(|e| off.abs_diff(e) <= page());
+        r.end = Some(off + n);
+        r.nas_since = match r.nas_since {
+            _ if !cached(n, took) => Some(0),
+            Some(s) if follows && s + n <= read_ahead() => Some(s + n),
+            _ => None,
+        };
+        r.nas_since.is_some()
+    }
+}
+
+/// This Mac's page size (the kernel's read-ahead tells a sequential read within one).
+fn page() -> u64 {
+    static P: OnceLock<u64> = OnceLock::new();
+    // SAFETY: sysconf with a valid name.
+    *P.get_or_init(|| match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+        p if p > 0 => p as u64,
+        _ => 16384,
+    })
+}
+
+/// The furthest the kernel reads ahead of a sequential reader (`kern.speculative_prefetch_max`:
+/// 192 MB on the M4); unbounded where it can't be told, so a run is never counted short.
+fn read_ahead() -> u64 {
+    static R: OnceLock<u64> = OnceLock::new();
+    *R.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            let (mut v, mut len) = (0u64, std::mem::size_of::<u64>());
+            // SAFETY: sysctlbyname with a NUL-terminated name, an out buffer of `len` bytes we own,
+            // and no new value.
+            let ok = unsafe {
+                libc::sysctlbyname(
+                    c"kern.speculative_prefetch_max".as_ptr(),
+                    (&mut v as *mut u64).cast(),
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            } == 0;
+            if ok && v > 0 {
+                // (An int on some versions: the low bytes.)
+                return if len == 4 { v & 0xffff_ffff } else { v };
+            }
+        }
+        u64::MAX
+    })
 }
 
 /// `n` bytes an upload read back from the NAS (crate::naming's read-back, past the cache): NAS reads
@@ -737,6 +849,47 @@ mod tests {
         take_program(&sub);
         assert!(own_waited() >= w + 5 && own_held() >= h + 50);
         assert!(waited_in(&d.path().join("missing")).is_none());
+    }
+
+    /// A read is the cache's when quicker than a NAS answer could be, the bound growing with its
+    /// bytes; a quick read following one the NAS answered is the NAS's (the kernel's read-ahead),
+    /// one elsewhere or after the cache's is the cache's, and past the read-ahead's reach the run
+    /// ends; what each is told is counted so.
+    #[test]
+    fn reads_are_told_the_nas_or_the_caches_by_their_time_and_run() {
+        let (us, ms) = (std::time::Duration::from_micros, std::time::Duration::from_millis);
+        assert!(cached(4096, us(5)) && !cached(4096, us(600)), "a 4 KB read: µs the cache's, a round trip the NAS's");
+        assert!(cached(1 << 20, us(360)) && !cached(1 << 20, ms(9)), "a MB");
+        assert!(cached(4 << 20, us(940)) && !cached(4 << 20, ms(5)), "4 MB");
+        let mb = 1u64 << 20;
+        // (Warm: every read quick, none the NAS's.)
+        let warm = Reads::default();
+        assert!((0..8).all(|k| !warm.nas(k * mb, mb, us(200))));
+        // (Cold: the first slow, the read-ahead's quick ones after it the NAS's too.)
+        let cold = Reads::default();
+        assert!(cold.nas(0, mb, ms(200)));
+        assert!((1..8).all(|k| cold.nas(k * mb, mb, us(200))));
+        // (Warm at its start, cold after: the NAS's from its first slow read; a quick read
+        // elsewhere, after it, the cache's, and the reads following that one too.)
+        let part = Reads::default();
+        assert!(!part.nas(0, mb, us(200)) && !part.nas(mb, mb, us(200)));
+        assert!(part.nas(2 * mb, mb, ms(30)) && part.nas(3 * mb, mb, us(200)));
+        assert!(!part.nas(40 * mb, mb, us(200)) && !part.nas(41 * mb, mb, us(200)));
+        // (Within a page of where the last ended still follows it.)
+        assert!(part.nas(60 * mb, 4096, ms(5)) && part.nas(60 * mb + 4096 + page(), 4096, us(5)));
+        // (Past the read-ahead's reach the run is the cache's again.)
+        if read_ahead() < u64::MAX / 4 {
+            let far = Reads::default();
+            assert!(far.nas(0, mb, ms(30)) && far.nas(mb, read_ahead() - mb, us(10)));
+            assert!(!far.nas(read_ahead(), 2 * mb, us(200)));
+        }
+        let (r, h, l) = (get(Count::ReadBytes), own_held(), get(Count::Local));
+        let f = Reads::default();
+        f.read(0, 3000, ms(10));
+        f.read(3000, 5000, us(3));
+        f.read(9 << 20, 700, us(3));
+        f.read(0, 0, ms(10));
+        assert!(get(Count::ReadBytes) >= r + 8000 && own_held() >= h + 700 && get(Count::Local) >= l + 700);
     }
 
     /// A process given the pid of one that ended makes a file of its own: the ended one's counts

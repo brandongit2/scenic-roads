@@ -904,7 +904,7 @@ mod net {
                         host_ceiling(&host),
                         store::aimd::NET_LEAST,
                         // (No cache of this Mac's answers for a host: every answer is a sample.)
-                        std::time::Duration::ZERO,
+                        store::aimd::never,
                     )))
                 });
             HostSlot { turn: l.take(), congested: Default::default(), bytes: Default::default() }

@@ -362,8 +362,10 @@ impl IoPool {
         }
     }
 
-    /// Reads exactly `len` bytes at `off` (pread; an error if the file is shorter).
-    pub fn read_at(&self, file: &Arc<File>, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+    /// Reads exactly `len` bytes at `off` (pread; an error if the file is shorter), and the time the
+    /// read itself took (on its worker: no wait for one), which tells whose answer it was
+    /// (crate::nasio::Reads: its caller counts it).
+    pub fn read_at(&self, file: &Arc<File>, off: u64, len: usize) -> Result<(Vec<u8>, Duration), IoError> {
         self.read_at_timeout(file, off, len, self.inner.cfg.op_timeout)
     }
 
@@ -374,25 +376,34 @@ impl IoPool {
         off: u64,
         len: usize,
         timeout: Duration,
-    ) -> Result<Vec<u8>, IoError> {
+    ) -> Result<(Vec<u8>, Duration), IoError> {
         let f = file.clone();
         self.call_timeout(timeout, move || {
             let mut buf = vec![0u8; len];
+            let t = Instant::now();
             f.read_exact_at(&mut buf, off)?;
-            Ok(buf)
+            Ok((buf, t.elapsed()))
         })
     }
 
-    /// Reads a whole (small) file. Counted as a file read; retried as `open_len`.
+    /// Reads a whole (small) file. Counted as a file read, its bytes the NAS's or this Mac's cache's
+    /// by the read's own time (crate::nasio::Reads: not its open's); retried as `open_len`.
     pub fn read_all(&self, path: &NasPath) -> Result<Vec<u8>, IoError> {
+        use std::io::Read;
         let p = path.unchecked_path();
         let t = Instant::now();
-        let b = self.retried(path, "read", || {
+        let (b, took) = self.retried(path, "read", || {
             let p = p.clone();
-            self.run(&path.display(), self.inner.cfg.op_timeout, move || fs::read(&p))
+            self.run(&path.display(), self.inner.cfg.op_timeout, move || {
+                let mut f = fs::File::open(&p)?;
+                let mut b = Vec::with_capacity(f.metadata().map_or(0, |m| m.len() as usize).saturating_add(1));
+                let t = Instant::now();
+                f.read_to_end(&mut b)?;
+                Ok((b, t.elapsed()))
+            })
         })?;
         crate::nasio::opened(&p, b.len() as u64, t.elapsed().as_millis() as u64);
-        crate::nasio::read(b.len() as u64);
+        crate::nasio::Reads::default().read(0, b.len() as u64, took);
         Ok(b)
     }
 
@@ -816,7 +827,7 @@ mod tests {
         }
         let (f, len) = pool.open_len(&p).unwrap();
         assert_eq!(len, 10);
-        assert_eq!(pool.read_at(&f, 3, 4).unwrap(), b"3456");
+        assert_eq!(pool.read_at(&f, 3, 4).unwrap().0, b"3456");
         assert!(matches!(pool.read_at(&f, 8, 4), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof));
         assert_eq!(pool.read_all(&p).unwrap(), b"0123456789");
         assert_eq!(pool.stat(&p).unwrap().len(), 10);

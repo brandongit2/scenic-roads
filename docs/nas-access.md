@@ -82,8 +82,9 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
   whole copy to the NAS, a NAS-to-NAS copy, a file written through `NasFile`: a job's beats see a
   long upload move, task #990; a file written in one call counts at its end),
   buildstore::localread's whole copies (store::blobs) count their bytes as they're read, as every
-  whole copy does (`nasfs::copy_counter`: a job's beats see a long copy move, task #986), and the
-  file once made (`count_opened`). `costin::meta` and
+  whole copy does (`nasfs::copy_counter`: a job's beats see a long copy move, task #986; each read
+  the NAS's or this Mac's cache's by its time, `nasio::Reads`, as every read is), and the file once
+  made (`count_opened`). `costin::meta` and
   `costin::wrote` keep a target's own measures and no longer add to nasio, which the layer does.
   What the layer counts that was never counted is new: the agent's and the coordinator's records,
   GC's and the archives' walks, the gate's listings, the heritage and depth readers' opens.

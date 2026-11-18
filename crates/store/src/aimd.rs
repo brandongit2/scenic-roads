@@ -23,9 +23,10 @@
 //!   lately (`FLOOR_WINDOW`: its minimum over this window and the one before, taken once the class
 //!   has `WARM` reads; one lucky answer isn't a run of reads' best), never under the source's
 //!   `least`, so it follows a source that has become slower for good instead of halving for ever
-//!   against an old best. A read answered quicker than the source's `cached` (this Mac's own cache,
-//!   in microseconds) is no sample: against it every real read would look slow (the review found
-//!   64 KB reads of 20 µs as the floor of the NAS's real ones of 5–36 ms). A read of no bytes, or
+//!   against an old best. A read the source's `cached` says this Mac's own cache answered (in
+//!   microseconds: the NAS's is crate::nasio::cached, the one test of it) is no sample: against it
+//!   every real read would look slow (the review found 64 KB reads of 20 µs as the floor of the
+//!   NAS's real ones of 5–36 ms). A read of no bytes, or
 //!   whose latency isn't its source's (a whole download's, a copy's), is none either
 //!   (`Slot::unmeasured`).
 //! - **No hang on a stuck source**: a read waits for its turn at most `TAKE_WAIT`, then goes
@@ -74,8 +75,9 @@ pub struct Limiter {
     ceiling: f64,
     /// The least a floor is taken to be (`Limiter::new`).
     least: Duration,
-    /// Answers quicker than this are this Mac's cache's, not the source's (`Limiter::new`).
-    cached: Duration,
+    /// Whether an answer of so many bytes in so long was this Mac's cache's, not the source's
+    /// (`Limiter::new`).
+    cached: fn(u64, Duration) -> bool,
 }
 
 struct State {
@@ -134,9 +136,9 @@ impl State {
 impl Limiter {
     /// A limiter starting at `start` reads in flight, at most `ceiling`, its floors never under
     /// `least` (the source's quickest true answer: a LAN round trip, an internet one), an answer
-    /// quicker than `cached` no sample (this Mac's cache's; zero for a source no cache of this
-    /// Mac's answers).
-    pub const fn new(start: usize, ceiling: usize, least: Duration, cached: Duration) -> Limiter {
+    /// `cached` says this Mac's cache gave no sample (`never` for a source no cache of this Mac's
+    /// answers).
+    pub const fn new(start: usize, ceiling: usize, least: Duration, cached: fn(u64, Duration) -> bool) -> Limiter {
         let st = State {
             held: 0,
             limit: start as f64,
@@ -178,7 +180,7 @@ impl Limiter {
                     g.halve();
                 }
             }
-            Outcome::Done { bytes, latency } if latency >= self.cached => {
+            Outcome::Done { bytes, latency } if !(self.cached)(bytes, latency) => {
                 let (k, scale) = class(bytes);
                 let c = &mut g.classes[k];
                 let x = (latency.as_secs_f64() * scale).max(self.least.as_secs_f64());
@@ -281,13 +283,17 @@ impl Drop for Slot<'_> {
 
 /// The NAS's limiter, this process's: every read of a stored file, a pack, a mid, a whole copy
 /// (store::range's NAS reads, crate::nasfs's reads and copies here) takes its turn from it.
-pub static NAS: Limiter = Limiter::new(NAS_START, NAS_CEILING, NAS_LEAST, NAS_LEAST);
+pub static NAS: Limiter = Limiter::new(NAS_START, NAS_CEILING, NAS_LEAST, crate::nasio::cached);
+
+/// No answer this Mac's cache's (a host's: `Limiter::new`'s `cached`).
+pub fn never(_: u64, _: Duration) -> bool {
+    false
+}
 /// The NAS's start and ceiling (task #534 measured 8 streams at 57 MB/s against one at 25; past 16
 /// SMB gains nothing and the share's other users lose).
 pub const NAS_START: usize = 2;
 pub const NAS_CEILING: usize = 16;
-/// The least a NAS read's floor is taken to be, and the quickest answer taken as the NAS's: about
-/// an SMB round trip on the LAN (a read this Mac's cache answers takes microseconds: no sample).
+/// The least a NAS read's floor is taken to be: about an SMB round trip on the LAN.
 pub const NAS_LEAST: Duration = Duration::from_millis(2);
 /// The least a host's request's floor is taken to be: about an internet round trip.
 pub const NET_LEAST: Duration = Duration::from_millis(20);
@@ -327,7 +333,12 @@ mod tests {
     }
 
     fn lim(start: usize, least: u64) -> Limiter {
-        Limiter::new(start, 16, ms(least), ms(least))
+        Limiter::new(start, 16, ms(least), under_a_ms)
+    }
+
+    /// (The tests' cache: answers under a millisecond.)
+    fn under_a_ms(_: u64, d: Duration) -> bool {
+        d < ms(1)
     }
 
     /// `n` reads of `bytes` begun in the window now, each taking `latency`, recorded at `now`.

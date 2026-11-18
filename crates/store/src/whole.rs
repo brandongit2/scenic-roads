@@ -446,62 +446,55 @@ fn swept_hourly(name: &str, folder: bool) -> bool {
 
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
-    copy_as(src, dst, false, &mut |_, _| {}).map(|c| c.0)
+    copy_timed(src, dst, &mut |_, _| {})
 }
 
-/// `copy`, with how many of `src`'s bytes this Mac's page cache held as it was opened
-/// (crate::sys::resident), `each` told the bytes as they're read, with that count held (as
-/// crate::sys::copy_data_held's): a NAS file's copy counts them as they come (crate::nasfs's
-/// `copy_counter`).
-pub fn copy_held(src: &Path, dst: &Path, each: &mut dyn FnMut(u64, u64)) -> Result<(u64, u64)> {
-    copy_as(src, dst, true, each)
-}
-
-/// `copy`, `each` told the bytes as they're read (and written next): an upload to the NAS counts
-/// them as they go (crate::nasfs's `copy_from_local`, task #990).
-pub fn copy_told(src: &Path, dst: &Path, each: &mut dyn FnMut(u64)) -> Result<u64> {
-    copy_as(src, dst, false, &mut |k, _| each(k)).map(|c| c.0)
-}
-
-/// A reader telling `each` of the bytes each read gives (`copy_held`'s, `copy_told`'s).
-struct Told<'a, R> {
-    r: R,
-    held: u64,
-    each: &'a mut dyn FnMut(u64, u64),
-}
-
-impl<R: std::io::Read> std::io::Read for Told<'_, R> {
-    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
-        let k = self.r.read(b)?;
-        if k > 0 {
-            (self.each)(k as u64, self.held);
-        }
-        Ok(k)
-    }
-}
-
-fn copy_as(src: &Path, dst: &Path, held: bool, each: &mut dyn FnMut(u64, u64)) -> Result<(u64, u64)> {
+/// `copy`, `each` told the bytes as they're read, each read's with the time it took: a NAS file's
+/// copy counts them as they come, the NAS's or this Mac's cache's (crate::nasfs's `copy_counter`).
+pub fn copy_timed(src: &Path, dst: &Path, each: &mut dyn FnMut(u64, std::time::Duration)) -> Result<u64> {
     let tmp = call_tmp_name(dst);
-    let r = (|| -> Result<(u64, u64)> {
-        let (mut n, mut want, mut h) = (0, 0, 0);
+    let r = (|| -> Result<u64> {
+        let (mut n, mut want) = (0, 0);
         redone(&tmp, || {
             let from = std::fs::File::open(src)?;
             want = from.metadata()?.len();
-            h = if held { crate::sys::resident(&from, want) } else { 0 };
             let mut to = std::fs::File::create(&tmp)?;
-            n = std::io::copy(&mut Told { r: from, held: h, each: &mut *each }, &mut to)?;
+            n = std::io::copy(&mut Timed { r: from, each: &mut *each }, &mut to)?;
             to.sync_all()?;
             crate::sys::close(to, &tmp)
         })?;
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
         rename_or_aside(&tmp, dst)?;
-        Ok((want, h))
+        Ok(want)
     })();
     if r.is_err() {
         std::fs::remove_file(&tmp).ok();
     }
     r.with_context(|| format!("copy {} to {}", src.display(), dst.display()))
+}
+
+/// `copy`, `each` told the bytes as they're read (and written next): an upload to the NAS counts
+/// them as they go (crate::nasfs's `copy_from_local`, task #990).
+pub fn copy_told(src: &Path, dst: &Path, each: &mut dyn FnMut(u64)) -> Result<u64> {
+    copy_timed(src, dst, &mut |k, _| each(k))
+}
+
+/// A reader telling `each` of the bytes each read gives and the time it took (`copy_timed`'s).
+struct Timed<'a, R> {
+    r: R,
+    each: &'a mut dyn FnMut(u64, std::time::Duration),
+}
+
+impl<R: std::io::Read> std::io::Read for Timed<'_, R> {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let t = std::time::Instant::now();
+        let k = self.r.read(b)?;
+        if k > 0 {
+            (self.each)(k as u64, t.elapsed());
+        }
+        Ok(k)
+    }
 }
 
 #[cfg(test)]

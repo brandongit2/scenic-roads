@@ -513,7 +513,7 @@ impl NasPath {
         let b = self.retry("read", || {
             taking_turn(|| self.moving("read", Vec::new(), |p, m| crate::whole::retried(p, &|q| read_told(q, m))))
         })?;
-        counted_read(&self.full(), b.len() as u64, t);
+        nasio::opened(&self.full(), b.len() as u64, ms_since(t));
         Ok(b)
     }
 
@@ -532,7 +532,7 @@ impl NasPath {
                 self.moving("read", Vec::new(), |p, m| crate::whole::read_replaced_by(p, &|q| read_told(q, m)))
             })
         })?;
-        counted_read(&self.full(), b.len() as u64, t);
+        nasio::opened(&self.full(), b.len() as u64, ms_since(t));
         Ok(b)
     }
 
@@ -557,7 +557,7 @@ impl NasPath {
                 })
             })
         })?;
-        counted_read(&self.full(), b.len() as u64, t);
+        nasio::opened(&self.full(), b.len() as u64, ms_since(t));
         Ok(b)
     }
 
@@ -645,19 +645,19 @@ impl NasPath {
     }
 
     /// Copies it to local file `dst`, whole (crate::whole::copy: a temporary name, renamed). The
-    /// bytes copied, counted as they're read (`copy_counter`: what this Mac's cache held, not the
-    /// NAS's), and the file counted opened. Moving as it copies; `dst` held while a late copy would
+    /// bytes copied, counted as they're read (`copy_counter`: the NAS's or this Mac's cache's), and
+    /// the file counted opened. Moving as it copies; `dst` held while a late copy would
     /// land (a later copy to it refused meanwhile).
     pub fn copy_to_local(&self, dst: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
         let t = Instant::now();
         let d = dst.to_path_buf();
-        let (n, _) = copying_turn(
+        let n = copying_turn(
             || {
                 self.moving("copy", vec![d.clone()], move |p, m| {
                     let mut count = copy_counter();
-                    Ok(crate::whole::copy_held(p, &d, &mut |k, h| {
-                        count(k, h);
+                    Ok(crate::whole::copy_timed(p, &d, &mut |k, took| {
+                        count(k, took);
                         m.add(k);
                     }))
                 })?
@@ -669,18 +669,18 @@ impl NasPath {
     }
 
     /// Copies it to local file `dst` (crate::sys::copy_data: its bytes and mode, no temporary name).
-    /// Counted as it's read (`copy_counter`: what this Mac's cache held, not the NAS's), and the
-    /// file counted opened. Moving as it copies; `dst` held as `copy_to_local`'s is.
+    /// Counted as it's read (`copy_counter`: the NAS's or this Mac's cache's), and the file counted
+    /// opened. Moving as it copies; `dst` held as `copy_to_local`'s is.
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let t = Instant::now();
         let d = dst.to_path_buf();
-        let (n, _) = copying_turn(
+        let n = copying_turn(
             || {
                 self.moving("copy", vec![d.clone()], move |p, m| {
                     let mut count = copy_counter();
-                    crate::sys::copy_data_held(p, &d, &mut |k, h| {
-                        count(k, h);
+                    crate::sys::copy_data_timed(p, &d, &mut |k, took| {
+                        count(k, took);
                         m.add(k);
                     })
                 })
@@ -856,10 +856,10 @@ impl NasPath {
         let _w = crate::waits::nas();
         let q = to.full();
         let t = Instant::now();
-        let (n, _) = self.moving("copy", vec![q.clone()], move |p, m| {
+        let n = self.moving("copy", vec![q.clone()], move |p, m| {
             let mut read = copy_counter();
-            crate::sys::copy_data_held(p, &q, &mut |k, h| {
-                read(k, h);
+            crate::sys::copy_data_timed(p, &q, &mut |k, took| {
+                read(k, took);
                 nasio::written(k);
                 m.add(k);
             })
@@ -961,20 +961,24 @@ impl NasPath {
     }
 }
 
-/// The file at `p` read whole, moving as its bytes come (`read_all_told`).
+/// The NAS file at `p` read whole, moving as its bytes come (`read_all_told`).
 fn read_told(p: &Path, m: &Progress) -> io::Result<Vec<u8>> {
     read_all_told(std::fs::File::open(p)?, m)
 }
 
-/// `f` read to its end in pieces of crate::sys::COPY_BUF at most, each told to `m` as it comes.
+/// NAS file `f` read to its end in pieces of crate::sys::COPY_BUF at most, each told to `m` as it
+/// comes and counted (nasio::Reads: the NAS's or this Mac's cache's, by its time).
 fn read_all_told(mut f: std::fs::File, m: &Progress) -> io::Result<Vec<u8>> {
     let len = f.metadata().map_or(0, |m| m.len()) as usize;
     let mut b = Vec::with_capacity(len.saturating_add(1));
+    let reads = nasio::Reads::default();
     loop {
+        let (at, t) = (b.len() as u64, Instant::now());
         let k = (&mut f).take(crate::sys::COPY_BUF as u64).read_to_end(&mut b)?;
         if k == 0 {
             return Ok(b);
         }
+        reads.read(at, k as u64, t.elapsed());
         m.add(k as u64);
     }
 }
@@ -1211,37 +1215,24 @@ impl std::fmt::Display for Shown {
     }
 }
 
-/// A file read (`len` bytes since `t`): one `Files`, its bytes, noted.
-fn counted_read(p: &Path, len: u64, t: Instant) {
-    nasio::opened(p, len, ms_since(t));
-    nasio::read(len);
-}
-
-/// Counts a NAS file's copy's bytes as they come (crate::sys::copy_data_held's `each`: a read of
-/// `k` bytes of a file of which this Mac's page cache held `held` as the copy began, asked of the
-/// copy's own descriptor; a file of no more than one copy read isn't asked): the first `held`
-/// read here, not from the NAS (nasio's `Local`, so not in a job's NAS weight, task #939: a
-/// slope-deep job copied its z6 tile's 200 MB terrain pack once a target, every copy after the
-/// first answered by the cache in a second or less, and each target weighed past the whole NAS),
-/// the rest the NAS's, each as it's read: a job's beats see a long copy move (task #986: its
-/// bytes at its end alone left a job copying a big file from a slow NAS still all the while). The
-/// first `held` are also counted as NAS bytes held here (`nasio::held`, task #1419): the job asked
-/// for them of the NAS all the same, which a warm cache answered. Reads into memory (`read` and the like) aren't asked: most are of small files, where asking
-/// would be a mapping, a round trip of its own. The file is counted opened (`nasio::opened`) once
-/// copied.
-pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
-    let mut done = 0u64;
-    move |k, held| {
-        let here = held.saturating_sub(done).min(k);
-        nasio::read(k - here);
-        nasio::add(nasio::Count::Local, here);
-        nasio::held(here);
-        done += k;
+/// Counts a NAS file's copy's bytes as they come (crate::sys::copy_data_timed's and
+/// crate::whole::copy_timed's `each`: a read of `k` bytes that took `took`), each read the NAS's
+/// or this Mac's cache's (nasio::Reads; the cache's counted `Local` too, so not in a job's NAS
+/// weight, task #939: a slope-deep job copied its z6 tile's 200 MB terrain pack once a target,
+/// every copy after the first answered by the cache in a second or less, and each target weighed
+/// past the whole NAS), each as it's read: a job's beats see a long copy move (task #986: its bytes
+/// at its end alone left a job copying a big file from a slow NAS still all the while). The file
+/// is counted opened (`nasio::opened`) once copied.
+pub(crate) fn copy_counter() -> impl FnMut(u64, Duration) {
+    let (reads, mut at) = (nasio::Reads::default(), 0u64);
+    move |k, took| {
+        reads.read(at, k, took);
+        at += k;
     }
 }
 
-/// An open NAS file: reads and writes through it are counted as they go; one written is counted as
-/// made when it is closed. Each read, write, sync, seek to its end and its close is a
+/// An open NAS file: reads and writes through it are counted as they go (its reads the NAS's or this
+/// Mac's cache's, by their time: nasio::Reads); one written is counted as made when it is closed. Each read, write, sync, seek to its end and its close is a
 /// crate::deadline call within its root's deadline: its reads fill a buffer of crate::sys::COPY_BUF
 /// at a time (one call a MB, not one a reader's few kB), its writes hold its path (a later change
 /// to it refused while one is held). A writer ends it with `close`, which says the close's error
@@ -1257,11 +1248,22 @@ pub struct NasFile {
     /// Bytes read ahead and not yet given (`buf[at..]`): the file's own position is past them.
     buf: Vec<u8>,
     at: usize,
+    /// Its reads, counted the NAS's or this Mac's cache's.
+    reads: nasio::Reads,
 }
 
 impl NasFile {
     fn new(f: std::fs::File, path: PathBuf, wrote: Option<u64>, t: Instant, deadline: Duration) -> NasFile {
-        NasFile { f: Some(Arc::new(f)), path, wrote, t, deadline, buf: Vec::new(), at: 0 }
+        NasFile {
+            f: Some(Arc::new(f)),
+            path,
+            wrote,
+            t,
+            deadline,
+            buf: Vec::new(),
+            at: 0,
+            reads: nasio::Reads::default(),
+        }
     }
 
     fn file(&self) -> &Arc<std::fs::File> {
@@ -1318,12 +1320,14 @@ impl Read for NasFile {
         if self.at == self.buf.len() {
             let _w = crate::waits::nas();
             let want = b.len().max(crate::sys::COPY_BUF);
-            let got = self.on("read", false, move |mut f| {
+            let (got, at, took) = self.on("read", false, move |mut f| {
+                // (Where it reads from: the file's own position, no call on the share.)
+                let (at, t) = (f.stream_position()?, Instant::now());
                 let mut v = Vec::with_capacity(want);
                 (&mut f).take(want as u64).read_to_end(&mut v)?;
-                Ok(v)
+                Ok((v, at, t.elapsed()))
             })?;
-            nasio::read(got.len() as u64);
+            self.reads.read(at, got.len() as u64, took);
             (self.buf, self.at) = (got, 0);
         }
         let n = b.len().min(self.buf.len() - self.at);
