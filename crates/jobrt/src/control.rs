@@ -984,6 +984,25 @@ pub fn granted() -> Option<usize> {
     std::fs::read_to_string(f).ok()?.trim().parse::<usize>().ok().map(|n| n.max(1))
 }
 
+/// The fewest threads this process's work has been allowed so far (0: none said): a paced job's
+/// (inputs::inputs::pace), its file as read, which its agent changes under its one long target.
+static FEWEST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// This process's work allowed `n` threads now (a paced job's, as it reads its file): `fewest_allowed`
+/// is the fewest so noted.
+pub fn allowed(n: usize) {
+    use std::sync::atomic::Ordering;
+    let n = n.max(1);
+    let _ = FEWEST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| Some(if f == 0 { n } else { f.min(n) }));
+}
+
+/// The fewest threads this process's work has been allowed so far (`allowed`); None: none said. A
+/// target's memory, measured over a run whose threads changed, is spread over no more threads
+/// than these (buildstore::costin's `threads_least`, agentcore's `per_thread_mb`).
+pub fn fewest_allowed() -> Option<usize> {
+    Some(FEWEST.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
+}
+
 /// The threads the target under way runs on (`on_grant`); 0 outside one.
 static IN_FORCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

@@ -576,7 +576,9 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
         .map(|c| {
             c.sizes
                 .iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "threads" | "cpu_ms" | "paused_ms" | "waited_ms"))
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "threads" | "threads_least" | "cpu_ms" | "paused_ms" | "waited_ms")
+                })
                 .map(|(k, v)| (k.clone(), *v as f64))
                 .collect()
         })

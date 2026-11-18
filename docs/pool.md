@@ -717,8 +717,10 @@ say no threads, so nothing is decided for them).
     `Agent::threads_room`), the cores its Mac has free (its capacity's `cores_free`, the last
     minute's CPU, less the in-use share's, less what jobs grown before it this round took) and its
     memory: each thread past those its grant's memory covers adds `Grant::thread_mb` (the lead's
-    `Sched::per_thread_mb`: its measured peak over the threads its runs had, the whole peak a thread
-    where those aren't recorded; the threads covered, `Grant::thread_covers`, the more of its
+    `Sched::per_thread_mb`: its measured peak over the threads its runs had, or the fewest a paced
+    run was cut to under way where fewer (its cost line's `threads_least`, from the fewest its pace
+    allowed, `jobrt::control::fewest_allowed`: never spread thinner than it ran), the whole peak a
+    thread where those aren't recorded; the threads covered, `Grant::thread_covers`, the more of its
     starting threads and those), within its capacity's `mem_mb` less what its jobs' grows hold
     already (`Agent::grown_mb`), and none while its Mac's memory admits no work (the brake, the
     floor, a give-back's cool-down: `Capacity::mem_held_back`). So a grow never takes a Mac past

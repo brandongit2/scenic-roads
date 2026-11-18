@@ -1906,7 +1906,8 @@ impl Sched {
 
     /// What a thread of a job of `step` over `targets` adds to its memory at most (MB), and the
     /// threads its measure covers: its measured peak `peak_mb` over the threads the runs that measured
-    /// it had (its targets' cost records' `threads`, the fewest among them), their memory in the peak;
+    /// it had (its targets' cost records' `threads`, or the fewest a run's agent cut it to under way,
+    /// `threads_least`: the fewest among them), their memory in the peak;
     /// the whole peak a thread, and one covered, where a target's aren't said (one more thread of a
     /// regions check once needed about a region's worth, docs/inputs.md §4.3). Never the peak over
     /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
@@ -1922,7 +1923,8 @@ impl Sched {
             .into_iter()
             .map(|t| {
                 let c = b.own(step, t)?;
-                c.sizes.get("threads").map(|&n| n as u32).filter(|&n| n > 0)
+                let least = c.sizes.get("threads_least").copied();
+                c.sizes.get("threads").map(|&n| least.map_or(n, |l| l.min(n)) as u32).filter(|&n| n > 0)
             })
             .collect::<Option<Vec<u32>>>()
             .and_then(|n| n.into_iter().min());

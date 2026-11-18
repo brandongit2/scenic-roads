@@ -66,6 +66,10 @@ impl Pace {
             .and_then(|t| t.trim().parse::<usize>().ok())
             .unwrap_or(self.fallback)
             .max(1);
+        // (Its cost line says the fewest its target ran on: buildstore::costin's `threads_least`.)
+        if self.file.is_some() {
+            jobrt::control::allowed(s.allowed);
+        }
     }
 
     /// The threads allowed now.

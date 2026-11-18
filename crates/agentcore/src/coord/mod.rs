@@ -10658,14 +10658,21 @@ mod tests {
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!((g.thread_mb, g.thread_covers), (g.peak_mb / 13, 13));
+        // Begun on 13 and cut to 4 under way: its peak spread over 4 at most.
+        for t in ["6/1/1", "6/1/2"] {
+            let mut book = c.shared.lock().unwrap();
+            let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
+            cost.sizes.insert("threads_least".into(), 4);
+        }
+        let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
+        let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
+        assert_eq!(c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak), (peak / 4, 4));
         // Measured at 1 thread instead: each thread past its 3 its whole peak.
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
             let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
             cost.sizes.insert("threads".into(), 1);
         }
-        let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
-        let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
         m1_beat(&c, Some(m1_cap(14, false, Some((g.lease, 4, 4)))));
         let s = c.shared.lock().unwrap();
         let lease = s.leases.of(g.lease).unwrap().clone();

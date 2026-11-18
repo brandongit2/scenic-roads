@@ -201,7 +201,13 @@ pub fn take() -> BTreeMap<String, u64> {
     if tiffs > 0 || m.contains_key("km2") {
         m.insert("tiffs".into(), tiffs);
     }
-    m.insert("threads".into(), if s.threads > 0 { s.threads } else { threads() } as u64);
+    let threads = if s.threads > 0 { s.threads } else { threads() };
+    m.insert("threads".into(), threads as u64);
+    // (Fewer allowed meanwhile, its agent cutting a paced job's threads under its one target: the
+    // fewest, which its memory is spread over no more than: agentcore's `per_thread_mb`.)
+    if let Some(f) = jobrt::control::fewest_allowed().filter(|&f| f < threads) {
+        m.insert("threads_least".into(), f as u64);
+    }
     if let (Some(a), Some(b)) = (s.cpu_at, jobrt::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
     }
@@ -293,6 +299,17 @@ pub static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #1420: a target whose threads its agent cut under way (a paced job's, its one long
+    /// target) says the fewest it was allowed beside the threads it began on.
+    #[test]
+    fn a_target_cut_under_way_says_the_fewest_threads_it_was_allowed() {
+        let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        jobrt::control::allowed(1);
+        begin();
+        let m = take();
+        assert_eq!(m.get("threads_least").copied(), (m["threads"] > 1).then_some(1));
+    }
 
     #[test]
     fn measures_since_begin() {
