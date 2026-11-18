@@ -10,6 +10,7 @@ import re
 import ssl
 import tomllib
 import unittest
+import unittest.mock
 import urllib.parse
 
 import certifi
@@ -963,10 +964,18 @@ class IndexFiles(unittest.TestCase):
         # (The first page again at 2, its answer's timeStamp another: stopped there by its
         # features, not paged on to the run's limit.)
         net = FakeNet({url(0): page([0, 1], 9), url(2): page([0, 1], 9, "2026-11-18T10:00:01Z")})
-        with self.assertRaises(SystemExit) as e:
-            list(extents.read_wfs(net, b, 0))
+        built = []
+        shape = extents.flat_shape
+        with unittest.mock.patch.object(extents, "flat_shape", lambda g: built.append(1) or shape(g)):
+            with self.assertRaises(SystemExit) as e:
+                list(extents.read_wfs(net, b, 0))
         self.assertIn("repeats", str(e.exception))
         self.assertEqual(net.requests, 2)
+        # (The check builds no geometry: the pages' thunks are left to what keeps them.)
+        self.assertEqual(built, [])
+        gml = lambda stamp: f'<wfs:FeatureCollection timeStamp="{stamp}" numberMatched="9"><m><a>1</a></m></wfs:FeatureCollection>'.encode()
+        self.assertEqual(extents.page_digest(gml("2026-11-18T10:00:00Z")), extents.page_digest(gml("2026-11-18T10:00:09Z")))
+        self.assertNotEqual(extents.page_digest(gml("x")), extents.page_digest(gml("x").replace(b">1<", b">2<")))
         # (An empty page while the server says 9 match: stopped, saying so.)
         net = FakeNet({url(0): page([0, 1], 9), url(2): page([], 9)})
         with self.assertRaises(SystemExit) as e:

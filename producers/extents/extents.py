@@ -562,8 +562,9 @@ def read_wfs(net, b, _tol):
         # (Every feature, those without geometry too, so a page's count is the server's.)
         feats = list(index_features(body, b))
         # (A server ignoring `startIndex` answers the first page again: stopped, not paged to the
-        # run's limit. By its features, not its bytes: an answer's timeStamp differs every time.)
-        digest = features_digest(feats)
+        # run's limit. By its features as the answer writes them, not its bytes, whose timeStamp
+        # differs every time; no geometry built.)
+        digest = page_digest(body)
         if off and feats and digest == last:
             sys.exit(f"{b['url']}: the page at {off} repeats the one before it (startIndex ignored?): stopped")
         last = digest
@@ -576,14 +577,13 @@ def read_wfs(net, b, _tol):
             return
 
 
-def features_digest(feats):
-    """A page's features as one digest: each one's properties and geometry, in order."""
-    h = hashlib.sha256()
-    for g, p in feats:
-        h.update(json.dumps(p, sort_keys=True, default=str).encode())
-        geom = g()
-        h.update(b"\0" + (geom.wkb if geom is not None else b"") + b"\1")
-    return h.digest()
+def page_digest(body):
+    """A WFS page's features as one digest, from the answer as written (its geometry never built):
+    GeoJSON's features (properties and geometry, keys sorted), or GML's bytes with the answer's
+    own `timeStamp` left out."""
+    if body.lstrip()[:1] == b"<":
+        return hashlib.sha256(re.sub(rb'\btimeStamp="[^"]*"', b"", body)).digest()
+    return hashlib.sha256(json.dumps(json.loads(body).get("features"), sort_keys=True).encode()).digest()
 
 
 def number_matched(body):
