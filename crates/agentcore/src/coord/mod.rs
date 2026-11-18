@@ -10676,7 +10676,10 @@ mod tests {
         }
         let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
         let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
-        assert_eq!(c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak), (peak.div_ceil(4), 4));
+        assert_eq!(
+            c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak),
+            (peak.div_ceil(4), 4)
+        );
         // Measured at 1 thread instead: each thread past its 3 its whole peak.
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
@@ -10707,7 +10710,11 @@ mod tests {
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m4", "slope-hi", 30_000, 100_000) };
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert_eq!(counted(&c, g.lease), g.threads);
-        let _ = c.ask_own(&Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a }, &BTreeSet::new(), 0);
+        let _ = c.ask_own(
+            &Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a },
+            &BTreeSet::new(),
+            0,
+        );
         assert_eq!(counted(&c, g.lease), g.threads + 4, "the lead's own ask");
     }
 

@@ -1911,8 +1911,9 @@ mod tests {
     /// own: the threads file's variable and the target under way are the process's.)
     #[test]
     fn a_deep_batch_whose_threads_change_as_it_goes_lands_each_target_the_same() {
-        if !crate::grant_tests::alone("slope_pack::tests::a_deep_batch_whose_threads_change_as_it_goes_lands_each_target_the_same")
-        {
+        if !crate::grant_tests::alone(
+            "slope_pack::tests::a_deep_batch_whose_threads_change_as_it_goes_lands_each_target_the_same",
+        ) {
             return;
         }
         crate::grant_tests::within("a slope-deep batch on grants of 2, 5 and 1", changing_batch);
