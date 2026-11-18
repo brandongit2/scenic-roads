@@ -1349,10 +1349,11 @@ fn a_countrys_inlet_half_in_its_zone_is_split_at_the_zone() {
 #[test]
 fn an_area_cut_down_round_a_box_meets_what_is_inside_it_the_same() {
     use super::tiles::near_part;
+    use det::Det;
     let coast: geom::Ring = (0..=2000)
         .map(|i| {
             let t = i as f64 / 2000.0;
-            [e7(t * 2.0), e7(1.0 + 0.003 * (t * 400.0).sin() + 0.001 * (t * 1300.0).cos())]
+            [e7(t * 2.0), e7(1.0 + 0.003 * (t * 400.0).dsin() + 0.001 * (t * 1300.0).dcos())]
         })
         .chain([[e7(2.0), e7(0.0)], [e7(0.0), e7(0.0)]])
         .collect();
