@@ -157,10 +157,9 @@ commit_here() {
 # rollback_ok <current.json> <previous.json>: 0 when the previous version's commit contains the live
 # one's rollback floor (the commit the first line of tools/app/rollback-floor names in the live
 # version's tree; no file there, no floor); else says why and returns 1: a rollback never goes back
-# past a change after which an older app is unsafe. A floor that isn't a full commit id (`878-8c`,
-# in the releases before task #1342) holds the previous version to the same first line. A commit
-# this repository lacks (the versions' and the floor's, all on origin's main) is fetched once; still
-# missing, refused, saying so. Run in the repository.
+# past a change after which an older app is unsafe. A commit this repository lacks (the versions' and
+# the floor's, all on origin's main) is fetched once; still missing, refused, saying so. Run in the
+# repository.
 rollback_ok() {
   local v pv c f=tools/app/rollback-floor floor
   v=$(live_version $1) || { print -r -- "can't read $1"; return 1; }
@@ -168,14 +167,9 @@ rollback_ok() {
   for c in ${v##*-} ${pv##*-}; do commit_here $c || return 1; done
   floor=$(git show "${v##*-}:$f" 2>/dev/null | head -1)
   [[ -n $floor ]] || return 0
-  if [[ $floor =~ '^[0-9a-f]{40}$' ]]; then
-    commit_here $floor || return 1
-    git merge-base --is-ancestor $floor ${pv##*-} && return 0
-    print -r -- "$pv is before the live version $v's rollback floor $floor (its commit doesn't contain $floor): refused. Why, from $f:"
-  else
-    [[ $(git show "${pv##*-}:$f" 2>/dev/null | head -1) == $floor ]] && return 0
-    print -r -- "$pv is before the live version $v's rollback floor $floor (its $f doesn't say $floor): refused. Why, from $f:"
-  fi
+  commit_here $floor || return 1
+  git merge-base --is-ancestor $floor ${pv##*-} && return 0
+  print -r -- "$pv is before the live version $v's rollback floor $floor (its commit doesn't contain $floor): refused. Why, from $f:"
   git show "${v##*-}:$f" 2>/dev/null | sed -n 's/^# \{0,1\}//p'
   return 1
 }
