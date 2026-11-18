@@ -9073,6 +9073,70 @@ mod tests {
         assert_eq!(super::super::steps::derived_key("heritage-sites", "heritage-sites", &kept), k);
     }
 
+    /// Task #1138: the plan is a function of what it's given. On one state, the whole plan (its
+    /// checklist, each region's work, counts and map tiles, the holds, as the plan bench digests
+    /// them) and the chains' work are the same from a coverage made again and from one kept and read
+    /// back in place (as a restarted agent reads it), each new at every state, with its shapes'
+    /// memos empty, and a context, terrain indexes and key memo of its own (a process's hash seeds
+    /// and memos differ from another's); and from the first, its memos filled. Three regions over
+    /// two z6 tiles, so the plan's lists by region and by tile hold several; at each state as the
+    /// build goes on.
+    #[test]
+    fn the_plan_is_the_same_however_its_coverage_and_memos_came() {
+        let d = tempfile::tempdir().unwrap();
+        let made = || {
+            let places = [("p", "-21.9,64.13,20"), ("q", "-21.6,64.0,12"), ("s", "45.5,40.5,20")];
+            let recipes: Vec<Recipe> = places
+                .iter()
+                .map(|(id, at)| Recipe {
+                    id: id.to_string(),
+                    name: id.to_uppercase(),
+                    outline: vec![format!("place:{at}")],
+                })
+                .collect();
+            Coverage::fixture(&recipes, None, d.path()).unwrap()
+        };
+        let kept_back = |c: &Coverage| {
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("c.cov");
+            std::fs::write(&p, buildstore::coverage::kept_bytes(c)).unwrap();
+            buildstore::coverage::from_kept(store::cachefile::map(&p).unwrap().unwrap()).unwrap()
+        };
+        let first = made();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for u in ["6-28-16", "6-40-20"] {
+            m.insert(format!("sources/osm/d/pieces/{u}"), format!("sources/osm/d/pieces/{u}.4444444444444444.osm.pbf"));
+        }
+        unit_inputs(&mut m, "d");
+        let mut done = Keys::default();
+        let inputs = spaced(&BTreeMap::new());
+        let planned = |c: &Coverage, m: &BTreeMap<String, String>, done: &Keys| {
+            let p = plan_with(c, "d", m, done, &inputs, &BTreeMap::new(), Some(0));
+            let tiles = tiles_for(m);
+            let chains = chains_left(&KeyCtx::new(c, "d", m, &inputs, Some(&reach()), &tiles), done);
+            (format!("{p:#?}"), p, chains)
+        };
+        let (mut states, mut most) = (0, 0);
+        for _ in 0..12 {
+            let one = planned(&first, &m, &done);
+            assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
+            assert!(one == planned(&kept_back(&made()), &m, &done), "a coverage read back in place, state {states}");
+            assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled, state {states}");
+            let p = &one.1;
+            most = most.max(p.regions.len().min(p.built.len()).min(p.regions.iter().map(|r| r.units.len()).sum()));
+            states += 1;
+            let w = past_publishing(&first, "d", &mut m, &mut done);
+            let Some(w) = w.first() else { break };
+            match w.step.as_str() {
+                "heritage-sites" => heritage_done(&mut m, &mut done, "d", w),
+                "terrain-hi" | "terrain-lo" | "slope-hi" | "slope-lo" => terrain_did(&mut m, &mut done, w),
+                _ => did(&mut m, &mut done, w),
+            }
+        }
+        assert!(states >= 6, "{states} states");
+        assert!(most >= 2, "the regions' lists held one at most");
+    }
+
     #[test]
     fn checklist_counts_to_the_end() {
         let c = cov();
@@ -12399,7 +12463,7 @@ mod tests {
     #[ignore]
     fn the_edge_tree_agrees_on_a_real_coverage() {
         let Ok(root) = std::env::var("SCENIC_BENCH_ROOT") else { return };
-        let nr = store::nasfs::NasRoot::local_for_test(std::path::Path::new(&root));
+        let nr = store::nasfs::NasRoot::from_arg(root);
         let m: BTreeMap<String, String> = buildstore::out::read_record(&nr.join("state/build/manifest.json")).unwrap();
         let a = inputs::inputs::regions::read::source(&nr, &m).unwrap();
         let cov = inputs::inputs::regions::read::accepted_coverage(&nr, &a, None).unwrap();
@@ -12432,14 +12496,18 @@ mod tests {
     /// read from and kept in). Twice over one coverage, as the agent's loops reuse theirs. With
     /// `SCENIC_BENCH_CACHE` (a folder of this Mac's disk), the coverage is read as the agent reads it,
     /// from its file there (made first when it isn't); without, made from the geometry files.
-    /// `SCENIC_BENCH_BRIEF`: a file the records are read from when it's there, else written with
-    /// the current brief (so runs of two builds plan the same state). Each lap says the process's
-    /// footprint and its peak.
+    /// `SCENIC_BENCH_BRIEF`: a file holding what the plan reads that isn't named by content: the
+    /// records, the pass, the planner's inputs and the base packs' extents the reaches read
+    /// (`codecs::extents`, brought in line with the kept manifest). Read from when it's there, else
+    /// written with those read now, so two runs, of one build or two, plan the same state whatever
+    /// the NAS holds meanwhile (the rest is read by the content names the manifest gives). Each lap
+    /// says the process's footprint and its peak.
     #[test]
     #[ignore]
     fn bench_plan_on_a_real_root() {
         let Ok(root) = std::env::var("SCENIC_BENCH_ROOT") else { return };
-        let root = std::path::PathBuf::from(root);
+        // (The real root, read only: not a test's stand-in, which refuses the NAS.)
+        let nr = store::nasfs::NasRoot::from_arg(root);
         let t = std::time::Instant::now();
         let lap = |what: &str, t: &mut std::time::Instant| {
             // SAFETY: the call fills the struct we own, of the flavour asked for.
@@ -12461,31 +12529,38 @@ mod tests {
             *t = std::time::Instant::now();
         };
         let mut t = t;
-        // (The records as the agent reads them: the current term's brief, or the one kept.)
+        // (What the plan reads that isn't named by content, as the agent reads it now, or kept.)
+        #[derive(Serialize, Deserialize)]
+        struct Frozen {
+            brief: agentcore::pool::records::Brief,
+            date: String,
+            inputs: BTreeMap<String, String>,
+            extents: codecs::extents::Extents,
+        }
         let kept = std::env::var("SCENIC_BENCH_BRIEF").ok().map(std::path::PathBuf::from);
-        let brief = match kept.as_ref().filter(|p| p.exists()) {
-            Some(p) => serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap(),
+        let frozen: Frozen = match kept.as_ref().filter(|p| p.exists()) {
+            Some(p) => serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap_or_else(|e| {
+                panic!("{}: not this bench's kept file (brief, date, inputs, extents): delete it ({e})", p.display())
+            }),
             None => {
-                let b = agentcore::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+                let brief = agentcore::pool::records::Brief::now(&nr).unwrap();
+                let date = inputs::osmpass::latest_pass_by(&nr, false).unwrap();
+                let inputs = crate::agent::theplan::key_inputs(&nr, &brief.manifest);
+                // (The lead's file brought in line with the kept manifest, as its planning keeps it.)
+                let (extents, _) = codecs::extents::fill(&nr, &brief.manifest, codecs::extents::load(&nr)).unwrap();
+                let f = Frozen { brief, date, inputs, extents };
                 if let Some(p) = &kept {
-                    std::fs::write(p, serde_json::to_vec(&b).unwrap()).unwrap();
+                    std::fs::write(p, serde_json::to_vec(&f).unwrap()).unwrap();
                 }
-                b
+                f
             }
         };
-        let agentcore::pool::records::Brief { manifest: m, keys, epoch, seq } = brief;
-        let date = inputs::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
-        let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
+        let Frozen { brief: agentcore::pool::records::Brief { manifest: m, keys, epoch, seq }, date, inputs, extents } =
+            frozen;
+        let a = inputs::inputs::regions::read::source(&nr, &m).unwrap();
         lap(&format!("reading records (term {epoch}, seq {seq}, regions {})", a.version), &mut t);
         let cache = std::env::var("SCENIC_BENCH_CACHE").ok().map(std::path::PathBuf::from);
-        let read = || {
-            inputs::inputs::regions::read::accepted_coverage(
-                &store::nasfs::NasRoot::local_for_test(&root),
-                &a,
-                cache.as_deref(),
-            )
-            .unwrap()
-        };
+        let read = || inputs::inputs::regions::read::accepted_coverage(&nr, &a, cache.as_deref()).unwrap();
         if cache.is_some() {
             // (Its file made when it isn't there, then read as a restarted agent reads it.)
             drop(read());
@@ -12504,12 +12579,12 @@ mod tests {
             ),
             &mut t,
         );
+        // (With the kept extents, not the lead's file as it is now.)
         let reach =
-            roads::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
+            roads::reach::Reaches::load(&nr, &m, &date).ok().flatten().map(|r| roads::reach::Reaches { extents, ..r });
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
-        tiles.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
-        let inputs = crate::agent::theplan::key_inputs(&store::nasfs::NasRoot::local_for_test(&root), &m);
-        lap("reading reaches, terrain indexes and input digests", &mut t);
+        tiles.load(&nr, &m);
+        lap("reading reaches and terrain indexes", &mut t);
         for round in 1..=2 {
             let k = keys.clone();
             let dg = |v: String| store::naming::hash16(v.as_bytes());
