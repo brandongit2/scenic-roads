@@ -292,6 +292,12 @@ impl WorkFile {
         self.r.read_part("blocks", e.offset, e.len as usize)
     }
 
+    /// The stored bytes of the blocks from `start` (an entry's offset), `len` bytes: several
+    /// blocks in one read (they lie in key order, one after another).
+    pub fn stored_run(&self, start: u64, len: usize) -> Result<Vec<u8>> {
+        self.r.read_part("blocks", start, len)
+    }
+
     /// A block, read and decoded.
     pub fn block(&self, e: &IndexEntry) -> Result<Block> {
         let z = self.stored(e)?;
@@ -301,6 +307,63 @@ impl WorkFile {
             bail!("a building block holds {} records, its index says {}", b.len(), e.count);
         }
         Ok(b)
+    }
+}
+
+/// A block's columns that tell what each record holds, read in place without its geometry (the
+/// data-available masks', crate::bld::extents): its records' heights, floors, flags, heights'
+/// datasets and OSM ids, as `Block::encode` lays them out.
+pub struct Tags<'a> {
+    pub n: usize,
+    h: &'a [u8],
+    f: &'a [u8],
+    flags: &'a [u8],
+    hsrc: &'a [u8],
+    osm: &'a [u8],
+}
+
+impl<'a> Tags<'a> {
+    /// A block's bytes (`encode`'s) read for its tags.
+    pub fn of(b: &'a [u8]) -> Result<Tags<'a>> {
+        let mut c = Cur { b, at: 0 };
+        let (n, np, nr, nv) = (c.u32()? as usize, c.u32()? as usize, c.u32()? as usize, c.u32()? as usize);
+        // (Centroids, areas, polygons per record; rings per polygon, vertices per ring; vertices.)
+        let geometry = 16 * n + 4 * np + 4 * nr + 8 * nv;
+        let at = c.at + geometry;
+        let need = at + 2 * n + 2 * n + 7 * n + 2 * n + 8 * n;
+        ensure!(b.len() == need, "a building block of {} bytes, its counts say {need}", b.len());
+        let col = |from: usize, w: usize| &b[from..from + w * n];
+        let h = col(at, 2);
+        let f = col(at + 4 * n, 1);
+        let flags = col(at + 9 * n, 1);
+        let hsrc = col(at + 10 * n, 1);
+        let osm = col(at + 13 * n, 8);
+        Ok(Tags { n, h, f, flags, hsrc, osm })
+    }
+
+    /// Record `i`'s height, decimetres (0: none).
+    pub fn h(&self, i: usize) -> u16 {
+        u16::from_le_bytes([self.h[2 * i], self.h[2 * i + 1]])
+    }
+
+    /// Record `i`'s floors (0: none).
+    pub fn f(&self, i: usize) -> u8 {
+        self.f[i]
+    }
+
+    /// Record `i`'s flags ([`flag`]).
+    pub fn flags(&self, i: usize) -> u8 {
+        self.flags[i]
+    }
+
+    /// Record `i`'s height's dataset, else its footprint's (a code into the meta's `srcs`).
+    pub fn hsrc(&self, i: usize) -> u8 {
+        self.hsrc[i]
+    }
+
+    /// Record `i`'s OSM id ([`osm`]; 0: not OSM's footprint).
+    pub fn osm(&self, i: usize) -> u64 {
+        u64::from_le_bytes(self.osm[8 * i..8 * i + 8].try_into().expect("eight bytes"))
     }
 }
 
@@ -388,6 +451,17 @@ mod tests {
         let e = b.encode();
         assert!(Block::decode(&e[..e.len() - 1]).is_err());
         assert!(Block::decode(&[e.clone(), vec![0]].concat()).is_err());
+        // Its tags read in place, as decoded; cut short or over, refused.
+        let t = Tags::of(&e).unwrap();
+        assert_eq!(t.n, 2);
+        for i in 0..2 {
+            assert_eq!(
+                (t.h(i), t.f(i), t.flags(i), t.hsrc(i), t.osm(i)),
+                (b.h[i], b.f[i], b.flags[i], b.hsrc[i], b.osm[i])
+            );
+        }
+        assert!(Tags::of(&e[..e.len() - 1]).is_err());
+        assert!(Tags::of(&[e.clone(), vec![0]].concat()).is_err());
     }
 
     #[test]

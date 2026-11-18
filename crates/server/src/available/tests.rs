@@ -313,7 +313,7 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
     }
     let land = inputs::inputs::regions::land::Land::earth();
     let cut = terrain::available::Cut::new(&land, terrain::available::cut::Side::Land).unwrap();
-    terrain::available::build(&mut out, "terrain", &pieces, &cut, &|_, _| {}).unwrap();
+    terrain::available::build(&mut out, "terrain", &pieces, &[], &cut, &|_, _| {}).unwrap();
     // The built set: two datasets over the whole world, the coarser one first in order.
     let t = Tile { ids: vec!["glo30".into(), "lidar".into()], sets: vec![vec![0, 1]], px: vec![0; PIXELS] };
     let tile = (0, 0, 0, t.gzipped(), t.encode().len() as u32);
@@ -650,7 +650,7 @@ fn renders_the_real_pieces() {
         None => Box::new(|_: &str| Ok(None)),
     };
     let cut = terrain::available::Cut::of_theme(&land, &theme, water).unwrap();
-    terrain::available::build(&mut out, &theme, &pieces, &cut, &|_, _| {}).unwrap();
+    terrain::available::build(&mut out, &theme, &pieces, &[], &cut, &|_, _| {}).unwrap();
     let took = t.elapsed();
     // SAFETY: getrusage fills the struct it's given (ru_maxrss: bytes on macOS).
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };

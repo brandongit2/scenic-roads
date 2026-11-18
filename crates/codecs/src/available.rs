@@ -236,6 +236,13 @@ pub fn mids_logical(theme: &str, set: &str) -> String {
     format!("work/{}/mids", layer(theme, set))
 }
 
+/// The record of a theme's mask pieces' cells by the build's files they were read from (the best
+/// set's; bld::bld::extents: the buildings' Overture pieces), so a run reads only the files that
+/// changed.
+pub fn masks_logical(theme: &str) -> String {
+    format!("work/{}/masks", layer(theme, BEST))
+}
+
 /// The built set's pieces (`layers/available-built-<theme>/datasets`): each dataset in the
 /// terrain's order with its description and how its extent was read (JSON), the server's.
 pub fn datasets_logical(theme: &str) -> String {

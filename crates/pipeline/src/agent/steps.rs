@@ -1371,8 +1371,9 @@ pub const TABLE: [Step; 65] = [
     },
     // The data-available layers (terrain::available; docs/steps.md §14): a target per theme, its
     // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
-    // coastline, made again only where a piece or the land moved. (Cost version 1: the cut, task
-    // #1361: its peak 2.75 → 3.01 GB on the mini.)
+    // coastline, made again only where a piece or the land moved; the buildings' mask pieces drawn
+    // from the build's normalized buildings (bld::bld::extents), the files its record doesn't name
+    // read. (Cost version 1: the cut, task #1361: its peak 2.75 → 3.01 GB on the mini.)
     Step {
         cost_v: 1,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
@@ -1380,6 +1381,7 @@ pub const TABLE: [Step; 65] = [
             In { name: "extents", of: idents::extents_pieces },
             In { name: "land", of: idents::pass_land },
             In { name: "inland", of: idents::inland_water },
+            In { name: "buildings", of: idents::overture_work },
         ],
         ..step(
             "finish",
@@ -2319,9 +2321,11 @@ fn available_packs(l: &str, set: &str) -> bool {
         || matches!(parts(l).as_slice(), ["work", w, "mids"] if av::of_layer(w).is_some_and(|(t, s, g)| s == set && !t.is_empty() && g == av::Grid::Mercator))
 }
 
-/// The best set's layers (`available`).
+/// The best set's layers (`available`), and its mask pieces' record (codecs::available::masks_logical).
 fn w_available(l: &str, _: bool) -> bool {
-    available_packs(l, codecs::available::BEST)
+    use codecs::available as av;
+    available_packs(l, av::BEST)
+        || matches!(parts(l).as_slice(), ["work", w, "masks"] if av::of_layer(w).is_some_and(|(t, s, g)| s == av::BEST && !t.is_empty() && g == av::Grid::Mercator))
 }
 
 /// The built set's layers and its datasets' descriptions (`available-built`).

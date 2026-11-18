@@ -869,19 +869,44 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 stage(k as u64, targets.len() as u64, &format!("the {theme} layers"));
                 let p = phase("reading the pieces");
                 let mut pieces = Vec::new();
+                let mut specs = Vec::new();
                 for (path, _) in a.files() {
                     if let extents::Kind::Pieces(th, id) = extents::kind(path) {
                         if th == theme {
-                            pieces.extend(terrain::available::pieces(id, &a.read(path)?)?);
+                            let geojson = a.read(path)?;
+                            pieces.extend(terrain::available::pieces(id, &geojson)?);
+                            // (Its mask pieces, drawn from the build's own data: bld::bld::extents.)
+                            specs.extend(::bld::bld::extents::specs(id, &geojson)?);
                         }
                     }
                 }
+                drop(p);
+                // (The mask pieces' cells: the normalized buildings' files the records' own record
+                // doesn't name read.)
+                let p = phase("reading the build's own data for its mask pieces");
+                let m = ::bld::bld::extents::masks(&mut out, theme, &specs, &|d, n| {
+                    jobrt::jobs::report(d, n, "buildings' files")
+                })?;
+                if !specs.is_empty() {
+                    eprintln!(
+                        "available {theme}: {} mask pieces; {} files read, {} as the record had them",
+                        specs.len(),
+                        m.read,
+                        m.kept
+                    );
+                }
+                for ((holds, dataset), n) in &m.undeclared {
+                    eprintln!(
+                        "available {theme}: {n} buildings' {holds} of {dataset:?}, which no overture block declares"
+                    );
+                }
+                let masks = m.masks;
                 // (The water's side with the water layer's inland water: terrain::available::inland.)
                 let water = terrain::available::inland::from_records(out.root(), &out.manifest);
                 let cut = terrain::available::Cut::of_theme(&land, theme, water)?;
                 drop(p);
                 let p = phase("drawing the pieces' tiles");
-                let made = terrain::available::build(&mut out, theme, &pieces, &cut, &|d, n| {
+                let made = terrain::available::build(&mut out, theme, &pieces, &masks, &cut, &|d, n| {
                     jobrt::jobs::report(d, n, "z6 tiles")
                 })
                 .map_err(|e| jobrt::control::stop_if_paused("available", e))?;
@@ -889,7 +914,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 out.save()?;
                 eprintln!(
                     "available {theme}: {} pieces; {} z6 tiles made again, {} dropped; {} packs, {} tiles; root {}; poles {:?}",
-                    pieces.len(),
+                    pieces.len() + masks.len(),
                     made.remade.len(),
                     made.dropped.len(),
                     made.packs,

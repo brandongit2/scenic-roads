@@ -18,6 +18,7 @@
 //! (The design's `buildings T` step is `bldtiles` here: `buildings` is the roadside buildings' job,
 //! crate::buildtiles, in scenic-build and the agent.)
 
+pub mod extents;
 pub mod fetch;
 pub mod field;
 pub mod fill;
@@ -58,9 +59,12 @@ pub fn z14_key(p: [i32; 2]) -> u64 {
     roadcore::archive::tile_key(14, x, y)
 }
 
+/// The normalized files' logical names' folder.
+pub const WORK: &str = "work/bld/";
+
 /// The logical name of z6 tile T's normalized file.
 pub fn work_logical(x: u32, y: u32) -> String {
-    format!("work/bld/6-{x}-{y}")
+    format!("{WORK}6-{x}-{y}")
 }
 
 /// The logical name of z6 tile T's hi pack.

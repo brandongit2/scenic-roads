@@ -368,7 +368,9 @@ pub fn theme_of(files: &BTreeMap<String, Vec<u8>>) -> Theme {
                     let block = piece.split('/').next().unwrap_or(piece);
                     let read =
                         reads.iter().find(|r| r["piece"].as_str() == Some(block)).map_or(Value::Null, |r| (*r).clone());
-                    if f["geometry"].is_null() {
+                    // (A mask piece's outline is the step's to draw, from the build's own data:
+                    // only an unknown one is drawn nowhere.)
+                    if props.get("extent").and_then(Value::as_str) == Some("unknown") {
                         let label = props.get("name").and_then(Value::as_str).unwrap_or(piece);
                         t.unknown.entry(id.to_string()).or_default().push(label.to_string());
                     }

@@ -45,10 +45,90 @@ fn run(root: &Path, pieces: &[Piece]) -> Made {
 }
 
 fn run_cut(root: &Path, pieces: &[Piece], cut: &Cut) -> Made {
+    run_masks(root, pieces, &[], cut)
+}
+
+fn run_masks(root: &Path, pieces: &[Piece], masks: &[Mask], cut: &Cut) -> Made {
     let mut o = out(root);
-    let m = build(&mut o, "terrain", pieces, cut, &|_, _| {}).unwrap();
+    let m = build(&mut o, "terrain", pieces, masks, cut, &|_, _| {}).unwrap();
     o.save().unwrap();
     m
+}
+
+/// A mask of z6 tile (x, y) holding the cells `cells` ((column, row), z14 tiles within it).
+fn mask_of(id: &str, x: u32, y: u32, cells: &[(u16, u16)]) -> Mask {
+    let mut rows = vec![Vec::new(); mask::CELLS as usize];
+    for &(c, r) in cells {
+        rows[r as usize].push((c, c + 1));
+    }
+    for row in &mut rows {
+        row.sort_unstable();
+        // (Cells side by side: one run.)
+        row.dedup_by(|b, a| {
+            if a.1 == b.0 {
+                a.1 = b.1;
+                true
+            } else {
+                false
+            }
+        });
+    }
+    Mask { id: id.into(), tiles: [((x, y), MaskTile::of(&rows))].into() }
+}
+
+/// A point inside z14 cell (c, r) of z6 tile (x, y): its centre.
+fn in_cell(x: u32, y: u32, c: u32, r: u32) -> (f64, f64) {
+    let b = roadcore::geo::tile_box(mask::MASK_Z, x * mask::CELLS + c, y * mask::CELLS + r);
+    ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+}
+
+#[test]
+fn a_mask_is_drawn_from_its_cells_beside_the_outlines() {
+    let d = tempfile::tempdir().unwrap();
+    // Z6 tile 6/33/22 (5.6° to 11.3° E, the Alps): cells 10 and 11 of row 20, cell 200 of row 100; a
+    // second mask on cell 11 of row 20; an outline over cells 10 to 12 of row 20.
+    let (x, y) = (33, 22);
+    let a = mask_of("o/a", x, y, &[(10, 20), (11, 20), (200, 100)]);
+    let b = mask_of("o/b", x, y, &[(11, 20)]);
+    let c0 = roadcore::geo::tile_box(mask::MASK_Z, x * mask::CELLS + 10, y * mask::CELLS + 20);
+    let c2 = roadcore::geo::tile_box(mask::MASK_Z, x * mask::CELLS + 12, y * mask::CELLS + 20);
+    let p = source("p", &[("box", vec![vec![square(c0[0] + 1e-4, c0[1] + 1e-4, c2[2] - 1e-4, c2[3] - 1e-4)]])]);
+    let m = run_masks(d.path(), &p, &[a.clone(), b.clone()], &everything());
+    assert_eq!(m.remade, ["6/33/22"], "{m:?}");
+    let pt = |c, r| {
+        let (lon, lat) = in_cell(x, y, c, r);
+        at(d.path(), lon, lat)
+    };
+    assert_eq!(pt(10, 20), ["o/a", "p/box"]);
+    assert_eq!(pt(11, 20), ["o/a", "o/b", "p/box"]);
+    assert_eq!(pt(12, 20), ["p/box"]);
+    assert_eq!(pt(200, 100), ["o/a"]);
+    assert!(pt(201, 100).is_empty() && pt(10, 21).is_empty());
+    // A cell's edge is the z14 tile's: just inside it held, just outside not.
+    let e = roadcore::geo::tile_box(mask::MASK_Z, x * mask::CELLS + 200, y * mask::CELLS + 100);
+    assert_eq!(at(d.path(), e[0] + 1e-4, (e[1] + e[3]) / 2.0), ["o/a"]);
+    assert!(at(d.path(), e[0] - 1e-4, (e[1] + e[3]) / 2.0).is_empty());
+    // Zoomed out the masks stay in sight.
+    let t0 = stored_tile(d.path(), "available-terrain", 0, 0, 0).unwrap();
+    let (mx, my) = roadcore::geo::merc(in_cell(x, y, 200, 100).0, in_cell(x, y, 200, 100).1);
+    assert!(t0.at((mx * 256.0) as usize, (my * 256.0) as usize).any(|s| s == "o/a"));
+    // Nothing moved: nothing made; a mask's cells moved: its z6 tile alone.
+    assert!(run_masks(d.path(), &p, &[a.clone(), b.clone()], &everything()).remade.is_empty());
+    let a2 = mask_of("o/a", x, y, &[(10, 20), (11, 20), (201, 100)]);
+    let m = run_masks(d.path(), &p, &[a2, b.clone()], &everything());
+    assert_eq!(m.remade, ["6/33/22"]);
+    assert_eq!(pt(201, 100), ["o/a"]);
+    assert!(pt(200, 100).is_empty());
+    // A mask and an outline of one id: refused.
+    let mut o = out(d.path());
+    let twice = mask_of("p/box", x, y, &[(0, 0)]);
+    assert!(build(&mut o, "terrain", &p, &[twice], &everything(), &|_, _| {}).is_err());
+    // A mask is cut to the side kept: none on the land's side where there's no land.
+    let sea = tempfile::tempdir().unwrap();
+    let far = Land::of_rings(&[e7(&square(20.0, 44.0, 20.5, 44.5))]);
+    let cut = Cut::new(&far, Side::Land).unwrap();
+    run_masks(sea.path(), &[], &[a], &cut);
+    assert!(at(sea.path(), in_cell(x, y, 10, 20).0, in_cell(x, y, 10, 20).1).is_empty());
 }
 
 /// The stored tile z/x/y of a layer, from the records at `root`.
@@ -222,10 +302,10 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     // B moved: only B's z6 tiles (as it was, and as it is) are made again; A's packs are as they were.
     let m = run(d.path(), &[a.clone(), b(-68.0)].concat());
     let all = everything();
-    let b_tiles: BTreeSet<String> = tile_keys(&b(-69.0), &all)
+    let b_tiles: BTreeSet<String> = tile_keys(&b(-69.0), &[], &all)
         .unwrap()
         .into_keys()
-        .chain(tile_keys(&b(-68.0), &all).unwrap().into_keys())
+        .chain(tile_keys(&b(-68.0), &[], &all).unwrap().into_keys())
         .collect();
     assert!(!m.remade.is_empty());
     for t in &m.remade {
@@ -233,7 +313,7 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     }
     assert!(m.root, "the root is made again from the mids");
     let after = packs(d.path());
-    for t in tile_keys(&a, &all).unwrap().into_keys() {
+    for t in tile_keys(&a, &[], &all).unwrap().into_keys() {
         let (x, y) = xy(&t);
         let l = fmt::pack_logical("available-terrain", x, y);
         assert_eq!(before.get(&l), after.get(&l), "{l}");

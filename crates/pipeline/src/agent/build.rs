@@ -4326,7 +4326,7 @@ fn region_tiles_target(x: &KeyCtx) -> Option<(String, String)> {
 }
 
 /// Every data-available target with its key (`available_work`): a theme's whose accepted extents
-/// have pieces (bathymetry and buildings have none yet: no layer).
+/// have pieces (none: no layer).
 fn available_targets(x: &KeyCtx) -> Vec<(String, String)> {
     inputs::inputs::extents::THEMES
         .iter()

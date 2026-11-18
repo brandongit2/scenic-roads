@@ -102,6 +102,23 @@ pub fn inland_water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     )
 }
 
+/// The build's normalized buildings (`work/bld/6-x-y`, bldprep's) by content, for the buildings'
+/// data-available target (`available-buildings`: its mask pieces are drawn from them,
+/// bld::bld::extents); nothing for another theme's. Not required: the layers are drawn from those
+/// there are, and drawn again as more come.
+pub fn overture_work(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    if t != codecs::available::layer("buildings", codecs::available::BEST) {
+        return Some(Vec::new());
+    }
+    let prefix = bld::bld::WORK;
+    Some(
+        x.m.range(prefix.to_string()..)
+            .take_while(|(l, _)| l.starts_with(prefix))
+            .map(|(l, c)| format!("{l}={c}"))
+            .collect(),
+    )
+}
+
 /// The built set's datasets (`available-built-terrain`): every accepted elevation dataset in the
 /// order, `id keyed` and the digest of what the input check measured of it (its coverage as its
 /// regions cut it, its presence and hollow tiles: a regions change or a check's new measure moves

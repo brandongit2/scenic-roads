@@ -1,7 +1,7 @@
 //! The cut to one side of the coastline (docs/steps.md §14): a theme's layers hold a piece only on
 //! its side, whatever its outline (an index's coastal tiles, a 1° tile, a block drawn over the sea).
-//! The side is the theme's (`SIDES`): the terrain's the land, bathymetry's the water: the sea, and
-//! the lakes, reservoirs and rivers inland (`Cut::sea`, super::inland).
+//! The side is the theme's (`SIDES`): the terrain's and the buildings' the land, bathymetry's the
+//! water: the sea, and the lakes, reservoirs and rivers inland (`Cut::sea`, super::inland).
 //!
 //! - **The land** is the coastline's, the pass's own (inputs::inputs::regions::land, the
 //!   `regions-land` step's, by 2° cell): OSM's coastline, so a lake is land (the coastline goes round
@@ -34,7 +34,7 @@ pub enum Side {
 }
 
 /// Each theme's side (every theme of inputs::inputs::extents::THEMES has one: `side_of`).
-pub const SIDES: [(&str, Side); 2] = [("terrain", Side::Land), ("bathymetry", Side::Sea)];
+pub const SIDES: [(&str, Side); 3] = [("terrain", Side::Land), ("bathymetry", Side::Sea), ("buildings", Side::Land)];
 
 /// Theme `theme`'s side.
 pub fn side_of(theme: &str) -> Result<Side> {

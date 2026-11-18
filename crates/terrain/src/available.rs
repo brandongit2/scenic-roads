@@ -23,6 +23,9 @@
 //!   key in its mids pack's meta and makes again only the tiles whose key moved (a new source, or
 //!   one fetched again, makes only the tiles it meets), keeping the others' packs as they are; the
 //!   root is made again from the mids whenever a z6 tile moved.
+//! - **Masks.** A piece of the build's own data (crate::available::mask: the buildings' Overture
+//!   pieces) is drawn from its cells, z14 tiles, not from an outline: its runs are added to each
+//!   row's before the cut, and each z6 tile's key names its digest there.
 //! - **The polar caps.** Past 85.05° the same sets in each pole's grid (roadcore::polar): a root
 //!   pack of z0–3 a pole (a pixel 1,024 m of the grid at z3), from the polygons reaching the
 //!   pole's square, keyed alike.
@@ -575,10 +578,12 @@ fn key_of(lines: &[String]) -> String {
     h.finalize().to_hex()[..16].to_string()
 }
 
-/// Each z6 tile a polygon's box meets ("6/x/y"), and its key: the lines of those polygons and the
-/// cut's there (`Cut::tile_lines`: the land's, and the inland water's on the water's side).
-fn tile_keys(pieces: &[Piece], cut: &Cut) -> Result<BTreeMap<String, String>> {
+/// Each z6 tile a polygon's box meets or a mask holds cells in ("6/x/y"), and its key: the lines
+/// of those polygons and masks (`mask::tile_lines`) and the cut's there (`Cut::tile_lines`: the
+/// land's, and the inland water's on the water's side).
+fn tile_keys(pieces: &[Piece], masks: &[Mask], cut: &Cut) -> Result<BTreeMap<String, String>> {
     let mut lines: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+    mask::tile_lines(masks, &mut lines);
     for p in pieces {
         for q in &p.polygons {
             let r = z6_range(q.bbox);
@@ -738,15 +743,24 @@ fn stored(cell: &Cell, sets: &Sets, ids: &[String]) -> (Vec<u8>, u32) {
     (fmt::gzip(&t), t.len() as u32)
 }
 
-/// Builds theme `theme`'s best set from `pieces` (every source's of the theme), cut to the theme's
-/// side of the coast (`cut`), making again only what their keys say moved; `report` hears the z6
-/// tiles done of those to make.
-pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &dyn Fn(u64, u64)) -> Result<Made> {
+/// Builds theme `theme`'s best set from `pieces` (every source's of the theme with an outline) and
+/// `masks` (those drawn from the build's own data: crate::available::mask), cut to the theme's side
+/// of the coast (`cut`), making again only what their keys say moved; `report` hears the z6 tiles
+/// done of those to make. The polar caps take the outlines alone (no mask reaches past 85.05°).
+pub fn build(
+    out: &mut Out,
+    theme: &str,
+    pieces: &[Piece],
+    masks: &[Mask],
+    cut: &Cut,
+    report: &dyn Fn(u64, u64),
+) -> Result<Made> {
     let mut seen = BTreeSet::new();
-    for p in pieces {
-        ensure!(seen.insert(p.id.as_str()), "piece {} twice", p.id);
+    for id in pieces.iter().map(|p| &p.id).chain(masks.iter().map(|m| &m.id)) {
+        ensure!(seen.insert(id.as_str()), "piece {id} twice");
     }
-    let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).collect();
+    let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).chain(masks.iter().map(|m| m.id.clone())).collect();
+    let first_mask = pieces.len() as u32;
     let polys: Vec<PlanePoly> = pieces
         .iter()
         .enumerate()
@@ -761,7 +775,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &d
     drive(
         out,
         &record,
-        tile_keys(pieces, cut)?,
+        tile_keys(pieces, masks, cut)?,
         poles.iter().map(|(p, k, w)| (*p, k.clone(), w.is_empty())).collect(),
         &mut |stale, sink| {
             // (A row of z6 tiles at a time: the row's runs cut to the side kept, then each tile's
@@ -778,11 +792,16 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &d
                 // quadtrees: the row's peak.)
                 let runs: Vec<Runs> = {
                     let mask = cut.with_inland(cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?, y, &xs, r0)?;
-                    row_runs(&polys, MERC_W, r0, r1, &mut band)
-                        .iter()
-                        .zip(&mask)
-                        .map(|(r, m)| cut::apply(r, m))
-                        .collect()
+                    let cells = mask::band_runs(masks, first_mask, y, &xs, MERC_W, &mut band);
+                    let outlines = row_runs(&polys, MERC_W, r0, r1, &mut band);
+                    let mut runs = Vec::with_capacity(outlines.len());
+                    for (k, (r, m)) in outlines.iter().zip(&mask).enumerate() {
+                        match &cells {
+                            Some(c) => runs.push(cut::apply(&mask::add(r, c, y, r0 + k as u32, &mut band), m)),
+                            None => runs.push(cut::apply(r, m)),
+                        }
+                    }
+                    runs
                 };
                 drop(boxes);
                 let band = std::sync::Arc::new(band);
@@ -1029,8 +1048,10 @@ fn put_record(out: &mut Out, ml: &str, meta: &MidsMeta, blobs: &BTreeMap<String,
 pub mod built;
 pub mod cut;
 pub mod inland;
+pub mod mask;
 
 pub use cut::Cut;
+pub use mask::{Mask, MaskTile};
 
 #[cfg(test)]
 mod tests;
