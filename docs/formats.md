@@ -1529,8 +1529,8 @@ the id with the clicked point. A reader takes version 8 only.
     `pending.json` are the unverified uploads (`buildstore::pending`), by content name alone: written
     as a list of them; read as a list or as an object keyed by them, whatever its values (apps
     before task #1387 wrote the object, with each upload's SHA-256 before task #1002, which nothing
-    read), for good: store entries, held hand-offs, records backups and the pre-pool `pending.json`
-    may hold it. An app before task #1002 reads only the object, so the rollback floor is task
+    read), for good: the records saved before the update (`records.json`, on the lead's disk and the
+    NAS), the lead's store entries, held hand-offs and the pre-pool `pending.json` may hold it. An app before task #1002 reads only the object, so the rollback floor is task
     #1002's commit.
   - A member's status rides in its beat (docs/coordination.md §3.1); the lead's
     status (its agent's `status.json`) lists the members' as `helpers` (read as `members` too, task #858) and their heartbeats as `beats`.

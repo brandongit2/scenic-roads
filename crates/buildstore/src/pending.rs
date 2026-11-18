@@ -5,8 +5,9 @@
 //!
 //! Written as a list of names. Read in either shape, for good: a list, or an object, content name →
 //! anything (apps before task #1387 wrote one, with each upload's SHA-256 before task #1002, which
-//! nothing read), which a lead's store entries, a member's held hand-offs, a records backup
-//! (`work/backup.*.json`) restored and `state/build/pending.json` before the pool may still hold.
+//! nothing read), which the records saved before the update (`records.json`, on the lead's disk and
+//! the NAS), the lead's store entries, a member's held hand-offs and `state/build/pending.json`
+//! before the pool may still hold.
 //! An app before task #1002 reads only the object, so the rollback floor (tools/app/rollback-floor)
 //! is task #1002's commit, whose reader takes both.
 
