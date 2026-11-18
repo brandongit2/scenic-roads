@@ -1091,15 +1091,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
                     v.push(p);
                 }
             }
-            let left: Vec<(Cell, Area)> = taken
-                .into_iter()
-                .map(|(c, at)| {
-                    let ps: Vec<&Area> = at.iter().map(|(m, i)| &given[m][&c][*i]).collect();
-                    (c, areas[id].get(c).minus(&geom::union_all_of(&ps)))
-                })
-                .collect();
             let a = areas.get_mut(id).unwrap();
-            for (c, l) in left {
+            for (c, at) in taken {
+                let ps: Vec<&Area> = at.iter().map(|(m, i)| &given[m][&c][*i]).collect();
+                let l = a.get(c).minus(&geom::union_all_of(&ps));
                 a.set(c, l);
             }
             for (m, cells) in given {
@@ -1918,9 +1913,11 @@ const NEAR_PAD: i64 = 100_000;
 /// (`Precision::ABSOLUTE`) an overlay with anything inside `r` gives the same result. On a thread
 /// that snaps (`geom::snap_here`, as the hand-outs and the slivers' `shared_km` run) i_overlay's
 /// snapping radius and strategy depend on the whole input, so it is the same there by measurement,
-/// not by construction: task #1426's Canada subset resolved to the same bytes with and without it,
-/// and the test runs it snapping. None when a segment the clip would cut comes near `r` (a long one,
-/// crossing both): `a` is to be read whole then. Empty when nothing of `a` comes near `r`.
+/// not by construction: task #1426's Canada subset resolved to the same bytes with and without it
+/// (a subset of four countries' waters handing out together, the same before and after their
+/// hand-outs held less), and the tests run it snapping. None when a segment the clip would cut
+/// comes near `r` (a long one, crossing both): `a` is to be read whole then. Empty when nothing of
+/// `a` comes near `r`.
 pub(super) fn near_part(a: &Area, r: [i64; 4]) -> Option<Area> {
     let meets = |b: [i64; 4], x: [i64; 4]| b[0] <= x[2] && x[0] <= b[2] && b[1] <= x[3] && x[1] <= b[3];
     let within = |b: [i64; 4], x: [i64; 4]| b[0] >= x[0] && b[2] <= x[2] && b[1] >= x[1] && b[3] <= x[3];

@@ -1452,3 +1452,59 @@ fn a_stretchs_edge_is_the_same_read_against_the_members_part() {
         }
     });
 }
+
+/// Task #1426: two places' waters handing out, touching no region in common, are made together (one
+/// run of hand-outs): each place's regions resolve as they do with the other place left out.
+#[test]
+fn hand_outs_made_together_give_what_each_gives_alone() {
+    let d = tempfile::tempdir().unwrap();
+    // Each place: two regions sharing a stretch of its zone, a third with a stretch of its own.
+    let places = [("a", 0.0, 61u64), ("b", 40.0, 71)];
+    let mut lands = Vec::new();
+    for (_, x, rel) in places {
+        lands.extend([(rel, (x, x + 1.0)), (rel + 1, (x + 1.0, x + 2.0)), (rel + 2, (x + 10.0, x + 11.0))]);
+    }
+    let p = outlines(
+        d.path(),
+        &lands.iter().map(|(rel, (w, e))| (*rel, "PP", deg_sq(*w, 0.0, *e, 1.0))).collect::<Vec<_>>(),
+    );
+    let land = lands.iter().flat_map(|(_, (w, e))| bx(*w, 0.0, *e, 1.0)).map(|r| vec![r]).collect();
+    let zones = places
+        .iter()
+        .enumerate()
+        .map(|(k, (_, x, _))| {
+            (k as u64 + 1, [bx(x - 1.0, -1.0, x + 3.0, 2.0), bx(x + 9.0, -1.0, x + 12.0, 2.0)].concat())
+        })
+        .collect();
+    let data = Datasets::from_parts(zones, HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let files = |which: &[&str]| -> Vec<(String, String)> {
+        let mut v = vec![("_pins.toml".to_string(), "osm = \"2026-09-28\"\n".to_string())];
+        for (k, (g, _, rel)) in places.iter().enumerate() {
+            if !which.contains(g) {
+                continue;
+            }
+            for (i, r) in [1u64, 2, 3].iter().enumerate() {
+                v.push((format!("{g}/{g}{r}.toml"), m(&format!("{g}{r}"), rel + i as u64)));
+            }
+            v.push((
+                format!("{g}/{g}-waters.toml"),
+                format!("id = \"{g}-waters\"\nname = \"{g} waters\"\nwater = [{{ minus = [\"eez:{}\", \"group:{g}\"] }}]\nhand_out = \"{g}\"\n", k + 1),
+            ));
+        }
+        v
+    };
+    let both = run_owned(&w, &files(&["a", "b"]));
+    assert!(both.problems.is_empty(), "{:?}", both.problems);
+    for g in ["a", "b"] {
+        let alone = run_owned(&w, &files(&[g]));
+        assert!(alone.problems.is_empty(), "{:?}", alone.problems);
+        for (id, r) in &alone.resolved {
+            assert_eq!(&both.resolved[id], r, "{id}");
+        }
+        // (The stretch round the third region was handed to it.)
+        let x = if g == "a" { 9.5 } else { 49.5 };
+        assert!(area_of(&both.resolved[&format!("{g}3")].geometry).contains([e7(x), e7(0.5)]), "{g}3");
+    }
+}
