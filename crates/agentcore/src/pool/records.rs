@@ -705,10 +705,12 @@ mod tests {
     /// names alone: a lead's snapshot saved before (`records.json`, on its disk and the NAS) and a
     /// member's hand-off held across the update (`saved.json`'s `mine.unwritten`); merged, it leaves
     /// the records as the same hand-off from this app does (the manifest, keys, sizes and pending
-    /// names alike: nothing builds or uploads again). What this app saves reads in theirs (a fixture
-    /// of its shape: the records' `pending` a required map of strings, a hand-off's a map of strings).
+    /// names alike: nothing builds or uploads again). What this app saves lists the names, which
+    /// their reader (the records' `pending` a required map of strings, a hand-off's a map of
+    /// strings) can't read: the rollback floor, task #1002's commit, keeps such an app from running
+    /// (buildstore::pending).
     #[test]
-    fn records_and_hand_offs_with_checksums_read_and_what_is_saved_reads_in_older_apps() {
+    fn records_and_hand_offs_with_checksums_read_and_what_is_saved_lists_the_names() {
         let sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
         let old = format!(
             r#"{{"term":3,"seq":9,"manifest":{{"base/6-1-1":"base/6-1-1.k1.base"}},"keys":{{}},"pending":{{"base/6-1-1.k1.base":"{sha}"}},"sizes":{{"base/6-1-1.k1.base":12}},"reflected":[]}}"#
@@ -734,22 +736,16 @@ mod tests {
         assert_eq!(r, ours, "merged alike");
 
         save(&mut r, &nas).unwrap();
-        #[derive(serde::Deserialize)]
-        struct OldRecords {
-            manifest: BTreeMap<String, String>,
-            pending: BTreeMap<String, String>,
+        let saved: serde_json::Value = serde_json::from_slice(&nas.read(ONE).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["pending"], serde_json::json!(r.pending.iter().collect::<Vec<_>>()));
+        assert!(!r.pending.is_empty());
+        assert_eq!(Records::now(&nas).unwrap().pending, r.pending, "read back as saved");
+        let h = &serde_json::to_value(&theirs).unwrap()["handoff"]["pending"];
+        assert_eq!(*h, serde_json::json!(["base/6-1-2.k2.base"]));
+        // (Their reader, a map of strings, refuses both.)
+        for p in [&saved["pending"], h] {
+            assert!(serde_json::from_value::<BTreeMap<String, String>>(p.clone()).is_err());
         }
-        let saved: OldRecords = serde_json::from_slice(&nas.read(ONE).unwrap().unwrap()).unwrap();
-        assert_eq!(saved.manifest, r.manifest);
-        assert_eq!(saved.pending.keys().collect::<Vec<_>>(), r.pending.iter().collect::<Vec<_>>());
-        assert!(saved.pending.values().all(String::is_empty), "no checksum carried");
-        #[derive(serde::Deserialize)]
-        struct OldHandoff {
-            #[serde(default)]
-            pending: BTreeMap<String, String>,
-        }
-        let h: OldHandoff = serde_json::from_value(serde_json::to_value(&theirs).unwrap()["handoff"].clone()).unwrap();
-        assert_eq!(h.pending.keys().collect::<Vec<_>>(), ["base/6-1-2.k2.base"]);
     }
 
     /// docs/coordination.md step 8c: a save writes the one path and its brief alone (no term's own

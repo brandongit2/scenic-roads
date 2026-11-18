@@ -1432,8 +1432,8 @@ mod tests {
     }
 
     /// Task #1002: an upload reads its file for its name's hash alone (`hash16_file`: no other
-    /// hash beside it), and its check pending is handed off by its name, an empty string where
-    /// apps before it wrote its SHA-256 (crate::pending). The same file put again under its name
+    /// hash beside it), and its check pending is handed off by its name alone, in a list
+    /// (crate::pending). The same file put again under its name
     /// by the same run is read once, for that hash, and nothing else (across chunks: a file larger
     /// than one, its last one short).
     #[test]
@@ -1462,10 +1462,10 @@ mod tests {
         out.save().unwrap();
         let b = std::fs::read(std::fs::read_dir(&hd).unwrap().next().unwrap().unwrap().path()).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-        assert_eq!(v["pending"], serde_json::json!({ name.clone(): "" }));
-        // (What an app before task #1002 reads a hand-off's pending as: a map of strings.)
-        let theirs: BTreeMap<String, String> = serde_json::from_value(v["pending"].clone()).unwrap();
-        assert_eq!(theirs.into_keys().collect::<Vec<_>>(), [name]);
+        assert_eq!(v["pending"], serde_json::json!([name]));
+        // (What an app before task #1002 reads a hand-off's pending as, a map of strings, can't read
+        // it: the rollback floor keeps such an app from running, crate::pending.)
+        assert!(serde_json::from_value::<BTreeMap<String, String>>(v["pending"].clone()).is_err());
     }
 
     /// A file there already is reused as it is, its time left (GC goes by its queue, not by

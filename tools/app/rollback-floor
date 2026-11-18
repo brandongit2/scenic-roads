@@ -1,4 +1,4 @@
-8bcf6142e37c6573b4dc32df0470f1b9a7c4db77
+68b23234b373b4873baae4d88e08f73aca2e2d07
 # The first line names the floor, a commit on origin's main (its full id); publish.sh --rollback refuses to go to
 # a version whose commit doesn't contain it (tools/app/lib.zsh rollback_ok): an app from before it
 # can't run the pool safely beside this one's NAS state. Raise it, with the reason here, once the
@@ -6,7 +6,12 @@
 # commit, rebased as it merges, is another), and before the next publish; tools/app/guards.sh
 # refuses a first line that isn't the full id of a commit this tree contains.
 #
-# 8bcf6142e (task #1175, its last change to the app): an app before it leads by writing the lead's
+# 68b23234b (task #1002, its reader of both shapes): this app writes the unverified uploads
+# (`pending`: hand-offs, records.json, saved.json, pending.json) as a list of content names
+# (buildstore::pending, task #1387); an app before it reads `pending` only as an object of strings,
+# so it fails to parse a hand-off, the records or a held hand-off this one wrote.
+#
+# Before 8bcf6142e (task #1175, its last change to the app): an app leads by writing the lead's
 # contact, its addresses and the pool's token, to the NAS's state/coordinator.json each beat (the
 # #1119 rollout's bridge, which #1175 deleted with the file), so an app from before task #1119
 # finds the lead again. That app is unsafe beside this NAS: it checks the NAS by `map/`, removed

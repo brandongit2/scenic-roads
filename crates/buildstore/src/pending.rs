@@ -3,13 +3,12 @@
 //! duties check each on the NAS by its size (agentcore::agent::gc::verify_pending), GC's queue holds
 //! them from its chunks, and the merge's checks name them.
 //!
-//! Read in either shape: an object, content name → anything (apps before task #1002 wrote each
-//! upload's SHA-256 there, which nothing read: an old member's hand-off, a lead's records saved
-//! before, `state/build/pending.json` before the pool), or a list of names. Written as an object of
-//! empty strings, the shape every app that can run today requires (its reader a map of strings, the
-//! records' field required: an app before task #1002, back to the rollback floor). Planned: written
-//! as a list, once no app that requires the object can run (the rollback floor at task #1002's
-//! commit or later).
+//! Written as a list of names. Read in either shape, for good: a list, or an object, content name →
+//! anything (apps before task #1387 wrote one, with each upload's SHA-256 before task #1002, which
+//! nothing read), which a lead's store entries, a member's held hand-offs, a records backup
+//! (`work/backup.*.json`) restored and `state/build/pending.json` before the pool may still hold.
+//! An app before task #1002 reads only the object, so the rollback floor (tools/app/rollback-floor)
+//! is task #1002's commit, whose reader takes both.
 
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -61,9 +60,9 @@ impl<const N: usize> From<[String; N]> for Pending {
 }
 
 impl Serialize for Pending {
-    /// An object of empty strings: what an app before task #1002 reads (module docs).
+    /// A list of the names (module docs).
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_map(self.0.iter().map(|c| (c, "")))
+        s.collect_seq(&self.0)
     }
 }
 
@@ -99,25 +98,27 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// Task #1002: what apps before it wrote (each upload's SHA-256) reads as its names; a list
-    /// (the planned shape) too; what this app writes is an object of empty strings, which their
-    /// reader (a map of strings) takes, names alike.
+    /// Every shape reads as its names: an object with each upload's SHA-256 (apps before task
+    /// #1002), one of empty strings (apps before task #1387) and a list; what this app writes is
+    /// the list, read back as written. An app before task #1002 (its reader a map of strings)
+    /// can't read it, which the rollback floor, task #1002's commit, keeps from running (module docs).
     #[test]
-    fn old_and_new_shapes_read_and_the_old_reader_takes_what_is_written() {
+    fn every_shape_reads_and_a_list_is_written() {
         let old = r#"{"a.0123456789abcdef.pack":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","b.0123456789abcdef.json":"aa"}"#;
         let p: Pending = serde_json::from_str(old).unwrap();
         let names: Vec<&str> = p.iter().map(String::as_str).collect();
         assert_eq!(names, ["a.0123456789abcdef.pack", "b.0123456789abcdef.json"]);
+        let empty = r#"{"a.0123456789abcdef.pack":"","b.0123456789abcdef.json":""}"#;
+        assert_eq!(serde_json::from_str::<Pending>(empty).unwrap(), p);
         let listed: Pending = serde_json::from_str(r#"["b.0123456789abcdef.json","a.0123456789abcdef.pack"]"#).unwrap();
         assert_eq!(listed, p);
         assert_eq!(serde_json::from_str::<Pending>("{}").unwrap(), Pending::default());
         assert!(serde_json::from_str::<Pending>(r#""a""#).is_err(), "neither shape");
 
         let written = serde_json::to_string(&p).unwrap();
-        assert_eq!(written, r#"{"a.0123456789abcdef.pack":"","b.0123456789abcdef.json":""}"#);
-        // (The reader of every app back to the rollback floor: a map of strings.)
-        let theirs: BTreeMap<String, String> = serde_json::from_str(&written).unwrap();
-        assert_eq!(theirs.keys().collect::<Vec<_>>(), p.iter().collect::<Vec<_>>());
+        assert_eq!(written, r#"["a.0123456789abcdef.pack","b.0123456789abcdef.json"]"#);
         assert_eq!(serde_json::from_str::<Pending>(&written).unwrap(), p, "read back as written");
+        assert_eq!(serde_json::to_string(&Pending::default()).unwrap(), "[]");
+        assert!(serde_json::from_str::<BTreeMap<String, String>>(&written).is_err(), "an app before the floor can't");
     }
 }
