@@ -542,7 +542,9 @@ before this); a stretch reaching past 1 km (an island no outline has, a long inl
 short of) stays out, for the cover check. A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its members
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge (hand-outs
-to outer folders first, then by id). A member is a region of the folder with water, but for a
+to outer folders first, then by id; a run of them touching no region in common made together, which
+gives what one after another would; a stretch's edge with a member measured against only the
+member's part round it, `tiles::near_part`). A member is a region of the folder with water, but for a
 subfolder holding a **waters region** (a region with `water` and no `outline`, in the subfolder
 itself; `water = []` when it has no sea of its own): the outermost such subfolder not holding the
 handing region is one member, its regions together, and what it alone borders goes whole to its
