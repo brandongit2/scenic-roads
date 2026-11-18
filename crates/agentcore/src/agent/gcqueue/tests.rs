@@ -367,8 +367,15 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(refusal(&back, &reused, T0).is_some(), "kept on the lead's disk");
     // The chunks and the orphans by HTTP alike: the records seen, nothing due, nothing queued.
     use crate::agent::gc::ChunkAsk;
-    let c = lead().chunk(&ChunkAsk { max: 200, newest_pass: None, dry: false }).unwrap();
-    assert!(c.names.is_empty());
+    let first = lead().chunk(&ChunkAsk { max: 200, dry: false }).unwrap();
+    assert!(first.names.is_empty() && first.newest_pass.is_none(), "no records served: no pass");
+    // (Task #1395: the newest pass is the lead's records', which name 2026-09-28's summary, not
+    // 2026-12-01's, whose hand-off isn't merged though its summary may be on the NAS.)
+    let mut r = records(2, &[("sources/osm/2026-09-28/pass", "sources/osm/2026-09-28/pass.1111111111111111.json")]);
+    r.manifest.insert("sources/osm/2026-12-01/pieces/6-1-1".into(), "x".into());
+    c.set_brief(Some(&r));
+    let ask = ChunkAsk { max: 200, dry: true };
+    assert_eq!(lead().chunk(&ask).unwrap().newest_pass.as_deref(), Some("2026-09-28"));
     assert_eq!(lead().orphans(&["base/6-1-2.k0.base".to_string()]).unwrap(), 1);
     assert!(q.queued("base/6-1-2.k0.base").is_some());
 }

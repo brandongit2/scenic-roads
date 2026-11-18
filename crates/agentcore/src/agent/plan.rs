@@ -1211,17 +1211,19 @@ impl Planner {
     }
 
     /// Whether the `gc` job has work (docs/storage.md, GC): a chunk GC's queue would hand
-    /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`: the
-    /// passes up to `latest`, the newest complete one), only the lead's agent running the jobs knowing; or a sweep's pass
-    /// under way or due (`gc::Sweeps`, `sweeps` its file). In words, for the job's card.
-    pub(super) fn gc_work(&self, sweeps: &Path, latest: Option<&str>) -> Option<String> {
+    /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`, by the
+    /// newest pass the coordinator's records name), only the lead's agent running the jobs
+    /// knowing; or a sweep's pass under way or due (`gc::Sweeps`, `sweeps` its file). In words,
+    /// for the job's card.
+    pub(super) fn gc_work(&self, sweeps: &Path) -> Option<String> {
         let now = now_s();
         let here = self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run);
         if let (Some(here), Some(co)) = (here, &self.coord) {
             let told = here.gc.removing_now().len();
             let cursors = here.feed.cursors();
             let holders = super::gcqueue::Holders { cursors: &cursors, oldest_lease: co.lease_bounds().0, now };
-            let due = told + here.gc.due_by(&holders, &|n| gc::by_the_queue(n, latest)).len();
+            let latest = co.newest_pass();
+            let due = told + here.gc.due_by(&holders, &|n| gc::by_the_queue(n, latest.as_deref())).len();
             if due > 0 {
                 return Some(format!("Removing {due} files nothing holds (GC's queue)"));
             }
@@ -1362,7 +1364,7 @@ impl Planner {
         }
         // GC, whenever it has work (docs/storage.md, GC): the NAS budget grants it when quiet.
         let sweeps = self.o.home.join(super::publish::MAPLOG).join(gc::SWEEPS_FILE);
-        if let Some(what) = self.gc_work(&sweeps, have.as_deref()) {
+        if let Some(what) = self.gc_work(&sweeps) {
             let keep = self.keep_depth_targets();
             let cmd = vec![
                 s(&me),

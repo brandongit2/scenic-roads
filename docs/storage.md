@@ -199,7 +199,8 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
   went and lets the rest go back to the queue, unmarked (but a name told more than once, which the
   killed job may have removed, stays marked). A chunk takes a name in a folder the map indexes, a removed
-  step's, a source of the newest complete pass or an older one (`sources/osm/<date>/`,
+  step's, a source of the newest complete pass (the one the lead's merged records name, never a
+  pass's summary on the NAS, there before its hand-off is merged) or an older one (`sources/osm/<date>/`,
   `sources/items/<date>/`, their subfolders too), or a rail list (a file of `sources/rail/` itself:
   the catalogue, the feeds checked, the zips' days, the rail and ferry feeds; `gc::by_the_queue`).
   Never a pass newer than the newest complete one (in progress: its job's uploads reach the records

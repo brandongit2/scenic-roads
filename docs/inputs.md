@@ -315,8 +315,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.9 GC and backups
 
-- GC sweeps `sources/inputs/` (`gc::inputs_kept`) and no other part of `sources/` (`NEVER`). A file
-  there goes once nothing names it and it's 14 days old (`gc::INPUTS_KEEP_S`; GC's inputs sweep,
+- GC's inputs sweep takes the gate's copies in `sources/inputs/` (`gc::inputs_kept`); of the rest of
+  `sources/` GC takes only the OSM passes' and the rail lists' files, by its queue and the orphan
+  sweep (docs/storage.md, GC). A copy in `sources/inputs/` goes once nothing names it and it's 14 days old (`gc::INPUTS_KEEP_S`; GC's inputs sweep,
   docs/storage.md, GC). Named: the
   manifest's and newest records' indexes, listings and held reports, every index touched within
   those 14 days, and the index each recent check

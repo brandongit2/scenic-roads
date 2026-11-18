@@ -65,20 +65,23 @@ pub trait Lead {
 
 /// A chunk asked of the lead.
 #[derive(Clone, Copy, Debug)]
-pub struct ChunkAsk<'a> {
+pub struct ChunkAsk {
     pub max: usize,
-    /// The newest complete OSM pass (`by_the_queue`).
-    pub newest_pass: Option<&'a str>,
     pub dry: bool,
 }
 
-/// The lead's answer: the chunk's names (those of a chunk told before first), and the top folders
-/// the map and the records name (the orphan sweep's).
+/// The lead's answer: the chunk's names (those of a chunk told before first), the top folders
+/// the map and the records name (the orphan sweep's), and the newest complete OSM pass its merged
+/// records name (`newest_pass`: the one `by_the_queue` took the chunk by, and the passes the orphan
+/// sweep lists; none, from a lead that doesn't say, and neither takes a pass's file). Never the
+/// job's own reading: a pass's `pass.*.json` is on the NAS before its hand-off is merged.
 #[derive(Debug, Default, Deserialize)]
 pub struct Chunk {
     pub names: Vec<String>,
     #[serde(default)]
     pub tops: BTreeSet<String>,
+    #[serde(default)]
+    pub newest_pass: Option<String>,
 }
 
 /// `Lead` by the lead's coordinator, found as coordwire::lead says (the lead this Mac's agent
@@ -111,7 +114,7 @@ impl TheLead {
 
 impl Lead for TheLead {
     fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
-        let v = self.ask(CHUNK, &serde_json::json!({ "max": a.max, "newest_pass": a.newest_pass, "dry": a.dry }))?;
+        let v = self.ask(CHUNK, &serde_json::json!({ "max": a.max, "dry": a.dry }))?;
         serde_json::from_value(v).context("the lead's chunk")
     }
 
@@ -246,7 +249,7 @@ pub fn by_the_queue(n: &str, newest_pass: Option<&str>) -> bool {
 /// The rail lists' folder (inputs::rail: the catalogue, the feeds checked, the zips' days and the
 /// rail and ferry feeds), each read by its logical name: its own files are GC's (`by_the_queue`,
 /// the orphan sweep), its subfolder of zips (`gtfs/`) not.
-pub const RAIL_LISTS: &str = "sources/rail/";
+const RAIL_LISTS: &str = "sources/rail/";
 
 /// The depth's current targets as the agent's last plan found them (`build::depth_kept`: the z3 and
 /// z6 tiles the coverage and the declared sources make targets, and those leased now), written to
@@ -794,11 +797,10 @@ pub fn run(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<R
 fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<Report> {
     let dry_run = asked.dry_run;
     let mut rep = Report { dry_run, ..Default::default() };
-    let latest = inputs::osmpass::latest_pass(root);
     crate::agent::jobs::stage(0, 2, "steps (removing what GC's queue frees)");
-    let (flow, tops) = {
+    let (flow, Chunk { tops, newest_pass: latest, .. }) = {
         let _p = jobrt::timings::phase("removing what GC's queue frees");
-        drain(root, ways, dry_run, latest.as_deref(), &mut rep)?
+        drain(root, ways, dry_run, &mut rep)?
     };
     if flow == Flow::Paused {
         rep.paused = true;
@@ -840,31 +842,25 @@ fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Resu
 }
 
 /// The queue's chunks, one after another until the lead has none (a dry run: the names due now,
-/// counted), each removed as it was told (`remove_told`). The orphan sweep's top folders, as the
-/// lead's last answer named them.
-fn drain(
-    root: &store::nasfs::NasRoot,
-    ways: &Ways,
-    dry_run: bool,
-    newest_pass: Option<&str>,
-    rep: &mut Report,
-) -> Result<(Flow, BTreeSet<String>)> {
-    let ask = ChunkAsk { max: if dry_run { usize::MAX } else { CHUNK_NAMES }, newest_pass, dry: dry_run };
+/// counted), each removed as it was told (`remove_told`). The lead's last answer, for the orphan
+/// sweep (its top folders and newest pass).
+fn drain(root: &store::nasfs::NasRoot, ways: &Ways, dry_run: bool, rep: &mut Report) -> Result<(Flow, Chunk)> {
+    let ask = ChunkAsk { max: if dry_run { usize::MAX } else { CHUNK_NAMES }, dry: dry_run };
     loop {
         let c = ways.lead.chunk(&ask).context("nothing removed: GC's queue on the lead not asked")?;
         if dry_run {
             rep.due = c.names.len();
-            return Ok((Flow::Done, c.tops));
+            return Ok((Flow::Done, c));
         }
         if c.names.is_empty() {
-            return Ok((Flow::Done, c.tops));
+            return Ok((Flow::Done, c));
         }
         rep.chunks += 1;
         let (mut removed, mut already) = (0, 0);
         let flow = remove_told(root, &c.names, ways, &mut removed, &mut already);
         (rep.removed, rep.gone_already) = (rep.removed + removed, rep.gone_already + already);
         if flow? == Flow::Paused {
-            return Ok((Flow::Paused, c.tops));
+            return Ok((Flow::Paused, c));
         }
     }
 }
@@ -1002,8 +998,8 @@ fn seen_key(p: &str) -> Vec<String> {
 }
 
 /// The orphan sweep (docs/storage.md, GC): the folders the map and the records name (`tops`, the
-/// lead's), the removed steps' (`RETIRED`), the passes' up to the newest complete one (`latest`;
-/// a newer one in progress never) and the rail lists' (`RAIL_LISTS`, not its zips), a folder
+/// lead's), the removed steps' (`RETIRED`), the passes' up to the newest complete one (`latest`,
+/// the lead's by its records; a newer one in progress never) and the rail lists' (`RAIL_LISTS`, not its zips), a folder
 /// at a time from the one it reached: each content-named file at least `ORPHAN_AGE_S` old sent to
 /// the lead, which queues those nothing holds (GC's queue frees them as any); each `.tmp` file
 /// `TMP_AGE_S` old removed; a retired pass's other files removed once the newer pass has been
@@ -1374,6 +1370,8 @@ mod tests {
     struct InProcess<'a> {
         q: &'a GcQueue,
         now: Cell<u64>,
+        /// The newest complete pass its records name.
+        newest: Option<&'static str>,
     }
 
     impl InProcess<'_> {
@@ -1385,13 +1383,13 @@ mod tests {
     impl Lead for InProcess<'_> {
         fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
             let none = BTreeMap::new();
-            let take = |n: &str| by_the_queue(n, a.newest_pass);
+            let take = |n: &str| by_the_queue(n, self.newest);
             let names = if a.dry {
                 self.q.due_by(&self.holders(&none), &take)
             } else {
                 self.q.chunk(&self.holders(&none), NEWEST, a.max, &take)?
             };
-            Ok(Chunk { names, tops: self.q.tops() })
+            Ok(Chunk { names, tops: self.q.tops(), newest_pass: self.newest.map(String::from) })
         }
         fn gone(&self, gone: &[String], released: &[String]) -> Result<()> {
             self.q.gone(gone, released, self.now.get(), NEWEST)
@@ -1476,7 +1474,7 @@ mod tests {
         let due = due_files(root, CHUNK_NAMES + 5);
         let t0 = now_s() - GRACE_S - 10;
         let (q, _) = queue_of(q_dir.path(), &due, &[kept], t0);
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &[]);
         let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
@@ -1533,7 +1531,7 @@ mod tests {
                 self.0.removing(n)
             }
         }
-        let deaf = Deaf(InProcess { q: &q, now: Cell::new(now_s()) });
+        let deaf = Deaf(InProcess { q: &q, now: Cell::new(now_s()), newest: None });
         assert!(run(&nas, &asked, &ways_for_tests(&deaf)).is_err());
         assert_eq!(q.removing_now(), more, "told, for the next chunk to take again");
     }
@@ -1566,7 +1564,7 @@ mod tests {
             Ok(())
         };
         {
-            let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+            let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
             let ways = Ways { remove: &killing, ..ways_for_tests(&lead) };
             let killed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&nas, &asked, &ways)));
             assert!(killed.is_err());
@@ -1585,7 +1583,7 @@ mod tests {
             tried.borrow_mut().push((p.rel().to_string(), r.is_ok()));
             r
         };
-        let lead = InProcess { q: &back, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &back, now: Cell::new(now_s()), newest: None };
         // (The share lost first, its mount gone: no file is found, and none counts as gone.)
         let check_dir = root.join(crate::agent::NAS_CHECK);
         fs::rename(&check_dir, root.join("check-away")).unwrap();
@@ -1623,7 +1621,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &[]);
         let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let removed: RefCell<Vec<String>> = Default::default();
         let remove = |p: &NasPath| {
             removed.borrow_mut().push(p.rel().to_string());
@@ -1674,20 +1672,25 @@ mod tests {
             "sources/osm/2026-09-28/pieces/6-1-1.7777777777777777.osm.pbf",
             "sources/osm/2026-09-28/pass.8888888888888888.json",
         );
-        // (The newest pass's: an extract the records name, its planet, and an item list they
-        // don't; a pass begun since, not complete; the rail lists' folder and a feed's zip.)
+        // (The newest pass's, as the lead's records say: an extract they name, its planet, an item
+        // list they don't, the items' answers archives; a pass begun since, its summary on the NAS
+        // but its hand-off not merged; the rail lists' folder and a feed's zip.)
         let (newest_held, newest_planet, newest_items) = (
             "sources/osm/2026-09-28/pieces/6-1-2.aaaaaaaaaaaaaaaa.osm.pbf",
             "sources/osm/2026-09-28/planet.osm.pbf",
             "sources/items/2026-09-28/facts.bbbbbbbbbbbbbbbb.json",
         );
-        let begun = "sources/osm/2026-12-01/pieces/6-1-1.cccccccccccccccc.osm.pbf";
+        let archives = ["sources/items/2026-09-28/answers.tar.zst", "sources/items/2026-09-28/heritage.tar.zst"];
+        let (begun, begun_done) = (
+            "sources/osm/2026-12-01/pieces/6-1-1.cccccccccccccccc.osm.pbf",
+            "sources/osm/2026-12-01/pass.ffffffffffffffff.json",
+        );
         let (rail, zip) = ("sources/rail/feeds.dddddddddddddddd.json", "sources/rail/gtfs/x.eeeeeeeeeeeeeeee.zip");
         let outside = "state/x.9999999999999999.json";
         for f in [kept, old, plain, z8, other, old_pass, planet, newest, outside] {
             put(root, f, days + 1);
         }
-        for f in [newest_held, newest_planet, newest_items, begun, rail, zip] {
+        for f in [newest_held, newest_planet, newest_items, begun, begun_done, rail, zip].iter().chain(&archives) {
             put(root, f, days + 1);
         }
         put(root, young, days - 1);
@@ -1698,7 +1701,7 @@ mod tests {
         symlink(root.join("state"), root.join("layers/a/state")).unwrap();
         let (q, _) = queue_of(q_dir.path(), &[], &[kept], now_s());
         q.records((2, 2), [newest_held, newest_done].map(String::from).iter(), now_s());
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: Some("2026-09-28") };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
         let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
@@ -1712,11 +1715,12 @@ mod tests {
         for f in [old, z8, old_pass, newest, newest_items, rail] {
             assert_eq!(q.queued(f).map(|x| x.at), Some(lead.now.get()), "{f}");
         }
-        for f in [kept, young, other, outside, newest_held, newest_done, begun, zip] {
+        for f in [kept, young, other, outside, newest_held, newest_done, begun, begun_done, zip] {
             assert!(q.queued(f).is_none(), "{f}");
         }
         assert!(!root.join(tmp_old).exists() && root.join(tmp_young).exists() && !root.join(planet).exists());
         assert!(root.join(plain).exists() && root.join(old_pass).exists() && root.join(newest_planet).exists());
+        assert!(archives.iter().all(|f| root.join(f).exists()) && root.join(begun_done).exists());
         // Found now: due once its grace has passed (and the lease rule from now), not before.
         let none = BTreeMap::new();
         let at = |now: u64, lease: Option<u64>| q.due(&Holders { cursors: &none, oldest_lease: lease, now });
@@ -1743,7 +1747,7 @@ mod tests {
         // (A new lead (moved, its disk lost): its map from the records, a queue file of nothing.)
         let fresh = tempfile::tempdir().unwrap();
         let (q, _) = queue_of(fresh.path(), &[], &[kept, "layers/a/hi/6-1-1.4444444444444444.pack"], now_s());
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
         let r = run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
@@ -1767,7 +1771,7 @@ mod tests {
         }
         let q_dir = tempfile::tempdir().unwrap();
         let (q, _) = queue_of(q_dir.path(), &[], &["layers/a/6-9-9.9999999999999999.pack"], now_s());
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
         let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
@@ -1800,7 +1804,7 @@ mod tests {
         let root = d.path();
         let due = due_files(root, 2);
         let (q, _) = queue_of(q_dir.path(), &due, &["layers/a/6-9-9.9999999999999999.pack"], now_s() - GRACE_S - 10);
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &[]);
         buildstore::costin::begin();
@@ -1876,7 +1880,7 @@ mod tests {
         q.open(q_dir.path(), &map_of(1, &[])).unwrap();
         let held = format!("{u}/c.9999999999999990.jsonl");
         q.records((2, 1), [held.clone()].iter(), now_s());
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: None };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let home = tempfile::tempdir().unwrap();
         let sweeps = home.path().join(SWEEPS_FILE);
@@ -2039,9 +2043,11 @@ mod tests {
             put(root, f, 1);
         }
         put(root, "sources/osm/2026-09-28/pass.6666666666666666.json", 1);
+        // (A newer pass's summary on the NAS, its hand-off not merged: the lead's records decide.)
+        put(root, "sources/osm/2026-12-01/pass.7777777777777777.json", 1);
         let (q, _) = queue_of(q_dir.path(), &freed, &[], now_s() - GRACE_S);
         q.records((2, 2), [again.to_string()].iter(), now_s());
-        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()), newest: Some("2026-09-28") };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &[]);
         let r = run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();

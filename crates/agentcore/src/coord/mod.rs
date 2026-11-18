@@ -384,14 +384,17 @@ struct GcRemoving {
     names: Vec<String>,
 }
 
+/// The newest complete OSM pass the records it serves name (`sources/osm/<date>/pass`,
+/// inputs::osmpass::latest_pass_in): what GC takes a pass's sources by (crate::agent::gc::by_the_queue),
+/// never a pass's summary on the NAS, there before its hand-off is merged. None while it serves none.
+fn newest_pass_of(s: &Shared) -> Option<String> {
+    s.brief.as_ref().and_then(|b| inputs::osmpass::latest_pass_in(&b.held.brief.manifest))
+}
+
 /// The `gc` job's ask of `/gc/chunk` (crate::agent::gc::Lead::chunk).
 #[derive(Deserialize)]
 struct GcChunk {
     max: usize,
-    /// The newest complete OSM pass: its sources and the older passes' are the queue's
-    /// (`by_the_queue`).
-    #[serde(default)]
-    newest_pass: Option<String>,
     #[serde(default)]
     dry: bool,
 }
@@ -3082,6 +3085,11 @@ impl Coordinator {
         }
     }
 
+    /// The newest complete OSM pass the merged records name (`newest_pass_of`).
+    pub fn newest_pass(&self) -> Option<String> {
+        newest_pass_of(&self.shared.lock().unwrap())
+    }
+
     /// The (epoch, seq) of the brief it serves.
     pub fn brief_mark(&self) -> Option<(u64, u64)> {
         self.shared.lock().unwrap().brief.as_ref().map(|b| b.held.mark)
@@ -4865,10 +4873,18 @@ fn route(
             // name it removes marked deleted first (written and fsynced), the newest lease granted
             // now its, so the merge refuses a hand-off of an older lease bringing one from then on;
             // each checked against its holders as of now.
-            let (q, feed, oldest_lease, lease, now) = {
+            let (q, feed, oldest_lease, lease, now, newest_pass) = {
                 let s = shared.lock().unwrap();
                 let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
-                (s.gc.clone(), s.maplog.clone(), oldest, crate::agent::gcqueue::lease(newest_lease(&s)), s.wall_s())
+                let newest_pass = newest_pass_of(&s);
+                (
+                    s.gc.clone(),
+                    s.maplog.clone(),
+                    oldest,
+                    crate::agent::gcqueue::lease(newest_lease(&s)),
+                    s.wall_s(),
+                    newest_pass,
+                )
             };
             let (Some(q), Some(feed)) = (q, feed) else {
                 return Ok((
@@ -4881,12 +4897,14 @@ fn route(
             let answer = match p {
                 crate::agent::gc::CHUNK => {
                     // The next chunk (a dry run's: every name due, nothing marked), and the
-                    // folders the orphan sweep lists.
+                    // folders and the newest pass the orphan sweep lists (by the merged records).
                     let b: GcChunk = serde_json::from_slice(body)?;
-                    let take = |n: &str| crate::agent::gc::by_the_queue(n, b.newest_pass.as_deref());
+                    let take = |n: &str| crate::agent::gc::by_the_queue(n, newest_pass.as_deref());
                     let names =
                         if b.dry { Ok(q.due_by(&holders, &take)) } else { q.chunk(&holders, lease, b.max, &take) };
-                    names.map(|names| serde_json::json!({ "names": names, "tops": q.tops() }))
+                    names.map(
+                        |names| serde_json::json!({ "names": names, "tops": q.tops(), "newest_pass": newest_pass }),
+                    )
                 }
                 crate::agent::gc::GONE => {
                     let b: GcGone = serde_json::from_slice(body)?;
