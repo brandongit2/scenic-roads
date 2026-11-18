@@ -138,7 +138,7 @@ fn an_include_by_anything_but_a_literal_is_an_error() {
     let d = tempfile::tempdir().unwrap();
     tree(d.path(), &[]);
     let by = format!("{}!(concat!(\"a/\", \"schema.json\"))", "include_str");
-    let a = a_with("include_str!(\"a/schema.json\")", &by);
+    let a = a_with(r#"include_str!("a/schema.json")"#, &by);
     std::fs::write(d.path().join("a.rs"), a).unwrap();
     let e = modules(d.path()).err().unwrap();
     assert!(e.contains("not a string literal"), "{e}");
