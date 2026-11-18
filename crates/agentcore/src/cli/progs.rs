@@ -18,9 +18,6 @@ pub struct Extract {
     /// The OSM extracts
     #[arg(value_name = "FILE.OSM.PBF", required = true)]
     pub inputs: Vec<PathBuf>,
-    /// Only rail-rels.bin, after pass 1 (a build made before it existed)
-    #[arg(long)]
-    pub rail_rels_only: bool,
     /// The landmark candidates' points too (the pois job)
     #[arg(long)]
     pub candidates: bool,

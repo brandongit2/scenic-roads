@@ -19,8 +19,6 @@ pub fn main(args: Vec<String>) -> Result<()> {
     std::fs::write(roadcore::tmp(&dir, "final.u16"), bytemuck::cast_slice(&du))?;
     std::fs::write(roadcore::tmp(&dir, "grade.u8"), &p.grade)?;
     roadcore::commit(&dir, &["final.u16", "grade.u8"])?;
-    // (A folder made before final.u16: its readers would take the new file anyway.)
-    std::fs::remove_file(dir.join("final.i16")).ok();
     eprintln!("elevations processed ({:.0?})", t0.elapsed());
     Ok(())
 }

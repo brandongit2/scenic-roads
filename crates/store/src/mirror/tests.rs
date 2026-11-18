@@ -284,12 +284,10 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
     // Everything the old mirror would have copied: both z6 tiles, the outlines, the whole basemap.
     let all: Vec<Item> = cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect();
     sync(&m, &cat, &wanted(std::slice::from_ref(&all)), &nas);
-    fs::write(home.path().join("mirror").join(OLD_USES), b"{}").unwrap();
     drop(m);
     // The switch: the World and A downloaded. B, the outlines and the whole basemap go; the
     // essentials and A's files stay (not copied again); the pieces are made.
     let m = big(home.path());
-    assert!(!home.path().join("mirror").join(OLD_USES).exists(), "the old use times are dropped");
     let removed: Arc<Mutex<Vec<String>>> = Default::default();
     let r2 = removed.clone();
     m.on_remove(move |n| r2.lock().unwrap().extend(n.iter().cloned()));

@@ -13,8 +13,7 @@
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
 //! Besides the ways: rail-rels.bin, each rail track's primary service (the route relation that
 //! names it; the app opens it on openstreetmap.org), sorted little-endian (i64 OSM way id, i64
-//! relation id). `--rail-rels-only` writes just that (a build made before it existed), after
-//! pass 1.
+//! relation id).
 //! Output geometry is densified so consecutive vertices are at most the spacing apart, which lets
 //! the DEM stage sample every raster cell a road crosses. `<spacing>` is metres, the same
 //! everywhere, or a spacing file (a unit's `spacing.json`): by the declared elevation datasets at
@@ -713,7 +712,7 @@ fn route_per_way(scenic: &mut Vec<(i64, String)>) {
 pub fn main(args: Vec<String>) -> Result<()> {
     // (`--candidates`: the landmark candidates' points (poi_kind), for the pois job; `--trailends`:
     // the pass's hiking-route ends (codecs::trailends), instead of working them out from the input.)
-    let agentcore::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
+    let agentcore::cli::progs::Extract { out_dir: out, spacing, inputs, candidates, trailends } =
         <agentcore::cli::progs::Extract as clap::Parser>::parse_from(args);
     use inputs::dem::spacing::{Fine, Spacing, Uniform};
     let spacing: Box<dyn Spacing + Sync> = match spacing.parse::<f64>() {
@@ -932,11 +931,6 @@ pub fn main(args: Vec<String>) -> Result<()> {
     let rail_rels_bytes: Vec<u8> =
         rail_rels.iter().flat_map(|(w, r)| w.to_le_bytes().into_iter().chain(r.to_le_bytes())).collect();
     std::fs::write(roadcore::tmp(&out, "rail-rels.bin"), &rail_rels_bytes)?;
-    if rail_rels_only {
-        roadcore::commit(&out, &["rail-rels.bin"])?;
-        eprintln!("wrote rail-rels.bin: {} tracks ({:.0?})", rail_rels.len(), t0.elapsed());
-        return Ok(());
-    }
     // Flag members of scenic routes (shortest route name wins when a way is in several).
     route_per_way(&mut scenic);
     let mut n_scenic = 0;

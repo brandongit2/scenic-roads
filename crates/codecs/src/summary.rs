@@ -129,14 +129,9 @@ mod tests {
     fn sums_road_length_by_elevation_and_rail_by_group() {
         // A road climbing from 5 m to 25 m over two segments; a rail track of group 1.
         let verts = [[0, 0], [0, 90_000], [0, 180_000], [100_000, 0], [100_000, 90_000]];
-        let elev = [50i16, 150, 250, 0, 0];
+        let elev: Vec<u16> = [50, 150, 250, 0, 0].iter().map(|&d| roadcore::elev::to_u16(d)).collect();
         let ways = [way(0, 3, class::PRIMARY, 0), way(3, 2, class::INTERCITY, 0b10)];
-        let s = Summary::of(&ways, &verts, Elevs::I16(&elev));
-        let su: Vec<u16> = elev.iter().map(|&d| roadcore::elev::to_u16(d as i32)).collect();
-        assert_eq!(
-            serde_json::to_string(&Summary::of(&ways, &verts, Elevs::U16(&su))).unwrap(),
-            serde_json::to_string(&s).unwrap()
-        );
+        let s = Summary::of(&ways, &verts, Elevs(&elev));
         let seg = dist_m(0.0, 0.0, 0.0, 0.009);
         // Midpoints at 10 m and 20 m: bands 1 and 2.
         assert!((s.hist[1] - seg / 1000.0).abs() < 1e-9 && (s.hist[2] - seg / 1000.0).abs() < 1e-9);

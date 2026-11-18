@@ -157,13 +157,9 @@ impl BasePack {
     pub fn verts(&self) -> Result<&[[i32; 2]]> {
         self.sect.slice("verts")
     }
-    /// Processed elevations (`roadcore::elev`): `elevu`, or `elev` in packs made before it.
+    /// Processed elevations (`roadcore::elev`): `elevu`.
     pub fn elev(&self) -> Result<Elevs<'_>> {
-        if self.sect.has("elevu") {
-            Ok(Elevs::U16(self.sect.slice("elevu")?))
-        } else {
-            Ok(Elevs::I16(self.sect.slice("elev")?))
-        }
+        Ok(Elevs(self.sect.slice("elevu")?))
     }
     pub fn grade(&self) -> Result<&[u8]> {
         self.sect.slice("grade")

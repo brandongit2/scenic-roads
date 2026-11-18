@@ -750,8 +750,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     // (The fields the app reads at start that only a built catalogue's meta has: without them it
     // stopped at setSource, "bounds is not iterable".)
     let mut meta = if cat.meta.is_object() { cat.meta.clone() } else { serde_json::json!({}) };
-    let empty = serde_json::json!({"minzoom": 0, "maxzoom": 0, "bounds": [-180.0, -85.0511, 180.0, 85.0511],
-        "ways": 0, "vertices": 0, "elev_min": 0, "elev_max": 0, "elev_hist_10m_km": [], "built": 0});
+    let empty = serde_json::json!({"bounds": [-180.0, -85.0511, 180.0, 85.0511], "elev_hist_10m_km": []});
     for (k, v) in empty.as_object().into_iter().flatten() {
         if meta.get(k).is_none() {
             meta[k] = v.clone();

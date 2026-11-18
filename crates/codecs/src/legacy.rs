@@ -216,7 +216,7 @@ pub fn base_sections(lg: &Legacy, unit: TileId, idx: &[u32], built: &str) -> Bas
         "source": built,
         "scenic": lg.scenic.is_some(),
         "drape": lg.drape.is_some(),
-        "summary": crate::summary::Summary::of(&ways, &v, Elevs::U16(&el)),
+        "summary": crate::summary::Summary::of(&ways, &v, Elevs(&el)),
     });
     let mut sections: Vec<(&'static str, Vec<u8>)> = vec![
         ("ways", bytes(&ways).to_vec()),

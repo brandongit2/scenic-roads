@@ -16,7 +16,7 @@ import { EARTH_R as R, mercLat, mercLon } from './merc';
 /** How far the camera stays above the ground under it (m). */
 const GROUND_CLEAR_M = 30;
 /** How far it stays above a building's roof under it (m). */
-export const ROOF_CLEAR_M = 4;
+const ROOF_CLEAR_M = 4;
 /** The highest roof under a point (rendered metres; -Infinity: none): the 3D buildings' (main.ts
  * sets it, buildings.roofAt), so the camera stops above a tower rather than inside it. */
 let roofUnder: (ll: LngLat) => number = () => -Infinity;
@@ -129,9 +129,6 @@ function orbitOffset(e: number, n: number, u: number, dBearing: number, b1: numb
   const c = Math.cos(th), s = Math.sin(th);
   return [e * c + cx * s + rx * d * (1 - c), n * c + cy * s + ry * d * (1 - c), u * c + cz * s];
 }
-
-/** True while MapLibre renders the globe (its camera then lives on a sphere). */
-export const isGlobe = (map: MLMap) => transform(map)?.isGlobeRendering === true;
 
 // On the globe the pivot stays at sea level: the globe camera ignores it, but the flat map
 // blended in during the hand-off uses it, and jumpTo would otherwise reset it to the terrain.
@@ -634,7 +631,7 @@ function pointAt(map: MLMap, tr: Tr, px: number, py: number, elev: number): LngL
  * on a ray through the screen at height y (tan of its angle from the axis, + up), is at depth
  * v ÷ (cos p − y sin p): least at the screen's bottom edge, y = −tan(fov / 2).
  */
-export function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): number {
+function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): number {
   if (!(clearM > 0)) return 0;
   const p = Math.min(Math.max(pitchDeg, 0), 89.9) * DEG;
   return clearM / (Math.cos(p) + Math.tan((fovDeg * DEG) / 2) * Math.sin(p));
@@ -646,7 +643,7 @@ export function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): 
  * pitch in degrees (a linear function over a box is least at a corner); Infinity when every corner is
  * behind the camera (nothing of it drawn), and negative when some are.
  */
-export function boxDepth(east: [number, number], south: [number, number], up: [number, number], bearingDeg: number, pitchDeg: number): number {
+function boxDepth(east: [number, number], south: [number, number], up: [number, number], bearingDeg: number, pitchDeg: number): number {
   const b = bearingDeg * DEG, p = pitchDeg * DEG;
   const fx = Math.sin(p) * Math.sin(b), fy = -Math.sin(p) * Math.cos(b), fz = -Math.cos(p);
   let lo = Infinity, hi = -Infinity;

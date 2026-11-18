@@ -216,12 +216,8 @@ pub fn terrarium_rgb(elev: &[f32]) -> Vec<u8> {
     rgb
 }
 
-/// Decode tile (z, x, y); if absent, crop + bilinearly upsample the nearest stored ancestor.
-pub fn tile_with_fallback(arc: &crate::archive::Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
-    tile_with_fallback_by(&|z, x, y| arc.get(z, x, y).map(<[u8]>::to_vec), z, x, y)
-}
-
-/// `tile_with_fallback` over any source of terrain tiles (`decode_terrain`).
+/// Tile (z, x, y) from any source of terrain tiles (`decode_terrain`); if absent, the nearest stored
+/// ancestor cropped and bilinearly upsampled.
 pub fn tile_with_fallback_by(get: &dyn Fn(u8, u32, u32) -> Option<Vec<u8>>, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     if let Some(b) = get(z, x, y) {
         return decode_terrain(&b).ok();

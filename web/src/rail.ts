@@ -11,9 +11,8 @@ export type RailMetric = 'rscore' | 'freq' | 'elev' | 'grade' | 'viaduct' | 'vie
 
 /** Trains a day each way, as a byte per line (log scale, 0.1 to 1000 a day; 0 = unknown). */
 export const freqCode = (perDay: number) => (perDay > 0 ? 1 + Math.round(Math.max(0, Math.min(1, (Math.log10(perDay) + 1) / 4)) * 254) : 0);
-export const freqOfCode = (c: number) => (c > 0 ? 10 ** (((c - 1) / 254) * 4 - 1) : -1);
 
-export interface RailMetricDef {
+interface RailMetricDef {
   key: RailMetric;
   label: string;
   /** Shader mode id (roads/layer.ts). */
@@ -47,7 +46,7 @@ export const RAIL_METRICS: RailMetricDef[] = [
 ];
 export const railMetricDef = (k: RailMetric) => RAIL_METRICS.find((m) => m.key === k) ?? RAIL_METRICS[0];
 
-export interface RailComponent {
+interface RailComponent {
   key: string;
   label: string;
   help: string;
@@ -86,7 +85,7 @@ export const RAIL_COMPONENTS: RailComponent[] = [
 ];
 export const RNCOMP = RAIL_COMPONENTS.length;
 /** Index of the service-frequency factor (left out of the score where unknown). */
-export const RAIL_FREQ = 10;
+const RAIL_FREQ = 10;
 
 /**
  * Components (0..1, RAIL_COMPONENTS order). Must agree with roadcore::scenic::ride_components

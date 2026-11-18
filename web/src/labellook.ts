@@ -59,15 +59,13 @@ export const LABEL_TYPES: { key: string; label: string; layers: string[] }[] = [
   { key: 'rail', label: 'Rail stations & stops', layers: ['rail-stop-label'] },
 ];
 const TYPE_OF = new Map(LABEL_TYPES.flatMap((t) => t.layers.map((id) => [id, t.key] as const)));
-/** The label type of a layer id. */
-export const labelTypeOf = (id: string): string | undefined => TYPE_OF.get(id);
 
 /** Whether a label layer is shown by its type's look (with its kind's switch: state.ts labelShown). */
 export const labelLayerShown = (looks: LabelLooks, id: string): boolean => looks[TYPE_OF.get(id) ?? '']?.shown !== false;
 
 const HEX = /^#[0-9a-f]{6}$/i;
 /** #rrggbb and alpha of a CSS colour MapLibre accepts (hex, rgb[a]); null for anything else. */
-export function parseColour(c: unknown): [string, number] | null {
+function parseColour(c: unknown): [string, number] | null {
   if (typeof c !== 'string') return null;
   const s = c.trim().toLowerCase();
   if (HEX.test(s)) return [s, 1];

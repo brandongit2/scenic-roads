@@ -16,7 +16,7 @@ export type FerryMetric = 'freq' | 'months';
 
 type Expr = ExpressionSpecification;
 
-export interface FerryMetricDef {
+interface FerryMetricDef {
   key: FerryMetric;
   label: string;
   help: string;
@@ -67,7 +67,7 @@ export interface FerryScale {
   colour: FerryColour;
 }
 /** Lines failing the highlight threshold (as the roads' dimmed colour). */
-export const DIMMED = '#3a414c';
+const DIMMED = '#3a414c';
 
 export const FERRY_GROUPS = [
   { key: 'urban', label: 'Urban & commuter', one: 'Urban & commuter ferry', help: 'City water buses and commuter boats (Staten Island, Star Ferry, Thames Clippers, Lisbon …)' },
@@ -88,11 +88,6 @@ export const UNKNOWN = '#5b6573';
 /** Frequency colouring: a headway is published but not the hours (so no daily count). */
 export const HEADWAY_ONLY = '#9aa8bd';
 
-/** Frequency scale: sailings a day each way, log scale from one a week to a hundred a day. */
-export const FREQ_LO = Math.log10(1 / 7);
-export const FREQ_HI = Math.log10(100);
-export const FREQ_TICKS: [number, string][] = [[1 / 7, '1/wk'], [1, '1/day'], [10, '10'], [100, '100/day']];
-export const freqT = (perDay: number) => Math.max(0, Math.min(1, (Math.log10(Math.max(perDay, 1e-3)) - FREQ_LO) / (FREQ_HI - FREQ_LO)));
 
 /** Distinct colours for operators without an official line colour. */
 const OPERATOR_PALETTE = ['#6aa8ff', '#4fd1c5', '#f6ad55', '#f472b6', '#a3e635', '#b48cff', '#fb7185', '#facc15', '#38bdf8', '#34d399', '#fdba74', '#c4b5fd'];

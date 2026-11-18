@@ -1920,11 +1920,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
                 Some(s) => s,
                 None => {
                     let (ways, verts) = (r.read_pod::<roadcore::WayRec>("ways")?, r.read_pod::<[i32; 2]>("verts")?);
-                    if r.section("elevu").is_some() {
-                        Summary::of(&ways, &verts, roadcore::elev::Elevs::U16(&r.read_pod::<u16>("elevu")?))
-                    } else {
-                        Summary::of(&ways, &verts, roadcore::elev::Elevs::I16(&r.read_pod::<i16>("elev")?))
-                    }
+                    Summary::of(&ways, &verts, roadcore::elev::Elevs(&r.read_pod::<u16>("elevu")?))
                 }
             };
             known.insert(content.clone(), s);

@@ -102,8 +102,7 @@ pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Fo
 
 #[derive(Serialize)]
 pub struct WayInfo {
-    /// The OSM way id (also `osm_id`; kept for the app's older field name).
-    idx: u64,
+    /// The OSM way id.
     osm_id: i64,
     class: &'static str,
     name: String,
@@ -171,7 +170,6 @@ pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
     );
     let rv = bp.road_val(f.index)?;
     Ok(WayInfo {
-        idx: w.id as u64,
         osm_id: w.id,
         class: class::NAMES[w.class as usize],
         name,

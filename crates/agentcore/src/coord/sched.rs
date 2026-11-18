@@ -183,12 +183,12 @@ pub struct Sched {
     /// last `JOB_PEAKS`): a batch's cache writes add up over its targets, and outside programs'
     /// files can outlast a target, so a batch is reckoned by the larger of its targets' disk
     /// summed and these runs' 90th percentile (`job_floor`); a step reading a shared cache's
-    /// (crate::needs::CACHES) count for nothing past their cache's fill (`note_fill`). Kept in
-    /// `job-disks-v6.json` (`JOB_DISKS`).
+    /// (crate::needs::CACHES) count for nothing past their cache's fill (`note_fill`). Kept in the
+    /// lead's store (crate::coord::kept).
     pub job_disks: BTreeMap<String, Vec<u64>>,
     /// What filling each shared cache (crate::needs::CACHES) on a Mac takes (MB, by cache): the
     /// last run that filled it, its disk past its targets' own output (`note_fill`). A Mac is
-    /// reserved what of it its capacity says it lacks (`missing`). Kept in `cache-fills.json`.
+    /// reserved what of it its capacity says it lacks (`missing`). Kept in the lead's store.
     pub fills: BTreeMap<String, u64>,
     /// The steps' models of their needs (crate::needs), kept while `needs_rev` stands: it moves with
     /// each cost, floor or disk floor taken or cleared.

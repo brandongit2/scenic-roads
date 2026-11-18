@@ -1,7 +1,5 @@
-//! Processed elevations per vertex, in decimetres, as stored: `final.i16` and base packs' `elev`
-//! (signed: −3,276.8 to 3,276.7 m; what was built before 2026-10-03), or `final.u16` and `elevu`
+//! Processed elevations per vertex, in decimetres, as stored: `final.u16` and base packs' `elevu`
 //! (unsigned from −500 m, `OFF`: up to 6,053.5 m, as roads in the Andes and the Himalaya need).
-//! Readers take either; writers write the unsigned form.
 
 use crate::Array;
 use anyhow::Result;
@@ -21,33 +19,21 @@ pub fn to_u16(dm: i32) -> u16 {
 
 /// A run of stored elevations.
 #[derive(Clone, Copy, Debug)]
-pub enum Elevs<'a> {
-    I16(&'a [i16]),
-    U16(&'a [u16]),
-}
+pub struct Elevs<'a>(pub &'a [u16]);
 
 impl<'a> Elevs<'a> {
     pub fn len(&self) -> usize {
-        match self {
-            Elevs::I16(s) => s.len(),
-            Elevs::U16(s) => s.len(),
-        }
+        self.0.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.0.is_empty()
     }
     /// Vertex `i`'s elevation, decimetres.
     pub fn dm(&self, i: usize) -> i32 {
-        match self {
-            Elevs::I16(s) => s[i] as i32,
-            Elevs::U16(s) => s[i] as i32 - OFF,
-        }
+        self.0[i] as i32 - OFF
     }
     pub fn slice(&self, r: Range<usize>) -> Elevs<'a> {
-        match self {
-            Elevs::I16(s) => Elevs::I16(&s[r]),
-            Elevs::U16(s) => Elevs::U16(&s[r]),
-        }
+        Elevs(&self.0[r])
     }
     /// Vertex `i`'s elevation, metres.
     pub fn m(&self, i: usize) -> f32 {
@@ -59,22 +45,15 @@ impl<'a> Elevs<'a> {
     }
 }
 
-/// A build folder's processed elevations, mapped: `final.u16`, else `final.i16`.
-pub enum Stored {
-    I16(Array<i16>),
-    U16(Array<u16>),
-}
+/// A build folder's processed elevations, mapped: `final.u16`.
+pub struct Stored(Array<u16>);
 
 impl Stored {
     pub fn open(dir: &Path) -> Result<Stored> {
-        let u = dir.join("final.u16");
-        Ok(if u.exists() { Stored::U16(Array::open(&u)?) } else { Stored::I16(Array::open(&dir.join("final.i16"))?) })
+        Ok(Stored(Array::open(&dir.join("final.u16"))?))
     }
     pub fn get(&self) -> Elevs<'_> {
-        match self {
-            Stored::I16(a) => Elevs::I16(a.get()),
-            Stored::U16(a) => Elevs::U16(a.get()),
-        }
+        Elevs(self.0.get())
     }
 }
 
@@ -83,14 +62,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_forms_read_alike() {
-        let a: Vec<i16> = vec![-5000, 0, 12345, 32767];
-        let b: Vec<u16> = a.iter().map(|&d| to_u16(d as i32)).collect();
-        assert_eq!(Elevs::I16(&a).to_dm(), Elevs::U16(&b).to_dm());
+    fn elevations_read_back_as_stored() {
+        let a: Vec<i32> = vec![-5000, 0, 12345, 32767];
+        let b: Vec<u16> = a.iter().map(|&d| to_u16(d)).collect();
+        assert_eq!(Elevs(&b).to_dm(), a);
         // Past i16: the Andes.
-        assert_eq!(Elevs::U16(&[to_u16(58_000)]).dm(0), 58_000);
+        assert_eq!(Elevs(&[to_u16(58_000)]).dm(0), 58_000);
         assert_eq!(to_u16(-6000), 0);
         assert_eq!(to_u16(70_000), u16::MAX);
-        assert_eq!(Elevs::U16(&[to_u16(MIN_DM), to_u16(MAX_DM)]).to_dm(), vec![MIN_DM, MAX_DM]);
+        assert_eq!(Elevs(&[to_u16(MIN_DM), to_u16(MAX_DM)]).to_dm(), vec![MIN_DM, MAX_DM]);
     }
 }

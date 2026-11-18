@@ -45,7 +45,7 @@ const MAGIC: &[u8; 8] = b"WAYIDX02";
 const EMPTY: Bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
 
 /// The sections read only where the chunks are, by vertex.
-const PER_VERTEX: [&str; 6] = ["verts", "elevu", "elev", "grade", "scenic", "drape"];
+const PER_VERTEX: [&str; 5] = ["verts", "elevu", "grade", "scenic", "drape"];
 /// The sections read whole (small).
 const WHOLE: [&str; 3] = ["strings", "rail", "sub9"];
 /// The sections the way index is worked out from, read whole (and checked) when it is.

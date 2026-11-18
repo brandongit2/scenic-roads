@@ -6,7 +6,7 @@
 // six connections each. Used when the page is on localhost and one of them answers a probe; else
 // (another browser, or a server elsewhere) everything comes from the page's origin.
 
-export type DataKind = 'roads' | 'rails' | 'terrain' | 'base' | 'trees' | 'layers' | 'buildings';
+type DataKind = 'roads' | 'rails' | 'terrain' | 'base' | 'trees' | 'layers' | 'buildings';
 
 const NAMES: Record<DataKind, string> = { roads: 'roads', rails: 'rails', terrain: 'terrain', base: 'base', trees: 'trees', layers: 'layers', buildings: 'buildings' };
 let hosts: Record<DataKind, string> | null = null;
@@ -26,6 +26,3 @@ export async function initHosts(timeoutMs = 700): Promise<void> {
 
 /** The origin to download this kind of data from. */
 export const hostFor = (k: DataKind): string => hosts?.[k] ?? location.origin;
-
-/** Whether downloads are spread over several hosts. */
-export const hostsSpread = (): boolean => hosts !== null;

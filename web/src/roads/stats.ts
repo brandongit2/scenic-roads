@@ -32,7 +32,7 @@ export interface ViewStats {
 }
 
 /** The road-length histogram's axis: log10 km. */
-export const ROADLEN_LOG: [number, number] = [Math.log10(0.05), Math.log10(5000)];
+const ROADLEN_LOG: [number, number] = [Math.log10(0.05), Math.log10(5000)];
 
 export class Dist {
   constructor(public lo: number, public hi: number, public bins: Float64Array, public total: number) {}
@@ -246,12 +246,6 @@ export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: nu
     complete: p.loaded >= p.wanted,
     cells,
   };
-}
-
-export function groupMaskFromClassMask(classMask: number): number {
-  let g = 0;
-  for (let c = 0; c < NCLASS; c++) if ((classMask >> c) & 1) g |= 1 << CLASS_GROUP[c];
-  return g;
 }
 
 /** Length-weighted distribution of sampled values over [lo, hi]. */

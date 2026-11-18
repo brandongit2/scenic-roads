@@ -2,8 +2,7 @@ import { tasks } from './tasks';
 import { packToken, type LayerPacks, type TerrainAreas } from './packs';
 
 export interface WayInfo {
-  /** The OSM way id (both fields). */
-  idx: number;
+  /** The OSM way id. */
   osm_id: number;
   class: string;
   name: string;
@@ -55,15 +54,8 @@ export interface Profile {
 }
 
 export interface Meta {
-  minzoom: number;
-  maxzoom: number;
   bounds: [number, number, number, number];
-  ways: number;
-  vertices: number;
-  elev_min: number;
-  elev_max: number;
   elev_hist_10m_km: number[];
-  built: number;
   /** Version token of each data file, by its file name (the catalogue's, under the files' old names). */
   versions?: Record<string, string | number>;
   /** Each tiled layer's packs' versions (a tile's `?v=`: packVersion). */

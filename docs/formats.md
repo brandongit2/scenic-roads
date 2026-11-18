@@ -1469,15 +1469,7 @@ the id with the clicked point. A reader takes version 8 only.
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
     `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v6.json`
-    (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first; an older `job-disks-v5.json`
-    (the same) read once whole, `pack`'s and `lo`'s targets' entries in `disks.json` dropped (task
-    #657: those of before task #396, brought back by each take-up of the coordinator's state); else an older `job-disks-v4.json`
-    (the same) read once without `pack`'s and `lo`'s runs, which counted their copies of whole base
-    packs before task #396, their targets' entries in `disks.json` dropped with them; else an older
-    `job-disks-v3.json`, `-v2` or `job-disks.json` (`{<step>: MB}`, the most) read once, each peak
-    one run, without `pack`'s and `lo`'s, its halo steps' stale peaks nor those past three times
-    their targets' 90th percentile and a GB, a step reading a shared cache's peak less its targets'
-    90th percentile its cache's fill instead); `cache-fills.json` (`{<cache>: MB}`, "DEM": what
+    (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first); `cache-fills.json` (`{<cache>: MB}`, "DEM": what
     filling it on a Mac takes, docs/pool.md §7.1; an entry of a cache that isn't one any more is
     dropped as it's read); the measures
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`

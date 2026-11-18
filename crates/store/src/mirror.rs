@@ -56,8 +56,6 @@ const BASEMAP: &str = ".basemap";
 const PACKS: &str = ".packs";
 const PART: &str = ".part";
 const SIZES: &str = "sizes.json";
-/// The use times the mirror kept before downloads (no longer: deleted when found).
-const OLD_USES: &str = ".uses";
 /// Bytes a second the copies keep to while the build runs.
 pub const SLOW_RATE: u64 = 20_000_000;
 
@@ -286,8 +284,6 @@ impl Mirror {
         }
         let mut files = HashMap::new();
         scan(&root.join("mirror"), "", &mut files).context("list the mirror")?;
-        // (The use times of the mirror before downloads: nothing reads them now.)
-        let _ = fs::remove_file(root.join("mirror").join(OLD_USES));
         let (pieces, sizes) = scan_pieces(&root.join("mirror"));
         Ok(Mirror {
             root,

@@ -358,34 +358,19 @@ impl<T: Pod> Sect<T> {
     }
 }
 
-/// A base pack's processed elevations (`roadcore::elev`): `elevu`, or `elev` in packs made before
-/// it.
-pub enum ElevSect {
-    I16(Sect<i16>),
-    U16(Sect<u16>),
-}
+/// A base pack's processed elevations (`roadcore::elev`): `elevu`.
+pub struct ElevSect(Sect<u16>);
 
 impl ElevSect {
     /// The elevations (decimetres) of vertices `r`.
     pub fn range(&self, r: Range<usize>) -> Result<Vec<i32>> {
-        Ok(match self {
-            ElevSect::I16(s) => Elevs::I16(&s.range(r)?).to_dm(),
-            ElevSect::U16(s) => Elevs::U16(&s.range(r)?).to_dm(),
-        })
+        Ok(Elevs(&self.0.range(r)?).to_dm())
     }
 
     /// Several ranges' elevations (decimetres) at once (`Sect::gather`).
     pub fn gather(&self, ranges: &[Range<usize>]) -> Result<Vec<Vec<i32>>> {
-        Ok(match self {
-            ElevSect::I16(s) => {
-                let g = s.gather(ranges)?;
-                (0..ranges.len()).map(|k| Elevs::I16(g.get(k)).to_dm()).collect()
-            }
-            ElevSect::U16(s) => {
-                let g = s.gather(ranges)?;
-                (0..ranges.len()).map(|k| Elevs::U16(g.get(k)).to_dm()).collect()
-            }
-        })
+        let g = self.0.gather(ranges)?;
+        Ok((0..ranges.len()).map(|k| Elevs(g.get(k)).to_dm()).collect())
     }
 }
 
@@ -420,11 +405,7 @@ impl BaseView {
             unit,
             ways: base.sect("ways")?,
             verts: base.sect("verts")?,
-            elev: if base.has("elevu") {
-                ElevSect::U16(base.sect("elevu")?)
-            } else {
-                ElevSect::I16(base.sect("elev")?)
-            },
+            elev: ElevSect(base.sect("elevu")?),
             grade: base.sect("grade")?,
             src: base.sect("src")?,
             scenic: if base.has("scenic") { Some(base.sect("scenic")?) } else { None },
