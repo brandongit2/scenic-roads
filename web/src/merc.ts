@@ -30,6 +30,20 @@ export const MERC_CIRC = 40075016.686;
  * globe. */
 export const EARTH_R = 6371008.8;
 
+/** WGS 84's semi-major axis (m) and flattening (roadcore::geo::WGS84_A, 1 / WGS84_RF): the polar
+ * caps' projection (polar.ts). */
+export const WGS84_A = 6378137.0;
+export const WGS84_F = 1 / 298.257223563;
+
+/** A rough km per degree, of latitude and of longitude at the equator, where a box's size or a
+ * search cell needs no more (inview.ts boxKm, the ferries' terminals and lengths); not EARTH_R's
+ * (111.195 km). */
+export const ROUGH_KM_PER_DEG = 111.32;
+/** The same in metres. */
+export const ROUGH_M_PER_DEG = 111320;
+/** A rough km per degree of latitude (the ferries' lengths). */
+export const ROUGH_KM_PER_DEG_LAT = 110.57;
+
 /** x held to [0, 1). */
 export const mercXIn = (lon: number) => Math.min(IN, Math.max(0, mercX(lon)));
 

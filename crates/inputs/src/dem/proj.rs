@@ -38,7 +38,7 @@ impl Ellipsoid {
     }
 
     pub const WGS84: (f64, f64) = (roadcore::geo::WGS84_A, roadcore::geo::WGS84_RF);
-    pub const GRS80: (f64, f64) = (6378137.0, 298.257222101);
+    pub const GRS80: (f64, f64) = (roadcore::geo::GRS80_A, roadcore::geo::GRS80_RF);
 
     /// Geodetic (height 0) to geocentric, from its latitude's part (`row`) and its longitude's
     /// (`column`): x = n·cos φ·cos λ, y = n·cos φ·sin λ, multiplied left to right as one expression

@@ -315,9 +315,9 @@ pub fn uncovered(
 
 // ---- Applying a conversion ----------------------------------------------------------------------
 
-/// GRS 80's semi-major axis and flattening (the frames' ellipsoid: WGS 84's differs by 0.1 mm).
-const A: f64 = 6_378_137.0;
-const F: f64 = 1.0 / 298.257_222_101;
+/// GRS 80's semi-major axis and flattening (roadcore::geo's: the frames' ellipsoid).
+const A: f64 = roadcore::geo::GRS80_A;
+const F: f64 = 1.0 / roadcore::geo::GRS80_RF;
 
 /// The change in ellipsoidal height at `lon`, `lat` (degrees, on the ellipsoid) of a Helmert:
 /// translation `t` (m), rotation `r` (mas), scale `s` (ppb), coordinate-frame or position-vector.

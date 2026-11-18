@@ -6,6 +6,9 @@
 // longitudes in −180…180 with west > east across the antimeridian, every longitude when the outline
 // circles a pole. crates/server/src/inview.rs is the same for the server's lists.
 
+// (Its file named: node's tests load this module, test/inview.test.ts.)
+import { ROUGH_KM_PER_DEG } from './merc.ts';
+
 /** West, south, east, north (degrees); west > east: across the antimeridian. */
 export type Box = [number, number, number, number];
 
@@ -98,8 +101,8 @@ export function boxesMeet(a: Box, b: Box): boolean {
 /** The box's widest extent (km): east–west at its middle latitude, or south–north; a box round a
  * pole is as wide as the cap it holds. */
 export function boxKm([w, s, e, n]: Box): number {
-  const ns = (n - s) * 111.32;
+  const ns = (n - s) * ROUGH_KM_PER_DEG;
   if (n >= 90 || s <= -90) return 2 * ns;
   const dl = w <= e ? e - w : e - w + 360;
-  return Math.max(dl * 111.32 * Math.cos(((s + n) / 2) * D), ns);
+  return Math.max(dl * ROUGH_KM_PER_DEG * Math.cos(((s + n) / 2) * D), ns);
 }

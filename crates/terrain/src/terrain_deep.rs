@@ -7,7 +7,8 @@
 //! source's heights as every level does: at sea, over lakes and below 0 m.
 //!
 //! - **Its tiles:** under the z10 tile, each of z13 to the deepest stored zoom near the coverage
-//!   (20 km) no finer than its place's finest zoom (`levels`). A z10 tile with none is no target.
+//!   (`roadcore::geo::NEAR_COVERAGE_KM`) no finer than its place's finest zoom (`levels`). A z10
+//!   tile with none is no target.
 //! - **Packs:** by z10 tile (`PACK_Z`): `layers/terrain/deep/10-x-y` (docs/formats.md, Pack), z13 to
 //!   `MAX_Z`; optional in a region's download (inputs::areafiles: "Terrain detail").
 //! - **Its mid** (`mid_logical`, `work/terrain-deep-mid/10-x-y`): its z13 tiles' 2×2 means before
@@ -44,7 +45,7 @@ pub fn native_zoom(sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> u8 {
 }
 
 /// Z10 tile `t`'s tiles of the band, finest first (`MAX_Z` → `FIRST_Z`): those near the coverage
-/// (20 km) no finer than their place's finest zoom.
+/// (`roadcore::geo::NEAR_COVERAGE_KM`) no finer than their place's finest zoom.
 pub fn levels(
     cov: &buildstore::coverage::Coverage,
     sets: &[crate::terrain_zoom::Set],

@@ -17,6 +17,10 @@ pub const KM_PER_DEG: f64 = M_PER_DEG / 1000.0;
 /// WGS 84's semi-major axis (m) and inverse flattening: the ellipsoid of the reprojections.
 pub const WGS84_A: f64 = 6_378_137.0;
 pub const WGS84_RF: f64 = 298.257_223_563;
+/// GRS 80's semi-major axis (m) and inverse flattening: the ellipsoid of the national frames
+/// (WGS 84's differs by 0.1 mm).
+pub const GRS80_A: f64 = 6_378_137.0;
+pub const GRS80_RF: f64 = 298.257_222_101;
 
 /// The Web Mercator's equator (m): the projection's sphere is WGS 84's semi-major axis (EPSG:3857),
 /// so a world unit is this many of the projection's metres. Not a ground distance: that is
@@ -253,6 +257,17 @@ pub fn winding<T: Coord, R: AsRef<[[T; 2]]>>(rings: &[R], p: [T; 2]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_earths_figures() {
+        // (By value: keys, packs and the web's copies, web/src/merc.ts, hold these.)
+        assert_eq!(EARTH_R.to_bits(), 6_371_008.8f64.to_bits());
+        assert_eq!(WGS84_A.to_bits(), 6_378_137.0f64.to_bits());
+        assert_eq!(WGS84_RF.to_bits(), 298.257_223_563f64.to_bits());
+        assert_eq!((GRS80_A.to_bits(), GRS80_RF.to_bits()), (6_378_137.0f64.to_bits(), 298.257_222_101f64.to_bits()));
+        assert_eq!(MERCATOR_LAT.to_bits(), 85.051_128_779_806_59f64.to_bits());
+        assert_eq!(NEAR_COVERAGE_KM, 20.0);
+    }
 
     #[test]
     fn tile_ranges() {

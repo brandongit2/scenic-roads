@@ -65,7 +65,8 @@ fn probe(
     let atlas = inputs::dem::proj::Projection::of(crs);
     let native = |lon: f64, lat: f64| atlas.as_ref().map_or((lon, lat), |a| a.project(lon, lat));
     // (Metres a unit of the files', roughly: a geographic one's degree.)
-    let unit = if atlas.is_some() { 1.0 } else { 111_320.0 };
+    const ROUGH_M_PER_DEG: f64 = 111_320.0;
+    let unit = if atlas.is_some() { 1.0 } else { ROUGH_M_PER_DEG };
     let n = 512;
     let pts: Vec<(f64, f64, f64, f64)> = (0..n)
         .flat_map(|j| (0..n).map(move |q| (q, j)))

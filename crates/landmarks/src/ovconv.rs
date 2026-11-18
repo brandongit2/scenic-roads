@@ -32,8 +32,8 @@ use terrain::layers::{pack_of, write_pack};
 pub const LAYER: &str = "a";
 /// The overlays' deepest zoom (codecs::vtgen's, which layers' tests name).
 pub use codecs::vtgen::MAXZ;
-/// Hi tiles (z9–12) only where the coverage is, and this far around it.
-const HALO_KM: f64 = 20.0;
+// (Hi tiles, z9–12, only where the coverage is and near it.)
+use roadcore::geo::NEAR_COVERAGE_KM;
 
 /// An area overlay: its catalogue layer, its lean file (the heritage job's), its details (file, and the key its
 /// records go under in ovdata and the detail route).
@@ -99,19 +99,19 @@ fn z3_of(lon: f64, lat: f64) -> String {
     TileId::of_point(3, [marks::e7(lon), marks::e7(lat)]).slash()
 }
 
-/// The z6 tiles meeting the coverage (the base packs' units) grown by `HALO_KM`: where hi tiles go.
+/// The z6 tiles meeting the coverage (the base packs' units) grown by `NEAR_COVERAGE_KM`: where hi tiles go.
 fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
     cover_of(out.manifest.keys()).into_iter().collect()
 }
 
-/// The z6 tiles within `HALO_KM` of the built units, by the manifest's logical names `names` (its
+/// The z6 tiles within `NEAR_COVERAGE_KM` of the built units, by the manifest's logical names `names` (its
 /// `base/` ones): what the rail stops are kept for (`stations_job`), so the stations' key
 /// (agent::build) names these, not the units.
 pub fn cover_of<'a>(names: impl Iterator<Item = &'a String>) -> std::collections::BTreeSet<(u32, u32)> {
     let grown: Vec<_> = names
         .filter_map(|k| k.strip_prefix("base/"))
         .filter_map(TileId::parse)
-        .map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM))
+        .map(|u| grow(tile_bounds(u.z, u.x, u.y), NEAR_COVERAGE_KM))
         .collect();
     let mut s = std::collections::BTreeSet::new();
     for x in 0..64u32 {

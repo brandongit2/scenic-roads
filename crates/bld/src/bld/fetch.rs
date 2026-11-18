@@ -1315,7 +1315,7 @@ mod tests {
             ..Default::default()
         };
         let asking = Asking::new(&cov);
-        let n = Near::new(&asking, 20.0);
+        let n = Near::new(&asking, MARGIN_KM);
         // 0.2° east at 45°N is ~15.7 km: near; 0.4° is ~31 km: not.
         assert!(n.meets(11.2, 45.4, 11.3, 45.5));
         assert!(!n.meets(11.4, 45.4, 11.5, 45.5));

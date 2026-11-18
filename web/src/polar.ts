@@ -6,12 +6,14 @@
 // and decoding, for any view that draws a cap: the globe's layer (polarglobe.ts) now, a flat polar
 // projection later. Nothing here assumes a globe.
 
+import { WGS84_A, WGS84_F } from './merc';
+
 export type Pole = 'n' | 's';
 export type TileKind = 'terrain' | 'slope';
 
 /** roadcore::polar's constants and projection (WGS 84). */
-const A = 6378137.0;
-const F = 1 / 298.257223563;
+const A = WGS84_A;
+const F = WGS84_F;
 const E = Math.sqrt(F * (2 - F));
 /** Half the grid's side (m): tile 0/0/0 spans ±HALF. */
 const HALF = 1048576.0;

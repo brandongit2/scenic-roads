@@ -20,7 +20,7 @@ import { labelShown, lineWeight, type AppState, type FerryState } from './state'
 import { labelLayerShown } from './labellook';
 import { cap, h } from './ui/dom';
 import { fmt } from './fmt';
-import { MERC_CIRC, tileX, tileY } from './merc';
+import { MERC_CIRC, ROUGH_KM_PER_DEG, ROUGH_KM_PER_DEG_LAT, ROUGH_M_PER_DEG, tileX, tileY } from './merc';
 
 const LINE = 'ferry-line';
 const LABELS = ['ferry-label', 'ferry-terminal-label'];
@@ -51,7 +51,7 @@ function lineBoxes(fs: Feature[]): Float64Array {
  * NEAR_M of it, nearest first: [line index, metres]. Segments bucketed on a grid of NEAR_M. A
  * generator (yields every few terminals: idle.ts runs it between frames), returning the map. */
 function* nearLines(fs: Feature[]): Generator<void, Map<number, [number, number][]>> {
-  const M = 111320; // metres per degree of latitude
+  const M = ROUGH_M_PER_DEG;
   const cell = NEAR_M / M; // degrees
   const grid = new Map<string, [number, number, number, number, number][]>();
   fs.forEach((f, li) => {
@@ -387,7 +387,7 @@ export class Ferries {
         }
         if (out || t1 <= t0) continue;
         const my = y0 + (dy * (t0 + t1)) / 2;
-        km += (t1 - t0) * Math.hypot(dx * 111.32 * Math.cos((my * Math.PI) / 180), dy * 110.57);
+        km += (t1 - t0) * Math.hypot(dx * ROUGH_KM_PER_DEG * Math.cos((my * Math.PI) / 180), dy * ROUGH_KM_PER_DEG_LAT);
       }
     }
     return km;

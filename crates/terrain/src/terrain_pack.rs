@@ -69,8 +69,8 @@ pub enum Fill {
     Relief,
 }
 
-/// The rule's quarters (`Fill`) for a terrain whose regions are `cov` (20 km about it) and whose
-/// sources are `sets`: by child tile (its zoom, column, row). `deep`: the tiles past z12 a z6
+/// The rule's quarters (`Fill`) for a terrain whose regions are `cov` (`NEAR_COVERAGE_KM` about
+/// it) and whose sources are `sets`: by child tile (its zoom, column, row). `deep`: the tiles past z12 a z6
 /// tile's run takes in (its z10 tiles' deep mids, crate::terrain_deep): a z13 child there is
 /// built only where one is.
 pub fn fill_of<'a>(
@@ -1743,8 +1743,9 @@ fn blocks(z: u8, tiles: &[(u32, u32)], up: u8) -> Vec<Vec<(u32, u32)>> {
     out
 }
 
-/// A z6 tile's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage (20 km) no finer than
-/// their place's finest zoom (crate::terrain_zoom::finest, of `sets`): those built (`Fill::Child`).
+/// A z6 tile's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage
+/// (`NEAR_COVERAGE_KM`) no finer than their place's finest zoom (crate::terrain_zoom::finest, of
+/// `sets`): those built (`Fill::Child`).
 pub fn piece_levels(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
     let (tx, ty) = t;
     (9..=12u8)
