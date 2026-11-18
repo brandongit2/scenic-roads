@@ -1549,3 +1549,31 @@ fn hand_outs_made_together_give_what_each_gives_alone() {
         assert!(area_of(&both.resolved[&format!("{g}3")].geometry).contains([e7(x), e7(0.5)]), "{g}3");
     }
 }
+
+/// A hand-out: a stretch of the handing region's water that two members border stays the handing
+/// region's, however small (task #1427: the old fill gave one under `sliver_km2` to the member with
+/// the longest edge).
+#[test]
+fn a_stretch_several_members_border_stays_the_handing_regions() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(61, "PP", deg_sq(0.0, 0.0, 1.0, 1.0)), (62, "PP", deg_sq(1.0, 0.0, 2.0, 1.0))]);
+    let land = vec![bx(0.0, 0.0, 1.0, 1.0), bx(1.0, 0.0, 2.0, 1.0)];
+    // (The zone: a strip off the coast, 0.07° of it off p1's and 0.03° off p2's: about 36 km².)
+    let zones = HashMap::from([(1u64, bx(0.93, 1.0, 1.03, 1.03))]);
+    let data = Datasets::from_parts(zones, HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let f = |p: &str, t: &str| (p.to_string(), t.to_string());
+    let files = vec![
+        f("_pins.toml", "osm = \"2026-09-28\"\n"),
+        f("p/p1.toml", "id = \"p1\"\nname = \"p1\"\noutline = [\"osm:61\"]\nwater = []\n"),
+        f("p/p2.toml", "id = \"p2\"\nname = \"p2\"\noutline = [\"osm:62\"]\nwater = []\n"),
+        f(
+            "p/p-waters.toml",
+            "id = \"p-waters\"\nname = \"P waters\"\nwater = [{ minus = [\"eez:1\", \"group:p\"] }]\nhand_out = \"p\"\n",
+        ),
+    ];
+    let out = run_owned(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str| area_of(&out.resolved[id].geometry).contains([e7(0.98), e7(1.015)]);
+    assert!(at("p-waters") && !at("p1") && !at("p2"));
+}

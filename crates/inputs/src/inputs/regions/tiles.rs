@@ -1084,6 +1084,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     all.extend(areas);
     if cover {
         strays(&ids, folder, data, &lands, &all, &mut out.problems, &mut out.fit, progress);
+        trace("the zones");
     }
     drop(lands);
     let rest_id = rests.first().map(|s| (*s).clone());
@@ -1913,7 +1914,8 @@ pub struct GapFit {
     pub land_km2: f64,
     /// Within 100 m of land.
     pub touches: bool,
-    /// A point inside it: in its largest piece touching land, else its largest.
+    /// A point inside it: in its largest piece of land, else its largest piece touching land, else
+    /// its largest.
     pub at: Pt,
     /// The rest's (the open sea), else in no region.
     pub rest: bool,
@@ -2056,40 +2058,59 @@ fn strays(
             water.set(c, s);
         }
         let comps = components(&water);
-        progress.item(comps.len());
-        // (The land's segments in a cell and round it, shifted as they lie from it: a stretch's
-        // edge on a cell's side meets the land across it.)
-        let land_round = |c: Cell| {
+        // (Each cell's stretches: a cell's index of the segments round it is made once, for all of
+        // them, not once a stretch: a coast of islets has thousands of stretches in a cell.)
+        progress.item(comps.iter().flat_map(|comp| comp.keys()).collect::<BTreeSet<_>>().len());
+        // (The rings' segments in a cell and round it, shifted as they lie from it: a stretch's
+        // edge on a cell's side meets what lies across it.)
+        let round = |c: Cell, rings: &HashMap<Cell, Vec<&Ring>>| {
             let mut idx = SegIndex::default();
             for x in c.0 - 1..=c.0 + 1 {
                 let (w, shift) = wrap(x);
                 for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
-                    if let Some(a) = land.cells.get(&(w, y)) {
-                        for r in a.polys.iter().flatten() {
-                            idx.add(0, r, shift, [i64::MIN / 2, -1_000_000_000, i64::MAX / 2, 1_000_000_000]);
-                        }
+                    for r in rings.get(&(w, y)).into_iter().flatten() {
+                        idx.add(0, r, shift, [i64::MIN / 2, -1_000_000_000, i64::MAX / 2, 1_000_000_000]);
                     }
                 }
             }
             idx
         };
-        // (Whether a stretch's edge lies on (within a metre of) the segments a cell's index holds.)
-        let meets = |comp: &BTreeMap<Cell, Area>, round: &dyn Fn(Cell) -> SegIndex| {
-            comp.iter().any(|(c, p)| {
-                let idx = round(*c);
-                p.polys.iter().flatten().any(|r| {
-                    (0..r.len()).any(|k| {
-                        let (a, b) = (r[k], r[(k + 1) % r.len()]);
-                        idx.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
-                    })
+        // (Whether a piece's edge lies on (within a metre of) the segments the index holds.)
+        let meets = |p: &Area, idx: &SegIndex| {
+            p.polys.iter().flatten().any(|r| {
+                (0..r.len()).any(|k| {
+                    let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                    idx.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
                 })
             })
         };
+        // (The stretches of `which` with a piece in a cell whose edge meets the rings round it.)
+        let meeting = |which: &[usize], rings: &HashMap<Cell, Vec<&Ring>>, counted: bool| -> Vec<usize> {
+            let mut by: BTreeMap<Cell, Vec<usize>> = BTreeMap::new();
+            for &i in which {
+                for c in comps[i].keys() {
+                    by.entry(*c).or_default().push(i);
+                }
+            }
+            let mut out: Vec<usize> = pace::par_map(by.into_iter().collect(), |(c, is)| {
+                let _part = counted.then(|| progress.part_on_drop());
+                let idx = round(c, rings);
+                is.into_iter().filter(|&i| meets(&comps[i][&c], &idx)).collect::<Vec<_>>()
+            })
+            .into_iter()
+            .flatten()
+            .collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
         let km2s: Vec<f64> = comps.iter().map(|comp| comp.values().map(geom::area_km2).sum()).collect();
-        let mut ok: Vec<bool> = pace::par_map((0..comps.len()).collect(), |i| {
-            let _part = progress.part_on_drop();
-            meets(&comps[i], &land_round)
-        });
+        let mut ok = vec![false; comps.len()];
+        let land_rings: HashMap<Cell, Vec<&Ring>> =
+            land.cells.iter().map(|(c, a)| (*c, a.polys.iter().flatten().collect())).collect();
+        for i in meeting(&(0..comps.len()).collect::<Vec<_>>(), &land_rings, true) {
+            ok[i] = true;
+        }
         // (A stretch the operations' snapping parts from one that touches the land, its edge on
         // that one's within a metre, is one with it: joined until none more joins.)
         loop {
@@ -2098,24 +2119,12 @@ fn strays(
                 break;
             }
             let mut by_cell: HashMap<Cell, Vec<&Ring>> = HashMap::new();
-            for (i, comp) in comps.iter().enumerate().filter(|(i, _)| ok[*i]) {
+            for (_, comp) in comps.iter().enumerate().filter(|(i, _)| ok[*i]) {
                 for (c, p) in comp {
                     by_cell.entry(*c).or_default().extend(p.polys.iter().flatten());
                 }
             }
-            let joined_round = |c: Cell| {
-                let mut idx = SegIndex::default();
-                for x in c.0 - 1..=c.0 + 1 {
-                    let (w, shift) = wrap(x);
-                    for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
-                        for r in by_cell.get(&(w, y)).into_iter().flatten() {
-                            idx.add(0, r, shift, [i64::MIN / 2, -1_000_000_000, i64::MAX / 2, 1_000_000_000]);
-                        }
-                    }
-                }
-                idx
-            };
-            let now: Vec<usize> = open.into_iter().filter(|&i| meets(&comps[i], &joined_round)).collect();
+            let now = meeting(&open, &by_cell, false);
             if now.is_empty() {
                 break;
             }
