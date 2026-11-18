@@ -562,7 +562,9 @@ A divided place is the union of its regions: nothing of it is left over to hand 
 inside it that no region covers is the cover check's, as any land in no region is. With
 `cover = "earth"` in `_rules.toml`, then, the cover check, which moves nothing: a place is in one
 region by the regions' definitions, or the check says where it isn't. Past `HAIR_KM2` (0.1 km²: what
-the outlines' own snapping leaves where two definitions meet exactly lies well under it), each is an
+the outlines' own snapping leaves where two definitions meet exactly, measured on the whole input,
+was at most 0.0093 km² a pair, in pieces of at most 0.00003 km²; a real disagreement smaller than
+the hair passes too), each is an
 error (`rg-cover`), at a point inside it, naming the regions round it by the edge they share with
 it (`tiles::Fit`):
 - `overlap`: two regions both covering a place, land or water (summed over the 2° cells), at a

@@ -1879,8 +1879,10 @@ pub struct Fit {
 /// cells, a stretch in no region, the rest's part of a zone in a stretch, or a region's stretch of
 /// water touching none of its land, up to it is no finding. The outlines' own snapping leaves
 /// these between regions whose definitions meet exactly (`geom::snapping`: i_overlay snaps each
-/// operation's points within a few units of E7): measured on the whole input (task #1427), the
-/// largest such sliver left was under a tenth of this.
+/// operation's points within a few units of E7): measured on the whole input once its definitions
+/// were fixed (task #1427), the largest such residue, between Chilean waters and Magallanes (one
+/// takes the other away by name), was 0.0093 km² summed over the cells, in pieces of at most
+/// 0.00003 km², under a tenth of this. A real disagreement smaller than it passes too.
 pub const HAIR_KM2: f64 = 0.1;
 
 #[derive(Debug, Default)]
