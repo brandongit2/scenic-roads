@@ -117,7 +117,7 @@ names, webpenc as now).
    byte-identical outputs. ~1.8k lines, no pipeline dependency.
 2. **codecs** (built, step 2; formats with no build state): terrain_codec, shade_codec, webp,
    whole, watercov, terrain_water, vtgen, chain, marks, stations, trailends, extents, areaflags,
-   tiling (with the root's `morton` and progress bars), summary, legacy, hipack, basepack,
+   tiling (with the root's `morton` and progress bars), summary, legacy, tile (the tile id, `TileId`), hipack, basepack,
    basepart. ~8.8k lines (31 Oct 2026), no pipeline dependency.
 3. **jobrt** (a job's runtime; built, step 3): sys, budget, phase_names, pyenv, control, timings,
    resume_log, `jobs` (the job side of agent::jobs: its progress lines and its log read back),
