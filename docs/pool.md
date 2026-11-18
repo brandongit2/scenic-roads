@@ -1488,18 +1488,11 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   the `gc` job's daily duties (`--history`), so the lead alone, outside its loop and the pool's lock
   (`agent::histarchive`, task #531): the day's lines merged into what its tar holds (a line there
   already not again), so a day finished is on the NAS by the next run, and a lead's disk lost loses
-  the history since then (a lead moved by hand takes its history with its `coord/`, §6.1). The day folders an app before task
-  #1119 wrote (`state/coord/history/<day>/`, a file per writer) are packed the old way as each
-  passes the week, then removed: its files read whole and merged into
-  what the day's tar holds already (a late write, an old day's event appended after the day was
-  packed, is added to the tar, never written over it; a tar that can't be read is never
-  replaced), the tar built in memory and written in one stream to a temporary name (one fsync),
-  read back and checked, renamed into place; only then the folder's files and folder removed,
-  and only if the folder still lists the same names and sizes (an append between that listing
-  and the removal, milliseconds, is the one way a line can be lost). A stopped run's temporary
-  file is removed once an hour old. A day that fails (a folder holding anything but files, over
-  512 MB, a deadline, an unreadable tar) is left as it is and said as a warning in the job's
-  note. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
+  the history since then (a lead moved by hand takes its history with its `coord/`, §6.1). A day's
+  tar is built in memory and written in one stream to a temporary name (one fsync), read back and
+  checked, renamed into place; a tar that can't be read is never replaced: the day is left as it
+  is and said as a warning in the job's note. A stopped run's temporary file is removed once an
+  hour old. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
   timings publish`, the forecast check) reads the days' tars and the lead's file (on another Mac,
   asked of the lead: `/api/history` with `data`, which the lead reads from its file); a lead's planned notes after a change of lead, the tars.
 - **The contact** (`coordwire::lead`, task #1119): each Mac's agent keeps its lead's in its folder

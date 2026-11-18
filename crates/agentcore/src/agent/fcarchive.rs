@@ -22,7 +22,7 @@
 //!   written again.
 //! - The daily `gc` job (lead only) packs the days the history's window no longer holds
 //!   (histarchive::cutoff) into one tar a month, `state/coord/forecasts-archive/<YYYY-MM>.tar`
-//!   (members `<day>.jsonl.zst`, merged as the history's are: histarchive::merge_into_tar), then
+//!   (members `<day>.jsonl.zst`, merged into it: histarchive::merge_into_tar, with `merge`), then
 //!   removes their files. Kept for good: never removed (23 Oct 2026, ~6,000 targets placed a
 //!   forecast: ~13 KB a forecast compressed, ~4 MB a day at one forecast in 5 minutes, 19 MB at
 //!   one a minute).
@@ -578,7 +578,7 @@ fn pack_month(
     if dry_run {
         return Ok(());
     }
-    histarchive::merge_into_tar(&arch.join(format!("{month}.tar")), members, histarchive::merge)?;
+    histarchive::merge_into_tar(&arch.join(format!("{month}.tar")), members, merge)?;
     for (name, size) in files {
         let p = dir.join(name);
         let q = p.clone();
@@ -593,6 +593,25 @@ fn pack_month(
         rep.days_archived += 1;
     }
     Ok(())
+}
+
+/// The month's tar's members with its days' files merged in, by name: a file that begins with the
+/// member's bytes (the same file, packed by a stopped run, maybe appended to since) takes its place;
+/// one the member ends with was merged by a run stopped before the removals; any other (a file begun
+/// again after its day was packed: a late write) is appended to it.
+fn merge(old: &[(String, Vec<u8>)], folder: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut m: std::collections::BTreeMap<String, Vec<u8>> = old.iter().cloned().collect();
+    for (name, b) in folder {
+        match m.get_mut(&name) {
+            Some(have) if b.starts_with(have) => *have = b,
+            Some(have) if have.ends_with(&b) => {}
+            Some(have) => have.extend_from_slice(&b),
+            None => {
+                m.insert(name, b);
+            }
+        }
+    }
+    m.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -812,5 +831,17 @@ mod tests {
             b.flush();
             assert!(b.pending.is_empty());
         }
+    }
+
+    #[test]
+    fn merging_again_after_a_stop_neither_loses_nor_doubles() {
+        let n = |s: &str| s.to_string();
+        let tar = vec![(n("d/m1"), b"a\nb\n".to_vec()), (n("d/m2"), b"c\n".to_vec())];
+        // Packed then appended to (a stopped run, then a write): the day's file takes its place.
+        assert_eq!(merge(&tar, vec![(n("d/m1"), b"a\nb\nz\n".to_vec())])[0].1, b"a\nb\nz\n");
+        // A late file merged, the run stopped before its removal: not appended twice.
+        assert_eq!(merge(&tar, vec![(n("d/m1"), b"b\n".to_vec())]), tar);
+        // A late file: appended.
+        assert_eq!(merge(&tar, vec![(n("d/m2"), b"x\n".to_vec())])[1].1, b"c\nx\n");
     }
 }

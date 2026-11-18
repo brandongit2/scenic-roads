@@ -1632,8 +1632,7 @@ the id with the clicked point. A reader takes version 8 only.
   - `state/coord/token`;
     `state/coord/history-archive/<day>.tar` (a ustar of `<day>/<member>.jsonl`: the history's
     events of a finished day, the lead's take-ups and step-downs as `kind: term`, packed from the
-    lead's `agent/coord/history.jsonl` by GC; `state/coord/history/<day>/` the days an older app
-    wrote, packed as they pass the week);
+    lead's `agent/coord/history.jsonl` by GC);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
     days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`);
     `state/coord/forecast-inputs/<day>.jsonl.zst` (the lead's forecast inputs, The forecast

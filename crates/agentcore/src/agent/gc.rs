@@ -1240,7 +1240,7 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
     // The history's old days, one tar a day (task #531).
     match super::histarchive::run(root, asked.history, crate::agent::jobs::now_s(), dry_run, &yield_point) {
         Ok(h) => {
-            meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64 + h.days_archived as u64);
+            meta(h.listed, h.stats, h.tmp_removed as u64 + h.days_archived as u64);
             rep.history_days_archived = h.days_archived;
             rep.warnings.extend(h.warnings);
         }

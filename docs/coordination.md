@@ -340,8 +340,9 @@ hours), never the agent's loop.
   (`state/coord/forecast-inputs/`, from 4 Nov) lacks them, until the archive covers them or the
   check no longer reads term folders.
 
-`state/coord/history/<day>/` goes by itself: the `gc` job packs each day into the archive and
-removes it as it passes the week.
+- **remove**: `state/coord/history/` (the days 2026-11-11 and 2026-11-12, ~4 MB: the lead's
+  history as an app before task #1119 copied it to the NAS, to 12 Nov 15:21 UTC). Every event in
+  them is in the archive's tars of their days already, packed from the lead's own file.
 
 ## 10. Decisions
 
@@ -394,6 +395,6 @@ PM, 30 Oct, with what was built:
      the week's lines once it holds twice as many), for the archive (`agent::histarchive`, packed by
      the daily `gc` job: one tar a day on the NAS) and for publishing's times on another Mac
      (`/api/history` with `data`, read from the file on demand, never the page's). The day folders
-     an older app wrote (`state/coord/history/<day>/`, to 12 Nov) are packed as they pass the week.
+     an older app wrote (`state/coord/history/<day>/`, to 12 Nov) are leftovers (§9).
 5. **A switch was deleted only once it read on for every member;** one still off anywhere became a
    setting (`/pool/settings`).
