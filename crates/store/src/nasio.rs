@@ -37,6 +37,12 @@
 //! processes' folded into `BASE` after the counts and its programs' taken in (`waited_in`). The
 //! agent reads it to tell a job's computing from its waiting (crate's caller, agentcore::agent::
 //! threads: its live thread control). An older file (shorter) says none.
+//!
+//! After it, the bytes of NAS files this process read that this Mac's page cache held, so the NAS
+//! served none of them (`held`: a whole copy's resident part, crate::nasfs's `copy_counter`, which
+//! counts them as `Local` too): with `ReadBytes`, what the job asked of the NAS whichever answered
+//! (task #1419). Summed, folded and taken as the wall time waited is (`held_in`); an older file says
+//! none.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -120,7 +126,7 @@ const SLOT_WORDS: usize = std::mem::size_of::<Slot>() / 8;
 
 /// A counts file's layout: the counts, then the phase (`set_phase`): its sequence number, when it
 /// was set (unix ms), its text (zero-padded); then the files noted (`note`): how many so far, and
-/// the ring; then the wall time waited (`add_waited`).
+/// the ring; then the wall time waited (`add_waited`), then the NAS bytes held here (`held`).
 #[repr(C)]
 struct File {
     counts: Cells,
@@ -130,6 +136,7 @@ struct File {
     noted: AtomicU64,
     ring: [Slot; RING],
     waited: AtomicU64,
+    held: AtomicU64,
 }
 
 /// Where the phase ends in a counts file (an older one's ends there: no ring).
@@ -141,9 +148,18 @@ const RING_AT: usize = PHASE_END + 8;
 /// A counts file's length.
 const FILE_LEN: usize = std::mem::size_of::<File>();
 
-/// Where the wall time waited is in a counts file (its last word), and in `BASE` (after the counts).
-const WAITED_AT: usize = FILE_LEN - 8;
-const BASE_WAITED_AT: usize = SLOTS * 8;
+/// The words after a counts file's ring (and after `BASE`'s counts), in order.
+#[derive(Clone, Copy)]
+enum Tail {
+    /// The wall time waited (`add_waited`).
+    Waited = 0,
+    /// The NAS bytes held here (`held`).
+    Held = 1,
+}
+
+/// Where the tail's words begin in a counts file, and in `BASE` (after the counts).
+const TAIL_AT: usize = std::mem::offset_of!(File, waited);
+const BASE_TAIL_AT: usize = SLOTS * 8;
 
 static OWN: File = File {
     counts: [const { AtomicU64::new(0) }; SLOTS],
@@ -153,6 +169,7 @@ static OWN: File = File {
     noted: AtomicU64::new(0),
     ring: [const { Slot::new() }; RING],
     waited: AtomicU64::new(0),
+    held: AtomicU64::new(0),
 };
 
 fn file() -> &'static File {
@@ -290,6 +307,18 @@ pub fn add_waited(ns: u64) {
 /// The wall time this process has waited so far (ns: `add_waited`'s, its programs' taken in).
 pub fn own_waited() -> u64 {
     file().waited.load(Ordering::Relaxed)
+}
+
+/// `n` bytes of a NAS file read here that this Mac's page cache held (no NAS read: `held`).
+pub fn held(n: u64) {
+    if n > 0 {
+        file().held.fetch_add(n, Ordering::Relaxed);
+    }
+}
+
+/// The NAS bytes held here this process read so far (`held`'s, its programs' taken in).
+pub fn own_held() -> u64 {
+    file().held.load(Ordering::Relaxed)
 }
 
 /// File `path` opened on the NAS for reading (`bytes` long; its open took `ms`): counted and noted.
@@ -493,10 +522,10 @@ fn add_dir(dir: &Path, out: &mut Counts, subs: bool) -> bool {
     true
 }
 
-/// A counts file's wall time waited (its bytes, read whole; `name` its file's): a process's file's
-/// last word, `BASE`'s after its counts; none in an older (shorter) one.
-fn waited_of(name: &str, b: &[u8]) -> u64 {
-    let at = if name == BASE { BASE_WAITED_AT } else { WAITED_AT };
+/// A counts file's tail word `t` (its bytes, read whole; `name` its file's): a process's file's
+/// after its ring, `BASE`'s after its counts; none in an older (shorter) one.
+fn tail_of(name: &str, b: &[u8], t: Tail) -> u64 {
+    let at = if name == BASE { BASE_TAIL_AT } else { TAIL_AT } + t as usize * 8;
     b.get(at..at + 8).map_or(0, |w| u64::from_le_bytes(w.try_into().unwrap_or_default()))
 }
 
@@ -504,22 +533,31 @@ fn waited_of(name: &str, b: &[u8]) -> u64 {
 /// `<pid>-<nonce>`, its running programs' folders one level down), as `sum_dir` sums the counts;
 /// None when the folder isn't there.
 pub fn waited_in(dir: &Path) -> Option<u64> {
-    fn add(dir: &Path, subs: bool) -> Option<u64> {
+    tail_in(dir, Tail::Waited)
+}
+
+/// Folder `dir`'s NAS bytes held here (`held`'s), summed as `waited_in` sums the time waited.
+pub fn held_in(dir: &Path) -> Option<u64> {
+    tail_in(dir, Tail::Held)
+}
+
+fn tail_in(dir: &Path, t: Tail) -> Option<u64> {
+    fn add(dir: &Path, subs: bool, t: Tail) -> Option<u64> {
         let rd = std::fs::read_dir(dir).ok()?;
         let mut n = 0;
         for e in rd.flatten() {
             let Ok(name) = e.file_name().into_string() else { continue };
             if name.starts_with(SUB) {
                 if subs {
-                    n += add(&e.path(), false).unwrap_or(0);
+                    n += add(&e.path(), false, t).unwrap_or(0);
                 }
             } else if name == BASE || name.split_once('-').is_some_and(|(p, _)| p.parse::<u32>().is_ok()) {
-                n += std::fs::read(e.path()).map_or(0, |b| waited_of(&name, &b));
+                n += std::fs::read(e.path()).map_or(0, |b| tail_of(&name, &b, t));
             }
         }
         Some(n)
     }
-    add(dir, true)
+    add(dir, true, t)
 }
 
 /// The prefix of a running program's counts folder inside its runner's (`program_dir`).
@@ -552,6 +590,7 @@ pub fn take_program(dir: &Path) {
         add_counts(&n);
     }
     add_waited(waited_in(&at).unwrap_or(0));
+    held(held_in(&at).unwrap_or(0));
     std::fs::remove_dir_all(&at).ok();
 }
 
@@ -590,19 +629,22 @@ pub fn fold_ended(dir: &Path) {
     let base = dir.join(BASE);
     let was = std::fs::read(&base).ok();
     let mut sum = was.as_deref().map(parse).unwrap_or_default();
-    let mut waited = was.as_deref().map_or(0, |b| waited_of(BASE, b));
+    let tails = [Tail::Waited, Tail::Held];
+    let mut tail = tails.map(|t| was.as_deref().map_or(0, |b| tail_of(BASE, b, t)));
     let mut taken = Vec::new();
     for p in ended {
         let Ok(b) = std::fs::read(&p) else { continue };
         for (o, v) in sum.iter_mut().zip(parse(&b)) {
             *o += v;
         }
-        waited += waited_of("", &b);
+        for (s, t) in tail.iter_mut().zip(tails) {
+            *s += tail_of("", &b, t);
+        }
         taken.push(p);
     }
     let tmp = dir.join(format!("{BASE}.tmp"));
     let mut out = bytes(&sum);
-    out.extend(waited.to_le_bytes());
+    out.extend(tail.iter().flat_map(|w| w.to_le_bytes()));
     if std::fs::write(&tmp, out).and_then(|_| std::fs::rename(&tmp, &base)).is_ok() {
         for p in taken {
             std::fs::remove_file(p).ok();
@@ -658,35 +700,42 @@ mod tests {
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
-    /// The wall time waited is summed over a folder's files as the counts are: a running process's,
-    /// a program's folder's, an ended one's folded into `BASE` (kept through a second fold), a
-    /// program's taken into its runner's own; an older file's (no word for it) says none; and the
-    /// counts' sums never include it.
+    /// The wall time waited and the NAS bytes held here are summed over a folder's files as the
+    /// counts are: a running process's, a program's folder's, an ended one's folded into `BASE`
+    /// (kept through a second fold), a program's taken into its runner's own; an older file's (no
+    /// word for either, or for the bytes held alone: one before task #1419, its time waited its last
+    /// word) says none of what it lacks; and the counts' sums never include them.
     #[test]
-    fn the_wall_time_waited_is_summed_folded_and_taken() {
+    fn the_tail_words_are_summed_folded_and_taken() {
         let d = tempfile::tempdir().unwrap();
         let a = mapped(d.path()).unwrap();
         a.waited.fetch_add(300, Ordering::Relaxed);
-        // (An ended process's, and an older one's with the counts alone.)
-        let mut ended = vec![0u8; FILE_LEN];
-        ended[WAITED_AT..].copy_from_slice(&40u64.to_le_bytes());
-        std::fs::write(d.path().join("2147483646-1"), &ended).unwrap();
+        a.held.fetch_add(3000, Ordering::Relaxed);
+        let file = |waited: u64, held: u64, len: usize| {
+            let mut b = vec![0u8; FILE_LEN];
+            b[TAIL_AT..TAIL_AT + 8].copy_from_slice(&waited.to_le_bytes());
+            b[TAIL_AT + 8..TAIL_AT + 16].copy_from_slice(&held.to_le_bytes());
+            b.truncate(len);
+            b
+        };
+        // (An ended process's, one from before the bytes held, and an older one's with the counts
+        // alone.)
+        std::fs::write(d.path().join("2147483646-1"), file(40, 400, FILE_LEN)).unwrap();
+        std::fs::write(d.path().join("2147483646-4"), file(2, 99, FILE_LEN - 8)).unwrap();
         std::fs::write(d.path().join("2147483646-2"), [7u8; SLOTS * 8]).unwrap();
         let sub = d.path().join(format!("{SUB}1-0"));
         std::fs::create_dir(&sub).unwrap();
-        let mut prog = vec![0u8; FILE_LEN];
-        prog[WAITED_AT..].copy_from_slice(&5u64.to_le_bytes());
-        std::fs::write(sub.join("2147483646-3"), &prog).unwrap();
-        assert_eq!(waited_in(d.path()), Some(345));
+        std::fs::write(sub.join("2147483646-3"), file(5, 50, FILE_LEN)).unwrap();
+        assert_eq!((waited_in(d.path()), held_in(d.path())), (Some(347), Some(3450)));
         let counts = sum_dir(d.path()).unwrap();
         fold_ended(d.path());
         fold_ended(d.path());
         assert!(!d.path().join("2147483646-1").exists());
-        assert_eq!(waited_in(d.path()), Some(345), "folded into the base");
+        assert_eq!((waited_in(d.path()), held_in(d.path())), (Some(347), Some(3450)), "folded into the base");
         assert_eq!(sum_dir(d.path()).unwrap(), counts, "the counts as they were");
-        let before = own_waited();
+        let (w, h) = (own_waited(), own_held());
         take_program(&sub);
-        assert!(own_waited() >= before + 5);
+        assert!(own_waited() >= w + 5 && own_held() >= h + 50);
         assert!(waited_in(&d.path().join("missing")).is_none());
     }
 

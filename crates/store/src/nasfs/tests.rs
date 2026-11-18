@@ -130,7 +130,8 @@ fn every_operation_is_counted() {
 }
 
 /// A file copied whole while this Mac's page cache holds it (one just written) counts as read
-/// here (`Local`), not from the NAS, task #939; the copy's file is counted as opened all the same.
+/// here (`Local`), not from the NAS, task #939, and as NAS bytes held here (`held`: asked of the
+/// NAS all the same, task #1419); the copy's file is counted as opened all the same.
 #[cfg(unix)]
 #[test]
 fn a_copy_the_page_cache_answers_is_read_here() {
@@ -140,11 +141,12 @@ fn a_copy_the_page_cache_answers_is_read_here() {
     std::fs::read(d.path().join("p.pack")).unwrap();
     let to = d.path().join("copies");
     std::fs::create_dir_all(&to).unwrap();
-    let at = nasio::own();
+    let (at, held) = (nasio::own(), nasio::own_held());
     let grew = |c: Count| nasio::own()[c as usize] - at[c as usize];
     assert_eq!(r.join("p.pack").copy_data_to_local(&to.join("a")).unwrap(), n as u64);
     assert_eq!(r.join("p.pack").copy_to_local(&to.join("b")).unwrap(), n as u64);
     assert!(grew(Count::Local) >= 2 * n as u64, "{} local", grew(Count::Local));
+    assert!(nasio::own_held() - held >= 2 * n as u64, "held here");
     assert!(grew(Count::Files) >= 2);
 }
 

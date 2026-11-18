@@ -1224,8 +1224,9 @@ fn counted_read(p: &Path, len: u64, t: Instant) {
 /// slope-deep job copied its z6 tile's 200 MB terrain pack once a target, every copy after the
 /// first answered by the cache in a second or less, and each target weighed past the whole NAS),
 /// the rest the NAS's, each as it's read: a job's beats see a long copy move (task #986: its
-/// bytes at its end alone left a job copying a big file from a slow NAS still all the while).
-/// Reads into memory (`read` and the like) aren't asked: most are of small files, where asking
+/// bytes at its end alone left a job copying a big file from a slow NAS still all the while). The
+/// first `held` are also counted as NAS bytes held here (`nasio::held`, task #1419): the job asked
+/// for them of the NAS all the same, which a warm cache answered. Reads into memory (`read` and the like) aren't asked: most are of small files, where asking
 /// would be a mapping, a round trip of its own. The file is counted opened (`nasio::opened`) once
 /// copied.
 pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
@@ -1234,6 +1235,7 @@ pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
         let here = held.saturating_sub(done).min(k);
         nasio::read(k - here);
         nasio::add(nasio::Count::Local, here);
+        nasio::held(here);
         done += k;
     }
 }
