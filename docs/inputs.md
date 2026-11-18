@@ -2742,7 +2742,7 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 
   | In the repository | On the NAS | The NAS folder is |
   |---|---|---|
-  | `producers/extents/terrain/` | `inputs/extents/terrain/` | the repository's whole: a file only on the NAS is drift |
+  | `producers/extents/terrain/`, `producers/extents/bathymetry/` | `inputs/extents/terrain/`, `inputs/extents/bathymetry/` | the repository's whole: a file only on the NAS is drift |
   | `producers/sources/`, `producers/depth/declarations/`, `producers/geoid/declarations/` | `inputs/sources/` | shared: the NAS's own files (the depth grids' indexes, made there) are counted, not drift |
   | `producers/elevation/`, `producers/elevation/1m/` | `inputs/elevation/` | shared (HRDEM's, 3DEP's and GSI's declarations are the NAS's own) |
   | `producers/how/<box>/` (each folder holding a README) | `inputs/<box>/how/` | shared: the notes beside them |

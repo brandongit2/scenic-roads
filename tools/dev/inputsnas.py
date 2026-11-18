@@ -56,6 +56,7 @@ import tarfile
 WHOLE, SHARED, NOTES, FILE = "whole", "shared", "notes", "file"
 MAPS = [
     ("producers/extents/terrain", "inputs/extents/terrain", WHOLE),
+    ("producers/extents/bathymetry", "inputs/extents/bathymetry", WHOLE),
     ("producers/sources", "inputs/sources", SHARED),
     ("producers/depth/declarations", "inputs/sources", SHARED),
     ("producers/geoid/declarations", "inputs/sources", SHARED),
