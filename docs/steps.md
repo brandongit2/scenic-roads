@@ -1135,6 +1135,13 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   again only its own z6 tile. The masks stop where the build holds buildings: its coverage, not
   all Overture has. The polar caps take no mask. The step also prints the buildings of a dataset
   and kind no block declares (what a declaration could add).
+  **The buildings' cost** (18 Nov; `measures_the_real_step`, the release test binary on the Mac
+  mini, load 5 to 10, the NAS's 1,276 normalized files, 87 GB, read over SMB, cut to the
+  2026-09-28 pass's land): the first run's masks 1,022 s (every file read; the 16 masks in 1 to
+  1,270 z6 tiles each), its record 8.1 MB; a run again with no file moved 0.2 s; the layers' build
+  of the 154 outlines and 16 masks 98 s, 2,106,136 tiles in 1,617 packs of 1.25 GB; the whole
+  1,121 s, a peak resident set of 4.86 GB (2.41 GB footprint). The reading is the NAS's bytes, so
+  a file of the build moved costs its own read alone.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
   On the 13,783 pieces with an extent of 18 Nov (producers/extents/terrain/, every region's
   sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, cut to the
