@@ -1,0 +1,20 @@
+name = "NOAA NCEI coastal and regional DEMs (CUDEM, the Coastal Relief Model, tsunami DEMs)"
+credit = "NOAA National Centers for Environmental Information"
+licence = "public domain"
+licence_url = "https://www.ncei.noaa.gov/products/coastal-elevation-models"
+source = "https://www.ncei.noaa.gov/products/coastal-elevation-models"
+theme = "bathymetry"
+availability = "open"
+notes = "NCEI's integrated topo-bathymetric DEMs, every one its DEM_all image service catalogues (1,917 items: the Continuously Updated DEM's 1/9 and 1/3 arc-second tiles, the Coastal Relief Model's tiles, the regional and tsunami inundation DEMs), each item's footprint, a piece for each cell size (arc-seconds, 30.87 m an arc-second of latitude). The DEMs are interpolated from soundings, lidar and other DEMs (each DEM's report lists its sources); the catalogue's DateCompleted is when a DEM was made, not surveyed, so no year is stated."
+
+[[piece]]
+id = "dem"
+method = "arcgis"
+class = "index"
+url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_all/ImageServer"
+filter = { Category = [1] }
+by = ["CellsizeArcseconds"]
+tolerance_m = 50
+[piece.metrics]
+spacing_m = { field = "CellsizeArcseconds", scale = 30.87 }
+measured = "compiled"

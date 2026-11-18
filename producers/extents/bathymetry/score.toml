@@ -1,0 +1,88 @@
+# Bathymetry's score (docs/inputs.md §6.11): how a piece's metrics make one number, 0 to 1, and
+# how pieces rank. The grid spacing decides, as the terrain's does (the owner, 13 Nov: resolution
+# trumps the rest in all normal cases): how the depths were measured, the publisher's quality
+# class and the year only break near-ties.
+#
+#   score = (1 - share) × value(spacing) + share × rest
+#   rest  = Σ weight × value / Σ weight over the other metrics the piece states
+#           (a metric it doesn't state leaves both sums; none of weight above 0 stated:
+#           rest = unstated, 0.5)
+#
+# Each metric's value is 0 at `worst` and 1 at `best`, clamped; `log` scales by the logarithm; a
+# `values` table gives each word its value. The guarantee: a piece finer than another by more
+# than a factor of `within` scores higher, whatever else either states (both spacings between
+# `best` and `worst`). It holds when share < k / (1 + k), k = ln(within) / ln(worst / best):
+# score.py refuses a file where it doesn't. A piece not stating its spacing has no score.
+#
+# The best piece at a place: of those whose spacing is within `within` of the finest there, those
+# of the best `availability` below; of them, the best score; of equal scores, the better-founded
+# extent (its class: mask, files, index, service, claimed, unknown); of equals, the first by id.
+# The map's default view, free data, draws only the open and login sources; its other view, all.
+#
+# Nothing is built again for a change here: the server reads it at its next sync.
+theme = "bathymetry"
+label = "Best data"
+primary = "spacing_m"
+# 1.25, as the terrain's: spacings closer than a quarter are one grid in different units (1/16
+# arc-minute, 115 m, against 100 m; 1 arc-second, 31 m, against 30 m), where the rest decides.
+within = 1.25
+# The other metrics' share: under the bound, k / (1 + k) = 0.0220 for these numbers.
+share = 0.02
+availability = ["open", "login", "paid", "closed"]
+
+[metric.spacing_m]
+label = "Spacing: a grid's cell"
+unit = "m"
+scale = "log"
+# (A 1 arc-minute grid, 1.85 km, is the coarsest declared; a bathymetric lidar's 0.5 m the finest.)
+worst = 2000
+best = 0.1
+
+# How the depths were measured: a word for each kind of reading, the direct ones first (GEBCO's
+# Type Identifier classes, IHO's terms; producers' `map`s read the publishers' codes into them, the
+# code kept as `stated`).
+[metric.measured]
+label = "How measured"
+weight = 0.6
+[metric.measured.values]
+multibeam = 1.0
+lidar = 1.0
+# A survey's measurements, its instrument not stated (EMODnet's survey data sets; GEBCO's 17, a
+# combination of direct methods).
+survey = 0.85
+singlebeam = 0.7
+seismic = 0.55
+# Depths at points: isolated soundings, an electronic chart's soundings.
+soundings = 0.5
+# From imagery: satellite-derived bathymetry, an optical sensor's depth.
+optical = 0.45
+# A grid compiled from measured and interpolated sources (a composite DTM, GEBCO's 44 and 70).
+compiled = 0.4
+# A depth estimated at a point from something else (a grounded iceberg's draft, a grounded float,
+# an animal's logger: GEBCO's 46-48).
+estimated = 0.3
+interpolated = 0.25
+# Digitized from a chart's or an ENC's depth contours.
+contours = 0.2
+# Predicted from gravity (satellite altimetry, a flight's gravimetry).
+predicted = 0.1
+# Modelled from the land round it, no depth read (GLOBathy's lakes).
+modelled = 0.05
+
+# The publisher's own quality class, on its scale from 0 (worst) to 100 (best): EMODnet's quality
+# index ("combined"); a class a publisher words (CATZOC's zones) mapped onto it in its declaration,
+# the class kept as `stated`.
+[metric.quality]
+label = "Stated quality index"
+unit = "%"
+weight = 0.2
+scale = "linear"
+worst = 0
+best = 100
+
+[metric.year]
+label = "Year surveyed"
+weight = 0.2
+scale = "linear"
+worst = 1960
+best = 2026

@@ -1,0 +1,22 @@
+name = "EMODnet Digital Bathymetry (DTM 2024)"
+credit = "EMODnet Bathymetry Consortium (2024): EMODnet Digital Bathymetry (DTM 2024)"
+licence = "CC-BY-4.0"
+licence_url = "https://sextant.ifremer.fr/record/ff3aff8a-cff1-44a3-a2c8-1910bf109f85/"
+source = "https://emodnet.ec.europa.eu/en/bathymetry"
+theme = "bathymetry"
+availability = "open"
+notes = "The European seas' 1/16 arc-minute grid (about 115 m; depths at LAT), read from the consortium's own index of what each cell was made from: its WFS layer quality_index of release 2024 (197,828 areas), a piece for each kind of source (CDI: a survey data set; DTM: a provider's composite DTM) and quality index (the layer's `combined`, 0 to 100). Cells the index names no source for are GEBCO's and IBCAO's filling, not drawn as EMODnet's. The survey data sets' instruments aren't in the index."
+
+[[piece]]
+id = "dtm"
+label = "EMODnet DTM 2024"
+method = "wfs"
+class = "index"
+url = "https://ows.emodnet-bathymetry.eu/wfs?cql_filter=release%3D%272024%27"
+type = "emodnet:quality_index"
+by = ["type"]
+tolerance_m = 1000
+[piece.metrics]
+spacing_m = 115
+measured = { field = "type", map = { CDI = "survey", DTM = "compiled" } }
+quality = { field = "combined" }

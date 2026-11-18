@@ -1,0 +1,20 @@
+name = "EMODnet high-resolution DTMs"
+credit = "EMODnet Bathymetry Consortium and its data providers"
+licence = "CC-BY-4.0"
+licence_url = "https://emodnet.ec.europa.eu/en/bathymetry"
+source = "https://emodnet.ec.europa.eu/en/bathymetry"
+theme = "bathymetry"
+availability = "open"
+notes = "The providers' composite DTMs of coasts and hotspots that EMODnet distributes beside its DTM, by the consortium's WFS layer hr_bathymetry_area (each DTM's outline, its resolution as N for 1/N arc-minute, its release, its download): a piece for each resolution. 1/N arc-minute is 1852/N m. The sampled records are CC BY 4.0; a provider restricting its DTM says so in its own record (CNR-ISMAR-22's 'Restricted'), not here: the layer's DTMs are each downloadable."
+
+[[piece]]
+id = "hr"
+method = "wfs"
+class = "index"
+url = "https://ows.emodnet-bathymetry.eu/wfs"
+type = "emodnet:hr_bathymetry_area"
+by = ["resolution"]
+tolerance_m = 50
+[piece.metrics]
+spacing_m = { field = "resolution", map = { "32" = 57.875, "64" = 28.9375, "128" = 14.4688, "256" = 7.2344, "448" = 4.1339, "512" = 3.6172, "1024" = 1.8086 } }
+measured = "compiled"

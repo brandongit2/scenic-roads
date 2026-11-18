@@ -1,0 +1,28 @@
+name = "CHS NONNA-10 and NONNA-100 (Non-Navigational Bathymetry)"
+credit = "Canadian Hydrographic Service, Fisheries and Oceans Canada"
+licence = "CHS NONNA Licence"
+licence_url = "https://api-proxy.edh-cde.dfo-mpo.gc.ca/catalogue/records/d3881c4c-650d-4070-bf9b-1e00aabf0a1d/attachments/CHS_NONNA_LICENCE-LICENCE_NONNA_DU_SHC.pdf"
+source = "https://open.canada.ca/data/en/dataset/d3881c4c-650d-4070-bf9b-1e00aabf0a1d"
+theme = "bathymetry"
+availability = "login"
+notes = "The CHS's consolidation of its digital surveys in Canadian waters (multibeam, lidar and older soundings merged), on chart datum, updated 1 Apr 2026: its two cell indexes (OGL-Canada, the record's attachments), NONNA-10's 72,305 cells of 0.1° (wider north of 68° N) and NONNA-100's 1,220 of 1°, each a piece. The data come through the CHS portal's guest login under the NONNA Licence (no redistribution; copies destroyed on its termination), so the cells are claimed. A cell is where the product has data, not all of it: gaps where no modern survey is. Its per-source detail (TECSOU, CATZOC, survey dates) is only inside the downloads: not read."
+
+[[piece]]
+id = "nonna-10"
+method = "file"
+class = "claimed"
+url = "https://api-proxy.edh-cde.dfo-mpo.gc.ca/catalogue/records/d3881c4c-650d-4070-bf9b-1e00aabf0a1d/attachments/NONNA10.zip"
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 10.0
+measured = "survey"
+
+[[piece]]
+id = "nonna-100"
+method = "file"
+class = "claimed"
+url = "https://api-proxy.edh-cde.dfo-mpo.gc.ca/catalogue/records/d3881c4c-650d-4070-bf9b-1e00aabf0a1d/attachments/NONNA100.zip"
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 100.0
+measured = "survey"

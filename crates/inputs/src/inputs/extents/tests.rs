@@ -1388,17 +1388,18 @@ const REAL: [(&str, &[u8]); 583] = [
     ("za-ngi-dem.toml", include_bytes!("../../../../../producers/extents/terrain/za-ngi-dem.toml")),
 ];
 
-#[test]
-fn the_real_terrain_files_are_taken() {
-    // (Every file there is here: one added to the folder fails this until it's listed.)
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents/terrain");
+/// A theme's real files (producers/extents/<theme>/, `real`) checked: every file there listed (one
+/// added to the folder fails this until it's listed), none with an error, each `.geojson` with
+/// pieces and a box; the warnings. The files, by their paths.
+fn real_files(theme: &str, real: &[(&str, &[u8])]) -> (BTreeMap<String, Vec<u8>>, Vec<String>) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents").join(theme);
     let mut on_disk: Vec<String> =
         std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     on_disk.sort();
-    let mut listed: Vec<String> = REAL.iter().map(|(n, _)| n.to_string()).collect();
+    let mut listed: Vec<String> = real.iter().map(|(n, _)| n.to_string()).collect();
     listed.sort();
     assert_eq!(on_disk, listed);
-    let files: BTreeMap<String, Vec<u8>> = REAL.iter().map(|(n, b)| (format!("terrain/{n}"), b.to_vec())).collect();
+    let files: BTreeMap<String, Vec<u8>> = real.iter().map(|(n, b)| (format!("{theme}/{n}"), b.to_vec())).collect();
     let mut warnings = Vec::new();
     for (p, b) in &files {
         let c = Extents.file(p, b);
@@ -1417,6 +1418,12 @@ fn the_real_terrain_files_are_taken() {
     let errors: Vec<&Finding> = whole.iter().filter(|f| f.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
     warnings.extend(whole.iter().map(|f| f.message.clone()));
+    (files, warnings)
+}
+
+#[test]
+fn the_real_terrain_files_are_taken() {
+    let (files, warnings) = real_files("terrain", &REAL);
     // (Where they lie isn't stated, or their area would overstate them: Belize's 17 %, Greater
     // Santo Domingo's 380 km², Dominica's, Guatemala's and Saint Kitts and Nevis's coverage; in
     // Europe the partial surveys with no outline and the restricted products whose coverage isn't
@@ -1514,6 +1521,44 @@ fn the_real_terrain_files_are_taken() {
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);
     assert_eq!(c.facts["pieces"], 1902);
     assert_eq!(c.facts["classes"], serde_json::json!({"files": 2, "index": 1900}));
+}
+
+const REAL_BATHYMETRY: [(&str, &[u8]); 23] = [
+    ("score.toml", include_bytes!("../../../../../producers/extents/bathymetry/score.toml")),
+    ("au-ausseabed.geojson", include_bytes!("../../../../../producers/extents/bathymetry/au-ausseabed.geojson")),
+    ("au-ausseabed.toml", include_bytes!("../../../../../producers/extents/bathymetry/au-ausseabed.toml")),
+    ("ca-chs-nonna.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ca-chs-nonna.geojson")),
+    ("ca-chs-nonna.toml", include_bytes!("../../../../../producers/extents/bathymetry/ca-chs-nonna.toml")),
+    ("emodnet-dtm.geojson", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-dtm.geojson")),
+    ("emodnet-dtm.toml", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-dtm.toml")),
+    ("emodnet-hr.geojson", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-hr.geojson")),
+    ("emodnet-hr.toml", include_bytes!("../../../../../producers/extents/bathymetry/emodnet-hr.toml")),
+    ("fo-fodm.geojson", include_bytes!("../../../../../producers/extents/bathymetry/fo-fodm.geojson")),
+    ("fo-fodm.toml", include_bytes!("../../../../../producers/extents/bathymetry/fo-fodm.toml")),
+    ("gebco-2026.geojson", include_bytes!("../../../../../producers/extents/bathymetry/gebco-2026.geojson")),
+    ("gebco-2026.toml", include_bytes!("../../../../../producers/extents/bathymetry/gebco-2026.toml")),
+    ("gmrt.geojson", include_bytes!("../../../../../producers/extents/bathymetry/gmrt.geojson")),
+    ("gmrt.toml", include_bytes!("../../../../../producers/extents/bathymetry/gmrt.toml")),
+    ("ibcao-v5.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ibcao-v5.geojson")),
+    ("ibcao-v5.toml", include_bytes!("../../../../../producers/extents/bathymetry/ibcao-v5.toml")),
+    ("ibcso.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ibcso.geojson")),
+    ("ibcso.toml", include_bytes!("../../../../../producers/extents/bathymetry/ibcso.toml")),
+    ("ncei-dems.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.geojson")),
+    ("ncei-dems.toml", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.toml")),
+    ("noaa-bluetopo.geojson", include_bytes!("../../../../../producers/extents/bathymetry/noaa-bluetopo.geojson")),
+    ("noaa-bluetopo.toml", include_bytes!("../../../../../producers/extents/bathymetry/noaa-bluetopo.toml")),
+];
+
+#[test]
+fn the_real_bathymetry_files_are_taken() {
+    let (files, warnings) = real_files("bathymetry", &REAL_BATHYMETRY);
+    assert_eq!(warnings, Vec::<String>::new());
+    // GEBCO's pieces a kind of source its type identifier grid holds, each from the file's cells.
+    let c = Extents.file("bathymetry/gebco-2026.geojson", &files["bathymetry/gebco-2026.geojson"]);
+    assert_eq!(c.facts["classes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["files"]);
+    // The bathymetry's score: its guarantee holds, its primary the grid's spacing.
+    let s = score(REAL_BATHYMETRY[0].1).unwrap();
+    assert_eq!(s.primary, "spacing_m");
 }
 
 /// Malformed files are findings, never a panic: each kind's fixture cut short at every few bytes,

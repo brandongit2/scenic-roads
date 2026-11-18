@@ -1,0 +1,20 @@
+name = "AusSeabed bathymetry surveys"
+credit = "AusSeabed, Geoscience Australia and the surveys' custodians"
+licence = "CC-BY-4.0"
+licence_url = "https://www.ausseabed.gov.au/"
+source = "https://warehouse.ausseabed.gov.au/"
+theme = "bathymetry"
+availability = "open"
+notes = "The Warehouse's register of Australian survey acquisitions (WFS layer MARINEDATAREGISTER_ACQUISITIONS_INDEX, 3,295 surveys), those published to the portal (PRODUCT_STATUS PUBLISHED: 243), a piece for each kind of survey and its last year. The register states no grid spacing (each survey's grids differ), so these pieces have no score: they're drawn on the layers of how depths were measured and the year. The 3,034 surveys only registered are the custodians' (2,733 under embargo, 1,247 restricted): not declared."
+
+[[piece]]
+id = "published"
+method = "wfs"
+class = "index"
+url = "https://warehouse.ausseabed.gov.au/geoserver/wfs"
+type = "ausseabed:MARINEDATAREGISTER_ACQUISITIONS_INDEX"
+filter = { PRODUCT_STATUS = ["PUBLISHED"] }
+tolerance_m = 1000
+[piece.metrics]
+measured = { field = "BATHY_TYPES", map = { "Multibeam" = "multibeam", "Singlebeam" = "singlebeam", "LiDAR" = "lidar", "Digital bathymetric contours from charts" = "contours", "Isolated sounding" = "soundings", "Combination of Direct Measurements" = "survey", "LiDAR | Multibeam" = "survey", "Pre-generated grid" = "compiled" } }
+year = { field = "END_DATE", date = "iso" }

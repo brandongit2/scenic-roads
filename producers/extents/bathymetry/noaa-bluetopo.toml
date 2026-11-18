@@ -1,0 +1,20 @@
+name = "BlueTopo (NOAA National Bathymetric Source)"
+credit = "NOAA Office of Coast Survey, National Bathymetric Source"
+licence = "public domain"
+licence_url = "https://www.nauticalcharts.noaa.gov/data/bluetopo.html"
+source = "https://www.nauticalcharts.noaa.gov/data/bluetopo.html"
+theme = "bathymetry"
+availability = "open"
+notes = "The tile scheme of 17 Nov 2026 (its GeoPackage, read whole: 6.7 MB, 12,638 tiles), the tiles delivered (8,689: those stating a resolution), a piece for each resolution (2, 4, 8 and 16 m). BlueTopo grids the best of NOAA's and its partners' surveys and leaves the rest empty: a tile's square isn't all data. Each tile's contributors are in its raster attribute table, not read."
+
+[[piece]]
+id = "tiles"
+method = "file"
+class = "index"
+url = "https://noaa-ocs-nationalbathymetry-pds.s3.amazonaws.com/BlueTopo/_BlueTopo_Tile_Scheme/BlueTopo_Tile_Scheme_20261117_154623.gpkg"
+exclude = { Resolution = [""] }
+by = ["Resolution"]
+tolerance_m = 50
+[piece.metrics]
+spacing_m = { field = "Resolution", text = "m" }
+measured = "survey"

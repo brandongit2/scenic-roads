@@ -1,0 +1,22 @@
+name = "IBCSO, annual release 2025"
+credit = "The International Bathymetric Chart of the Southern Ocean (IBCSO), Alfred Wegener Institute"
+licence = "CC-BY"
+licence_url = "https://ibcso.org/"
+source = "https://ibcso.org/"
+theme = "bathymetry"
+availability = "open"
+notes = "The Southern Ocean south of 50° S on a 500 m grid (EPSG:9354), its Type Identifier grid (GEBCO's codes; 15 MB, read whole), a piece for each kind of source its cells hold, 0 land left out. A mask cell is 20 by 20 grid cells (10 km), holding every kind any of its cells holds. The page states a CC BY licence without its version."
+
+[[piece]]
+id = "tid"
+label = "IBCSO 2025"
+method = "raster"
+urls = ["https://ibcso.org/wp-content/uploads/_ANNUAL/IBCSO_TID.tif"]
+block = 20
+values = "tid"
+skip = [0]
+by = ["tid"]
+tolerance_m = 5000
+[piece.metrics]
+spacing_m = { field = "res_m" }
+measured = { field = "tid", map = { "10" = "singlebeam", "11" = "multibeam", "12" = "seismic", "13" = "soundings", "14" = "soundings", "15" = "lidar", "16" = "optical", "17" = "survey", "40" = "predicted", "41" = "interpolated", "42" = "contours", "43" = "contours", "44" = "compiled", "45" = "predicted", "46" = "estimated", "47" = "estimated", "48" = "estimated", "70" = "compiled", "72" = "interpolated" } }

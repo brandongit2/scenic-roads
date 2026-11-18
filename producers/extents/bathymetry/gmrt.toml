@@ -1,0 +1,20 @@
+name = "Global Multi-Resolution Topography (GMRT) v4.5"
+credit = "Ryan, W.B.F. et al. (2009), Global Multi-Resolution Topography synthesis, Lamont-Doherty Earth Observatory"
+licence = "CC-BY-4.0"
+licence_url = "https://www.gmrt.org/about/terms_of_use.php"
+source = "https://www.gmrt.org/"
+theme = "bathymetry"
+availability = "open"
+notes = "The synthesis's own index of the multibeam surveys it holds (gmrt_swath_polygons.zip, 1,638 swath outlines, read whole: 58 MB), a piece for each survey year. Its multibeam cells are gridded at about 100 m in the deep sea (the publisher: \"typically ~100 m\"); elsewhere GMRT is a GEBCO base, not declared here."
+
+[[piece]]
+id = "multibeam"
+method = "file"
+class = "index"
+url = "https://www.gmrt.org/shapefiles/gmrt_swath_polygons.zip"
+by = ["YEAR"]
+tolerance_m = 2000
+[piece.metrics]
+spacing_m = 100
+measured = "multibeam"
+year = { field = "YEAR", date = "year" }
