@@ -5,22 +5,15 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://survey.kartverket.no/"
 theme = "bathymetry"
 availability = "open"
-notes = "Kartverket's open sea-floor terrain models (Dybdedata, terrengmodeller: a 50 m grid of the surveyed Norwegian waters, built from the Hydrographic Service's and its partners' surveys, in chart datum nearshore and mean sea level offshore; free, not for navigation) by the extent of the surveys they are made of: the survey coverage register (Dybdedata dekning, OGC API collection `surveys`, 6,226 survey outlines, read in seven pages of a thousand: 438 MB), a piece for each way the depths were measured and the survey's last year. The 50 m grid is the finest open product inside the territorial sea (data finer than 50 m there is classified, or by application), so every survey is drawn at 50 m. The 25 m and 5 m grids of the MAREANO programme (only outside the territorial sea, in cells whose list carries no outlines) are not declared. Surveys whose method or year the register doesn't state state none."
+notes = "Kartverket's open sea-floor terrain models (Dybdedata, terrengmodeller: a 50 m grid of the surveyed Norwegian waters, built from the Hydrographic Service's and its partners' surveys, in chart datum nearshore and mean sea level offshore; free, not for navigation) by the extent of the surveys they are made of: the survey coverage register (Dybdedata dekning, OGC API collection `surveys`, its outlines paged by the API's own `next` links, a thousand a page: 438 MB), a piece for each way the depths were measured and the survey's last year. The 50 m grid is the finest open product inside the territorial sea (data finer than 50 m there is classified, or by application), so every survey is drawn at 50 m. The 25 m and 5 m grids of the MAREANO programme (only outside the territorial sea, in cells whose list carries no outlines) are not declared. Surveys whose method or year the register doesn't state state none."
 
 [[piece]]
 id = "dtm50"
 label = "Terrengmodell 50 m"
-method = "file"
+method = "stac"
 class = "index"
-urls = [
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=0",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=1000",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=2000",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=3000",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=4000",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=5000",
-  "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys/items?f=json&limit=1000&offset=6000",
-]
+url = "https://hybasapi.atgcp1-prod.kartverket.cloud/collections/surveys"
+page = 1000
 tolerance_m = 500
 [piece.metrics]
 spacing_m = 50.0

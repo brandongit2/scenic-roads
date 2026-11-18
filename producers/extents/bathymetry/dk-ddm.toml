@@ -18,4 +18,4 @@ by = ["src"]
 tolerance_m = 250
 [piece.metrics]
 spacing_m = 50.0
-measured = { field = "src", map = { "1" = "soundings", "2" = "singlebeam", "3" = "multibeam", "4" = "lidar", "5" = "optical", "6" = "survey", "7" = "soundings", "8" = "interpolated" } }
+measured = { field = "src", map = { "1" = "soundings", "2" = "singlebeam", "3" = "multibeam", "4" = "lidar", "5" = "optical", "6" = "soundings", "7" = "soundings", "8" = "interpolated" } }

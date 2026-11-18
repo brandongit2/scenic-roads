@@ -255,7 +255,7 @@ class Fetcher:
                 f.write(body)
             os.replace(path + ".part", path)
 
-    def get(self, url, rng=None):
+    def get(self, url, rng=None, accept=None):
         self.keep()
         key = hashlib.sha1((url + (f"#{rng[0]}-{rng[1]}" if rng else "")).encode()).hexdigest()
         path = os.path.join(self.cache, key) if self.cache else None
@@ -267,7 +267,7 @@ class Fetcher:
             self.spend(url, len(body))
             self.saw(datetime.date.fromtimestamp(os.path.getmtime(path)).isoformat())
             return body
-        headers = {"User-Agent": UA}
+        headers = {"User-Agent": UA, **({"Accept": accept} if accept else {})}
         if rng:
             headers["Range"] = f"bytes={rng[0]}-{rng[1]}"
         host = urllib.parse.urlsplit(url).hostname
@@ -369,11 +369,14 @@ class Fetcher:
         return self.lengths[url]
 
     def json(self, url):
-        return json.loads(self.get(url))
+        # (Asked for as JSON: an OGC API that answers a browser's request with its HTML page, Kartverket's
+        # without `f=json`, and its `next` links then carry the format on.)
+        return json.loads(self.get(url, accept="application/json, application/geo+json;q=0.9, */*;q=0.1"))
 
 
 class RangeFile:
-    """A remote file read a block at a time through the fetcher, for rasterio's `opener`."""
+    """A remote file read a block at a time through the fetcher, for rasterio's `opener`; a stretch
+    named beforehand (`span`) is read in one request."""
 
     BLOCK = 1 << 16
 
@@ -383,7 +386,7 @@ class RangeFile:
         url = re.sub(r"^(https?):/+", r"\1://", str(url))
         if not url.startswith("http"):
             raise FileNotFoundError(url)
-        self.net, self.url, self.pos, self.blocks = net, url, 0, {}
+        self.net, self.url, self.pos, self.blocks, self.spanned = net, url, 0, {}, (0, b"")
         # (A server that ignores the range, a coverage service's answer made on request, sends the
         # whole file: it is then read from that answer, which --max-gb bounds as any other.)
         self.whole = None
@@ -406,10 +409,21 @@ class RangeFile:
             self.blocks[k] = self.net.get(self.url, (k * self.BLOCK, (k + 1) * self.BLOCK - 1))
         return self.blocks[k]
 
+    def span(self, start, end):
+        """The bytes from `start` up to `end` (the file's end where it is nearer), in one request:
+        what is read from there is served from it, not a block at a time. Only the latest is kept."""
+        if self.whole is None:
+            end = min(end, self.size)
+            self.spanned = (start, self.net.get(self.url, (start, end - 1)) if end > start else b"")
+
     def read(self, n=-1):
         out = b""
         while (n < 0 or len(out) < n) and self.pos < self.size:
-            b = self._block(self.pos // self.BLOCK)[self.pos % self.BLOCK:]
+            at, held = self.spanned
+            if at <= self.pos < at + len(held):
+                b = held[self.pos - at:]
+            else:
+                b = self._block(self.pos // self.BLOCK)[self.pos % self.BLOCK:]
             b = b if n < 0 else b[:n - len(out)]
             out += b
             self.pos += len(b)
@@ -632,10 +646,10 @@ def read_file(net, b, _tol):
                 yield from shapefile_features(z, name[:-4], b)
                 continue
             body = z.read(name)
-        yield from index_features(body, b)
+        yield from index_features(body, b, url)
 
 
-def index_features(body, b):
+def index_features(body, b, url=None):
     """An index file's features, by what it is: a GeoPackage, GML, or GeoJSON."""
     if body[:16] == b"SQLite format 3\0":
         yield from geopackage_features(body, b)
@@ -644,7 +658,7 @@ def index_features(body, b):
     else:
         d = json.loads(body)
         if "records" in b:
-            yield from record_features(d, b)
+            yield from record_features(d, b, url)
             return
         if answer_crs(d) and "crs" not in b:
             b["crs"] = answer_crs(d)
@@ -673,19 +687,25 @@ def flattened(o, prefix=""):
     return out
 
 
-def record_features(d, b):
+def record_features(d, b, url=None):
     """A catalogue's records as features (a JSON answer that isn't GeoJSON: OpenTopography's
     otCatalog): the list at the dotted path `records`, each record's footprint the GeoJSON at its
     dotted path `footprint` (a geometry, a Feature or a FeatureCollection, its features' geometries
     one), its properties its scalar fields by their dotted paths. An answer that is one record, not a
-    list (`records` empty or naming a record: a catalogue's page for one layer), is that record."""
-    rs = dotted(d, b["records"]) or []
-    for r in [rs] if isinstance(rs, dict) else rs:
+    list (`records` empty or naming a record: a catalogue's page for one layer), is that record, and
+    one with no footprint (an error object, a page that moved) stops the run: it names the piece."""
+    rs = dotted(d, b["records"])
+    rs = [] if rs is None else rs
+    one = isinstance(rs, dict)
+    for r in [rs] if one else rs:
         g = dotted(r, b["footprint"]) or {}
         if g.get("type") == "FeatureCollection":
             parts = [f["geometry"] for f in g.get("features") or [] if f.get("geometry")]
         else:
             parts = [x for x in [g.get("geometry") if g.get("type") == "Feature" else g] if x]
+        if one and not parts:
+            sys.exit(f"{b.get('id')}: {url or b.get('url')}: the answer is one record with no footprint at {b['footprint']!r}: "
+                     f"{', '.join(list(r)[:5]) or 'empty'}")
         # (Its polygons as they are, one feature: an invalid one is repaired, and counted, as any.)
         yield (lambda parts=parts: xy(sg.MultiPolygon([p for x in parts for p in polygon_parts(flat_shape(x))]), b) if parts else None), flattened(r)
 
@@ -1132,9 +1152,10 @@ def read_raster(net, b, _tol):
     with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_PAM_ENABLED="NO"):
         if "member" in b:
             # (A zip's members matching `member`, each read from the zip by range (its central
-            # directory, then the member's own bytes: a 2.4 GB zip holding a 7.6 MB grid costs the
-            # grid) and opened from a copy on disk, removed once it is read. A server that ignores
-            # ranges sends the whole zip, as `RangeFile` has it.)
+            # directory, then each member's span, from its local header to the end of its data, in
+            # one request: a 2.4 GB zip holding a 7.6 MB grid costs the grid) and opened from a copy
+            # on disk, removed once it is read. A server that ignores ranges sends the whole zip, as
+            # `RangeFile` has it.)
             import shutil
             import tempfile
             with tempfile.TemporaryDirectory() as tmp, RangeFile(net, b["url"]) as remote:
@@ -1144,6 +1165,7 @@ def read_raster(net, b, _tol):
                     sys.exit(f"{b['url']}: no member matches {b['member']!r}")
                 for n in names:
                     local = os.path.join(tmp, "member" + os.path.splitext(n)[1])
+                    remote.span(*member_span(z.getinfo(n)))
                     with z.open(n) as src, open(local, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     with rasterio.open(local) as ds:
@@ -1153,6 +1175,15 @@ def read_raster(net, b, _tol):
         for url in raster_files(net, b):
             with rasterio.open(url, opener=lambda p, mode="rb", net=net: RangeFile(net, p)) as ds:
                 yield from raster_shapes(ds, b)
+
+
+def member_span(info):
+    """Where a zip member lies, as the central directory has it: from its local header to the end of
+    its compressed data (its data descriptor, if it has one, is no part of it: it is never read). The
+    local header's own name and extra field may be longer than the central entry's: a kilobyte more
+    than it says is asked for, and what lies beyond that is read as a block."""
+    start = info.header_offset
+    return start, start + 30 + len(info.orig_filename.encode("utf-8")) + 1024 + len(info.extra) + info.compress_size
 
 
 def raster_shapes(ds, b):

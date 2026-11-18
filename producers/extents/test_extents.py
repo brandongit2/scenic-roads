@@ -903,6 +903,16 @@ class IndexFiles(unittest.TestCase):
         got = [(g().bounds, p["title"]) for g, p in extents.read_file(FakeNet({"a": page("Porirua 1m", 0), "b": page("Otago 2m", 5)}), b, 0)]
         self.assertEqual(got, [((0.0, 0.0, 1.0, 1.0), "Porirua 1m"), ((5.0, 0.0, 6.0, 1.0), "Otago 2m")])
 
+    def test_an_answer_that_is_one_record_needs_its_footprint(self):
+        # (An error object at the path is a dict too, one record with no footprint: it stops the run,
+        # naming the piece and the answer's first keys, where it would pass as a feature of no shape.)
+        b = {"id": "depth-models", "urls": ["u"], "records": "", "footprint": "data.extent"}
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_file(FakeNet({"u": b'{"error": {"code": 401}, "detail": "no key"}'}), b, 0))
+        self.assertIn("depth-models", str(e.exception))
+        self.assertIn("error", str(e.exception))
+        # (A list's record with no footprint is still one without a shape: a catalogue's.)
+
     def test_a_shapefiles_text_in_its_encoding(self):
         import io
         import zipfile
@@ -1161,6 +1171,60 @@ class RasterFiles(unittest.TestCase):
         self.assertEqual(props, {"res_m": round(0.01 * extents.M_PER_DEG, 4)})
         self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 49.36, 10.64, 50.0))
 
+    def test_h_each_member_is_one_request(self):
+        # (A member's span, from its local header to the end of its data, is one ranged request, not a
+        # request for each 64 KiB block of it: the zip's own reads are its central directory's, the
+        # same in every kind of member. A 700 KB grid, a dozen blocks, stored, deflated, in a ZIP64
+        # entry, and with a data descriptor (flag 0x8: a zip written to a stream that can't seek).)
+        import os
+        import zipfile
+
+        import numpy as np
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+        data = np.random.default_rng(1).integers(0, 30000, (600, 600)).astype(np.int16)
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=600, height=600, count=1, dtype="int16", crs="EPSG:4326",
+                          transform=from_origin(10, 50, 0.01, 0.01)) as ds:
+                ds.write(data, 1)
+            tif = mem.read()
+
+        class Stream(io.RawIOBase):
+            """A sink that can't seek, so the zip writes data descriptors."""
+            def __init__(self):
+                self.out = io.BytesIO()
+            def writable(self):
+                return True
+            def write(self, b):
+                return self.out.write(b)
+
+        def zipped(how):
+            buf = Stream() if how == "descriptor" else io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED if how == "stored" else zipfile.ZIP_DEFLATED) as z:
+                z.writestr("a_before.bin", os.urandom(300_000))
+                with z.open("grid.tif", "w", force_zip64=how == "zip64") as f:
+                    f.write(tif)
+                z.writestr("z_after.bin", os.urandom(300_000))
+            return (buf.out if how == "descriptor" else buf).getvalue()
+
+        for how in ("stored", "deflated", "zip64", "descriptor"):
+            body = zipped(how)
+            if how == "descriptor":
+                with zipfile.ZipFile(io.BytesIO(body)) as z:
+                    self.assertTrue(z.getinfo("grid.tif").flag_bits & 0x8)
+            if how == "zip64":
+                with zipfile.ZipFile(io.BytesIO(body)) as z:
+                    at = z.getinfo("grid.tif").header_offset
+                self.assertEqual(body[at + 30 + 8:at + 30 + 10], b"\x01\x00")
+            url = "https://h/g.zip"
+            base = FakeNet({url: body})
+            zipfile.ZipFile(extents.RangeFile(base, url)).namelist()
+            net = FakeNet({url: body})
+            [(geom, props)] = list(extents.read_raster(net, {"url": url, "member": r"\.tif$", "block": 50}, 0))
+            self.assertEqual(net.requests, base.requests + 1, how)
+            self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 44.0, 16.0, 50.0), how)
+            self.assertLess(net.bytes, base.bytes + len(tif) + 5000, how)
+
 
 class WholeNet(FakeNet):
     """A server that ignores Range and says no length: the whole answer every time."""
@@ -1376,6 +1440,21 @@ class Pacing(unittest.TestCase):
         self.assertAlmostEqual(t[2] - t[1], 0.25)
         self.assertAlmostEqual(t[4] - t[3], 1.0)
         self.assertEqual(extents.Fetcher(None, 1, 2.0).interval("nominatim.openstreetmap.org"), 2.0)
+
+    def test_a_json_answer_is_asked_for_as_json(self):
+        # (Kartverket's OGC API answers a request without `f=json` with its HTML page: its `next` links
+        # carry the format on, so the first request alone asks for it, and so does every JSON one.)
+        import unittest.mock
+        seen = []
+        def urlopen(req, timeout, context):
+            seen.append(req.get_header("Accept"))
+            return Answer(b'{"features": []}')
+        with unittest.mock.patch("urllib.request.urlopen", urlopen):
+            net = extents.Fetcher(None, 1 << 30, 0)
+            self.assertEqual(net.json("https://h/collections/surveys/items?limit=2"), {"features": []})
+            net.get("https://h/file.tif")
+        self.assertTrue(seen[0].startswith("application/json"))
+        self.assertIsNone(seen[1])
 
 
 def pem_blocks():

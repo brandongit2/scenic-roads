@@ -5,7 +5,7 @@ licence_url = "https://www.foroyakort.fo/tak-datur-nidur/datur-a-sjonum"
 source = "https://www.foroyakort.fo/tak-datur-nidur/datur-a-sjonum"
 theme = "bathymetry"
 availability = "open"
-notes = "The 50 m model of Faroese waters (on LAT, 2026) by its source grid, FODM2026_50m_Depth_int (13.6 MB zip, read whole: 0, a cell from single- or multibeam soundings; 1, interpolated or EMODnet's DTM), a piece for each. A mask cell is 20 by 20 grid cells (1 km), holding both where both are in it."
+notes = "The 50 m model of Faroese waters (on LAT, 2026) by its source grid, FODM2026_50m_Depth_int (13.6 MB zip, its GeoTIFF read by range (its central directory, then one request): 0, a cell from single- or multibeam soundings; 1, interpolated or EMODnet's DTM), a piece for each. A mask cell is 20 by 20 grid cells (1 km), holding both where both are in it."
 
 [[piece]]
 id = "fodm50"

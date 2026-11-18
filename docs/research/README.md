@@ -17,6 +17,6 @@ earlier drafts that these replaced.
 | 3D buildings (heights, storeys, models) | `buildings-index.md` | `buildings-usa.md`, `buildings-americas.md`, `buildings-europe-w.md`, `buildings-europe-e.md`, `buildings-asia.md`, `buildings-rest.md` |
 
 What has been done with them: the terrain reports feed the declared terrain sources
-(`producers/extents/terrain/`, docs/inputs.md §6.11). The bathymetry and buildings reports are not
-yet used by the build. The owner's decisions on the questions the indexes ask are written at the
+(`producers/extents/terrain/`, docs/inputs.md §6.11). The bathymetry and buildings reports feed the declared
+sources too (`producers/extents/bathymetry/`, `producers/extents/buildings/`). The owner's decisions on the questions the indexes ask are written at the
 top of each index's questions section.

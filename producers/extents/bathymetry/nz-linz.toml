@@ -5,80 +5,13 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://data.linz.govt.nz/"
 theme = "bathymetry"
 availability = "open"
-notes = "Two of LINZ's open (CC BY 4.0) bathymetric products. The Depth Model series on the LINZ Data Service (58 of its 64 gridded layers, of multibeam sonar and of airborne bathymetric lidar at Whitianga, Motiti, Great Mercury, Stewart Island and the Snares and Solander Islands; harbours, sounds, fiords and shipping lanes surveyed 1999 to 2025, on approximate lowest astronomical tide): each layer's page on the Data Service's API (a free Data Service login for its export, a key the producer doesn't hold), its extent the layer's bounding box, so each is claimed, the box reaching beyond where the sonar went (the six shipping lane models, narrow strips whose boxes would claim 100,000 km² of open sea each, are left out: their footprints are LINZ's index layers 122710 and 122711, behind the key); its spacing and year are those of its title (`... Multibeam 2m Depth Model (2022)`). The New Zealand Coastal LiDAR 1 m DEM (the 3D Coastal Mapping Programme: airborne topographic and bathymetric lidar to about 25 m of water, anonymous on LINZ's public S3 bucket, NZVD2016, surveys captured 2024 to 2026): the capture areas of its 29 collections (28 surveys and their composite), a piece for them all (each area's own survey year isn't in its file)."
+notes = "Two of LINZ's open (CC BY 4.0) bathymetric products. The Depth Model series on the LINZ Data Service (58 of its 64 gridded layers, of multibeam sonar and of airborne bathymetric lidar, harbours, sounds, fiords and shipping lanes surveyed 1999 to 2025, on approximate lowest astronomical tide) is not declared as an extent: only the layers' bounding boxes are public without an API key (a free Data Service login gives the export and the footprint layers, a key we create no account for), and a box reaches far beyond where the sonar went, so claiming it would outrank real surveys across all that open sea. The New Zealand Coastal LiDAR 1 m DEM (the 3D Coastal Mapping Programme: airborne topographic and bathymetric lidar to about 25 m of water, anonymous on LINZ's public S3 bucket, NZVD2016, surveys captured 2024 to 2026): the capture areas of its 29 collections (28 surveys and their composite), a piece for them all (each area's own survey year isn't in its file)."
 
 [[piece]]
 id = "depth-models"
 availability = "login"
-method = "file"
-class = "claimed"
-urls = [
-  "https://data.linz.govt.nz/services/api/v1.x/layers/114913/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116014/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116447/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116591/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116592/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116593/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116594/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116596/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116607/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116608/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116609/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116610/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116611/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116613/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116614/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116615/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116619/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116620/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116621/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116622/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116623/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116624/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116625/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116626/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116627/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116630/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116676/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116677/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116678/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116679/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116680/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116682/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116683/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116685/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116686/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116687/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116722/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116723/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116724/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116725/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116726/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116727/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116728/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116729/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116730/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116732/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116733/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116734/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/116735/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/119145/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/119147/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/119564/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/119565/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/120850/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/122423/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/122679/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/122942/",
-  "https://data.linz.govt.nz/services/api/v1.x/layers/124429/",
-]
-records = ""
-footprint = "data.extent"
-tolerance_m = 500
-[piece.metrics]
-spacing_m = { field = "title", pattern = '(\d+(?:\.\d+)?)m\b' }
-measured = [{ field = "title", pattern = "(Bathymetric LiDAR)", map = { "Bathymetric LiDAR" = "lidar" } }, "multibeam"]
-year = { field = "title", pattern = '\((\d{4})\)', date = "year" }
+method = "none"
+why = "the Depth Model layers' extents are bounding boxes, which claim open sea (58 of them 548,000 km², twice New Zealand's land; one box round the Bounty and Antipodes Islands alone 252,943 km²), and the Data Service gives their footprints only with an API key, which we create no account for"
 
 [[piece]]
 id = "coastal-lidar-1m"

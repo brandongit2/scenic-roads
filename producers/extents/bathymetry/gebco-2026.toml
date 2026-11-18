@@ -5,7 +5,7 @@ licence_url = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/00README_cata
 source = "https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid"
 theme = "bathymetry"
 availability = "open"
-notes = "The worldwide 15 arc-second grid's Type Identifier grid (the eight 90° GeoTIFFs in one 96 MB zip, read whole), a piece for each kind of source its cells hold: GEBCO's codes 10 to 17 measured, 40 to 48 indirect, 70 to 72 unknown, 0 land (left out). A mask cell is 120 by 120 grid cells (30 arc-minutes, about 56 km), holding every kind any of its cells holds, so a measured track narrower than a cell is drawn a cell wide: the kinds' boundaries cross every ocean, and at 6 arc-minutes they made the layers' step store 3.8 million tiles of its own (docs/steps.md §14). The grid's own cells are resampled from its sources: it is no finer than 15 arc-seconds wherever they are."
+notes = "The worldwide 15 arc-second grid's Type Identifier grid (the eight 90° GeoTIFFs in one 96 MB zip, each read by range from the zip: its central directory, then one request for each GeoTIFF), a piece for each kind of source its cells hold: GEBCO's codes 10 to 17 measured, 40 to 48 indirect, 70 to 72 unknown, 0 land (left out). A mask cell is 120 by 120 grid cells (30 arc-minutes, about 56 km), holding every kind any of its cells holds, so a measured track narrower than a cell is drawn a cell wide: the kinds' boundaries cross every ocean, and at 6 arc-minutes they made the layers' step store 3.8 million tiles of its own (docs/steps.md §14). The grid's own cells are resampled from its sources: it is no finer than 15 arc-seconds wherever they are."
 
 [[piece]]
 id = "tid"

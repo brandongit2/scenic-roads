@@ -5,7 +5,7 @@ licence_url = "https://dap.ceda.ac.uk/bodc/gebco/ibcao/ibcao_v5.2/00README_catal
 source = "https://catalogue.ceda.ac.uk/uuid/30ad58b60d8c4a4dab6d64a40640540a"
 theme = "bathymetry"
 availability = "open"
-notes = "The Arctic north of 64° N on a 100 m grid (EPSG:3996), its Type Identifier grid (GEBCO's codes) read whole from its 37 MB zip, a piece for each kind of source its cells hold, 0 land left out. A mask cell is 500 by 500 grid cells (50 km, as GEBCO's), holding every kind any of its cells holds."
+notes = "The Arctic north of 64° N on a 100 m grid (EPSG:3996), its Type Identifier grid (GEBCO's codes) read by range from its 37 MB zip (its central directory, then one request for the GeoTIFF), a piece for each kind of source its cells hold, 0 land left out. A mask cell is 500 by 500 grid cells (50 km, as GEBCO's), holding every kind any of its cells holds."
 
 [[piece]]
 id = "tid"
