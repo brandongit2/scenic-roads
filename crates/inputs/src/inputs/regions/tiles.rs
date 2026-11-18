@@ -1384,7 +1384,8 @@ pub const SPECK_KM2: f64 = 0.01;
 /// an outline's coast lay inland of it, its sea where the water's parts stopped short of it — is
 /// joined across the cells' edges into stretches; a stretch every point of which (its vertices and
 /// a point inside each piece) lies within `COAST_REACH_M` of a region's land (a piece of land) or
-/// water and lakes (a piece of sea) goes to the nearest such region, split at the median line
+/// its water and, with any water, its land (a piece of sea: land dominates the sea; never its lakes)
+/// goes to the nearest such region, split at the median line
 /// where several are nearest; a region without water keeps its outline (its share stays out).
 /// So every region's coast is the coastline's.
 fn coast(
@@ -1399,7 +1400,9 @@ fn coast(
         .flat_map(|m| m.land.cells.keys().chain(m.water.cells.keys()).chain(m.lakes.cells.keys()).copied())
         .collect();
     let takes = |id: &str| made.contains_key(id) && folder.regions.get(id).is_some_and(|(_, r)| r.has_water());
-    // A region's side (land, or water and lakes) in a cell.
+    // A region's side in a cell: its land; or, for the sea, its water and, with any water, its
+    // land (land dominates the sea: a stretch off its coast is nearest it), never its lakes (a big
+    // lake is no sea: a stretch beside one, off another's coast, is not the lake's holder's).
     let ids: Vec<&String> = made.keys().chain(others.keys()).collect();
     // (Which regions have any of their area in each cell.)
     let mut at: HashMap<Cell, Vec<usize>> = HashMap::new();
@@ -1415,7 +1418,8 @@ fn coast(
     // A region's pieces on one side in a cell, by reference.
     let side_ref = |k: usize, sea: bool, c: Cell| -> Vec<&Area> {
         match made.get(ids[k]) {
-            Some(m) if sea => [m.water.cells.get(&c), m.lakes.cells.get(&c)].into_iter().flatten().collect(),
+            Some(m) if sea && m.water.cells.is_empty() => Vec::new(),
+            Some(m) if sea => [m.water.cells.get(&c), m.land.cells.get(&c)].into_iter().flatten().collect(),
             Some(m) => m.land.cells.get(&c).into_iter().collect(),
             None => others[ids[k]].cells.get(&c).into_iter().collect(),
         }
@@ -1468,7 +1472,10 @@ fn coast(
             .get(&c)
             .unwrap_or(&none)
             .iter()
-            .flat_map(|&k| side_ref(k, false, c).into_iter().chain(side_ref(k, true, c)))
+            .flat_map(|&k| match made.get(ids[k]) {
+                Some(m) => [m.land.cells.get(&c), m.water.cells.get(&c), m.lakes.cells.get(&c)].into_iter().flatten().collect(),
+                None => side_ref(k, false, c),
+            })
             .cloned()
             .collect();
         let free = geom::box_area(cell_box(c)).minus(&geom::union_all(&all));

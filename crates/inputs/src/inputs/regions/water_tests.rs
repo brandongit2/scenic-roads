@@ -1046,6 +1046,28 @@ fn a_lake_whose_shores_are_anothers_is_no_stray() {
     assert!(at("u", 10.8, 10.5) && !at("v", 10.8, 10.5), "the water's lake is u's");
 }
 
+/// The coast: sea between one region's shore and a big lake over the sea that another's outline
+/// holds (Kherson's shore and the Syvash, task #1427) is the shore's region's, never the lake's
+/// holder's (land dominates the sea: given to the lake's holder, it touched none of its land).
+#[test]
+fn sea_between_a_shore_and_anothers_lake_is_the_shores() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
+    let lakes = HashMap::from([(77, bx(11.003, 10.4, 11.2, 10.6))]);
+    let land = vec![bx(10.0, 10.0, 11.0, 11.0), bx(11.2, 10.4, 11.3, 10.6)];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), lakes, land, "fixture");
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    // k: the land to 11.0° and its sea but the box east of it; c: the lake (from 11.003°, 330 m
+    // off k's shore) and the land past it, and its sea round that land. The strip between is no one's.
+    let k = "id = \"k\"\nname = \"K\"\noutline = [\"box:9.9,9.9,11.0,11.1\"]\nwater = [{ minus = [{ buffer = \"land:k\", by = \"10 km\" }, \"box:11.0,10.4,11.3,10.6\"] }]\n";
+    let c = "id = \"c\"\nname = \"C\"\noutline = [\"box:11.0,10.4,11.3,10.6\"]\nwater = [{ buffer = \"land:c\", by = \"10 km\" }]\n";
+    let out = run(&w, &[PINS, RULES, ("k.toml", k), ("c.toml", c), ("high-seas.toml", HIGH)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("k", 11.0015, 10.5) && !at("c", 11.0015, 10.5), "the strip is k's");
+    assert!(at("c", 11.1, 10.5), "the lake is c's");
+}
+
 /// Two coasts with the same fingerprint (box, point count, point sums) but different rings: a split
 /// and its complement still divide the area exactly (ties decided by the rings, a total order).
 #[test]

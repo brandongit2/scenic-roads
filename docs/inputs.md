@@ -534,8 +534,10 @@ lies in no region along the coastline, on either side of it — land where an ou
 inland of the coastline's, sea where the water's parts stopped short of it (the coastline: the
 land's edge, the big lakes' shores included, never a cell's edge) — is joined across the cells'
 edges into stretches; a stretch whose every point (its vertices and a point inside each piece) is
-within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or water and lakes (a stretch
-of sea) goes to the nearest such region, split at the median line where several are nearest (a
+within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or, for a stretch of sea, its
+water and, when it has any water, its land (land dominates the sea: sea off a region's shore is
+nearest it; a lake is never sea's, so sea between a shore and a big lake another's outline holds
+is the shore's region's) goes to the nearest such region, split at the median line where several are nearest (a
 piece under 0.01 km², `SPECK_KM2`, whole to the region nearest a point inside it), each part to its
 region if that has `water` (a region without `water` keeps its outline: its part stays
 out). So a region's land and water meet on the coastline's coast (a `land:` part names the land
