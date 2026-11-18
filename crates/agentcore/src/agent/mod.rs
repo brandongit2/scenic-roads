@@ -1029,7 +1029,7 @@ pub struct Status {
     /// (crate::coord::Coordinator::handoffs_refused): the lead's, each round; flagged 2+ times
     /// (flags::refused).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub handoffs_refused: Vec<crate::coord::RefusedHandoff>,
+    pub handoffs_refused: Vec<crate::coord::HandoffRefusal>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the

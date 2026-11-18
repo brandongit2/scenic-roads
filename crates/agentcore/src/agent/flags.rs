@@ -204,7 +204,7 @@ pub const REFUSED_AGAIN: u32 = 2;
 /// and why.
 pub fn refused(st: &Status, now: u64) -> Vec<Flag> {
     const SHOWN: usize = 4;
-    let mut by_step: Vec<(&str, Vec<&crate::coord::RefusedHandoff>)> = Vec::new();
+    let mut by_step: Vec<(&str, Vec<&crate::coord::HandoffRefusal>)> = Vec::new();
     for r in st.handoffs_refused.iter().filter(|r| r.times >= REFUSED_AGAIN) {
         match by_step.iter_mut().find(|(s, _)| *s == r.step) {
             Some((_, v)) => v.push(r),

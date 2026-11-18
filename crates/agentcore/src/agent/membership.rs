@@ -2953,7 +2953,7 @@ mod tests {
         coord.set_epoch(1);
         let me = run.side.member().id.clone();
         // A pack job's entry writing a terrain pack too (another step's): refused, or held.
-        let outside = |member: &str, n: u64, t: &str| {
+        let outside = |member: &str, n: u64, job: u64, t: &str| {
             let dash = t.replace('/', "-");
             let changes = ["hidata", "layers/terrain/hi"]
                 .iter()
@@ -2961,7 +2961,7 @@ mod tests {
                 .collect();
             Entry {
                 member: member.to_string(),
-                job: JobId { epoch: 1, n },
+                job: JobId { epoch: 1, n: job },
                 step: "pack".into(),
                 handoff: Handoff {
                     changes,
@@ -2976,12 +2976,12 @@ mod tests {
             let id = coord.hold("pack", &ts).expect("granted");
             coord.finish(id, &ts);
             assert_eq!(coord.hold("pack", &ts), None, "held done: not granted again");
+            id
         };
-        done("6/1/3", 2);
-        done("6/1/4", 3);
-        done("6/1/5", 4);
+        // (Each entry its own job's, by its lease: a refusal lets go of what that job did alone.)
+        let (n3, _, n5) = (done("6/1/3", 2), done("6/1/4", 3), done("6/1/5", 4));
         let held = "m-00000000000000ff";
-        run.entries.extend([(outside(&me, 2, "6/1/3"), None), (outside(held, 4, "6/1/5"), None)]);
+        run.entries.extend([(outside(&me, 2, n3, "6/1/3"), None), (outside(held, 4, n5, "6/1/5"), None)]);
         let out = run.step();
         let again = out.events.iter().find_map(|e| match e {
             Event::Merged { refused: 1, again, .. } => Some(again.clone()),
@@ -3003,7 +3003,7 @@ mod tests {
             (e.step.as_deref(), e.targets.clone(), e.ok),
             (Some("pack"), vec!["6/1/3".to_string()], Some(false))
         );
-        assert!(e.note.contains("layers/terrain/hi/6-1-3") && e.job == Some(JobId { epoch: 1, n: 2 }), "{e:?}");
+        assert!(e.note.contains("layers/terrain/hi/6-1-3") && e.job == Some(JobId { epoch: 1, n: n3 }), "{e:?}");
         assert!(said(&out.events.iter().find(|e| matches!(e, Event::Merged { .. })).unwrap().clone())
             .ends_with("(0 passed over, 1 refused; 1 target to do again)"));
     }

@@ -519,10 +519,10 @@ pub struct Shared {
     /// holds its targets in backoff against that worker. Kept as `done` is: let go with it.
     pub done_by: BTreeMap<(String, String), (jobrt::jobid::JobId, String)>,
     /// The targets whose hand-offs the lead's merge refused, one after another with none taken
-    /// between (step, target) → `RefusedHandoff`: the status's `handoffs_refused`, flagged 2+ times
+    /// between (step, target) → `HandoffRefusal`: the status's `handoffs_refused`, flagged 2+ times
     /// (crate::agent::flags, refused). Gone once a hand-off of it is merged, or the plan offers it
     /// no more; not kept across a restart (the history's "refused" rows are).
-    pub handoffs_refused: BTreeMap<(String, String), RefusedHandoff>,
+    pub handoffs_refused: BTreeMap<(String, String), HandoffRefusal>,
     /// Each worker's asks answered over the last `ANSWERS_S`, oldest first (`answered`): what the
     /// lead's departure lines name (crate::agent::forecast::departures, `Coordinator::answers`).
     pub answers: BTreeMap<String, std::collections::VecDeque<Answer>>,
@@ -1246,7 +1246,7 @@ pub struct Capacity {
 /// (`Shared::handoffs_refused`; the status's `handoffs_refused`): its step and target, how many
 /// times, the last's time (unix s), the Mac its job ran on and why it was refused.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RefusedHandoff {
+pub struct HandoffRefusal {
     pub step: String,
     pub target: String,
     pub times: u32,
@@ -2169,7 +2169,7 @@ impl Coordinator {
             };
             for (t, _) in &a.targets {
                 let r = s.handoffs_refused.entry((a.step.clone(), t.clone())).or_default();
-                *r = RefusedHandoff {
+                *r = HandoffRefusal {
                     step: a.step.clone(),
                     target: t.clone(),
                     times: r.times + 1,
@@ -2198,7 +2198,7 @@ impl Coordinator {
 
     /// The targets whose hand-offs the lead's merge refused one after another (`Shared::handoffs_refused`),
     /// for the status (`Status::handoffs_refused`), in step and target order.
-    pub fn handoffs_refused(&self) -> Vec<RefusedHandoff> {
+    pub fn handoffs_refused(&self) -> Vec<HandoffRefusal> {
         self.shared.lock().unwrap().handoffs_refused.values().cloned().collect()
     }
 
