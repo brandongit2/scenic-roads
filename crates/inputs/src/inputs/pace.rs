@@ -242,6 +242,8 @@ mod tests {
 
     /// Task #1420: one long operation under way (a regions check's one target) follows its file as
     /// its agent changes it: on 1 at first, as many as 4 at once once raised, 2 at most once cut.
+    /// (Its windows from when each change was written, plus the `POLL` it's seen within and a
+    /// margin: on a loaded Mac a sleep runs long, 18 Nov at a load of 47.)
     #[test]
     fn an_operation_under_way_follows_its_file_up_and_down() {
         let (_d, f) = file("1");
@@ -249,34 +251,46 @@ mod tests {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
         let t0 = Instant::now();
         let now = AtomicUsize::new(0);
+        // (When the file said 4, and 2, ms from t0; and when the tasks stop.)
+        let (raised, cut, done) = (AtomicUsize::new(usize::MAX), AtomicUsize::new(usize::MAX), AtomicUsize::new(0));
+        let ms = || t0.elapsed().as_millis() as usize;
+        let settle = (POLL + Duration::from_millis(500)).as_millis() as usize;
         // (Each task: when it began (ms) and how many ran with it.)
-        let seen: Vec<(u128, usize)> = std::thread::scope(|s| {
-            let writer = s.spawn(|| {
+        let seen: Vec<(usize, usize)> = std::thread::scope(|s| {
+            s.spawn(|| {
                 std::thread::sleep(Duration::from_millis(1200));
+                // (Its time taken first: no task before it saw 4.)
+                raised.store(ms(), Ordering::SeqCst);
                 std::fs::write(&f, "4").unwrap();
-                std::thread::sleep(Duration::from_millis(1800));
+                std::thread::sleep(Duration::from_millis(2500));
                 std::fs::write(&f, "2").unwrap();
+                cut.store(ms(), Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(settle as u64 + 1000));
+                done.store(1, Ordering::SeqCst);
             });
-            let out = pool.install(|| {
-                pace.par_map((0..2000).collect(), |_: usize| {
-                    if t0.elapsed() > Duration::from_millis(5000) {
+            pool.install(|| {
+                pace.par_map((0..100_000).collect(), |_: usize| {
+                    if done.load(Ordering::SeqCst) == 1 {
                         return (0, 0);
                     }
                     let n = now.fetch_add(1, Ordering::SeqCst) + 1;
-                    let at = t0.elapsed().as_millis();
+                    let at = ms();
                     std::thread::sleep(Duration::from_millis(20));
                     now.fetch_sub(1, Ordering::SeqCst);
                     (at, n)
                 })
-            });
-            writer.join().unwrap();
-            out
+            })
         });
+        let (raised, cut) = (raised.into_inner(), cut.into_inner());
         let most =
-            |from: u128, to: u128| seen.iter().filter(|(at, n)| *n > 0 && (from..to).contains(at)).map(|s| s.1).max();
-        assert_eq!(most(0, 1100), Some(1), "on 1 at first");
-        assert_eq!(most(2300, 3000), Some(4), "raised: 4 at once, the pool's every thread");
-        assert!(most(4100, 5000).is_some_and(|n| n <= 2), "cut: 2 at most, {:?}", most(4100, 5000));
+            |from: usize, to: usize| seen.iter().filter(|(at, n)| *n > 0 && (from..to).contains(at)).map(|s| s.1).max();
+        assert_eq!(most(0, raised), Some(1), "on 1 at first");
+        assert_eq!(most(raised + settle, cut), Some(4), "raised: 4 at once, the pool's every thread");
+        assert!(
+            most(cut + settle, usize::MAX).is_some_and(|n| n <= 2),
+            "cut: 2 at most, {:?}",
+            most(cut + settle, usize::MAX)
+        );
         assert_eq!(pace.active(), 0);
     }
 
