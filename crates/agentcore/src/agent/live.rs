@@ -804,7 +804,11 @@ impl Rates {
         put(LOAD, super::cond::load1());
         let free = jobrt::sys::memory_free_pct();
         put(MEM_FREE, free.map(f64::from));
-        let avail = jobrt::sys::memory_available();
+        let jobs = guard.jobs();
+        let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, jobrt::sys::usage_of_group(*pgid))).collect();
+        let b = self.jobs(&used, t);
+        // (The jobs' own memory is no idle memory to compress: as the guard reads it.)
+        let avail = jobrt::sys::memory_available(b.mem.unwrap_or(0));
         put(MEM_AVAIL, avail.map(|a| a.total() as f64 / GB));
         put(MEM_COMPRESSIBLE, avail.map(|a| a.compressible as f64 / GB));
         let avail = avail.map(|a| a.total());
@@ -812,7 +816,6 @@ impl Rates {
         put(SWAP, jobrt::sys::swap_used().map(|b| (b >> 20) as f64));
         put(COMPRESSED, jobrt::sys::memory_compressed().map(|b| b as f64 / GB));
         put(THERMAL, jobrt::sys::thermal_state().map(f64::from));
-        let jobs = guard.jobs();
         put(JOBS, Some(jobs.len() as f64));
         if t % 10 == 0 {
             put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / GB));
@@ -835,8 +838,6 @@ impl Rates {
             put(CORES_E, Some(e));
             put(CORES_P, Some(p));
         }
-        let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, jobrt::sys::usage_of_group(*pgid))).collect();
-        let b = self.jobs(&used, t);
         put(BUILD_CORES, b.cores);
         if let (Some(all), Some(c)) = (busy, b.cores) {
             put(OTHERS_CORES, Some((all[0] - c).max(0.0)));

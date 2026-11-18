@@ -866,7 +866,7 @@ impl Sampler {
         let (avail_mb, compress_mb, swap) = match set {
             Some(mb) => (mb, 0, g.swap_set),
             None => {
-                let a = jobrt::sys::memory_available()?;
+                let a = jobrt::sys::memory_available(held_mb << 20)?;
                 (a.total() >> 20, a.compressible >> 20, g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20)))
             }
         };
@@ -1338,34 +1338,36 @@ mod tests {
         assert_eq!(Reading { pressure: 4, ..m4(20, 0) }.room_mb(), 0);
     }
 
-    /// The M4's night of 4 Nov replayed under the floor alone and the compressible memory counted
-    /// (task #945). Recorded (the 10 s ring): at 00:07:30 one terrain-deep job held 3.2 GB, the
-    /// kernel's level 75 % and its compressor 4.4 GB (40.4 GB not wired); four more started at
-    /// 00:07:40 under the old jobs cap, the compressor reached two fifths of the unwired at 00:10:05
-    /// and the pressure warning at 00:10:30; at 01:10 five held 37 GB, the compressor 23.1 GB of
-    /// 39.8, the swap growing 3.6 GB in 90 s. The pages between those figures are a model (Docker's
-    /// VM 8.2 GB and 4 GB of the owner's apps in use, 6 GB of them idle, the 5.4 GB file cache macOS
-    /// kept, the compressor's ratio the M4's 1.79 read on 4 Nov), 7.5 GB a terrain-deep job's peak,
-    /// the owner's 4 GB floor.
+    /// The M4's night of 4 Nov replayed under the floor alone and the available as it is reckoned
+    /// now (tasks #945, #1244). Recorded (the 10 s ring): at 00:07:30 one terrain-deep job held 3.2
+    /// GB, the kernel's level 75 % and its compressor 4.4 GB (40.4 GB not wired); four more started
+    /// at 00:07:40 under the old jobs cap, the compressor reached two fifths of the unwired at
+    /// 00:10:05 and the pressure warning at 00:10:30; at 01:10 five held 37 GB, the compressor 23.1
+    /// GB of 39.8, the swap growing 3.6 GB in 90 s. The pages between those figures are a model
+    /// (Docker's VM 8.2 GB and 4 GB of the owner's apps in use, 6 GB of them idle, a 5.4 GB file
+    /// cache all of it what macOS keeps, the compressor's ratio the M4's 1.79 read on 4 Nov), 7.5 GB
+    /// a terrain-deep job's peak, the owner's 4 GB floor.
     #[test]
     fn the_fourth_of_november_replayed() {
         let page = |gb: f64| (gb * (1u64 << 30) as f64 / 16384.0).round() as u64;
-        // (Memory, in GB: free, file cache, active and idle anonymous, the compressor and the GB
-        // it holds.)
-        let mac = |free: f64, file: f64, active: f64, idle: f64, comp: f64, stored: f64| -> Reading {
+        // (Memory, in GB: free, file cache (all of it kept), active and idle anonymous, the
+        // compressor and the GB it holds; the jobs' MB.)
+        let mac = |free: f64, file: f64, active: f64, idle: f64, comp: f64, stored: f64, held_mb: u64| -> Reading {
             let p = jobrt::sys::Pages {
                 free: page(free),
                 file: page(file),
+                kept: page(file),
                 active: page(active),
                 inactive: page(idle + file),
                 compressor: page(comp),
                 stored: page(stored),
                 ..Default::default()
             };
-            let a = p.available();
+            let a = p.available((held_mb << 20) / 16384);
             let mb = |pages: u64| pages * 16384 >> 20;
             Reading {
                 avail_mb: mb(a.total()),
+                held_mb,
                 compress_mb: mb(a.compressible),
                 floor_mb: 4 * GB,
                 pressure: 1,
@@ -1377,48 +1379,28 @@ mod tests {
         let admits = |r: &Reading, running: u64| {
             (0..8u64).take_while(|&n| r.admit_mb().saturating_sub((running + n) * peak) >= peak).count()
         };
-        // 00:07:30: 9.2 GB free and 5.4 of cache, 2.6 more by compressing the 6 GB idle: 17.2 GB
-        // available; the job's growth (4.3) and the floor leave room for one more, not four.
-        let r = Reading { held_mb: 3277, ..mac(9.2, 5.4, 3.2 + 8.2 + 4.0, 6.0, 4.4, 4.4 * 1.79) };
-        assert_eq!(r.compress_mb / 100, 27, "{r:?}");
-        assert_eq!(admits(&r, 1), 1);
-        // (Without the compressible memory, the floor alone, none: 14.6 − 4.3 − 4 < 7.5.)
-        assert_eq!(admits(&Reading { avail_mb: r.avail_mb - r.compress_mb, compress_mb: 0, ..r }, 1), 0);
-        // Both at their peaks (15 GB): the idle 6 GB compressed (the compressor 7.7 GB, 19 % of the
-        // unwired: the pressure normal), the cache kept: 5.4 GB available, above the floor, room for
-        // no third.
-        let r = Reading { held_mb: 2 * peak, ..mac(0.0, 5.4, 15.0 + 8.2 + 4.0, 0.1, 7.7, 13.8) };
-        assert!(!r.below() && r.held_back().is_none() && admits(&r, 2) == 0, "{r:?}");
-        // (The compiles' 4 GB more met by compressing the jobs' and Docker's: the compressor 12.8 GB,
-        // under two fifths, nothing more counted; still above the owner's 4 GB floor, so nothing
-        // given back, nothing started. A Mac at its default floor, 6 GB, is below it: the newest
-        // drains before the pressure leaves normal.)
-        let r = Reading { held_mb: 2 * peak, ..mac(0.0, 5.4, 15.0 + 8.2 + 4.0 + 4.0 - 9.1, 0.0, 12.8, 22.9) };
-        assert!(r.compress_mb == 0 && !r.below() && admits(&r, 2) == 0, "{r:?}");
-        let at_default = Reading { floor_mb: 6 * GB, ..r };
-        assert!(at_default.below() && !at_default.acts());
+        // 00:07:30: 9.2 GB free, the 5.4 of cache kept, and the 6 GB idle less the job's own 3.2
+        // compressed for 1.2 more: 10.4 GB available. The job's growth (4.3), a second job's peak
+        // and the floor don't fit: none starts (counted as before, the cache and the job's own
+        // memory among the idle, one did, and the four that did took the Mac to swap).
+        let r = mac(9.2, 5.4, 3.2 + 8.2 + 4.0, 6.0, 4.4, 4.4 * 1.79, 3277);
+        assert_eq!((r.avail_mb / 100, r.compress_mb / 100), (106, 12), "{r:?}");
+        assert_eq!(admits(&r, 1), 0);
+        // Had a second started, both at their peaks (15 GB): the idle 6 GB compressed (the
+        // compressor 7.7 GB, 19 % of the unwired: the pressure normal), the cache kept: nothing
+        // available, under the floor, and the newest drains before macOS compresses the jobs'.
+        let r = mac(0.0, 5.4, 15.0 + 8.2 + 4.0, 0.1, 7.7, 13.8, 2 * peak);
+        assert!(r.avail_mb < 100 && r.below() && !r.acts() && admits(&r, 2) == 0, "{r:?}");
         let two = [Some(peak), Some(peak)];
-        assert_eq!(decide_by(&two, at_default.room_mb(), &[false; 2], &[false; 2], &[1, 2]), Act::Drain(1));
-        // (But past two fifths the M4's series kept more cache than the model's 5.4 GB: 6.4 GB at
-        // the median at warning. There even the default floor isn't reached: nothing given back by
-        // it, no job started; the brake (the pressure at warning, swap grown past the floor's room)
-        // is what acts.)
-        let kept = Reading {
-            held_mb: 2 * peak,
-            floor_mb: 6 * GB,
-            ..mac(0.0, 6.4, 15.0 + 8.2 + 4.0 + 4.0 - 9.1 - 1.0, 0.0, 12.8, 22.9)
-        };
-        assert!(kept.compress_mb == 0 && !kept.below() && admits(&kept, 2) == 0, "{kept:?}");
-        assert!(Reading { pressure: 2, swap_grown_mb: GB, ..kept }.acts(), "swap grown past the floor's room");
+        assert_eq!(decide_by(&two, r.room_mb(), &[false; 2], &[false; 2], &[1, 2]), Act::Drain(1));
         // 01:10 as it was, five jobs at 37 GB: the compressor 23.1 GB of 39.8, past two fifths, so
-        // compression counts nothing (0.2 GB free, the 5.4 kept); the pressure at warning: no job
-        // starts; the swap grown 3.6 GB leaves 2.0 usable, under the floor: the brake acts, the
+        // compression counts nothing (0.2 GB free, the 5.4 of cache kept); the pressure at warning: no job
+        // starts; the swap grown 3.6 GB leaves none usable, under the floor: the brake acts, the
         // newest frozen at once and given back if the Mac isn't back within the minute.
         let r = Reading {
-            held_mb: 37 * GB,
             pressure: 2,
             swap_grown_mb: 3686,
-            ..mac(0.2, 5.4, 39.8 - 23.1 - 0.2 - 5.4, 0.0, 23.1, 23.1 * 1.79)
+            ..mac(0.2, 5.4, 39.8 - 23.1 - 0.2 - 5.4, 0.0, 23.1, 23.1 * 1.79, 37 * GB)
         };
         assert_eq!(r.compress_mb, 0, "{r:?}");
         assert!(r.brake().is_some() && r.acts() && r.below() && r.admit_mb() == 0, "{r:?}");

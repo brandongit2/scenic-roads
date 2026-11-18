@@ -744,6 +744,11 @@ pub struct Pages {
     pub speculative: u64,
     pub file: u64,
     pub purgeable: u64,
+    /// The file cache macOS keeps (`vm.vm_page_filecache_min`, the kernel's own line, recomputed
+    /// as it scans): while the pageable file-backed pages are under it, the pageout scan takes
+    /// anonymous pages (compresses them) rather than file-backed ones, so only the cache above it
+    /// is handed out at no cost. Where it can't be read, all of it (none counted).
+    pub kept: u64,
     /// The reusable pages (`vm.page_reusable_count`): anonymous memory a process freed and its
     /// allocator told the kernel it no longer needs (malloc's `MADV_FREE_REUSABLE`). They stay in
     /// the process's resident size, out of its footprint, marked clean, on whichever queue they
@@ -776,29 +781,40 @@ impl Available {
 }
 
 impl Pages {
-    /// The memory available (pages).
+    /// The memory available (pages), the pool's jobs holding `own` pages (their footprints
+    /// together: memory a job holds is no other process's idle memory, wherever the kernel queues
+    /// it).
     ///
-    /// - **Cheap:** the free pages, the file-backed ones (the file cache, dropped at once), the
-    ///   purgeable ones, and the reusable ones as far as the inactive anonymous pages hold them
-    ///   (freed by their process: the scan frees those it reaches there with nothing compressed;
-    ///   one on the active queue it reaches only after compressing others, as measured on the M4
-    ///   on 12 Nov: 1.4 of 5.6 GB handed out before macOS compressed the memory in use). A
-    ///   read-ahead's speculative pages are counted once: the kernel's free count includes them
-    ///   and so does the file-backed (file-backed + anonymous = active + inactive + speculative, to
-    ///   the page; `vm_stat` prints free less speculative), so they come off the free.
+    /// - **Cheap:** the free pages, the file cache above what macOS keeps (`kept`: dropped at once,
+    ///   before anything is compressed), the purgeable pages, and the reusable ones as far as the
+    ///   other processes' inactive anonymous pages hold them (freed by their process: the scan
+    ///   frees those it reaches there with nothing compressed; one on the active queue it reaches
+    ///   only after compressing others, as measured on the M4 on 12 Nov: 1.4 of 5.6 GB handed out
+    ///   before macOS compressed the memory in use). A read-ahead's speculative pages are counted
+    ///   once: the kernel's free count includes them and so does the file-backed (file-backed +
+    ///   anonymous = active + inactive + speculative, to the page; `vm_stat` prints free less
+    ///   speculative), so they come off the free.
     /// - **Compressible:** what macOS frees by compressing other processes' idle memory before its
     ///   pressure leaves normal. Its inactive anonymous pages (the inactive queue less every
     ///   file-backed page not speculative and the purgeable: the least they can be, as the kernel
-    ///   doesn't split the queue), less the reusable counted above, compressed at the ratio its
-    ///   compressor holds now (`stored` over `compressor`) free 1 − 1/ratio of themselves; the
-    ///   compressor may grow only to `COMPRESSOR_NORMAL` of the memory not wired, each page more
-    ///   of it freeing ratio − 1. The less of the two. A compressor holding nothing has no ratio
-    ///   measured: none counted.
-    pub fn available(&self) -> Available {
-        let idle =
-            self.inactive.saturating_sub(self.file.saturating_sub(self.speculative)).saturating_sub(self.purgeable);
+    ///   doesn't split the queue) less the jobs' own (the kernel keeps its inactive queue about as
+    ///   long as its active one, so a job's memory in use sits on it too: 20.8 GB each on the M4
+    ///   on 12 Nov with one program writing to 25 GB) and the reusable counted above, compressed
+    ///   at the ratio its compressor holds now (`stored` over `compressor`), free 1 − 1/ratio of
+    ///   themselves; the compressor may grow only to `COMPRESSOR_NORMAL` of the memory not wired,
+    ///   each page more of it freeing ratio − 1. The less of the two. A compressor holding nothing
+    ///   has no ratio measured: none counted.
+    pub fn available(&self, own: u64) -> Available {
+        let idle = self
+            .inactive
+            .saturating_sub(self.file.saturating_sub(self.speculative))
+            .saturating_sub(self.purgeable)
+            .saturating_sub(own);
         let reusable = self.reusable.min(idle);
-        let cheap = self.free.saturating_sub(self.speculative) + self.file + self.purgeable + reusable;
+        let cheap = self.free.saturating_sub(self.speculative)
+            + self.file.saturating_sub(self.kept)
+            + self.purgeable
+            + reusable;
         if self.compressor == 0 || self.stored <= self.compressor {
             return Available { cheap, compressible: 0 };
         }
@@ -816,8 +832,8 @@ impl Pages {
 }
 
 /// The kernel's page counts now (`Pages`) and its page size (bytes); None where they can't be read.
-/// (The reusable pages are no field of `host_statistics64`'s: a sysctl's, none counted where it
-/// can't be read.)
+/// (The reusable pages and the file cache kept are no fields of `host_statistics64`'s: sysctls',
+/// where they can't be read none of the reusable pages counted, all of the cache kept.)
 fn memory_pages() -> Option<(Pages, u64)> {
     #[cfg(target_os = "macos")]
     {
@@ -827,6 +843,7 @@ fn memory_pages() -> Option<(Pages, u64)> {
                 speculative: u64::from(v.speculative_count),
                 file: u64::from(v.external_page_count),
                 purgeable: u64::from(v.purgeable_count),
+                kept: sysctl::<u32>("vm.vm_page_filecache_min").map_or(u64::MAX, u64::from),
                 reusable: sysctl::<u32>("vm.page_reusable_count").map_or(0, u64::from),
                 active: u64::from(v.active_count),
                 inactive: u64::from(v.inactive_count),
@@ -840,14 +857,15 @@ fn memory_pages() -> Option<(Pages, u64)> {
     None
 }
 
-/// The memory available now (bytes, `Pages::available`): what macOS hands a process at no cost,
-/// and what it frees by compressing other processes' idle memory with its pressure left normal.
-/// Not `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
+/// The memory available now (bytes, `Pages::available`), the pool's jobs holding `own` bytes
+/// (their footprints together): what macOS hands a process at no cost, and what it frees by
+/// compressing other processes' idle memory with its pressure left normal. Not
+/// `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
 /// compressed, apps' own pages in use too, and read 60 % on the M4 on 4 Nov with 21 GB swapped
 /// (docs/pool.md §7.1). None where it can't be read.
-pub fn memory_available() -> Option<Available> {
+pub fn memory_available(own: u64) -> Option<Available> {
     let (p, page) = memory_pages()?;
-    let a = p.available();
+    let a = p.available(own / page);
     Some(Available { cheap: a.cheap * page, compressible: a.compressible * page })
 }
 
@@ -1196,7 +1214,8 @@ mod available {
     const GB: f64 = (1u64 << 30) as f64;
 
     /// `vm_stat`'s counts (its free less speculative, as it prints it) and `vm.page_reusable_count`,
-    /// in 16 KB pages: the available's two parts (MB).
+    /// in 16 KB pages, the file cache counted whole (these readings took no `kept`, the kernel's
+    /// line; `kept_and_own` below has it) and no job's memory: the available's two parts (MB).
     fn mb(
         free: u64,
         active: u64,
@@ -1212,6 +1231,7 @@ mod available {
             free: free + spec,
             speculative: spec,
             file,
+            kept: 0,
             purgeable,
             reusable,
             active,
@@ -1219,7 +1239,7 @@ mod available {
             compressor: occupied,
             stored,
         };
-        let a = p.available();
+        let a = p.available(0);
         ((a.cheap * 16384) >> 20, (a.compressible * 16384) >> 20)
     }
 
@@ -1252,6 +1272,44 @@ mod available {
         assert_eq!(m4(0), (28746, 0));
     }
 
+    /// The M4 on 18 Nov (task #1244's controlled run, MB as read, in pages; its pool paused, other
+    /// agents' tests running): the kernel's line (`vm.vm_page_filecache_min`) at 12.2 GB, its file
+    /// cache 10.6 GB, so none of it counts. A program taking incompressible memory in 512 MB steps,
+    /// rewriting it all the while, got 11.0 GB with the pressure normal, the compressor unmoved and
+    /// no swap; at the next step macOS dropped 1.7 GB of the cache and compressed 0.8 GB more, and
+    /// 4.8 GB more by 14.5 GB taken. Counted at the start: 10.6 GB (21.3 with the cache counted
+    /// whole). Its own memory taken out of the idle as it grows, the compressing part falls to none
+    /// by 2.5 GB taken.
+    #[test]
+    fn kept_and_own() {
+        let m4 = |kept: u64, own: u64| {
+            let p = Pages {
+                free: 8438 * 64,
+                file: 10892 * 64,
+                kept: kept * 64,
+                purgeable: 370 * 64,
+                reusable: 1042 * 64,
+                active: 13500 * 64,
+                inactive: 14721 * 64,
+                compressor: 6660 * 64,
+                stored: 11629 * 64,
+                ..Default::default()
+            };
+            let a = p.available(own * 64);
+            (a.total() / 64, a.compressible / 64)
+        };
+        assert_eq!(m4(12540, 0), (10882, 1032));
+        assert_eq!(m4(0, 0), (21774, 1032), "the cache counted whole");
+        // (A kept line under the cache: what's above it counts.)
+        assert_eq!(m4(10892 - 1000, 0).0, 10882 + 1000);
+        // (The taker's 2 GB out of the 3.5 GB idle: 1.4 left, 1.0 of it the reusable pages at no
+        // cost, 0.4 compressed for 0.15.)
+        assert_eq!(m4(12540, 2048), (10007, 157));
+        assert_eq!(m4(12540, 3459).1, 0);
+        // (Unread, all of it kept: none of the cache counts.)
+        assert_eq!(m4(u64::MAX / 64, 0), m4(12540, 0));
+    }
+
     #[test]
     fn the_three_macs_count_their_idle_memory_compressed() {
         // (4 Nov's readings, taken without the reusable pages: none counted.)
@@ -1280,17 +1338,23 @@ mod available {
             stored: page(41.0),
             ..Default::default()
         };
-        assert_eq!(night.available().compressible, 0);
+        assert_eq!(night.available(0).compressible, 0);
         // (Just under the line, what's left of the room limits it; an empty compressor, no ratio
         // measured, counts none; nothing idle, none.)
         let under = Pages { compressor: page(10.0), stored: page(18.0), ..night };
-        let a = under.available();
+        let a = under.available(0);
         let unwired = under.active + under.inactive + under.free + under.compressor;
         let room = (unwired * 2 / 5 - under.compressor) as u128 * (under.stored - under.compressor) as u128
             / under.compressor as u128;
         assert!(a.compressible > 0 && a.compressible as u128 == room, "{a:?} {room}");
-        assert_eq!(Pages { compressor: 0, stored: 0, ..under }.available().compressible, 0);
-        assert_eq!(Pages { inactive: page(1.0), ..under }.available().compressible, 0, "the idle all file-backed");
+        assert_eq!(Pages { compressor: 0, stored: 0, ..under }.available(0).compressible, 0);
+        assert_eq!(Pages { inactive: page(1.0), ..under }.available(0).compressible, 0, "the idle all file-backed");
+        // (The jobs' own memory is none of the idle: the jobs holding it all, none; holding all but
+        // a tenth of a GB of it, what that frees, under the room's.)
+        let idle = under.inactive - under.file;
+        assert_eq!(under.available(idle).compressible, 0);
+        let freed = page(0.1) as u128 * (under.stored - under.compressor) as u128 / under.stored as u128;
+        assert_eq!(under.available(idle - page(0.1)).compressible as u128, freed);
     }
 }
 
@@ -1319,8 +1383,11 @@ mod tests {
         assert!(v.free_count >= v.speculative_count, "{} {}", v.free_count, v.speculative_count);
         // (Task #1215: the reusable pages' count is read, anonymous pages among the queues'.)
         let reusable = sysctl::<u32>("vm.page_reusable_count").expect("vm.page_reusable_count");
+        // (Task #1244: the kernel's line on the file cache it keeps is read, under the Mac's pages.)
+        let kept = sysctl::<u32>("vm.vm_page_filecache_min").expect("vm.vm_page_filecache_min");
+        assert!(u64::from(kept) * page < mem, "{kept}");
         assert!(u64::from(reusable) <= u64::from(v.internal_page_count) + queued / 100, "{reusable} {v:?}");
-        let avail = memory_available().expect("available");
+        let avail = memory_available(0).expect("available");
         let used = (u64::from(v.wire_count) + u64::from(v.compressor_page_count)) * page;
         assert!(avail.cheap <= mem.saturating_sub(used) + (64 << 20), "{avail:?} {mem} {used}");
         // (Task #945: what compressing frees comes out of the apps' memory in use, never more than
