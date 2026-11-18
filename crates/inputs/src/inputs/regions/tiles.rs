@@ -2220,17 +2220,23 @@ fn cover_check(
             let len = (0..owners.len()).filter(|&k| len[k] > 0.0).map(|k| (owners[k].clone(), len[k])).collect();
             let g = Area { polys: vec![poly] };
             let km2 = geom::area_km2(&g);
-            let (zone_km2, zone_at) = if zone.is_empty() {
-                (0.0, None)
-            } else {
-                let z = g.intersect(&zone);
-                (geom::area_km2(&z), largest(&z))
+            // (Each against only the zones' and the land's part round it: a cell has tens of
+            // thousands of gaps along a coast of islets, and the cell's land thousands of rings.)
+            let part = |a: &Area| -> Option<Area> {
+                let gb = g.bbox()?;
+                match near_part(a, gb) {
+                    Some(n) if n.is_empty() => None,
+                    Some(n) => Some(g.intersect(&n)),
+                    None => Some(g.intersect(a)),
+                }
             };
-            let (land_km2, land_at) = if touches {
-                let on = g.intersect(&land);
-                (geom::area_km2(&on), largest(&on))
-            } else {
-                (0.0, None)
+            let (zone_km2, zone_at) = match part(&zone) {
+                Some(z) => (geom::area_km2(&z), largest(&z)),
+                None => (0.0, None),
+            };
+            let (land_km2, land_at) = match touches.then(|| part(&land)).flatten() {
+                Some(on) => (geom::area_km2(&on), largest(&on)),
+                None => (0.0, None),
             };
             out.push(Gap { c, sides, km2, zone_km2, zone_at, land_km2, land_at, at, touches, len, area: g });
         }
