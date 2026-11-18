@@ -1181,7 +1181,7 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   tile of its own.
   **Bathymetry's** 191 pieces of 18 Nov (producers/extents/bathymetry/, the same test with
   `SCENIC_RENDER_THEME=bathymetry`, cut to the same pass's land and the NAS's water layer, on the
-  Mac mini under its build jobs, load 5 to 17): 1,127 s, a peak resident set of 5.50 GB (a loaded Mac's; the memory below), 6,469,611
+  Mac mini under its build jobs, load 5 to 17): 1,127 s (the memory below), 6,469,611
   tiles in packs of 3.87 GB (z12's 4,082,293, 2.35 GB); 1,044 tiles of more than 256 sets, the
   most 14,523. The water's side costs what the land's doesn't: every lake's and river's edge the
   water layer draws, at z9's 153 m, is cut into the pieces over it, so the worldwide grids'
@@ -1194,19 +1194,14 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   borne, or the inland water drawn coarser (lakes over an area), is the owner's.
   **The sea side's memory** (task #1439's review, 18 Nov; `renders_the_real_pieces` with
   `SCENIC_RENDER_THEME=bathymetry`, the NAS's water layer over SMB, the M4, the process's resident set
-  sampled every 10 s and its peak from `getrusage`). A run that kept every ancestor tile met needed
-  16.8 GB for the 191 pieces and 21.1 to 21.6 GB for the 622 (a quiet M4; a loaded Mac's figure,
-  5.50 GB, understated it), the peak early, in the z6 tiles' keys (`Inland::lines`), following the
-  water layer, not the pieces: `Inland` kept
-  every ancestor tile it met (z0 to z8 of a z9 tile the layer doesn't store; each decoded, 512 by 512
-  pixels of 9 bytes, 2.36 MB) and every water pack's index and open file, for the whole build. Now an
-  ancestor is decoded once and kept as one bit for each z9 tile under it (`4^(9 - z)` bits: 32 KB for
-  z0, a byte for a z8 tile), the root and the 64 z3 packs are kept and a z6 tile's hi pack is read
-  again for each of its two uses (`lines`, `rows`) and let go. The output is the same: the 191
-  pieces make 6,469,611 tiles in packs of 3,873,811,952 bytes (z12's 4,082,293, 2.35 GB), as before,
-  and peak at **4.66 GB**. With the national and local grids of task #1439 (587 pieces after its
-  review: LINZ's depth models are declared `none`, their bounding boxes would claim 548,000 km² of open
-  sea; 622 before): 6,618,826 tiles (z12's 4,189,068) in packs of 4.03 GB, 1,379 tiles of more than
+  sampled every 10 s and its peak from `getrusage`). `Inland` decodes an ancestor tile once and keeps
+  it as one bit for each z9 tile under it (`4^(9 - z)` bits: 32 KB for z0, a byte for a z8 tile),
+  keeps the root and the 64 z3 packs, and reads a z6 tile's hi pack again for each of its two uses
+  (`lines`, `rows`) and lets it go: what stays is bounded by the z8 tiles' bits and the z3 packs'
+  indexes, not by decoded tiles (512 by 512 pixels of 9 bytes, 2.36 MB each). The 191
+  pieces make 6,469,611 tiles in packs of 3,873,811,952 bytes (z12's 4,082,293, 2.35 GB), and peak
+  at **4.66 GB**. With the national and local grids of task #1439 (587 pieces: LINZ's depth
+  models are declared `none`, their bounding boxes would claim 548,000 km² of open sea): 6,618,826 tiles (z12's 4,189,068) in packs of 4.03 GB, 1,379 tiles of more than
   256 sets, the most 15,796, a peak of **4.46 GB**. The new grids add 149,215 tiles to the 191 pieces'
   and 0.16 GB of packs: AusBathyTopo's pieces cross 176,723 tiles (83,559 no other source's),
   Kartverket's 163,578 (57,837), INFOMAR's 16,346 (4,711), Ontario's lakes 13,429 (none their own).

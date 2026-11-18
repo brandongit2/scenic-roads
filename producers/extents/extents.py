@@ -646,10 +646,10 @@ def read_file(net, b, _tol):
                 yield from shapefile_features(z, name[:-4], b)
                 continue
             body = z.read(name)
-        yield from index_features(body, b, url)
+        yield from index_features(body, b)
 
 
-def index_features(body, b, url=None):
+def index_features(body, b):
     """An index file's features, by what it is: a GeoPackage, GML, or GeoJSON."""
     if body[:16] == b"SQLite format 3\0":
         yield from geopackage_features(body, b)
@@ -658,7 +658,7 @@ def index_features(body, b, url=None):
     else:
         d = json.loads(body)
         if "records" in b:
-            yield from record_features(d, b, url)
+            yield from record_features(d, b)
             return
         if answer_crs(d) and "crs" not in b:
             b["crs"] = answer_crs(d)
@@ -687,25 +687,19 @@ def flattened(o, prefix=""):
     return out
 
 
-def record_features(d, b, url=None):
+def record_features(d, b):
     """A catalogue's records as features (a JSON answer that isn't GeoJSON: OpenTopography's
     otCatalog): the list at the dotted path `records`, each record's footprint the GeoJSON at its
     dotted path `footprint` (a geometry, a Feature or a FeatureCollection, its features' geometries
-    one), its properties its scalar fields by their dotted paths. An answer that is one record, not a
-    list (`records` empty or naming a record: a catalogue's page for one layer), is that record, and
-    one with no footprint (an error object, a page that moved) stops the run: it names the piece."""
+    one), its properties its scalar fields by their dotted paths."""
     rs = dotted(d, b["records"])
     rs = [] if rs is None else rs
-    one = isinstance(rs, dict)
-    for r in [rs] if one else rs:
+    for r in rs:
         g = dotted(r, b["footprint"]) or {}
         if g.get("type") == "FeatureCollection":
             parts = [f["geometry"] for f in g.get("features") or [] if f.get("geometry")]
         else:
             parts = [x for x in [g.get("geometry") if g.get("type") == "Feature" else g] if x]
-        if one and not parts:
-            sys.exit(f"{b.get('id')}: {url or b.get('url')}: the answer is one record with no footprint at {b['footprint']!r}: "
-                     f"{', '.join(list(r)[:5]) or 'empty'}")
         # (Its polygons as they are, one feature: an invalid one is repaired, and counted, as any.)
         yield (lambda parts=parts: xy(sg.MultiPolygon([p for x in parts for p in polygon_parts(flat_shape(x))]), b) if parts else None), flattened(r)
 

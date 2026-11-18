@@ -894,25 +894,6 @@ class IndexFiles(unittest.TestCase):
                for g, p in extents.read_file(FakeNet({"u": body}), b, 0)]
         self.assertEqual(got, [((0.0, 0.0, 3.0, 1.0), "a", "OT.1", False), ((5.0, 5.0, 6.0, 6.0), "b", None, False), (None, "c", None, False)])
 
-    def test_an_answer_that_is_one_record(self):
-        # (LINZ's page for one layer, read with several `urls`: the record is the answer, its extent a
-        # polygon at a dotted path, its title a metric's source.)
-        def page(title, x):
-            return json.dumps({"title": title, "data": {"extent": {"type": "Polygon", "coordinates": [[[x, 0], [x + 1, 0], [x + 1, 1], [x, 0]]]}}}).encode()
-        b = {"urls": ["a", "b"], "records": "", "footprint": "data.extent"}
-        got = [(g().bounds, p["title"]) for g, p in extents.read_file(FakeNet({"a": page("Porirua 1m", 0), "b": page("Otago 2m", 5)}), b, 0)]
-        self.assertEqual(got, [((0.0, 0.0, 1.0, 1.0), "Porirua 1m"), ((5.0, 0.0, 6.0, 1.0), "Otago 2m")])
-
-    def test_an_answer_that_is_one_record_needs_its_footprint(self):
-        # (An error object at the path is a dict too, one record with no footprint: it stops the run,
-        # naming the piece and the answer's first keys, where it would pass as a feature of no shape.)
-        b = {"id": "depth-models", "urls": ["u"], "records": "", "footprint": "data.extent"}
-        with self.assertRaises(SystemExit) as e:
-            list(extents.read_file(FakeNet({"u": b'{"error": {"code": 401}, "detail": "no key"}'}), b, 0))
-        self.assertIn("depth-models", str(e.exception))
-        self.assertIn("error", str(e.exception))
-        # (A list's record with no footprint is still one without a shape: a catalogue's.)
-
     def test_a_shapefiles_text_in_its_encoding(self):
         import io
         import zipfile
@@ -1224,6 +1205,41 @@ class RasterFiles(unittest.TestCase):
             self.assertEqual(net.requests, base.requests + 1, how)
             self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 44.0, 16.0, 50.0), how)
             self.assertLess(net.bytes, base.bytes + len(tif) + 5000, how)
+
+    def test_i_a_local_extra_much_longer_than_the_central_entrys(self):
+        # (The span asks a kilobyte past the central entry's own extra; a local header with more
+        # than that leaves the member's last bytes beyond the span, and they are read as blocks.)
+        import os
+        import zipfile
+
+        import numpy as np
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+        data = np.random.default_rng(2).integers(0, 30000, (600, 600)).astype(np.int16)
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=600, height=600, count=1, dtype="int16", crs="EPSG:4326",
+                          transform=from_origin(10, 50, 0.01, 0.01)) as ds:
+                ds.write(data, 1)
+            tif = mem.read()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+            info = zipfile.ZipInfo("grid.tif")
+            info.extra = b"\x99\x99" + (3000).to_bytes(2, "little") + bytes(3000)
+            z.writestr(info, tif)
+            info.extra = b""  # (The central directory is written at close: with none.)
+            z.writestr("z_after.bin", os.urandom(300_000))
+        body = buf.getvalue()
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            info = z.getinfo("grid.tif")
+            self.assertEqual(info.extra, b"")
+            self.assertGreater(len(body[info.header_offset + 30 + 8:]), 3000)
+        url = "https://h/g.zip"
+        base = FakeNet({url: body})
+        zipfile.ZipFile(extents.RangeFile(base, url)).namelist()
+        net = FakeNet({url: body})
+        [(geom, props)] = list(extents.read_raster(net, {"url": url, "member": r"\.tif$", "block": 50}, 0))
+        self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 44.0, 16.0, 50.0))
+        self.assertGreater(net.requests, base.requests + 1)
 
 
 class WholeNet(FakeNet):

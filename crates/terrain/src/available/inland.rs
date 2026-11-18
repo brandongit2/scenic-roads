@@ -25,6 +25,12 @@ pub const LAKE: u8 = 128;
 const Z: u8 = wt::STORED_MAXZ;
 /// Its z9 tiles a z6 tile's side.
 const PER: u32 = 1 << (Z - codecs::available::PACK_Z);
+// (`sources` reads a z6 tile's z9 tiles from the z6 tile's hi pack: the layers' hi packs are at
+// z6, and the water layer's finest stored zoom is in them.)
+const _: () = assert!(
+    codecs::available::PACK_Z == store::catalogue::HI_Z && Z >= store::catalogue::HI_FIRST_Z,
+    "a z6 tile's hi pack must hold the water layer's z9 tiles"
+);
 /// A z6 tile's side in the water layer's pixels.
 pub const SIDE6: u32 = PER * wt::SIZE as u32;
 
@@ -105,8 +111,7 @@ impl Lakes {
 /// The water layer's inland water, read as it's asked for: the packs of the root and the z3 tiles
 /// (65 in all) and each ancestor tile's bits kept, a z6 tile's own hi pack (4,096 of them, an index
 /// of its tiles each) only while its tile is made. What stays is bounded by the water layer's z8
-/// tiles' bits and the z3 packs' indexes, never by its decoded tiles (docs/steps.md §14: what
-/// keeping each ancestor's pixels cost).
+/// tiles' bits and the z3 packs' indexes, never by its decoded tiles (docs/steps.md §14).
 pub struct Inland<'a> {
     open: Box<Open<'a>>,
     packs: Mutex<HashMap<String, Option<Arc<Pack>>>>,
