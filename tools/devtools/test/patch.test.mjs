@@ -105,3 +105,33 @@ test("patchChildren: a node whose key is kept but whose tag changed is replaced"
   assert.equal(host.childNodes[0].tagName, "SECTION");
   assert.equal(keep.parentNode, null);
 });
+
+test("patchChildren, 500 random changes: the list is what was built, attributes gone are gone, and a node of a key kept with its tag is the node it was", () => {
+  // (A seeded generator: the same lists every run.)
+  let seed = 1428;
+  const rnd = (n) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  const make = (k) => {
+    const [kind, id] = k.split(":");
+    if (kind === "t") return new Text(`text ${id}`);
+    const attrs = { class: rnd(3) ? "row task" : "row task sel", ...(kind === "p" ? {} : { "data-id": id }) };
+    if (rnd(2)) attrs["aria-current"] = "true";
+    if (rnd(2)) attrs.tabindex = rnd(2) ? "0" : "-1";
+    return new El(kind === "p" ? "p" : rnd(20) ? "div" : "section", attrs, [`title ${id} ${rnd(3)}`]);
+  };
+  const pool = [...Array.from({ length: 30 }, (_, i) => `r:i${i}`), "t:a", "t:b", "p:x", "p:x", "r:i3"];
+  const pick = () => Array.from({ length: rnd(25) }, () => pool[rnd(pool.length)]);
+  const host = list(pick().map(make));
+  const sig = (n) => (n.nodeType === 3 ? n.data : `${n.tagName}|${n.attributes.map((a) => `${a.name}=${a.value}`).sort().join(",")}|${n.childNodes.map(sig).join("")}`);
+  for (let round = 0; round < 500; round++) {
+    const before = new Map(host.childNodes.map((n, i) => [keysOf(host.childNodes)[i], n]));
+    const next = pick().map(make);
+    const want = next.map(sig), keys = keysOf(next);
+    patchChildren(host, frag(next));
+    assert.deepEqual(host.childNodes.map(sig), want, `round ${round}`);
+    host.childNodes.forEach((n, i) => {
+      const was = before.get(keys[i]);
+      if (was && was.nodeType === 1 && was.tagName === n.tagName) assert.equal(n, was, `round ${round}: ${keys[i]} kept`);
+      assert.equal(n.parentNode, host);
+    });
+  }
+});

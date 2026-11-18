@@ -26,8 +26,9 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   again on every change and put in place of the one shown node by node (`public/task-board/patch.mjs`):
   a row that didn't change stays the same node and a changed one keeps its node, so the list stays
   where it is unless you move it (the browser's scroll anchoring holds the row in view; a row out of
-  view keeps the size it was laid out at, `content-visibility: auto`), and a row clicked or dropped
-  is never scrolled to;
+  view keeps the size it was laid out at, `content-visibility: auto`), a row clicked or dropped
+  is never scrolled to, and as a search or filter ends the row that was at the top when it began is
+  put back where it was;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's: a subscription reads once the event stream is open and again on each
   change of its collection (the items: whole once, then only what changed since, `?since=`, below),

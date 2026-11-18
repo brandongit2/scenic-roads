@@ -674,6 +674,8 @@ import { patchChildren } from "./patch.mjs";
     q: "",
     filters: new Set(),
     assigned: null, // the filter: tasks assigned to this
+    searched: false, // (the last render's searching())
+    unsearched: null, // where the list was when a search or filter began (firstInView), put back as it ends
     hist: new Set(), // ids whose history shows open in their rows ("" the top level's)
     draft: null, // {kind, parent, text}: a new item whose title is being typed
     dragging: false,
@@ -1365,7 +1367,9 @@ import { patchChildren } from "./patch.mjs";
   // quick) and put in place of what it showed node by node (patch.mjs), so a row that didn't change
   // is the same node: the list stays where it is (the browser's scroll anchoring holds the row in
   // view, and a row out of view keeps the size it was laid out at); focus survives it. Not while a
-  // row is being dragged or a new title typed: then it waits for that to end.
+  // row is being dragged or a new title typed: then it waits for that to end. A search or filter
+  // shows other rows, which anchoring can't hold to: the row at the top of the list when it began is
+  // put back where it was as it ends.
   let renderQueued = false;
   function soon() {
     if (renderQueued) return;
@@ -1386,9 +1390,13 @@ import { patchChildren } from "./patch.mjs";
     if (S.sel && !M.byId.has(S.sel) && !holding) { S.sel = null; S.sheet = false; syncUrl(false); }
     if (S.anchor && !S.picked.has(S.anchor)) S.anchor = S.sel;
     const focus = rememberFocus();
+    const searched = searching();
+    if (searched && !S.searched) S.unsearched = firstInView();
     renderHeader();
     if (S.view === "tree") renderTree();
     else renderSorted();
+    if (!searched && S.searched && S.unsearched) putInView(S.unsearched);
+    S.searched = searched;
     renderEditor();
     askHistory();
     restoreFocus(focus);
@@ -1413,6 +1421,19 @@ import { patchChildren } from "./patch.mjs";
       el = row && f.act ? row.querySelector(`[data-act="${f.act}"]`) || row : row;
     }
     el?.focus({ preventScroll: true });
+  }
+  // The first row in view, and how far below the list's top it is; and that row put there again.
+  function firstInView() {
+    const top = $("list-scroll").getBoundingClientRect().top;
+    for (const r of $("list").querySelectorAll(".row[data-id]")) {
+      const b = r.getBoundingClientRect();
+      if (b.bottom > top) return { id: r.dataset.id, y: b.top - top };
+    }
+    return null;
+  }
+  function putInView({ id, y }) {
+    const sc = $("list-scroll"), row = rowEl(id);
+    if (row) sc.scrollTop += row.getBoundingClientRect().top - sc.getBoundingClientRect().top - y;
   }
   const rowEl = (id) => (id ? $("list").querySelector(`.row[data-id="${CSS.escape(id)}"]`) : null);
 
@@ -1601,10 +1622,9 @@ import { patchChildren } from "./patch.mjs";
       for (const r of rows) {
         if (r.add && !canWrite()) frag.append(h("div", { class: "gap", "aria-hidden": "true" }));
         else if (r.add) {
-          frag.append(h("div", { class: "addrow", style: `--d:${r.depth}`, "data-folder": r.add.id }, h("button", { type: "button", tabindex: "-1", "data-act": "add-task", "data-parent": r.add.id }, "+ Task"), h("button", { type: "button", tabindex: "-1", "data-act": "add-folder", "data-parent": r.add.id }, "+ Folder")));
+          frag.append(h("div", { class: "addrow" + (r.add.id === hot ? " hot" : ""), style: `--d:${r.depth}`, "data-folder": r.add.id }, h("button", { type: "button", tabindex: "-1", "data-act": "add-task", "data-parent": r.add.id }, "+ Task"), h("button", { type: "button", tabindex: "-1", "data-act": "add-folder", "data-parent": r.add.id }, "+ Folder")));
         } else if (r.draft) {
-          const input = h("input", { id: "draft-input", type: "text", placeholder: S.draft.kind === "folder" ? "Folder name" : "What should be done", "aria-label": S.draft.kind === "folder" ? "New folder's name" : "New task's title", autocomplete: "off", maxlength: "300" });
-          input.value = S.draft.text || "";
+          const input = h("input", { id: "draft-input", type: "text", placeholder: S.draft.kind === "folder" ? "Folder name" : "What should be done", "aria-label": S.draft.kind === "folder" ? "New folder's name" : "New task's title", autocomplete: "off", maxlength: "300", value: S.draft.text || null });
           if (S.draft.waiting) { input.classList.add("unsaved"); input.title = "Not saved yet: changes are paused until the connection is back"; }
           frag.append(h("div", { class: "row draft", style: `--d:${r.depth}` }, S.draft.kind === "folder" ? h("span", { class: "tw leaf" }) : h("span", { class: "box", "aria-hidden": "true" }), input));
         } else {

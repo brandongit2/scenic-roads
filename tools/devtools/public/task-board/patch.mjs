@@ -59,7 +59,7 @@ export function patchChildren(host, frag) {
     const cur = from[i] < 0 ? null : old[from[i]];
     if (!cur) return n;
     if (cur.isEqualNode(n)) { used.add(cur); return cur; }
-    if (cur.nodeType !== 1 || cur.tagName !== n.tagName) { stay.delete(i); return n; }
+    if (cur.nodeType !== 1 || cur.tagName !== n.tagName) return n;
     for (const a of [...cur.attributes]) if (!n.hasAttribute(a.name)) cur.removeAttribute(a.name);
     for (const a of n.attributes) if (cur.getAttribute(a.name) !== a.value) cur.setAttribute(a.name, a.value);
     cur.replaceChildren(...n.childNodes);
@@ -67,7 +67,7 @@ export function patchChildren(host, frag) {
     return cur;
   });
   for (const e of old) if (!used.has(e)) e.remove();
-  // (From the end: each node not staying goes before the one after it, already in place.)
+  // (From the end: each node new or not staying goes before the one after it, already in place.)
   let after = null;
   for (let i = nodes.length - 1; i >= 0; i--) {
     if (!stay.has(i) || nodes[i].parentNode !== host) host.insertBefore(nodes[i], after);
