@@ -10483,8 +10483,7 @@ mod tests {
     fn controllable(c: &Coordinator) {
         packable(c, "slope-hi", 2, None);
         for t in ["6/1/1", "6/1/2"] {
-            let sizes =
-                [("threads".to_string(), 13), ("cpu_ms".to_string(), 7_440_000), ("waited_ms".to_string(), 0)].into();
+            let sizes = [("threads".to_string(), 13), ("cpu_ms".to_string(), 7_440_000)].into();
             let cost = Cost {
                 peak_mb: 2000,
                 secs: 600,
@@ -10594,7 +10593,7 @@ mod tests {
     fn thin(c: &Coordinator) {
         packable(c, "slope-hi", 6, Some(1));
         for i in 1..=6 {
-            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 60_000), ("waited_ms".to_string(), 0)];
+            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 60_000)];
             let cost = Cost {
                 peak_mb: 2000,
                 secs: 600,
@@ -10813,8 +10812,7 @@ mod tests {
             let (d, c, w, clock) = every((0, 0));
             let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
             for t in &ts {
-                let sizes =
-                    [("threads".to_string(), 3), ("cpu_ms".to_string(), cpu_ms), ("waited_ms".to_string(), 0)].into();
+                let sizes = [("threads".to_string(), 3), ("cpu_ms".to_string(), cpu_ms)].into();
                 let cost = Cost {
                     peak_mb: 3700,
                     secs: 600,
@@ -10836,7 +10834,7 @@ mod tests {
             );
             (d, c, w, clock)
         };
-        // Not held by its threads (1.16 busy of 3): granted 2 (task #896: the cores it computed on,
+        // Not held by its threads (1.16 busy of 3): granted 2 (task #896: the cores it kept busy,
         // to the nearest whole, and one more), counted for 1.2; the build's memory, 39 GB, holds ten
         // of 3.7 GB, where by threads 14 cores held seven.
         // (Task #688 review: past the seven their threads allow, one a minute, as the load shows
@@ -10943,8 +10941,7 @@ mod tests {
         let (_d, c, w, clock) = every((0, 0));
         let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
         for t in &ts {
-            let sizes =
-                [("threads".to_string(), 5), ("cpu_ms".to_string(), 2_250_000), ("waited_ms".to_string(), 0)].into();
+            let sizes = [("threads".to_string(), 5), ("cpu_ms".to_string(), 2_250_000)].into();
             let cost = Cost {
                 peak_mb: 3000,
                 secs: 600,

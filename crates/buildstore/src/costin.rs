@@ -9,10 +9,11 @@
 //! local copy's reads, task #551, and the part of a NAS file copied whole that this Mac's page
 //! cache held, task #939; not the NAS's, so not in its NAS weight),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
-//! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `waited_ms`
-//! (the wall time over it in which the process waited on the NAS, the network, the disk or other
-//! work, store::waits by its wall clock, where the job's run is timed: `waited`; task #896, what
-//! agentcore::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
+//! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `nas_net_ms`
+//! (the wall time over it in which the process waited on the NAS or the network, store::waits by
+//! its wall clock, `nas_net`, where the job's run is timed: `waited`; the waits its agent's live
+//! thread control counts too, task #1435; what agentcore::needs::Curve tells a step whose waits
+//! dominate by), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
@@ -53,10 +54,11 @@ static STATE: Mutex<State> = Mutex::new(State {
     m: BTreeMap::new(),
 });
 
-/// The wall time this process has waited on anything so far (ns: store::waits' kinds together, by
-/// its wall clock); None while store::waits isn't measuring (a run not timed, jobrt::timings::start).
+/// The wall time this process has waited on the NAS and the network so far (ns:
+/// store::waits::nas_net, by its wall clock); None while store::waits isn't measuring (a run not
+/// timed, jobrt::timings::start).
 fn waited() -> Option<u64> {
-    store::waits::enabled().then(|| store::waits::totals()[..store::waits::KINDS].iter().sum())
+    store::waits::enabled().then(store::waits::nas_net)
 }
 
 /// Counts a GeoTIFF opened (crate::geotiff::Tiff::open). One a job's open-file cache keeps from an
@@ -216,7 +218,7 @@ pub fn take() -> BTreeMap<String, u64> {
         m.insert("paused_ms".into(), paused);
     }
     if let (Some(a), Some(b)) = (s.waited_at, waited()) {
-        m.insert("waited_ms".into(), b.saturating_sub(a) / 1_000_000);
+        m.insert("nas_net_ms".into(), b.saturating_sub(a) / 1_000_000);
     }
     m
 }
@@ -232,8 +234,8 @@ pub struct Taken {
     pub read_back: u64,
     pub cpu_ms: Option<u64>,
     pub paused_ms: u64,
-    /// The wall time it waited (ms: `waited`); None where that isn't measured.
-    pub waited_ms: Option<u64>,
+    /// The wall time it waited on the NAS and the network (ms: `waited`); None where that isn't measured.
+    pub nas_net_ms: Option<u64>,
 }
 
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
@@ -248,8 +250,8 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
         _ => None,
     };
     let (bytes, local, tiffs, read_back) = grew(&at, &store::nasio::own());
-    let waited_ms = w0.zip(waited()).map(|(a, b)| b.saturating_sub(a) / 1_000_000);
-    (v, Taken { bytes, local, tiffs, read_back, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0), waited_ms })
+    let nas_net_ms = w0.zip(waited()).map(|(a, b)| b.saturating_sub(a) / 1_000_000);
+    (v, Taken { bytes, local, tiffs, read_back, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0), nas_net_ms })
 }
 
 /// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
@@ -270,8 +272,8 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     if t.paused_ms > 0 {
         *m.entry("paused_ms".into()).or_default() += t.paused_ms;
     }
-    if let Some(ms) = t.waited_ms {
-        *m.entry("waited_ms".into()).or_default() += ms;
+    if let Some(ms) = t.nas_net_ms {
+        *m.entry("nas_net_ms".into()).or_default() += ms;
     }
 }
 
@@ -353,7 +355,7 @@ mod tests {
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
         add_to(
             &mut m,
-            Taken { bytes: 7, local: 0, tiffs: 2, read_back: 3, cpu_ms: None, paused_ms: 0, waited_ms: None },
+            Taken { bytes: 7, local: 0, tiffs: 2, read_back: 3, cpu_ms: None, paused_ms: 0, nas_net_ms: None },
         );
         assert_eq!((m["bytes"], m["tiffs"], m["read_back"]), (7, 2, 3));
         assert!(!m.contains_key("cpu_ms"));

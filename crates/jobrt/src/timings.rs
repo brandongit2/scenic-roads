@@ -1189,16 +1189,11 @@ const SPANS_EVERY: u64 = 4;
 /// the wall clock), as last added to the job's counts file.
 static WAITED_SAID: AtomicU64 = AtomicU64::new(0);
 
-/// The wall time waited since last said added to the job's counts file (store::nasio::add_waited),
-/// where its agent reads it live to tell its computing from its waiting (agentcore::agent::threads).
-/// The local disk's waits aren't counted (store::waits::On::Disk): a read its cache serves is
-/// computing on its thread, and a job's disk reads rise with its threads, so a job computing on
-/// every thread would read as waiting and never be grown. Nor other work's (On::Other: a join, a
-/// condition): the threads waited for may be computing. (Each instant is one kind's, so the two
-/// add without overlap.)
+/// The wall time waited on the NAS and the network (store::waits::nas_net, which says why those
+/// two) since last said added to the job's counts file (store::nasio::add_waited), where its agent
+/// reads it live to tell its computing from its waiting (agentcore::agent::threads).
 fn say_waited() {
-    let t = store::waits::totals();
-    let now = t[store::waits::On::Nas as usize] + t[store::waits::On::Net as usize];
+    let now = store::waits::nas_net();
     let was = WAITED_SAID.fetch_max(now, Ordering::Relaxed);
     store::nasio::add_waited(now.saturating_sub(was));
 }

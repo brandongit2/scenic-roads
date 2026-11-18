@@ -1369,7 +1369,7 @@ impl Sched {
     /// The threads a job packed as `n` is granted to start on a Mac of `total` cores, and the cores
     /// it counts for there, in tenths of a core (task #688; tenths, task #697: a job's busy cores
     /// rounded to the nearest undercounted up to half a core each). Measured: its grant
-    /// (crate::needs::Book::cores: the cores it computed on and a thread more) within the Mac's
+    /// (crate::needs::Book::cores: the cores it kept busy and a thread more) within the Mac's
     /// cores, counted for the cores it kept busy (`busy_tenths`, a climb's thread among them; its
     /// threads where its runs said no CPU time). No fixed share caps or floors a measured job (task
     /// #888: the M4's terrain jobs were held to 3 of 14 cores, 2.4 of them busy, while the Mac sat at

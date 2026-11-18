@@ -235,7 +235,7 @@ fn a_stuck_read_is_given_up() {
 }
 
 /// Task #896 review: a watched read counts as waiting on the NAS (store::waits), so a job copying
-/// base packs says it waited (`waited_ms`), not that it computed.
+/// base packs says it waited (`nas_net_ms`), not that it computed.
 #[test]
 fn a_watched_read_is_a_nas_wait() {
     store::waits::enable();

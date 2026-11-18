@@ -254,6 +254,17 @@ pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
+/// The wall time spent waiting on the NAS and the network so far (ns; 0 before `enable`): the
+/// waits a job counts as waiting (task #1420; its agent's live thread control and its cost
+/// records' `nas_net_ms` alike). Not the local disk's (`On::Disk`): a read its cache serves is
+/// computing on its thread, and a job's disk reads rise with its threads, so a job computing on
+/// every thread would read as waiting. Nor other work's (`On::Other`: a join, a condition): the
+/// threads waited for may be computing. Each instant is one kind's, so the two add without overlap.
+pub fn nas_net() -> u64 {
+    let t = totals();
+    t[On::Nas as usize] + t[On::Net as usize]
+}
+
 /// The wall time spent waiting so far, by kind, and the pairs' at once (ns; all 0 before `enable`).
 pub fn totals() -> Totals {
     if !enabled() {

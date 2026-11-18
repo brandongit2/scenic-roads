@@ -555,17 +555,20 @@ workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU 
 took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: frozen by the memory
 or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that wakes each second
 and counts the time since its last wake, less a second, when a SIGCONT came meanwhile, `store::sys::continued`,
-tasks #697 and #1155), and the wall time its process waited on the NAS, the network, the
-disk or other work meanwhile (`waited_ms`, store::waits by the wall clock, task #870; where the
-run is timed). **A job starts on the threads its measure gives it, and its agent controls them
+tasks #697 and #1155), and the wall time its process waited on the NAS or the network meanwhile
+(`nas_net_ms`, store::waits by the wall clock, task #870; where the run is timed): the waits its
+agent's live control counts (Threads controlled live, below; task #1435), not the local disk's,
+which rise with its threads, nor other work's, whose threads may be computing. **A job starts on the threads its measure gives it, and its agent controls them
 from there** (Threads controlled live, below): what it starts on, and the cores it counts for in
 packing, come from its targets' cost records; what it runs on once it runs, from what it keeps busy
 now. A job's
 measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two (task #896: no hand-set ratio or factor): its **grant**, the cores it kept busy
-while it computed (its CPU time over the time it ran and didn't wait; no waits said, over the time
-it ran), within its threads, to the nearest whole, plus one thread: to overlap its waits, or, where
-it computed on every thread it had, to climb by. So a job waiting on the NAS or the network, or held
+(its CPU time over the time it ran, waits and all, as its agent's live control judges them, task
+#1435: not over the time it didn't wait, as a wait is an instant any of its threads waited while the
+others may compute, so 4 threads waiting 40 % of the time with 2.4 cores busy would read as 4 busy,
+and past its threads), within its threads, to the nearest whole, plus one thread: to overlap its waits, or, where
+it kept every thread it had busy, to climb by. So a job waiting on the NAS or the network, or held
 by its serial parts, settles where a run measures the same (2.4 cores busy of 6, of 4 or of 3: 3;
 a serial step: 1–2) and never climbs, and one its threads held climbs a thread a run, measured at
 each, to what it can use (capped at the Mac's cores); and its
@@ -587,7 +590,7 @@ beat by 2 standard errors of the difference (`CURVE_SE`): the margin scales with
 not a set time. These three are statistical choices, not measures of a step: 5 runs is the fewest whose
 median and MAD say anything about spread; 2 standard errors is the usual ~95 % bar against calling noise
 a gain; one in ten bounds the share of jobs run off the knee while learning. With two points or more
-known, a job whose waits dominate (the median of its step's runs' shares of time waited, `waited_ms`, is
+known, a job whose waits dominate (the median of its step's runs' shares of time waited on the NAS and the network, `nas_net_ms`, is
 half or more, taken over the step so one run doesn't switch a job between the curve and the climb, and
 its own run didn't climb) is
 granted the knee, whatever its busy cores' grant; under two, that grant. **One target in ten**
@@ -596,8 +599,8 @@ first, else one fewer) while the neighbour has under 5 runs and that count itsel
 knee and the exploring stops once both are known. A curve's grant counts for the most cores a run
 kept busy at the most threads known up to it, plus each thread past those as a whole busy core
 (none measured them idle yet), so exploring never overcommits a Mac, and it stays within the Mac's
-cores like any grant. Any other job (a climbing one, its runs computed on every thread, or one
-computing more than it waited) keeps its busy cores' grant. `scenic pool needs` prints each step's curve, knee and grant. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
+cores like any grant. Any other job (a climbing one, its runs keeping every thread busy, or one
+of a step whose runs wait on the NAS and the network under half their time) keeps its busy cores' grant. `scenic pool needs` prints each step's curve, knee and grant. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
 measured grant within its Mac's cores (task #888: no fixed share caps it, so a busy step's grant
 climbs where cores sit idle; the M4's terrain jobs had been held to 3 of 14 threads; task #896: no

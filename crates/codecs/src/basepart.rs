@@ -131,7 +131,7 @@ pub fn index_path(cache: &Path, content: &str) -> PathBuf {
 
 /// `f`, a NAS read that says it moved (`Progress::add`, its bytes), as a store::deadline call:
 /// given up after `deadline` without a byte (an error at once, the read left to the kernel), never
-/// for its length. The caller's wait is a wait on the NAS (store::waits: a job's `waited_ms`
+/// for its length. The caller's wait is a wait on the NAS (store::waits: a job's `nas_net_ms`
 /// counts its base packs' copies, task #896 review).
 pub fn watched<T: Send + 'static>(
     deadline: Duration,

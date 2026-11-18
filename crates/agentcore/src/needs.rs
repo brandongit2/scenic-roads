@@ -422,9 +422,11 @@ pub struct Point {
 pub struct Curve {
     pub size: Option<String>,
     pub points: Vec<Point>,
-    /// Its waits dominate: the median of its runs' share of time waited (`waited_ms`) is half or
-    /// more. Taken over the step's runs, not one target's last, so a single run waiting a little
-    /// more or less doesn't switch a job between the curve and the climb (task #904 review).
+    /// Its waits dominate: the median of its runs' share of time waited on the NAS and the network
+    /// (`nas_net_ms`, task #1435: the waits its agent's live control counts; a run saying none
+    /// isn't counted) is half or more. Taken over the step's runs, not one target's last, so a
+    /// single run waiting a little more or less doesn't switch a job between the curve and the
+    /// climb (task #904 review).
     pub waits: bool,
 }
 
@@ -570,15 +572,15 @@ fn tile(target: &str) -> Option<(u8, u32, u32)> {
     (it.next().is_none() && z <= 30).then_some((z, x, y))
 }
 
-/// The sizes known of a cost (its measured `sizes`; its tile's area when it has no `km2`).
+/// The sizes known of a cost (its measured `sizes`; its tile's area when it has no `km2`): not its
+/// threads, nor the times its run took (`…_ms`: its CPU, its time stopped, its waits, whatever
+/// their name), which measure the run, not its work.
 fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
     let mut m: BTreeMap<String, f64> = c
         .map(|c| {
             c.sizes
                 .iter()
-                .filter(|(k, _)| {
-                    !matches!(k.as_str(), "threads" | "threads_least" | "cpu_ms" | "paused_ms" | "waited_ms")
-                })
+                .filter(|(k, _)| !matches!(k.as_str(), "threads" | "threads_least") && !k.ends_with("_ms"))
                 .map(|(k, v)| (k.clone(), *v as f64))
                 .collect()
         })
@@ -1285,9 +1287,10 @@ impl<'a> Book<'a> {
     /// packs none beside it). (A run waiting on a crowded NAS reads less busy, which would pack more
     /// jobs, each reading less busy still; but a target not run the way it runs now, nearly every
     /// one a job is granted for, counts for its step's most, which no crowded run lowers: task #697.)
-    /// One whose waits dominate (task #904: its runs waited half their time or more, `waited_ms`,
-    /// and didn't climb) takes its threads from its step's wall time by threads instead
-    /// (`Curve::grant`): a wait-bound step gets the threads that pay, and no more; a busy one climbs.
+    /// One whose waits dominate (task #904: its step's runs waited on the NAS and the network half
+    /// their time or more, `Curve::waits`, and it didn't climb) takes its threads from its step's
+    /// wall time by threads instead (`Curve::grant`): a wait-bound step gets the threads that pay,
+    /// and no more; a busy one climbs.
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
         let (c, no_climb) = self.cores_busy(step, target)?;
         Some(if no_climb && self.curve(step).waits { self.curve(step).grant(c, target) } else { c })
@@ -1307,23 +1310,20 @@ impl<'a> Book<'a> {
             Some(match kept {
                 None => (Cores { grant: t, busy_tenths: None }, false),
                 Some(k) => {
-                    // (Task #896: the cores it kept busy while it computed, its CPU time over the
-                    // time it didn't wait (`waited_ms`, store::waits by the wall clock, task #870;
-                    // none said: none), within its threads, to the nearest whole, and one thread
-                    // more: to overlap its waits, or, where it computed on every thread, to climb
-                    // by. So a job waiting on the NAS or the network, or held by its serial parts,
-                    // settles where a run measures the same (2.4 busy of 6 or of 3: 3), and one its
-                    // threads held climbs a thread a run, measured at each, to what it can use
-                    // (crate::coord caps it at the Mac's cores). It counts for the thread it
-                    // climbs by besides its busy cores, as nothing measured it idle yet, so a
-                    // climb never overcommits its Mac (task #888 review).)
+                    // (Task #896: the cores it kept busy, within its threads, to the nearest whole,
+                    // and one thread more: to overlap its waits, or, where it kept every thread
+                    // busy, to climb by. So a job waiting on the NAS or the network, or held by its
+                    // serial parts, settles where a run measures the same (2.4 busy of 6 or of 3:
+                    // 3), and one its threads held climbs a thread a run, measured at each, to what
+                    // it can use (crate::coord caps it at the Mac's cores). It counts for the thread
+                    // it climbs by besides its busy cores, as nothing measured it idle yet, so a
+                    // climb never overcommits its Mac (task #888 review). Its busy cores are its CPU
+                    // over the time it ran, waits and all, as its agent's live control judges them
+                    // (crate::agent::threads, task #1435): not over the time it didn't wait, a wait
+                    // being an instant any of its threads waited while the others may compute, so 4
+                    // threads waiting 40 % of the time with 2.4 cores busy would read as 4 busy.)
                     let busy = ((k * 10.0).round() as u32).max(1);
-                    let waited = c.sizes.get("waited_ms").map_or(0, |&w| w.min(ran));
-                    // (Task #896 review: waits covering its wall time, within a second, leave no
-                    // time it computed in to measure: its busy cores, not every thread, so a run
-                    // its threads all waited through settles at those and one more, never climbs.)
-                    let computing = if ran - waited >= 1000 { k * ran as f64 / (ran - waited) as f64 } else { k };
-                    let grant = (computing.min(f64::from(t)) + 0.5) as u32 + 1;
+                    let grant = (k.min(f64::from(t)) + 0.5) as u32 + 1;
                     let busy = busy.min(t * 10) + grant.saturating_sub(t) * 10;
                     (Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }, grant <= t)
                 }
@@ -1400,7 +1400,7 @@ impl<'a> Book<'a> {
                 None if per_mb => c.sizes["bytes"] as f64 / 1e6,
                 None => 1.0,
             };
-            if let Some(&w) = c.sizes.get("waited_ms") {
+            if let Some(&w) = c.sizes.get("nas_net_ms") {
                 waited.push(w as f64 / ran as f64);
             }
             let e = by.entry((t as u32).max(1)).or_default();
@@ -1745,7 +1745,7 @@ mod tests {
                 r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                 let u = (r >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
                 let secs = (wall(t) * (1.0 + noise * u)).round() as u64;
-                let sizes = [("threads", u64::from(t)), ("cpu_ms", secs * 300), ("waited_ms", secs * 700)];
+                let sizes = [("threads", u64::from(t)), ("cpu_ms", secs * 300), ("nas_net_ms", secs * 700)];
                 let c = Cost { v: cost_version("slope"), ..cost(100, secs, &sizes) };
                 costs.insert(cost_key("slope", &format!("6/{t}/{i}")), c);
             }
@@ -1771,6 +1771,25 @@ mod tests {
         assert_eq!(knee(&curve_costs(&[2, 3], 8, 0.3, |t| 100.0 - f64::from(t))), Some(2));
         assert_eq!(knee(&curve_costs(&[3], 30, 0.0, sat)), None, "one count known: no curve yet");
         assert_eq!(knee(&curve_costs(&[1, 3], 4, 0.0, sat)), None, "too few runs at each");
+    }
+
+    /// Task #1435: a step's waits dominate by its runs' NAS and network waits (`nas_net_ms`, 0.7 of
+    /// each run's time here); an older record's `waited_ms` (any wait, the local disk's among
+    /// them) neither counts as a wait nor as a size its time is fitted by.
+    #[test]
+    fn a_steps_waits_are_its_nas_and_network_waits() {
+        let costs = curve_costs(&[2, 3], 8, 0.0, |_| 100.0);
+        assert!(Book::new(crate::agent::seam::for_tests(), &costs).curve("slope").waits);
+        let old: BTreeMap<String, Cost> = costs
+            .into_iter()
+            .map(|(k, mut c)| {
+                let w = c.sizes.remove("nas_net_ms").unwrap();
+                c.sizes.insert("waited_ms".into(), w);
+                (k, c)
+            })
+            .collect();
+        assert!(!Book::new(crate::agent::seam::for_tests(), &old).curve("slope").waits);
+        assert!(!sizes_of("slope 6/2/0", old.values().next()).contains_key("waited_ms"));
     }
 
     /// Task #904: a tenth of the targets explore a neighbour of the knee the curve lacks, and none
@@ -1802,17 +1821,17 @@ mod tests {
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let explorer = (0..).map(|i| format!("7/{i}/0")).find(|t| b.cores("slope", t).unwrap().grant == 4).unwrap();
         assert_eq!(b.cores("slope", &explorer), Some(Cores { grant: 4, busy_tenths: Some(13) }));
-        // (A job whose runs computed on every thread climbs by its busy cores: the curve doesn't hold it.)
+        // (A job whose runs kept every thread busy climbs by its busy cores: the curve doesn't hold it.)
         let mut costs = BTreeMap::new();
         for i in 0..30 {
             let c = Cost {
                 v: cost_version("slope"),
-                ..cost(100, 100, &[("threads", 3), ("cpu_ms", 300_000), ("waited_ms", 0)])
+                ..cost(100, 100, &[("threads", 3), ("cpu_ms", 300_000), ("nas_net_ms", 0)])
             };
             costs.insert(cost_key("slope", &format!("6/3/{i}")), c);
             let c = Cost {
                 v: cost_version("slope"),
-                ..cost(100, 100, &[("threads", 2), ("cpu_ms", 200_000), ("waited_ms", 0)])
+                ..cost(100, 100, &[("threads", 2), ("cpu_ms", 200_000), ("nas_net_ms", 0)])
             };
             costs.insert(cost_key("slope", &format!("6/2/{i}")), c);
         }
@@ -1839,11 +1858,10 @@ mod tests {
         // (Its CPU time over its wall time: a serial run given 8 threads that waited on nothing is
         // granted 2 and counted for 0.9 cores; a busy one, its threads full, climbs a thread from
         // its 8, counted for its 8 busy and the one it climbs by.)
-        let w0 = ("waited_ms", 0);
-        costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_000), w0])));
+        costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_000)])));
         costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
         // (Task #896: 7.6 cores busy of 8 is 8 to the nearest whole: its threads held it.)
-        costs.insert(cost_key("pois", "6/1/3"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 76_000), w0])));
+        costs.insert(cost_key("pois", "6/1/3"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 76_000)])));
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2"), b.cores("pois", "6/1/3")),
@@ -1856,11 +1874,11 @@ mod tests {
         let v = cost_version("terrain-hi");
         costs.insert(
             cost_key("terrain-hi", "6/48/16"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), w0]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000)]) },
         );
         costs.insert(
             cost_key("terrain-hi", "6/48/17"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000), w0]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000)]) },
         );
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.cores("terrain-hi", "6/48/16"), c(2, Some(12)));
@@ -1871,7 +1889,7 @@ mod tests {
         for t in [6, 4, 3] {
             costs.insert(
                 cost_key("terrain-hi", "6/48/19"),
-                Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000), w0]) },
+                Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000)]) },
             );
             assert_eq!(
                 Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/19"),
@@ -1879,30 +1897,33 @@ mod tests {
                 "{t}"
             );
         }
-        // (Task #896: 0.3 cores busy of 3 over 1000 s: waits not said, 1; waiting 500 s, 0.6
-        // busy while it computed: 2; waiting 900 s, all 3 busy while it computed: it climbs one,
-        // counted for its 0.3 and the thread.)
-        // (Task #896 review: waiting its whole wall time, or all but half a second, on its 3
-        // threads: its 0.3 busy and one more, 1, never a climb.)
-        let all = [(Some(1_000_000), 1, 3), (Some(999_500), 1, 3)];
-        for (waited, grant, busy) in
-            [(None, 1, 3), (Some(500_000), 2, 3), (Some(900_000), 4, 13)].into_iter().chain(all)
+        // (Task #1435: its busy cores are its CPU over the time it ran, waits and all, as its
+        // agent's live control judges them: 0.3 cores busy of 3 over 1000 s is 0.3 however long it
+        // waited, granted 1 and never a climb, where over the time it didn't wait 900 s of waits
+        // read as all 3 busy. 4 threads waiting 40 % of the time with 2.4 cores busy are granted
+        // 3, not read as 4 busy and climbed to 5; an older record's `waited_ms` (any wait, the
+        // local disk's among them) counts for nothing.)
+        for waited in
+            [None, Some(("nas_net_ms", 500_000)), Some(("nas_net_ms", 900_000)), Some(("waited_ms", 1_000_000))]
         {
             let mut s = vec![("threads", 3), ("cpu_ms", 300_000)];
-            s.extend(waited.map(|w| ("waited_ms", w)));
+            s.extend(waited);
             costs.insert(cost_key("terrain-hi", "6/48/19"), Cost { v, ..cost(3700, 1000, &s) });
             assert_eq!(
                 Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/19"),
-                c(grant, Some(busy)),
+                c(1, Some(3)),
                 "{waited:?}"
             );
         }
+        let s = [("threads", 4), ("cpu_ms", 2_400_000), ("nas_net_ms", 400_000)];
+        costs.insert(cost_key("terrain-hi", "6/48/19"), Cost { v, ..cost(3700, 1000, &s) });
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/19"), c(3, Some(24)));
         costs.remove(&cost_key("terrain-hi", "6/48/19"));
         // (Task #697: a run frozen by the memory guard for 420 of its 1000 s kept 2 cores busy over
         // the 580 s it ran, not 1.16.)
         costs.insert(
             cost_key("terrain-hi", "6/48/16"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000), w0]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000)]) },
         );
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
     }

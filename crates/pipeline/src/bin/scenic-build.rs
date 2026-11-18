@@ -4628,7 +4628,7 @@ fn settle_tails(
                     (a, b) => a.or(b),
                 },
                 paused_ms: read.paused_ms + t.paused_ms,
-                waited_ms: match (read.waited_ms, t.waited_ms) {
+                nas_net_ms: match (read.nas_net_ms, t.nas_net_ms) {
                     (Some(a), Some(b)) => Some(a + b),
                     (a, b) => a.or(b),
                 },
