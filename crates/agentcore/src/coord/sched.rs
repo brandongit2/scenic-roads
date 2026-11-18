@@ -571,7 +571,7 @@ impl Refused {
         let others: Vec<String> = [
             (self.held, "held by jobs"),
             (self.done, done),
-            (self.backoff, "in backoff after failing here"),
+            (self.backoff, "in backoff after failing or being refused here"),
             (self.other, "free but held back otherwise (no measure yet, the NAS budget or placement)"),
         ]
         .iter()

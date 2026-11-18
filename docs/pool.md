@@ -1391,16 +1391,19 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   follow. A held entry keeps them done (its record is read later). Each refusal is in the history
   ("refused", on the build page as a problem, with why) and the log ("merged 0 entries (0 passed
   over, 1 refused; 1 target to do again)").
-- **A hand-off refused every time backs off** (task #1384): a refusal holds its targets from the
-  worker its job ran on (found by the done entry, else its lease, else its "done" event in the
-  history; a lead's own job's "end": the lead) as a failure does (`Sched::backoff`: an hour,
-  doubling, 32 h at most), counted with each refusal of the target in a row
-  (`Shared::handoffs_refused`), so a job refused on one Mac goes to another, and one refused
-  everywhere comes round less and less often. The status's `handoffs_refused` lists those targets
-  (step, target, times, the last's time, Mac and why), and a target refused twice in a row or
-  more is flagged (§10, Flags: *refused*), until a hand-off of it is merged or the plan offers it
-  no more. Neither is kept across a lead's restart (the history's rows are). A page's retry of the
-  target (`Coordinator::clear_failed`) lifts its backoff. GC's refusals stop by themselves
+- **A hand-off refused every time backs off** (task #1384): each refusal of a target is counted,
+  in a row until a hand-off of it is merged (`Shared::handoffs_refused`). From the second in a row
+  on (`flags::REFUSED_AGAIN`), a refusal holds the target from the worker its job ran on as a
+  failure does (`Sched::backoff`: an hour, doubling with each refusal after, 32 h at most), the
+  worker found by the done entry, else the job's lease, else the Mac of its "done" or "end" event
+  in the history (a lead's own job of a lead before this one, moved since: that Mac). A first
+  refusal alone holds nothing: it may be a one-off (a name GC was removing then), and a step the
+  lead alone runs (pack, rail, names-todo) has no other Mac. So a job refused again and again
+  comes round less and less often. The status's `handoffs_refused` lists those targets (step,
+  target, times, the last's time, Mac and why), and one refused twice in a row or more is flagged
+  (§10, Flags: *refused*), until a hand-off of it is merged or the plan offers it no more. Neither
+  is kept across a lead's restart (the history's rows are). A page's retry of the target
+  (`Coordinator::clear_failed`) lifts its backoff and its count. GC's refusals stop by themselves
   (its next run hands off again, below).
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
   lead's whose entry carries only a done record, merged only by the lead whose member it is
@@ -2514,7 +2517,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
     memory and disk this Mac is short of, by how much ("lo 3/6/3 needs 12.7 GB of memory and 35.2
     GB of disk: disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"; the
     whole copies counted for it said among its disk), then how many of the other targets offered
-    are held by jobs, done, in backoff after failing here, or free but held back otherwise (no
+    are held by jobs, done, in backoff after failing or being refused here, or free but held back otherwise (no
     measure yet, the NAS budget or placement); with no target past the room, those
     counts alone ("nothing offered is free to take: 3 held by jobs"). Room held for that target
     while the Mac's jobs end is the refusal ("room held for a job of lo 3/6/3 (…)"), whether or
@@ -2613,7 +2616,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
     done again and again that never reaches the records (a write outside its step's write-set, a
     bad content name). One flag per step: its targets with their counts (the first four), the
     latest refusal's age, Mac and why. Its targets are held from each Mac they were refused from
-    meanwhile (§7.3, a hand-off refused every time backs off), so the loop slows but doesn't stop
+    since the second refusal (§7.3, a hand-off refused every time backs off), so the loop slows but doesn't stop
     by itself; the flag stands until a hand-off of the target is merged or the plan offers it no
     more. It has no window or setting of its own: the backoff is a failure's.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set

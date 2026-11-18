@@ -11,7 +11,7 @@
 //!   it names the first target past it (step and tile), what that needs (memory, disk) and what
 //!   this Mac is short of, each by how much ("lo 3/6/3 needs 12.7 GB of memory and 35.2 GB of disk:
 //!   disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"), then how many of
-//!   the other targets offered are held by jobs, done, in backoff after failing here, or free but
+//!   the other targets offered are held by jobs, done, in backoff after failing or being refused here, or free but
 //!   held back otherwise; room held
 //!   for that target while this Mac's jobs end is said as the hold ("room held for a job of …").
 //!   Each Mac's flag says its own room, so the flags of the Macs together say what each lacks.
@@ -69,8 +69,9 @@
 //!   times in a row or more, none taken between (`Status::handoffs_refused`,
 //!   crate::coord::Coordinator::merged): work done again and again that never reaches the records
 //!   (a write outside its step's write-set, a bad content name), a flag per step, with the latest
-//!   refusal's Mac and why. Each refusal holds its targets from the worker its job ran on, an hour
-//!   doubling with each refusal in a row, so the loop slows but doesn't stop by itself. Flagged
+//!   refusal's Mac and why. Each refusal from the second in a row holds its targets from the
+//!   worker its job ran on, an hour doubling with each after, so the loop slows but doesn't stop
+//!   by itself (a first alone may be a one-off, and holds nothing). Flagged
 //!   until a hand-off of the target is merged, or the plan offers it no more.
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
@@ -223,7 +224,7 @@ pub fn refused(st: &Status, now: u64) -> Vec<Flag> {
                 kind: "refused".into(),
                 mac: last.mac.clone(),
                 said: format!(
-                    "{step}: {} {} refused {REFUSED_AGAIN} times in a row or more ({}), the last {} ago, from {}: {}; each held from the Mac it ran on, an hour doubling with each refusal (32 h at most)",
+                    "{step}: {} {} refused {REFUSED_AGAIN} times in a row or more ({}), the last {} ago, from {}: {}; each held from the Mac it ran on, an hour from the second refusal, doubling with each after (32 h at most)",
                     rs.len(),
                     if rs.len() == 1 { "target's hand-off" } else { "targets' hand-offs" },
                     shown.join(", "),

@@ -679,7 +679,7 @@ impl Mac {
                     *w.counts.entry("hand-offs passed over for a later lease's").or_default() += n;
                     w.applied(k, e, applied);
                     // (Their work not taken, granted again: as crate::agent::membership's step.)
-                    if let Some(c) = w.macs[k].coord.clone().filter(|_| !again.is_empty()) {
+                    if let Some(c) = w.macs[k].coord.clone() {
                         w.tick(k);
                         c.merged(done, again);
                     }

@@ -141,10 +141,10 @@ Common rules:
   (`Coordinator::merged`): their record is never to be read, so they're granted again at the next
   ask; a held one (from a member on a newer app) stays done, and so does one a later job of the
   same target made at the same key (`Shared::done_by`). Each refusal is in the history
-  ("refused": the Mac, the job, its targets and why; on the build page as a problem), and holds
-  its targets from the worker its job ran on as a failure does (below; task #1384), so a job whose
-  hand-off is always refused comes round less and less often; refused twice in a row it's flagged
-  ("refused": docs/pool.md §10).
+  ("refused": the Mac, the job, its targets and why; on the build page as a problem); refused twice
+  in a row or more, its targets are held from the worker its job ran on as a failure's are (below;
+  task #1384), so a job whose hand-off is always refused comes round less and less often, and
+  flagged ("refused": docs/pool.md §7.3, §10).
 - **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
   `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.

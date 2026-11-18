@@ -211,8 +211,8 @@ In `agent/pool/` on its own disk:
   lead, a lost store: `Beats::set_settings`, seeded from `pool-settings.json`).
 
 A hand-off the lead's merge refuses (a write outside its step's write-set, a bad content name:
-pool.md §7.3) lets its targets go to be done again, held from the worker its job ran on for an
-hour, doubling with each refusal in a row, and refused twice in a row is flagged in `scenic status
+pool.md §7.3) lets its targets go to be done again; refused twice in a row, they are held from the worker its
+job ran on for an hour, doubling with each refusal after, and flagged in `scenic status
 --flags` ("refused"), so the hourly health check sees it (task #1384).
 
 A repeat changes nothing (principle 4). A hand-off is lost only to a double fault: its member's
