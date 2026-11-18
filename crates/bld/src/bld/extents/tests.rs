@@ -1,5 +1,5 @@
 use super::*;
-use crate::bld::work::{Block, FMT, ZSTD_LEVEL};
+use crate::bld::work::{Block, ZSTD_LEVEL};
 use std::path::Path;
 use store::nasfs::NasRoot;
 
@@ -31,36 +31,51 @@ fn block(recs: &[Rec]) -> Vec<u8> {
         hsrc: recs.iter().map(|r| r.3).collect(),
         ghsl: vec![0; n],
         osm: vec![0; n],
-        fsrc: recs.iter().map(|r| r.4).collect(),
         ..Default::default()
     };
     b.index();
     zstd::bulk::compress(&b.encode(), ZSTD_LEVEL).unwrap()
 }
 
-/// Z6 tile (x, y)'s normalized file of format `fmt` holding `blocks` ((column, row) of its z14
-/// cells, records), its datasets `srcs`, put in the records under its logical name.
-fn put_fmt(o: &mut Out, dir: &Path, (x, y): (u32, u32), fmt: u32, srcs: &[&str], blocks: &[((u32, u32), Vec<Rec>)]) {
+/// Z6 tile (x, y)'s normalized file holding `blocks` ((column, row) of its z14 cells, records),
+/// its datasets `srcs`, put in the records under its logical name; its content name, and its
+/// records' footprints' datasets in its order (the side file's column).
+fn put_work(
+    o: &mut Out,
+    dir: &Path,
+    (x, y): (u32, u32),
+    srcs: &[&str],
+    blocks: &[((u32, u32), Vec<Rec>)],
+) -> (String, Vec<u8>) {
     let meta = Meta {
-        fmt,
+        fmt: 1,
         tile: format!("6/{x}/{y}"),
         srcs: srcs.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
     };
-    let mut bs: Vec<(u64, Vec<u8>, u32)> = blocks
+    let mut bs: Vec<(u64, &Vec<Rec>)> = blocks
         .iter()
-        .map(|((c, r), recs)| {
-            (roadcore::archive::tile_key(14, x * CELLS + c, y * CELLS + r), block(recs), recs.len() as u32)
-        })
+        .map(|((c, r), recs)| (roadcore::archive::tile_key(14, x * CELLS + c, y * CELLS + r), recs))
         .collect();
     bs.sort_by_key(|b| b.0);
-    let p = dir.join(format!("w-{x}-{y}-{fmt}.sect"));
-    crate::bld::work::write(&p, &meta, &mut bs.into_iter().map(Ok)).unwrap();
-    o.put_file(&crate::bld::work_logical(x, y), "sect", &p).unwrap();
+    let fsrc = bs.iter().flat_map(|(_, recs)| recs.iter().map(|r| r.4)).collect();
+    let p = dir.join(format!("w-{x}-{y}.sect"));
+    crate::bld::work::write(&p, &meta, &mut bs.iter().map(|(k, recs)| Ok((*k, block(recs), recs.len() as u32))))
+        .unwrap();
+    (o.put_file(&crate::bld::work_logical(x, y), "sect", &p).unwrap(), fsrc)
 }
 
+/// Z6 tile (x, y)'s side file, naming the normalized file `work`, put under its logical name.
+fn put_side(o: &mut Out, dir: &Path, (x, y): (u32, u32), work: &str, fsrc: &[u8]) {
+    let p = dir.join(format!("s-{x}-{y}.sect"));
+    crate::bld::side::write(&p, &format!("6/{x}/{y}"), work, fsrc).unwrap();
+    o.put_file(&crate::bld::side_logical(x, y), "sect", &p).unwrap();
+}
+
+/// Z6 tile t's normalized file and its side file.
 fn put(o: &mut Out, dir: &Path, t: (u32, u32), srcs: &[&str], blocks: &[((u32, u32), Vec<Rec>)]) {
-    put_fmt(o, dir, t, FMT, srcs, blocks)
+    let (work, fsrc) = put_work(o, dir, t, srcs, blocks);
+    put_side(o, dir, t, &work, &fsrc);
 }
 
 const OSM: &str = "OpenStreetMap";
@@ -89,8 +104,9 @@ fn cells(m: &Mask, t: (u32, u32)) -> Vec<(u16, u16)> {
         .collect()
 }
 
-/// The cells' rule: footprints the plurality's (ties to the first code), never a stray
-/// building's; heights where half the buildings have one, each dataset of a quarter of them.
+/// The cells' rule: footprints the plurality's (ties to the first code; code 0, no dataset, first
+/// of all), never a stray building's; heights where half the buildings have one, each dataset of a
+/// quarter of them; storeys where half the buildings with no height have floors.
 #[test]
 fn the_cells_rule() {
     let fp = |n: &[u32]| n.iter().map(|&k| [k, 0, 0]).collect::<Vec<_>>();
@@ -98,6 +114,8 @@ fn the_cells_rule() {
     assert_eq!(credit(&fp(&[0, 1, 10]), 11, FOOTPRINTS), [2]);
     assert_eq!(credit(&fp(&[0, 3, 3]), 6, FOOTPRINTS), [1]);
     assert_eq!(credit(&fp(&[5, 3, 1]), 9, FOOTPRINTS), Vec::<u8>::new());
+    // (A tie with code 0: no dataset.)
+    assert_eq!(credit(&fp(&[3, 3, 1]), 7, FOOTPRINTS), Vec::<u8>::new());
     let ht = |n: &[u32]| n.iter().map(|&k| [0, 0, k]).collect::<Vec<_>>();
     // Houston: two datasets' heights on 44 % of the buildings each: both.
     assert_eq!(credit(&ht(&[0, 44, 44]), 100, HEIGHTS), [1, 2]);
@@ -107,6 +125,12 @@ fn the_cells_rule() {
     assert_eq!(credit(&ht(&[0, 0, 0]), 0, HEIGHTS), Vec::<u8>::new());
     let st = |n: &[u32]| n.iter().map(|&k| [0, k, 0]).collect::<Vec<_>>();
     assert_eq!(credit(&st(&[0, 3, 2]), 6, STOREYS), [1, 2]);
+    // 60 % heights and 40 % storeys alone: the storeys are all the buildings with no height.
+    let both = |hs: u32, st: u32| vec![[0, 0, 0], [0, st, hs]];
+    assert_eq!(credit(&both(60, 40), 100, STOREYS), [1]);
+    assert_eq!(credit(&both(60, 40), 100, HEIGHTS), [1]);
+    // Storeys on under half the buildings with no height: none.
+    assert_eq!(credit(&both(60, 19), 100, STOREYS), Vec::<u8>::new());
     // HOLDS's order, as these indexes take it.
     assert_eq!([HOLDS[FOOTPRINTS], HOLDS[STOREYS], HOLDS[HEIGHTS]], ["footprints", "storeys", "heights"]);
 }
@@ -141,15 +165,17 @@ fn a_cell_holds_a_piece_by_its_buildings() {
             ((201, 9), vec![(0, 0, flag::PART, 3, 3)]),
             // A tie of Esri's and Microsoft's footprints: Esri's (first by name), undeclared.
             ((202, 9), vec![(0, 0, 0, 1, 1), (0, 0, 0, 2, 2)]),
+            // Three OSM heights, two OSM storeys alone: heights, and the storeys (two of two).
+            ((203, 9), [vec![(100, 0, 0, 3, 3); 3], vec![(0, 3, 0, 3, 3); 2]].concat()),
         ],
     );
     let s = specs5();
-    let m = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
-    assert_eq!((m.read, m.kept, m.older), (1, 0, 0));
+    let m = masks(&mut o, "buildings", &s, &|_, _, _| {}).unwrap();
+    assert_eq!((m.read, m.kept, m.left_out.len()), (1, 0, 0));
     let t = (33, 22);
-    assert_eq!(cells(&m.masks[0], t), [(5, 1), (7, 1), (200, 9)]);
-    assert_eq!(cells(&m.masks[1], t), [(5, 1), (8, 1)]);
-    assert_eq!(cells(&m.masks[2], t), [(7, 1)]);
+    assert_eq!(cells(&m.masks[0], t), [(5, 1), (7, 1), (200, 9), (203, 9)]);
+    assert_eq!(cells(&m.masks[1], t), [(5, 1), (8, 1), (203, 9)]);
+    assert_eq!(cells(&m.masks[2], t), [(7, 1), (203, 9)]);
     assert_eq!(cells(&m.masks[3], t), [(6, 1), (8, 1), (9, 1)]);
     assert_eq!(cells(&m.masks[4], t), [(8, 1), (200, 9)]);
     // Side by side, one run.
@@ -158,7 +184,7 @@ fn a_cell_holds_a_piece_by_its_buildings() {
     assert_eq!(m.undeclared.get(&("heights".into(), MS.into())), None);
     // Again: the record's cells, nothing read, the same masks and the same record.
     let rec = o.get(&codecs::available::masks_logical("buildings")).unwrap().to_string();
-    let m2 = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
+    let m2 = masks(&mut o, "buildings", &s, &|_, _, _| {}).unwrap();
     assert_eq!((m2.read, m2.kept), (0, 1));
     for (a, b) in m.masks.iter().zip(&m2.masks) {
         assert_eq!((&a.id, &a.tiles), (&b.id, &b.tiles));
@@ -166,27 +192,41 @@ fn a_cell_holds_a_piece_by_its_buildings() {
     assert_eq!(o.get(&codecs::available::masks_logical("buildings")).unwrap(), rec);
     // A second file: it alone read; its masks beside the first's.
     put(&mut o, d.path(), (34, 22), &srcs, &[((0, 0), vec![(0, 0, 0, 2, 2)])]);
-    let m3 = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
+    let m3 = masks(&mut o, "buildings", &s, &|_, _, _| {}).unwrap();
     assert_eq!((m3.read, m3.kept), (1, 1));
     assert_eq!(cells(&m3.masks[3], (34, 22)), [(0, 0)]);
     assert_eq!(cells(&m3.masks[3], t), [(6, 1), (8, 1), (9, 1)]);
     // A spec changed: every file read again.
     let mut s2 = specs5();
     s2[1].block.holds = "storeys".into();
-    let m4 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
+    let m4 = masks(&mut o, "buildings", &s2, &|_, _, _| {}).unwrap();
     assert_eq!((m4.read, m4.kept), (2, 0));
-    assert_eq!(cells(&m4.masks[1], t), [(7, 1)]);
-    // A file of an older format: left out, not recorded, its tile in no mask.
-    put_fmt(&mut o, d.path(), (34, 22), FMT - 1, &srcs, &[((0, 0), vec![(0, 0, 0, 2, 2)])]);
-    let m5 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
-    assert_eq!((m5.read, m5.kept, m5.older), (0, 1, 1));
+    assert_eq!(cells(&m4.masks[1], t), [(7, 1), (203, 9)]);
+    // A normalized file made again, its side file still the old one's (naming another): left
+    // out, said in the record, its tile in no mask; then its own side file: read.
+    let (work, fsrc) = put_work(&mut o, d.path(), (34, 22), &srcs, &[((0, 0), vec![(0, 0, 0, 2, 2); 2])]);
+    let said = std::sync::Mutex::new(Vec::new());
+    let m5 = masks(&mut o, "buildings", &s2, &|d, n, l| said.lock().unwrap().push((d, n, l))).unwrap();
+    assert_eq!((m5.read, m5.kept, &m5.left_out[..]), (0, 1, &[(34, 22)][..]));
+    assert_eq!(said.into_inner().unwrap(), [(1, 1, 1)]);
     assert!(!m5.masks[3].tiles.contains_key(&(34, 22)));
+    let l = codecs::available::masks_logical("buildings");
+    let rec = zstd::decode_all(&o.path(o.get(&l).unwrap()).read().unwrap()[..]).unwrap();
+    assert_eq!(rec[rec.len() - 12..], [1, 0, 0, 0, 34, 0, 0, 0, 22, 0, 0, 0]);
+    put_side(&mut o, d.path(), (34, 22), &work, &fsrc);
+    let m5 = masks(&mut o, "buildings", &s2, &|_, _, _| {}).unwrap();
+    assert_eq!((m5.read, m5.kept, m5.left_out.len()), (1, 1, 0));
+    assert_eq!(cells(&m5.masks[3], (34, 22)), [(0, 0)]);
+    // A side file gone: its tile left out, nothing read.
+    o.remove(&crate::bld::side_logical(34, 22));
+    let m5 = masks(&mut o, "buildings", &s2, &|_, _, _| {}).unwrap();
+    assert_eq!((m5.read, m5.kept, &m5.left_out[..]), (0, 1, &[(34, 22)][..]));
     // A file gone: its tile gone from the masks and the record.
     o.remove(&crate::bld::work_logical(34, 22));
-    let m6 = masks(&mut o, "buildings", &s2, &|_, _| {}).unwrap();
-    assert_eq!((m6.read, m6.kept, m6.older), (0, 1, 0));
+    let m6 = masks(&mut o, "buildings", &s2, &|_, _, _| {}).unwrap();
+    assert_eq!((m6.read, m6.kept, m6.left_out.len()), (0, 1, 0));
     // No mask piece: nothing read, the record gone.
-    let m7 = masks(&mut o, "buildings", &[], &|_, _| {}).unwrap();
+    let m7 = masks(&mut o, "buildings", &[], &|_, _, _| {}).unwrap();
     assert!(m7.masks.is_empty() && m7.read == 0 && m7.kept == 0);
     assert!(o.get(&codecs::available::masks_logical("buildings")).is_none());
 }
@@ -197,7 +237,7 @@ fn a_record_unreadable_or_of_other_specs_is_read_again() {
     let mut o = out(d.path());
     put(&mut o, d.path(), (10, 20), &[OSM], &[((3, 4), vec![(0, 0, 0, 1, 1)])]);
     let s = specs5();
-    masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
+    masks(&mut o, "buildings", &s, &|_, _, _| {}).unwrap();
     let l = codecs::available::masks_logical("buildings");
     let b = o.path(o.get(&l).unwrap()).read().unwrap();
     // Its own bytes decode to what it holds; other specs' digest holds nothing; cut short, refused.
@@ -206,7 +246,7 @@ fn a_record_unreadable_or_of_other_specs_is_read_again() {
     assert!(decode(&b, &specs_digest(&s[..2]), 2).unwrap().is_empty());
     assert!(decode(&b[..b.len() - 3], &digest, s.len()).is_err());
     o.put_bytes(&l, "bin", b"not a record").unwrap();
-    let m = masks(&mut o, "buildings", &s, &|_, _| {}).unwrap();
+    let m = masks(&mut o, "buildings", &s, &|_, _, _| {}).unwrap();
     assert_eq!((m.read, m.kept), (1, 0));
     assert_eq!(cells(&m.masks[0], (10, 20)), [(3, 4)]);
 }
@@ -260,7 +300,8 @@ fn measures_the_real_step() {
     let manifest: BTreeMap<String, String> = serde_json::from_value(brief["manifest"].clone()).unwrap();
     let d = tempfile::tempdir().unwrap();
     let mut o = out(d.path());
-    for (l, c) in manifest.range(crate::bld::WORK.to_string()..).take_while(|(l, _)| l.starts_with(crate::bld::WORK)) {
+    let ours = |l: &String| l.starts_with(crate::bld::WORK) || l.starts_with(crate::bld::SIDE);
+    for (l, c) in manifest.iter().filter(|(l, _)| ours(l)) {
         let link = d.path().join(c);
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(nas.join(c), &link).unwrap();
@@ -282,8 +323,15 @@ fn measures_the_real_step() {
     }
     let files = o.manifest.len();
     let t = std::time::Instant::now();
-    let m = masks(&mut o, "buildings", &specs_all, &|_, _| {}).unwrap();
-    eprintln!("masks: {} files ({} read, {} kept, {} older) in {:.1?}", files, m.read, m.kept, m.older, t.elapsed());
+    let m = masks(&mut o, "buildings", &specs_all, &|_, _, _| {}).unwrap();
+    eprintln!(
+        "masks: {} files ({} read, {} kept, {} z6 tiles left out) in {:.1?}",
+        files,
+        m.read,
+        m.kept,
+        m.left_out.len(),
+        t.elapsed()
+    );
     for k in &m.masks {
         eprintln!("  {}: {} z6 tiles", k.id, k.tiles.len());
     }
@@ -291,7 +339,7 @@ fn measures_the_real_step() {
         eprintln!("  undeclared: {n} buildings' {holds} of {dataset}");
     }
     let t = std::time::Instant::now();
-    let again = masks(&mut o, "buildings", &specs_all, &|_, _| {}).unwrap();
+    let again = masks(&mut o, "buildings", &specs_all, &|_, _, _| {}).unwrap();
     eprintln!("masks again: {} read, {} kept in {:.1?}", again.read, again.kept, t.elapsed());
     let record = o.path(o.get(&codecs::available::masks_logical("buildings")).unwrap()).read().unwrap().len();
     eprintln!("the record: {record} bytes");

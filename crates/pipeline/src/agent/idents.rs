@@ -102,18 +102,19 @@ pub fn inland_water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     )
 }
 
-/// The build's normalized buildings (`work/bld/6-x-y`, bldprep's) by content, for the buildings'
-/// data-available target (`available-buildings`: its mask pieces are drawn from them,
-/// bld::bld::extents); nothing for another theme's. Not required: the layers are drawn from those
-/// there are, and drawn again as more come.
+/// The build's normalized buildings (`work/bld/6-x-y`, bldprep's) and their side files
+/// (`work/bldsrc/6-x-y`, bld::bld::side) by content, for the buildings' data-available target
+/// (`available-buildings`: its mask pieces are drawn from them, bld::bld::extents); nothing for
+/// another theme's. Not required: the layers are drawn from those there are, and drawn again as
+/// more come.
 pub fn overture_work(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     if t != codecs::available::layer("buildings", codecs::available::BEST) {
         return Some(Vec::new());
     }
-    let prefix = bld::bld::WORK;
     Some(
-        x.m.range(prefix.to_string()..)
-            .take_while(|(l, _)| l.starts_with(prefix))
+        [bld::bld::WORK, bld::bld::SIDE]
+            .into_iter()
+            .flat_map(|prefix| x.m.range(prefix.to_string()..).take_while(move |(l, _)| l.starts_with(prefix)))
             .map(|(l, c)| format!("{l}={c}"))
             .collect(),
     )

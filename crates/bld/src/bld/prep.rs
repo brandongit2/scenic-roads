@@ -616,7 +616,6 @@ impl Prepped {
             b.hsrc.push(remap[3][self.hsrc[i] as usize]);
             b.ghsl.push(self.ghsl[i]);
             b.osm.push(self.osm[i]);
-            b.fsrc.push(remap[3][self.fsrc[i] as usize]);
         }
         b
     }
@@ -633,8 +632,9 @@ impl Prepped {
         }
     }
 
-    /// Writes the normalized file of tile `t` to `path`; its counts.
-    pub fn write(mut self, t: TileId, release: &str, path: &Path) -> Result<Stats> {
+    /// Writes the normalized file of tile `t` to `path`; its counts, and its records' footprints'
+    /// datasets (codes into its `srcs`) in the file's order, the side file's column (crate::bld::side).
+    pub fn write(mut self, t: TileId, release: &str, path: &Path) -> Result<(Stats, Vec<u8>)> {
         self.resolve_parts();
         let ord = self.order();
         let (classes, rc) = self.classes.sorted("classes")?;
@@ -651,7 +651,7 @@ impl Prepped {
             }
         }
         let meta = Meta {
-            fmt: super::work::FMT,
+            fmt: 1,
             tile: t.slash(),
             release: release.to_string(),
             buildings: nb,
@@ -684,10 +684,12 @@ impl Prepped {
             z
         });
         work::write(path, &meta, &mut chunks)?;
+        // (The blocks' records lie in `ord`'s order: the groups are its runs.)
+        let fsrc = ord.iter().map(|&i| remap[3][self.fsrc[i as usize] as usize]).collect();
         let mut st = self.stats.clone();
         st.buildings = nb;
         st.parts = np;
-        Ok(st)
+        Ok((st, fsrc))
     }
 }
 
@@ -894,7 +896,8 @@ fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
 
 /// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
 /// folder, inputs::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
-/// (or, when T has no building, the one it had dropped). Its counts.
+/// and its side file as `work/bldsrc/6-x-y`, naming it (crate::bld::side), or, when T has no
+/// building, the ones it had dropped. Its counts.
 pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     use jobrt::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&inputs::inputs::sources::read(out.root(), &out.manifest)?)?;
@@ -903,9 +906,12 @@ pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
         .with_context(|| format!("bldprep {}", t.slash()))?;
     eprintln!("bldprep {}: read in {:.0?}: {:?}", t.slash(), t0.elapsed(), p.stats);
     let logical = super::work_logical(t.x, t.y);
+    let side = super::side_logical(t.x, t.y);
     if p.is_empty() {
-        if out.get(&logical).is_some() {
-            out.remove(&logical);
+        for l in [&logical, &side] {
+            if out.get(l).is_some() {
+                out.remove(l);
+            }
         }
         out.save()?;
         pieces.finish();
@@ -913,10 +919,13 @@ pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     }
     let local = out.scratch_file(&format!("{logical}.sect"));
     let w = phase("writing the normalized file");
-    let st = p.write(t, &release, &local)?;
+    let (st, fsrc) = p.write(t, &release, &local)?;
     drop(w);
     let w = phase("uploading");
     let name = out.put_file(&logical, "sect", &local)?;
+    let local = out.scratch_file(&format!("{side}.sect"));
+    super::side::write(&local, &t.slash(), &name, &fsrc)?;
+    out.put_file(&side, "sect", &local)?;
     drop(w);
     out.save()?;
     pieces.finish();
@@ -1198,8 +1207,10 @@ mod tests {
         assert_eq!((p.stats.buildings, p.stats.parts, p.stats.underground, p.stats.outside), (4, 1, 1, 1));
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("w.sect");
-        let st = p.write(t, "2026-09-23.1", &path).unwrap();
+        let (st, fsrc) = p.write(t, "2026-09-23.1", &path).unwrap();
         assert_eq!((st.buildings, st.parts), (4, 1));
+        // (The footprints' datasets, a record each in the file's order: the side file's column.)
+        assert_eq!(fsrc, [1; 5]);
         let w = work::WorkFile::open(&path).unwrap();
         assert_eq!(w.meta.classes, vec!["apartments"]);
         assert_eq!(w.meta.srcs, vec!["OpenStreetMap"]);
@@ -1251,5 +1262,48 @@ mod tests {
         end(&mut s);
         let e = Prepped::from_frames(std::mem::take(&mut s), t).err().expect("refused");
         assert!(format!("{e:#}").contains("a GHSL window after rows"), "{e:#}");
+    }
+
+    /// The real files made again, a check run by hand: z6 tiles `$SCENIC_PREP_TILES` (`6/x/y`,
+    /// comma-separated) read from the NAS root `$SCENIC_PREP_ROOT` (its records' accepted sources
+    /// and downloads; nothing written there) into a local folder, each normalized file's content
+    /// hash printed beside the one the records name: equal, `bldtiles` (keyed on them) runs nothing
+    /// again for a new `BLDPREP_V`. Nothing without the variables; on the Mac mini, near the NAS.
+    #[test]
+    fn remakes_the_real_files() {
+        let (Some(nas), Some(tiles)) = (std::env::var_os("SCENIC_PREP_ROOT"), std::env::var("SCENIC_PREP_TILES").ok())
+        else {
+            return;
+        };
+        let nas = std::path::PathBuf::from(nas);
+        let brief: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(nas.join("state/build/brief.json")).unwrap()).unwrap();
+        let manifest: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(brief["manifest"].clone()).unwrap();
+        let root = store::nasfs::NasRoot::from_arg(&nas);
+        let (release, ghsl, _) =
+            super::super::sources::declared(&inputs::inputs::sources::read(&root, &manifest).unwrap()).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut same = 0;
+        let n = tiles.split(',').count();
+        for t in tiles.split(',') {
+            let t = TileId::parse(t).unwrap();
+            let (p, _pieces) = read(&root, &release, &ghsl, t, d.path(), false).unwrap();
+            let path = d.path().join(format!("{}.sect", t.dash()));
+            let (st, fsrc) = p.write(t, &release, &path).unwrap();
+            let h = store::naming::hash16(&std::fs::read(&path).unwrap());
+            let named = manifest.get(&super::super::work_logical(t.x, t.y)).cloned().unwrap_or_default();
+            let eq = named.contains(&format!(".{h}."));
+            same += usize::from(eq);
+            eprintln!(
+                "{}: {} buildings, {} parts, {} side records; made {h}, the records name {named}: {}",
+                t.slash(),
+                st.buildings,
+                st.parts,
+                fsrc.len(),
+                if eq { "the same" } else { "DIFFERENT" }
+            );
+        }
+        eprintln!("{same} of {n} the same");
     }
 }

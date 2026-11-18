@@ -4,25 +4,30 @@
 //! whose cells are the z14 tiles of the normalized files (`work/bld/6-x-y`, crate::bld::work, a
 //! block per z14 tile) the cells' rule gives it.
 //!
-//! A record's kind, from the columns the files keep (crate::bld::work::Tags; building parts left
-//! out): its **footprint**, counted for the footprint's dataset (`fsrc`); a **height** (`h`),
-//! counted for the height's dataset (`hsrc`); **storeys** (floors and no height), counted for the
-//! footprint's dataset.
+//! A record's kind, from the columns the files keep (crate::bld::work::Tags, and the side file's
+//! `fsrc`, crate::bld::side; building parts left out): its **footprint**, counted for the
+//! footprint's dataset (`fsrc`); a **height** (`h`), counted for the height's dataset (`hsrc`);
+//! **storeys** (floors and no height), counted for the footprint's dataset.
 //!
 //! **The cells' rule** ([`credit`]), a cell's buildings counted:
 //! - **footprints:** the cell is the footprints' piece of the dataset holding the most of its
 //!   buildings (ties to the dataset first by name), and no other's: a stray building gives its
-//!   dataset nothing;
+//!   dataset nothing. Where the most are of no dataset (code 0), or code 0 ties for the most, no
+//!   dataset has the cell;
 //! - **heights:** where half its buildings or more have a height ([`HELD`]), the cell is the
 //!   heights' piece of each dataset holding a quarter or more of those heights ([`CREDITED`]): two
 //!   datasets of 44 % each both have it;
-//! - **storeys:** likewise, of the buildings with floors and no height.
+//! - **storeys:** likewise, of the buildings with no height: where half of those or more have
+//!   floors, each dataset holding a quarter or more of the storeys (a cell of 60 % heights and 40 %
+//!   storeys alone has its storeys).
 //!
-//! The step's record of what it read (codecs::available::masks_logical: each file's content name
-//! and its pieces' cells, for the pieces declared as they are) is read first, and only the files
-//! it doesn't name are read: a file is read whole, a run of blocks at a time
-//! ([`READ_RUN`]), its geometry left unread. The record holds the current files alone. A file of
-//! an older format (one `bldprep` hasn't made again yet: work::FMT) is left out and counted.
+//! The step's record of what it read (codecs::available::masks_logical: each tile's normalized
+//! file's and side file's content names and its pieces' cells, for the pieces declared as they
+//! are) is read first, and only the files it doesn't name are read: a file is read whole, a run of
+//! blocks at a time ([`READ_RUN`]), its geometry left unread. The record holds the current files
+//! alone, and the z6 tiles left out: a tile whose side file is missing, or names another
+//! normalized file than the tile's (one `bldprep` hasn't written yet), has no cells until it has
+//! its own.
 
 use anyhow::{bail, ensure, Context, Result};
 use buildstore::out::Out;
@@ -31,10 +36,11 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use terrain::available::mask::{Mask, MaskTile, CELLS, MASK_Z};
 
+use super::side::SideFile;
 use super::work::{flag, IndexEntry, Meta, Tags, WorkFile};
 
 /// What the record holds: bumped with a change to how a file's cells are found (every file read
-/// again). (2: the footprint's own dataset, and the cells' rule.)
+/// again). (2: the footprint's own dataset, from the side file, and the cells' rule.)
 pub const MASKS_V: u32 = 2;
 
 /// The share of a cell's buildings that must hold heights (or storeys) for the cell to have them.
@@ -78,11 +84,11 @@ pub fn specs(source: &str, pieces: &[u8]) -> Result<Vec<Spec>> {
 #[derive(Debug, Default)]
 pub struct Masks {
     pub masks: Vec<Mask>,
-    /// The normalized files read, those whose cells the record held, and those of an older format
-    /// left out.
+    /// The normalized files read, and those whose cells the record held.
     pub read: usize,
     pub kept: usize,
-    pub older: usize,
+    /// The z6 tiles left out: a side file missing, or naming another normalized file.
+    pub left_out: Vec<(u32, u32)>,
     /// The buildings read of a (holds, dataset) no spec names: what a declaration could add.
     pub undeclared: BTreeMap<(String, String), u64>,
 }
@@ -90,9 +96,11 @@ pub struct Masks {
 /// A file's cells: by spec (its index), the tile's cells held.
 type FileCells = Vec<(usize, MaskTile)>;
 
-/// The masks of `specs` (theme `theme`'s), from the normalized files the records name, the step's
-/// record (`masks_logical`) read and written again; `report` hears the files read of those to read.
-pub fn masks(out: &mut Out, theme: &str, specs: &[Spec], report: &(dyn Fn(u64, u64) + Sync)) -> Result<Masks> {
+/// The masks of `specs` (theme `theme`'s), from the normalized files and their side files the
+/// records name, the step's record (`masks_logical`) read and written again; `report` hears the
+/// files read of those to read, and the z6 tiles left out so far.
+pub fn masks(out: &mut Out, theme: &str, specs: &[Spec], report: &(dyn Fn(u64, u64, usize) + Sync)) -> Result<Masks> {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
     let logical = codecs::available::masks_logical(theme);
     // (No mask piece: nothing read, and no record.)
     if specs.is_empty() {
@@ -101,11 +109,15 @@ pub fn masks(out: &mut Out, theme: &str, specs: &[Spec], report: &(dyn Fn(u64, u
         }
         return Ok(Masks::default());
     }
-    let files: Vec<((u32, u32), String)> = out
+    // (Each tile's normalized file and its side file, where it has one.)
+    let files: Vec<((u32, u32), String, Option<String>)> = out
         .manifest
         .range(super::WORK.to_string()..)
         .take_while(|(l, _)| l.starts_with(super::WORK))
-        .filter_map(|(l, c)| Some((tile_of(l)?, c.clone())))
+        .filter_map(|(l, c)| {
+            let t = tile_of(l)?;
+            Some((t, c.clone(), out.get(&super::side_logical(t.0, t.1)).map(str::to_string)))
+        })
         .collect();
     let digest = specs_digest(specs);
     let mut old = match out.get(&logical) {
@@ -118,50 +130,64 @@ pub fn masks(out: &mut Out, theme: &str, specs: &[Spec], report: &(dyn Fn(u64, u
         }
         None => HashMap::new(),
     };
-    let todo: Vec<&((u32, u32), String)> = files.iter().filter(|(_, c)| !old.contains_key(c)).collect();
-    let done = std::sync::atomic::AtomicU64::new(0);
+    let mut left_out: Vec<(u32, u32)> = files.iter().filter(|(_, _, s)| s.is_none()).map(|(t, _, _)| *t).collect();
+    let sided: Vec<((u32, u32), String, String)> =
+        files.iter().filter_map(|(t, c, s)| Some((*t, c.clone(), s.clone()?))).collect();
+    let todo: Vec<&((u32, u32), String, String)> =
+        sided.iter().filter(|(_, c, s)| !old.contains_key(&pair(c, s))).collect();
+    let (done, unmatched) = (AtomicU64::new(0), AtomicUsize::new(0));
     let n = todo.len() as u64;
-    type Read = (String, Option<(FileCells, BTreeMap<(String, String), u64>)>);
+    type Read = ((u32, u32), String, Option<(FileCells, BTreeMap<(String, String), u64>)>);
     let read: Vec<Read> = todo
         .par_iter()
-        .map(|((x, y), c)| {
-            let got = read_file(&out.path(c), (*x, *y), specs)
-                .with_context(|| format!("the buildings of 6/{x}/{y} ({c})"))?;
-            report(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, n);
-            Ok((c.clone(), got))
+        .map(|((x, y), c, s)| {
+            let got = read_file(&out.path(c), c, &out.path(s), (*x, *y), specs)
+                .with_context(|| format!("the buildings of 6/{x}/{y} ({c}, {s})"))?;
+            if got.is_none() {
+                unmatched.fetch_add(1, Relaxed);
+            }
+            report(done.fetch_add(1, Relaxed) + 1, n, left_out.len() + unmatched.load(Relaxed));
+            Ok(((*x, *y), pair(c, s), got))
         })
         .collect::<Result<_>>()?;
-    let mut made = Masks { kept: files.len() - read.len(), ..Default::default() };
-    // (A file of an older format isn't recorded: it's left out until `bldprep` makes it again.)
-    let mut older = std::collections::HashSet::new();
-    for (c, got) in read {
+    let mut made = Masks { kept: sided.len() - todo.len(), ..Default::default() };
+    // (A tile whose side file names another normalized file isn't recorded: it's left out until
+    // `bldprep` writes its own.)
+    for (t, k, got) in read {
         let Some((cells, u)) = got else {
-            older.insert(c);
+            left_out.push(t);
             continue;
         };
         made.read += 1;
-        old.insert(c, cells);
+        old.insert(k, cells);
         for (k, v) in u {
             *made.undeclared.entry(k).or_default() += v;
         }
     }
-    made.older = older.len();
+    left_out.sort_unstable();
     // (The record of the current files alone, in their order; the masks from it.)
-    let mut rec: Vec<(&str, (u32, u32), &FileCells)> = Vec::with_capacity(files.len());
+    let mut rec: Vec<(String, (u32, u32), &FileCells)> = Vec::with_capacity(sided.len());
     let mut masks: Vec<Mask> = specs.iter().map(|s| Mask { id: s.id.clone(), tiles: BTreeMap::new() }).collect();
-    for (t, c) in files.iter().filter(|(_, c)| !older.contains(c)) {
-        let cells = &old[c];
-        rec.push((c.as_str(), *t, cells));
-        for (k, m) in cells {
-            masks[*k].tiles.insert(*t, m.clone());
+    for (t, c, s) in &sided {
+        let k = pair(c, s);
+        let Some(cells) = old.get(&k) else { continue };
+        for (i, m) in cells {
+            masks[*i].tiles.insert(*t, m.clone());
         }
+        rec.push((k, *t, cells));
     }
-    let bytes = encode(&digest, &rec)?;
+    let bytes = encode(&digest, &rec, &left_out)?;
     if out.get(&logical).is_none_or(|c| out.path(c).read().ok().as_deref() != Some(&bytes[..])) {
         out.put_bytes(&logical, "bin", &bytes)?;
     }
     made.masks = masks;
+    made.left_out = left_out;
     Ok(made)
+}
+
+/// A tile's key in the record: its normalized file's and its side file's content names.
+fn pair(work: &str, side: &str) -> String {
+    format!("{work} {side}")
 }
 
 /// A normalized file's z6 tile, from its logical name (`work/bld/6-x-y`).
@@ -185,12 +211,15 @@ fn specs_digest(specs: &[Spec]) -> String {
 /// but never credited) and its buildings (`all`).
 pub fn credit(count: &[[u32; 3]], all: u32, h: usize) -> Vec<u8> {
     if h == FOOTPRINTS {
-        // (The plurality; the first code, the first by name, of equals.)
+        // (The plurality; the first code of equals, the first by name, code 0 before any: a cell
+        // whose most are of no dataset, or tie with them, credits none.)
         let best = count.iter().enumerate().fold((0usize, 0u32), |b, (c, n)| if n[h] > b.1 { (c, n[h]) } else { b });
         return if best.0 != 0 && best.1 > 0 { vec![best.0 as u8] } else { Vec::new() };
     }
+    // (Storeys of the buildings with no height: a height outranks them.)
+    let of = if h == STOREYS { all - count.iter().map(|n| n[HEIGHTS]).sum::<u32>() } else { all };
     let total: u32 = count.iter().map(|n| n[h]).sum();
-    if total == 0 || f64::from(total) < HELD * f64::from(all) {
+    if total == 0 || f64::from(total) < HELD * f64::from(of) {
         return Vec::new();
     }
     (1..count.len())
@@ -199,15 +228,32 @@ pub fn credit(count: &[[u32; 3]], all: u32, h: usize) -> Vec<u8> {
         .collect()
 }
 
-/// A file's cells of `specs`, and the buildings read of a (holds, dataset) none names; None for a
-/// file of an older format.
+/// A normalized file's (`path`, its content name `work`) cells of `specs` with its side file's
+/// (`side`), and the buildings read of a (holds, dataset) none names; None where the side file
+/// names another normalized file.
 fn read_file(
     path: &store::nasfs::NasPath,
+    work: &str,
+    side: &store::nasfs::NasPath,
     t: (u32, u32),
     specs: &[Spec],
 ) -> Result<Option<(FileCells, BTreeMap<(String, String), u64>)>> {
-    let Some(f) = WorkFile::open_current(path)? else { return Ok(None) };
-    ensure!(f.meta.tile == format!("6/{}/{}", t.0, t.1), "a file of tile {}", f.meta.tile);
+    let s = SideFile::open(side)?;
+    if s.meta.work != work {
+        return Ok(None);
+    }
+    let f = WorkFile::open(path)?;
+    let tile = format!("6/{}/{}", t.0, t.1);
+    ensure!(
+        f.meta.tile == tile && s.meta.tile == tile,
+        "a file of tile {}, its side file's {}",
+        f.meta.tile,
+        s.meta.tile
+    );
+    let records: usize = f.index.iter().map(|e| e.count as usize).sum();
+    ensure!(s.fsrc.len() == records, "a side file of {} records, its normalized file's {records}", s.fsrc.len());
+    // (The side file's records, in the file's order: each block's from `at`.)
+    let mut at = 0usize;
     // (Each spec's dataset as the file's code: 0 where the file holds none of it.)
     let code = |d: &str| f.meta.srcs.iter().position(|s| s == d).map_or(0, |i| i as u8 + 1);
     let want: Vec<(u8, usize)> = specs.iter().map(|s| (code(&s.block.dataset), holds_index(&s.block.holds))).collect();
@@ -223,6 +269,8 @@ fn read_file(
             let raw = zstd::decode_all(z).context("a building block's zstd")?;
             let b = Tags::of(&raw)?;
             ensure!(b.n == e.count as usize, "a building block holds {} records, its index says {}", b.n, e.count);
+            let fsrc = &s.fsrc[at..at + b.n];
+            at += b.n;
             // (Per dataset code, per holds: the buildings; and the cell's buildings.)
             let mut count = vec![[0u32; 3]; codes];
             let mut all = 0u32;
@@ -231,7 +279,7 @@ fn read_file(
                     continue;
                 }
                 all += 1;
-                let (fs, hs) = (usize::from(b.fsrc(i)), usize::from(b.hsrc(i)));
+                let (fs, hs) = (usize::from(fsrc[i]), usize::from(b.hsrc(i)));
                 ensure!(fs < codes && hs < codes, "a dataset code {} past the file's {}", fs.max(hs), codes - 1);
                 count[fs][FOOTPRINTS] += 1;
                 if b.h(i) > 0 {
@@ -318,9 +366,10 @@ fn runs(index: &[IndexEntry]) -> Vec<&[IndexEntry]> {
     out
 }
 
-/// The record's bytes (zstd'd): its magic, the specs' digest, then per file its content name, its
-/// tile and its pieces' cells (each spec's index, its rows' run counts, its runs).
-fn encode(digest: &str, files: &[(&str, (u32, u32), &FileCells)]) -> Result<Vec<u8>> {
+/// The record's bytes (zstd'd): its magic, the specs' digest, then per tile its files' content
+/// names ([`pair`]), its tile and its pieces' cells (each spec's index, its rows' run counts, its
+/// runs); then the tiles left out.
+fn encode(digest: &str, files: &[(String, (u32, u32), &FileCells)], left_out: &[(u32, u32)]) -> Result<Vec<u8>> {
     let mut b = Vec::new();
     b.extend_from_slice(b"BLDMASK1");
     b.extend_from_slice(digest.as_bytes());
@@ -341,6 +390,11 @@ fn encode(digest: &str, files: &[(&str, (u32, u32), &FileCells)]) -> Result<Vec<
                 b.extend_from_slice(&q.to_le_bytes());
             }
         }
+    }
+    b.extend_from_slice(&(left_out.len() as u32).to_le_bytes());
+    for (x, y) in left_out {
+        b.extend_from_slice(&x.to_le_bytes());
+        b.extend_from_slice(&y.to_le_bytes());
     }
     Ok(zstd::bulk::compress(&b, 3)?)
 }
@@ -373,6 +427,9 @@ fn decode(z: &[u8], digest: &str, specs: usize) -> Result<HashMap<String, FileCe
         }
         out.insert(c, cells);
     }
+    // (The tiles left out: the record says them, the run finds them afresh.)
+    let left = r.u32()? as usize;
+    r.take(8 * left)?;
     ensure!(r.at == b.len(), "the record has bytes over");
     Ok(out)
 }

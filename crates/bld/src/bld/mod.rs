@@ -26,13 +26,14 @@ pub mod ghsl;
 pub mod job;
 pub mod overture;
 pub mod prep;
+pub mod side;
 pub mod sources;
 pub mod task;
 pub mod tiles;
 pub mod work;
 
-/// Bumped when the normalized files change (every `bldprep` target runs again). (3, task #1438:
-/// each record's footprint's dataset, `fsrc`, work::FMT 2.)
+/// Bumped when the normalized files or their side files change (every `bldprep` target runs
+/// again). (3, task #1438: the side files, [`side`]; the normalized files as they were.)
 pub const BLDPREP_V: u32 = 3;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
 /// `bldtiles` target runs again, nothing else). (5, task #862: a heritage footprint's buildings by
@@ -66,6 +67,14 @@ pub const WORK: &str = "work/bld/";
 /// The logical name of z6 tile T's normalized file.
 pub fn work_logical(x: u32, y: u32) -> String {
     format!("{WORK}6-{x}-{y}")
+}
+
+/// The side files' logical names' folder ([`side`]).
+pub const SIDE: &str = "work/bldsrc/";
+
+/// The logical name of z6 tile T's side file.
+pub fn side_logical(x: u32, y: u32) -> String {
+    format!("{SIDE}6-{x}-{y}")
 }
 
 /// The logical name of z6 tile T's hi pack.

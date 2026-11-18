@@ -1944,8 +1944,8 @@ pub fn outside_by(e: &agentcore::pool::journal::Entry, writes: &dyn Fn(&str, boo
 /// z6 tiles (a z6 tile's) hi pack of their layer and its mid, an assembly's (a z3 tile's) lo pack; an
 /// a z3 tile's lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
 /// z3 tile's whole run: a lease of the scheme before z6 tiles); a z6 tile's normalized buildings
-/// (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid (`bldtiles`); a z3 tile's field
-/// lo pack (`bldfield-lo`). False for the other steps.
+/// and their side file (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid
+/// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = TileId::parse(target);
@@ -1953,8 +1953,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
     match step {
         "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
-        // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
-        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == bld::bld::work_logical(t.x, t.y)),
+        // (A z6 tile's normalized buildings and their side file, and its 3D buildings' hi pack.)
+        "bldprep" => tile.is_some_and(|t| {
+            t.z == 6 && (l == bld::bld::work_logical(t.x, t.y) || l == bld::bld::side_logical(t.x, t.y))
+        }),
         "bldtiles" => tile.is_some_and(|t| {
             t.z == 6
                 && (l == bld::bld::pack_logical(t.x, t.y)
@@ -2452,8 +2454,9 @@ fn w_bld_fetch(l: &str, _: bool) -> bool {
     l == buildstore::asked::logical("bld-fetch")
 }
 
+/// The normalized buildings and their side files (bld::bld::side).
 fn w_bldprep(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["work", "bld", t] if tile(t, 6))
+    matches!(parts(l).as_slice(), ["work", "bld" | "bldsrc", t] if tile(t, 6))
 }
 
 /// The 3D buildings' hi packs, their field's and its mids.
@@ -3195,7 +3198,7 @@ mod tests {
                 ],
             ),
             ("rail", &[("global/railfreq", false)]),
-            ("bldprep", &[("work/bld/6-56-25", true)]),
+            ("bldprep", &[("work/bld/6-56-25", true), ("work/bldsrc/6-56-25", true)]),
             ("bldtiles", &[("layers/buildings/hi/6-56-25", false)]),
             ("prune", &[("base/6-1-2", true), ("layers/roads/lo/3-1-2", true)]),
             ("catalog", &[]),

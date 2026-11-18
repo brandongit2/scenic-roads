@@ -884,16 +884,24 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 // (The mask pieces' cells: the normalized buildings' files the records' own record
                 // doesn't name read.)
                 let p = phase("reading the build's own data for its mask pieces");
-                let m = ::bld::bld::extents::masks(&mut out, theme, &specs, &|d, n| {
-                    jobrt::jobs::report(d, n, "buildings' files")
+                // (The tiles left out, said on the progress line: the build page shows it.)
+                let unit = |left: usize| {
+                    format!("buildings' files ({left} z6 tiles left out: no side file of their normalized file's)")
+                };
+                let m = ::bld::bld::extents::masks(&mut out, theme, &specs, &|d, n, left| {
+                    jobrt::jobs::report(d, n, &unit(left))
                 })?;
                 if !specs.is_empty() {
+                    // (Every tile's, the left out too: said when nothing was to read.)
+                    let all = (m.read + m.kept + m.left_out.len()) as u64;
+                    jobrt::jobs::report(all, all, &unit(m.left_out.len()));
                     eprintln!(
-                        "available {theme}: {} mask pieces; {} files read, {} as the record had them, {} of an older format left out (bldprep makes them again)",
+                        "available {theme}: {} mask pieces; {} files read, {} as the record had them; {} z6 tiles left out, their side file missing or another file's (bldprep writes it){}",
                         specs.len(),
                         m.read,
                         m.kept,
-                        m.older
+                        m.left_out.len(),
+                        if m.left_out.is_empty() { String::new() } else { format!(": {:?}", &m.left_out[..m.left_out.len().min(20)]) }
                     );
                 }
                 for ((holds, dataset), n) in &m.undeclared {

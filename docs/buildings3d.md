@@ -119,7 +119,7 @@ release (§5).
 | Step | Target | Reads | Writes |
 |---|---|---|---|
 | `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` |
-| `bldprep` | z6 tile T | Overture row groups and GHSL tiles meeting T | `work/bld/6-x-y` |
+| `bldprep` | z6 tile T | Overture row groups and GHSL tiles meeting T | `work/bld/6-x-y`, and its side file `work/bldsrc/6-x-y` (the masks' columns: docs/steps.md §14) |
 | `bldtiles` | z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage, T's heritage slices | `layers/buildings/hi/6-x-y`, `layers/buildings-field/hi/6-x-y`, `work/bldfield-mid/6-x-y` |
 | `bldfield-lo` | z3 tile | its z6 tiles' mids | `layers/buildings-field/lo/3-x-y` |
 
@@ -189,7 +189,10 @@ No `unit` (roads) key reads any of them.
 
 docs/formats.md has the bytes. In brief:
 - **Normalized buildings** (`work/bld/6-x-y`, RDSECT, not served): a zstd block per z14 tile (of the
-  centroid), records sorted by Overture id, column by column.
+  centroid), records sorted by Overture id, column by column. Its **side file**
+  (`work/bldsrc/6-x-y`) holds the columns only the data-available masks read (each record's
+  footprint's dataset), naming the normalized file: `bldtiles` never reads it, so a column for the
+  masks never makes the 3D buildings again.
 - **Mesh tiles** (`layers/buildings/hi/6-x-y`, RDPACK, encoding `mvt`, z14 only, no lo or root
   packs): MVT 2.1, extent 4096, layer `b`. Each building or part is **whole, in the tile holding its
   centroid** (not clipped), so MapLibre extrudes it from one centroid: no step at tile edges, nothing
