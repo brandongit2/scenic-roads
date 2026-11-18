@@ -123,6 +123,8 @@ impl Mac {
     }
 
     pub(super) fn run(mut self) {
+        // (Its requests numbered on its own, from its thread: the same each run of its seed.)
+        crate::coord::held::SIM_SENT.set(Some(crate::coord::held::Sent { process: 1 + self.k as u64, n: 0 }));
         // (Its process crashed as it started: its next loop restarts it. Its thread had ended,
         // the turn left with it, and the run hung: the simulator's seed 1224 of every fault.)
         if let Err(e) = self.start() {

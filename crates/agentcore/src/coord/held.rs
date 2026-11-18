@@ -95,9 +95,23 @@ pub struct Sent {
     pub n: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pool's simulator's Mac on this thread (crate::pool::sim): its own requests' numbers,
+    /// not the test process's, so a lease's (`lease::Lease::asked`), in its lead's store, is the
+    /// same each time its seed runs, whatever runs beside it.
+    pub(crate) static SIM_SENT: std::cell::Cell<Option<Sent>> = const { std::cell::Cell::new(None) };
+}
+
 /// This process's next `Sent` (an agent's beats and asks, crate::agent::beat and
 /// crate::coord::client::LeaseCalls::ask).
 pub fn sent() -> Sent {
+    #[cfg(test)]
+    if let Some(s) = SIM_SENT.get() {
+        let s = Sent { n: s.n + 1, ..s };
+        SIM_SENT.set(Some(s));
+        return s;
+    }
     static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let process = *PROCESS.get_or_init(|| {
