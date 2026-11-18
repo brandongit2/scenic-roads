@@ -277,7 +277,7 @@ from the first (`edit_held`).
   target, in-use share and memory floor) are taken up the moment their files change by the
   agent's control (`agent::asks`, §4.1 there), which publishes them for the loop and the beat and
   cuts the loop's wait short; a cancel and another member's pause are taken at once by the jobs'
-  own thread (`agent::slots`, §4.5 there: a cancelled job stopped there and then, recorded by the
+  own thread (`agent::slots`, §4.5 there: a cancelled job stopped there and then, its timings taken as `cancelled`, recorded by the
   loop at its next round), which also wakes the loop the moment a job ends, so its slot is filled
   at once (the loop otherwise waits 20 s between rounds). It holds the job, its progress (from the job's `progress:` lines)
   with the time left, and a checklist of the build to the end: a line per stage with an item per

@@ -3421,10 +3421,11 @@ impl Agent {
     /// Slot `k`'s ended job's timings (jobrt::timings): kept in this Mac's log (`timings.jsonl`),
     /// and in the build's, its coordinator's (`coord/timings.jsonl`), here; a member's go with its
     /// hand-off (`send_outbox`, `end_lease`), from its folder, written back there. Stamped first
-    /// with what this agent knows of the run (task #1419): how it ended (`outcome`), the targets it
-    /// finished of the `of` it was given, its processes' NAS traffic (its counts folder), and the
-    /// plausibility checks it fails at this Mac's clock (jobrt::timings::implausible).
-    fn take_timings(&mut self, k: usize, outcome: &Outcome, finished: usize, of: usize) {
+    /// with what this agent knows of the run (task #1419): how it ended (`end`: jobrt::timings::Done's),
+    /// the targets it finished of the `of` it was given, its processes' NAS traffic (its counts
+    /// folder), and the plausibility checks it fails at this Mac's top clock
+    /// (jobrt::timings::implausible; none checked while it's still being read, `top_clock_soon`).
+    fn take_timings(&mut self, k: usize, end: &str, finished: usize, of: usize) {
         // (By where the job writes them, whoever leads now: a member's leased job in its folder,
         // this Mac's own in the agent's.)
         let handed = match &self.slots[k].lease {
@@ -3444,13 +3445,7 @@ impl Agent {
         let Some(mut rec) = rec.map(|r| jobrt::timings::RunRec { job: r.job.or(self.slots[k].job), ..r }) else {
             return;
         };
-        let end = match outcome {
-            Outcome::Done => "done",
-            Outcome::Paused => "paused",
-            Outcome::Interrupted => "interrupted",
-            Outcome::Failed => "failed",
-        };
-        rec.stamp(end, finished, of, &self.nas_counts_path(k), jobrt::sys::top_clock());
+        rec.stamp(end, finished, of, &self.nas_counts_path(k), jobrt::sys::top_clock_now());
         if let Some(p) = &handed {
             // (Its hand-off reads it from the folder: this Mac's disk, one write.)
             if let Err(e) = serde_json::to_vec(&rec).map_err(std::io::Error::other).and_then(|b| std::fs::write(p, b)) {
@@ -3787,6 +3782,8 @@ impl Agent {
     pub fn run(&mut self) -> Result<()> {
         // (The handler only stores to an atomic.)
         jobrt::sys::on_terminate(on_signal);
+        // (This Mac's top clock, which the timings' checks read: off this loop.)
+        jobrt::sys::top_clock_soon();
         // The build memory setting a release before task #932 left: replaced by the memory floor,
         // said (memfloor::migrate).
         if let Some(said) = memfloor::migrate(&self.o.home, self.mac_total_mb()) {
@@ -5209,7 +5206,13 @@ impl Agent {
             if self.slots[k].mem_drain.is_some() {
                 self.cool_down(k);
             }
-            self.take_timings(k, &outcome, done.len(), of);
+            let end = match outcome {
+                Outcome::Done => "done",
+                Outcome::Paused => "paused",
+                Outcome::Interrupted => "interrupted",
+                Outcome::Failed => "failed",
+            };
+            self.take_timings(k, end, done.len(), of);
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, self.slots[k].job, &what, ok || paused, empty, secs, note);
             if own {
@@ -7893,7 +7896,10 @@ impl Agent {
         let scratch = r.spec.cmd.windows(2).find(|w| w[0] == "--scratch").map(|w| PathBuf::from(&w[1]));
         let secs = r.elapsed().as_secs();
         let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
+        let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
         let done = self.finished_targets(k, false);
+        // (Its record, kept as the SIGTERM of `stop` ended it, within its grace: jobrt::timings.)
+        self.take_timings(k, "cancelled", done.len(), of);
         // (Not the guard's stop, nor a yield: a cancel keeps nothing from this Mac.)
         (self.slots[k].guard_stopped, self.slots[k].yield_stopped) = (false, false);
         self.worked(&id);

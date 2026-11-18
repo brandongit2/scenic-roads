@@ -102,6 +102,7 @@ function side(f, out) {
     ["CPU", fig?.cpu, meds.cpu, dur],
     ["cores busy", fig?.cores, meds.cores, (x) => fx(x)],
     ["peak memory", fig?.peak, meds.peak, mb],
+    ["instructions", fig?.insn, meds.insn, (x) => (x == null ? "–" : `${fx(x / 1e9, x >= 1e11 ? 0 : 1)} G`)],
     ["threads", fig?.threads, meds.threads, (x) => (x == null ? "–" : String(Math.round(x)))],
     ["NAS wait", fig?.nas, meds.nas, dur],
     ["network wait", fig?.net, meds.net, dur],
