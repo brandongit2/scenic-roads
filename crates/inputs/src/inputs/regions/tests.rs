@@ -66,6 +66,7 @@ fn run(f: &Fx, files: &[(&str, &str)]) -> resolve::Outcome {
         others: &others,
         memo: None,
         kept: None,
+        reuse: None,
         names: String::new(),
         data: None,
         progress: Default::default(),
@@ -247,6 +248,7 @@ fn decide_on(checks: &Regions, files: &[(&str, &[u8])]) -> crate::inputs::gate::
         full: false,
         read_new: &rn,
         read_old: &ro,
+        memo: None,
     })
     .unwrap()
 }
@@ -364,6 +366,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         full: false,
         read_new: &rn,
         read_old: &ro,
+        memo: None,
     })
     .unwrap();
     assert!(d.report.is_none(), "{:?}", d.report);
@@ -390,6 +393,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         full: false,
         read_new: &rn,
         read_old: &ro2,
+        memo: None,
     })
     .unwrap();
     assert!(!d2.changed);
@@ -440,6 +444,7 @@ fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
             full: false,
             read_new: &rn,
             read_old: &ro,
+            memo: None,
         })
         .unwrap()
     };
@@ -508,6 +513,7 @@ fn a_change_that_a_region_doesnt_read_keeps_its_accepted_geometry() {
             full: true,
             read_new: &rn,
             read_old: &ro,
+            memo: None,
         })
         .unwrap();
         kept.borrow_mut().extend(d.store.clone());
@@ -561,6 +567,7 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
         others: &others,
         memo: None,
         kept: None,
+        reuse: None,
         names: String::new(),
         data: None,
         progress: Default::default(),
@@ -611,6 +618,7 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
             full: false,
             read_new: &rn,
             read_old: &ro,
+            memo: None,
         })
         .unwrap()
     };

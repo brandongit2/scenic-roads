@@ -373,6 +373,14 @@ pub trait Checks: Sync {
     /// Told the accepted version before a check: what its checks read from files still as they
     /// were may be taken from it rather than read again (the elevation datasets' measurements).
     fn seed(&self, _accepted: &Index) {}
+    /// Told what the last check kept for the next (`Listed::memo`, its own `memo`), before a check:
+    /// what of it the check's inputs still match it takes rather than work out again (the regions'
+    /// outcomes: crate::inputs::regions's `Recorded`).
+    fn recall(&self, _memo: &serde_json::Value) {}
+    /// What this check keeps for the next (`Listed::memo`): None, nothing.
+    fn memo(&self) -> Option<serde_json::Value> {
+        None
+    }
     /// Its work kept as pieces in scratch folder `scratch` from now on (task #897; the regions'
     /// resolutions): a check resumed after a pause takes what its last kept.
     fn keep_in(&self, _scratch: &std::path::Path) {}
@@ -478,7 +486,8 @@ pub struct Index {
 /// listing with, reading only the files that differ (a held change's file keeps the time of the
 /// version accepted, so it's read again; a file only touched takes its new time, so it isn't); and
 /// the index the last change of version replaced, which GC keeps, with its files, while this state
-/// is recent (gc::inputs_kept), so a version replaced stays restorable.
+/// is recent (gc::inputs_kept), so a version replaced stays restorable; and what the check keeps for
+/// the next (`memo`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Listed {
     pub fmt: u32,
@@ -490,6 +499,10 @@ pub struct Listed {
     /// one daily from it, whichever Mac led then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_at: Option<u64>,
+    /// What the last check kept for the next (`Checks::memo`): the regions' outcomes, by what each
+    /// was resolved from, so a check finding the same inputs resolves nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<serde_json::Value>,
 }
 
 /// A unit's check's state, as the records name it (empty before its first check).

@@ -1015,11 +1015,19 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         } else {
             standing(folder, &g, id, &members, &mut out.problems)
         };
-        let unions: BTreeMap<&String, TArea> = units
+        // (Counted by cell, the units' unions' and the stretches' (task #1423): a region's hand-out
+        // with a large stretch, or to a folder of many regions, had said nothing for an hour.)
+        let comps = components(&mine);
+        let joined: Vec<(&String, Vec<&TArea>)> = units
             .iter()
             .filter(|(_, ms)| ms.len() > 1)
-            .map(|(to, ms)| (to, union_of(&ms.iter().map(|m| &areas[m]).collect::<Vec<_>>())))
+            .map(|(to, ms)| (to, ms.iter().map(|m| &areas[m]).collect()))
             .collect();
+        let union_cells: usize =
+            joined.iter().map(|(_, ts)| ts.iter().flat_map(|t| t.cells.keys()).collect::<BTreeSet<_>>().len()).sum();
+        progress.item(union_cells + comps.iter().map(BTreeMap::len).sum::<usize>());
+        let unions: BTreeMap<&String, TArea> =
+            joined.into_iter().map(|(to, ts)| (to, union_of(&ts, progress))).collect();
         let theirs: Vec<(&String, &TArea)> = units
             .keys()
             // (A border hands out land: only to regions with land.)
@@ -1028,13 +1036,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             .collect();
         // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
         // where it goes.
-        let comps = components(&mine);
-        progress.item(comps.len());
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(comps, |comp| {
-            let _part = progress.part_on_drop();
             let km2: f64 = comp.values().map(geom::area_km2).sum();
             let mut edge: Vec<f64> = vec![0.0; theirs.len()];
             for (c, p) in &comp {
+                let _part = progress.part_on_drop();
                 let mut ring: Option<Area> = None;
                 for (k, (_, t)) in theirs.iter().enumerate() {
                     edge[k] += edge_in(p, *c, t, &mut ring);
@@ -2750,10 +2756,11 @@ fn standing(
     units
 }
 
-/// Tiled areas' union, cell by cell.
-fn union_of(ts: &[&TArea]) -> TArea {
+/// Tiled areas' union, cell by cell, each cell a part of `progress`'s item under way.
+fn union_of(ts: &[&TArea], progress: &Progress) -> TArea {
     let cells: BTreeSet<Cell> = ts.iter().flat_map(|t| t.cells.keys().copied()).collect();
     let v: Vec<(Cell, Area)> = pace::par_map(cells.into_iter().collect(), |c| {
+        let _part = progress.part_on_drop();
         (c, geom::union_all(&ts.iter().filter_map(|t| t.cells.get(&c).cloned()).collect::<Vec<_>>()))
     });
     let mut u = TArea::default();

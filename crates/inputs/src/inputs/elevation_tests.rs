@@ -126,15 +126,31 @@ impl Fixture {
     }
 }
 
+/// The check's key names the accepted regions and the accepted geoid sources (task #1423: only
+/// those, as `prepared` reads them; another source's declaration checks nothing again).
 #[test]
-fn the_checks_key_names_the_accepted_regions_and_sources() {
+fn the_checks_key_names_the_accepted_regions_and_geoid_sources() {
+    use crate::inputs::sources::{accept_files, STAGED};
+    let d = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(d.path());
+    let egm: (&str, &[u8]) = ("egm2008.toml", include_bytes!("../../../../producers/geoid/declarations/egm2008.toml"));
+    let cgg: (&str, &[u8]) =
+        ("cgg2013a.toml", include_bytes!("../../../../producers/geoid/declarations/cgg2013a.toml"));
+    let planet = STAGED.iter().copied().find(|(p, _)| *p == "osm-planet.toml").unwrap();
+    let key = |m: &BTreeMap<String, String>| Elevation::default().context(&root, m).unwrap();
     let mut m = BTreeMap::new();
     m.insert(crate::inputs::logical(crate::inputs::regions::UNIT), "regions-index".to_string());
-    m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources-index".to_string());
-    let c = Elevation::default()
-        .context(&store::nasfs::NasRoot::local_for_test(std::path::Path::new("/nonexistent")), &m)
-        .unwrap();
-    assert!(c.contains(&"regions regions-index".to_string()) && c.contains(&"sources sources-index".to_string()));
+    accept_files(&root, &mut m, &[egm]);
+    let k = key(&m);
+    assert!(k.contains(&"regions regions-index".to_string()), "{k:?}");
+    assert!(k.iter().any(|l| l.starts_with("geoid source egm2008 ")), "{k:?}");
+    let mut other = m.clone();
+    accept_files(&root, &mut other, &[egm, planet]);
+    assert_ne!(other, m);
+    assert_eq!(key(&other), k, "another source");
+    let mut more = m.clone();
+    accept_files(&root, &mut more, &[egm, cgg]);
+    assert_ne!(key(&more), k, "a geoid source declared");
 }
 
 #[test]
@@ -592,6 +608,7 @@ fn an_unchanged_dataset_whose_grids_stop_reaching_it_is_held_as_accepted() {
             full: false,
             read_new: &read_new,
             read_old: &read_old,
+            memo: None,
         })
         .unwrap();
         copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));
@@ -635,6 +652,7 @@ fn decide_with(
         full: false,
         read_new: &read_new,
         read_old: &read_old,
+        memo: None,
     })
     .unwrap();
     copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));

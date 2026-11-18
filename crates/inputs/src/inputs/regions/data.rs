@@ -162,6 +162,20 @@ impl Datasets {
         self.land.as_ref().is_some_and(|l| !l.is_empty())
     }
 
+    /// The names `read` gives the datasets the accepted sources `s` declare (`names`: each role's
+    /// source and version, the land's content name), without reading them: what the resolution's
+    /// keys read of them. None when no `regions-sea` is declared.
+    pub fn names_of(s: &crate::inputs::sources::Sources, land: Option<&str>) -> Option<String> {
+        s.role(SEA).ok()?;
+        let mut names: Vec<String> = ROLES
+            .iter()
+            .filter_map(|r| s.role(r).ok())
+            .map(|src| format!("{} {}", src.id, src.version().unwrap_or("-")))
+            .collect();
+        names.extend(land.map(|n| format!("land {n}")));
+        Some(names.join(", "))
+    }
+
     /// The datasets the accepted sources `s` declare, read from `root`'s `sources/fetched/<id>/`
     /// (each declaration's `params.path`), with the pass's land (its content name, open) when
     /// it's made. None when no `regions-sea` is declared.
@@ -171,9 +185,8 @@ impl Datasets {
         land: Option<(String, super::land::Land)>,
     ) -> Result<Option<Datasets>> {
         let Ok(sea) = s.role(SEA) else { return Ok(None) };
-        let mut names = Vec::new();
-        let mut path = |src: &crate::inputs::sources::Source| -> Result<std::path::PathBuf> {
-            names.push(format!("{} {}", src.id, src.version().unwrap_or("-")));
+        let names = Datasets::names_of(s, land.as_ref().map(|l| l.0.as_str()));
+        let path = |src: &crate::inputs::sources::Source| -> Result<std::path::PathBuf> {
             // (Read by GDAL and the shapefile reader, by path: tests/nas_access.rs.)
             Ok(root.join(src.param_str("path")?).unchecked_path())
         };
@@ -202,11 +215,10 @@ impl Datasets {
                 d.lakes.insert(id, (rings, a));
             }
         }
-        if let Some((name, l)) = land {
-            names.push(format!("land {name}"));
+        if let Some((_, l)) = land {
             d.land = Some(l);
         }
-        d.names = names.join(", ");
+        d.names = names.unwrap_or_default();
         d.index();
         Ok(Some(d))
     }

@@ -126,7 +126,7 @@ impl Kept {
 }
 
 /// A check name as `Problem` has it (static): the names read back are few, each kept once.
-fn check_name(s: &str) -> &'static str {
+pub(super) fn check_name(s: &str) -> &'static str {
     static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     let mut n = NAMES.lock().unwrap();
     if let Some(x) = n.iter().find(|x| **x == s) {

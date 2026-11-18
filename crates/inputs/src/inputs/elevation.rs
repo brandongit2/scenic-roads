@@ -1313,17 +1313,20 @@ impl Checks for Elevation {
         }
     }
 
-    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
+    fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
-        // regions: a dataset's `regions` cut its coverage. The accepted sources: their geoid grids
-        // convert its heights.)
+        // regions: a dataset's `regions` cut its coverage. The accepted geoid sources, as `prepared`
+        // reads them: their grids convert its heights; another source's change checks nothing.)
         let regions = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT));
-        let sources = manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT));
+        let geoid = anyhow::Context::context(
+            crate::inputs::sources::geoid(root, manifest),
+            "the accepted sources can't be read now",
+        )?;
         Ok(outlines_of(manifest)
             .map(|o| format!("outlines {o}"))
             .into_iter()
             .chain(regions.map(|r| format!("regions {r}")))
-            .chain(sources.map(|s| format!("sources {s}")))
+            .chain(std::iter::once(format!("geoid {}", geoid.iter().map(|s| s.named()).collect::<Vec<_>>().join(", "))))
             .collect())
     }
 

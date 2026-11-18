@@ -51,6 +51,8 @@ pub struct Given<'a> {
     pub read_new: &'a (dyn Fn(&str) -> Result<Vec<u8>> + Sync),
     /// An accepted file's bytes (its checked copy), by its entry.
     pub read_old: &'a dyn Fn(&FileEntry) -> Result<Vec<u8>>,
+    /// What the last check kept for this one (`super::Listed::memo`).
+    pub memo: Option<&'a serde_json::Value>,
 }
 
 /// What a check decides.
@@ -70,6 +72,8 @@ pub struct Decision {
     pub store: BTreeMap<String, Arc<Vec<u8>>>,
     /// The inputs-folder files read (the rest were taken as unchanged by their size and time).
     pub read: Vec<String>,
+    /// What this check keeps for the next (`Checks::memo`).
+    pub memo: Option<serde_json::Value>,
 }
 
 /// A change of the candidate's.
@@ -95,6 +99,9 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut derived_from = g.checks.derived_from();
     let rederive = prev.checks != empty.checks || prev.derived_from != derived_from;
     g.checks.seed(prev);
+    if let Some(m) = g.memo {
+        g.checks.recall(m);
+    }
     let mut read = Vec::new();
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
     let mut findings: Vec<Finding> = Vec::new();
@@ -418,7 +425,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
             needs,
         }
     });
-    Ok(Decision { index, changed, listed, listed_changed, report, store: taken, read })
+    Ok(Decision { index, changed, listed, listed_changed, report, store: taken, read, memo: g.checks.memo() })
 }
 
 /// A version's bytes, by path: `files`' own, else (None there) the accepted copy's, each read once.
@@ -526,6 +533,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
         full,
         read_new: &read_new,
         read_old: &read_old,
+        memo: state.memo.as_ref(),
     })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
@@ -558,8 +566,15 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     }
     // (A full check's time kept with it: the lead's next is a day after, whichever Mac leads.)
     let full_at = if full { Some(jobrt::jobs::now_s()) } else { state.full_at };
-    if d.listed_changed || replaced != state.replaced || full_at != state.full_at {
-        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone(), replaced, full_at };
+    if d.listed_changed || replaced != state.replaced || full_at != state.full_at || d.memo != state.memo {
+        let l = super::Listed {
+            fmt: 1,
+            unit: unit.into(),
+            listed: d.listed.clone(),
+            replaced,
+            full_at,
+            memo: d.memo.clone(),
+        };
         let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;
         out.set(&super::listed_logical(unit), Some(name));
     }

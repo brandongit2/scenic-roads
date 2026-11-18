@@ -433,6 +433,7 @@ mod tests {
             others: &others,
             memo: None,
             kept: None,
+            reuse: None,
             names: String::new(),
             data: Some(&data),
             progress: Default::default(),

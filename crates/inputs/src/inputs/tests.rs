@@ -60,6 +60,7 @@ fn check(
         full,
         read_new: &read_new,
         read_old: &read_old,
+        memo: None,
     })
     .unwrap();
     for (n, bytes) in &d.store {
@@ -419,6 +420,7 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
         full: false,
         read_new: &read_new,
         read_old: &read_old,
+        memo: None,
     })
     .unwrap();
     assert!(
@@ -1013,6 +1015,7 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
         full: false,
         read_new: &read_new,
         read_old: &read_old,
+        memo: None,
     })
     .unwrap();
     assert!(dec.index.files.contains_key("a.jsonl"));

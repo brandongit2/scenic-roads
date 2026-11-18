@@ -13,6 +13,12 @@
 //! build's is held with its file unchanged (`Checks::holds_unchanged`), keeping its accepted
 //! geometry.
 //!
+//! What's resolved is reused (§6.1.4, task #1423): a region without water whose key
+//! (`resolve::key`: everything it reads) is the one its accepted geometry was resolved from takes
+//! that geometry; and the folder's whole outcome (its problems, what it needs, which regions
+//! resolve from what) is kept with the check's state (`Recorded`, `Checks::memo`) by its key
+//! (`resolve::outcome_key`), so a check finding the same inputs as the last resolves nothing.
+//!
 //! The readers (crate::inputs::regions::read): `accepted_coverage` and the regions as accepted,
 //! and, until the migration's proof (§6.1.10), the inputs folder's recipes as before.
 
@@ -33,8 +39,9 @@ pub mod tiles;
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use anyhow::{Context, Result};
 use buildstore::outlines::Outlines;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// The unit's name.
 pub const UNIT: &str = "regions";
@@ -48,9 +55,114 @@ pub struct Regions {
     /// Its resolutions kept as pieces (task #897: `Checks::keep_in`).
     kept: kept::Kept,
     needs: Mutex<Vec<String>>,
-    /// The accepted version's regions, by path: what each was resolved from (`resolved_from`),
+    /// The accepted version's regions, by path: what each was resolved from and where it's stored,
     /// told by `seed`.
-    accepted_from: Mutex<BTreeMap<String, String>>,
+    accepted: Mutex<BTreeMap<String, Stored>>,
+    /// The outcomes the last check kept (`recall`), and this check's, made or taken (`memo`), by key.
+    recalled: Mutex<BTreeMap<String, Recorded>>,
+    recorded: Mutex<BTreeMap<String, Recorded>>,
+    /// The last outcome made, whole, by its key: a check resolves the candidate, the next version
+    /// and derives from it, often the same version.
+    last: Mutex<Option<(String, Arc<resolve::Outcome>)>>,
+}
+
+/// An accepted region's resolution: what it was resolved from (`resolved_from`), and its stored
+/// geometry's and drawing's content names.
+#[derive(Clone, Debug)]
+struct Stored {
+    from: String,
+    geometry: String,
+    drawn: String,
+}
+
+/// A folder's outcome as a check keeps it for the next (`Checks::memo`), by its key
+/// (`resolve::outcome_key`): everything a check reads of a resolution but the geometry, which the
+/// accepted version stores.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recorded {
+    pub key: String,
+    pub problems: Vec<Said>,
+    /// What it needs of the extract (`extract::Id`s).
+    pub needs: Vec<String>,
+    /// The regions resolved, each with its key (`resolve::Outcome::keys`).
+    pub resolved: BTreeMap<String, String>,
+}
+
+/// A problem as kept (`resolve::Problem`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Said {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
+    pub check: String,
+    pub about: Vec<String>,
+    pub found: Vec<String>,
+    pub files: Vec<String>,
+    pub message: String,
+}
+
+impl Recorded {
+    fn of(key: &str, out: &resolve::Outcome) -> Recorded {
+        Recorded {
+            key: key.to_string(),
+            problems: out
+                .problems
+                .iter()
+                .map(|p| Said {
+                    warning: p.warning,
+                    check: p.check.to_string(),
+                    about: p.about.clone(),
+                    found: p.found.clone(),
+                    files: p.files.clone(),
+                    message: p.message.clone(),
+                })
+                .collect(),
+            needs: out.needs.iter().map(ToString::to_string).collect(),
+            resolved: out.keys.clone(),
+        }
+    }
+
+    fn problems(&self) -> Vec<resolve::Problem> {
+        self.problems
+            .iter()
+            .map(|p| resolve::Problem {
+                warning: p.warning,
+                check: kept::check_name(&p.check),
+                about: p.about.clone(),
+                found: p.found.clone(),
+                files: p.files.clone(),
+                message: p.message.clone(),
+            })
+            .collect()
+    }
+}
+
+/// What the last check kept for the next (`Checks::memo`): this version's outcomes.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Memo {
+    fmt: u32,
+    outcomes: Vec<Recorded>,
+}
+
+/// An outcome: made now (whole), or as a check recorded it (its geometry the accepted version's).
+enum Got {
+    Made(Arc<resolve::Outcome>),
+    Recorded(Recorded),
+}
+
+impl Got {
+    fn problems(&self) -> Vec<resolve::Problem> {
+        match self {
+            Got::Made(o) => o.problems.clone(),
+            Got::Recorded(r) => r.problems(),
+        }
+    }
+
+    fn needs(&self) -> Vec<String> {
+        match self {
+            Got::Made(o) => o.needs.iter().map(ToString::to_string).collect(),
+            Got::Recorded(r) => r.needs.clone(),
+        }
+    }
 }
 
 /// The version of what a region resolves to (its stored geometry and drawing), in each region's
@@ -94,9 +206,16 @@ pub struct Prepared {
     /// Else where the accepted sources say they are: read only once a region in the folder names
     /// them (`Region::needs_data`), so declaring them costs a check that needs none nothing.
     pub data_from: Option<(store::nasfs::NasRoot, crate::inputs::sources::Sources)>,
+    /// Told once: whether they're there to read (`data::absent`), an error's message when that
+    /// can't be told now.
+    pub data_there: std::sync::OnceLock<std::result::Result<bool, String>>,
     /// Read once: None while they aren't there to read (`Regions::data`), an error's message when
     /// they can't be read.
     pub data_read: std::sync::OnceLock<std::result::Result<Option<data::Datasets>, String>>,
+    /// Where the accepted resolutions are read (`Regions::accepted_resolution`), when given.
+    pub root: Option<store::nasfs::NasRoot>,
+    /// The other passes' outline sets' content names (`others`), for the outcome's key.
+    pub others_names: String,
     /// The pass's land's content name (crate::inputs::regions::land), once made.
     pub land: Option<String>,
     /// The outline set's, the extract's and the land's content names.
@@ -111,17 +230,56 @@ impl Regions {
         Regions { ctx, ..Default::default() }
     }
 
-    /// The folder `v` holds, resolved. The process is stopped (exit 3, saying so) if its footprint
-    /// passes `max_mb()` while it resolves: a check never takes the Mac down. How far it is goes
-    /// out as the check's stage under way every few seconds (crate::inputs::regions::progress,
-    /// jobrt::jobs::saying).
-    pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, resolve::Outcome)> {
+    /// The folder `v` holds, resolved now (or as this check last made it, by the same key). The
+    /// process is stopped (exit 3, saying so) if its footprint passes `max_mb()` while it resolves:
+    /// a check never takes the Mac down. How far it is goes out as the check's stage under way every
+    /// few seconds (crate::inputs::regions::progress, jobrt::jobs::saying).
+    pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, Arc<resolve::Outcome>)> {
+        let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
+        let key = self.outcome_key(&folder)?;
+        let out = self.made(&folder, &key)?;
+        Ok((folder, out))
+    }
+
+    /// The folder `v` holds, its outcome: as this check last made it, or as a check recorded it
+    /// (`Recorded`) under the same key; else resolved now.
+    fn outcome(&self, v: &Version) -> Result<(resolve::Folder, Got)> {
+        let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
+        let key = self.outcome_key(&folder)?;
+        if let Some((k, o)) = self.last.lock().unwrap().as_ref() {
+            if *k == key {
+                return Ok((folder, Got::Made(o.clone())));
+            }
+        }
+        let had = self.recorded.lock().unwrap().get(&key).cloned();
+        if let Some(r) = had.or_else(|| self.recalled.lock().unwrap().get(&key).cloned()) {
+            eprintln!(
+                "regions: the outcome of {} regions as the last check recorded it: nothing resolved",
+                folder.regions.len()
+            );
+            self.recorded.lock().unwrap().insert(key, r.clone());
+            return Ok((folder, Got::Recorded(r)));
+        }
+        let out = self.made(&folder, &key)?;
+        Ok((folder, Got::Made(out)))
+    }
+
+    /// The outcome of `folder` under `key`: this check's last, else resolved now (the last one
+    /// let go first: one outcome's geometry held at a time).
+    fn made(&self, folder: &resolve::Folder, key: &str) -> Result<Arc<resolve::Outcome>> {
+        {
+            let mut last = self.last.lock().unwrap();
+            match last.as_ref() {
+                Some((k, o)) if k == key => return Ok(o.clone()),
+                _ => *last = None,
+            }
+        }
         jobrt::sys::footprint_guard("the regions' check", max_mb());
         geom::watch(30, op_budget_s());
-        let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
-        let data = self.data(&folder)?;
+        let data = self.data(folder)?;
+        let reuse = |path: &str, key: &str| self.accepted_resolution(path, key);
         let ctx = resolve::Context {
             pass: c.and_then(|c| c.pass.as_deref()),
             outlines: c.and_then(|c| c.outlines.as_ref()),
@@ -129,18 +287,55 @@ impl Regions {
             others: c.map_or(&empty, |c| &c.others),
             memo: Some(&self.memo),
             kept: Some(&self.kept),
+            reuse: Some(&reuse),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
             data,
             progress: Default::default(),
         };
         let out =
-            jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, |_| ctx.progress.say(), || resolve::resolve(&folder, &ctx));
+            jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, |_| ctx.progress.say(), || resolve::resolve(folder, &ctx));
         // (A pause a piece kept met: the check stops there.)
         self.kept.stopped()?;
         if let Some(d) = data {
             d.land_failed()?;
         }
-        Ok((folder, out))
+        eprintln!(
+            "regions: {} regions resolved, {} of them as the accepted version stores them",
+            out.resolved.len(),
+            out.reused.len()
+        );
+        let out = Arc::new(out);
+        self.recorded.lock().unwrap().insert(key.to_string(), Recorded::of(key, &out));
+        *self.last.lock().unwrap() = Some((key.to_string(), out.clone()));
+        Ok(out)
+    }
+
+    /// The key of `folder`'s whole outcome (`resolve::outcome_key`) against what the check reads.
+    fn outcome_key(&self, folder: &resolve::Folder) -> Result<String> {
+        let c = self.ctx.as_ref();
+        let data = self.data_names(folder)?;
+        let names = c.map(|c| c.names.clone()).unwrap_or_default();
+        let a = resolve::Against { names: &names, pass: c.and_then(|c| c.pass.as_deref()), data: &data };
+        Ok(resolve::outcome_key(folder, &a, c.map_or("", |c| c.others_names.as_str())))
+    }
+
+    /// A region without water's resolution as the accepted version stores it, when its file is at
+    /// `path` and it was resolved from `key` (with this `RESOLUTION`): its geometry and drawing read
+    /// back. None when it wasn't, or they can't be read now (it's resolved again).
+    fn accepted_resolution(&self, path: &str, key: &str) -> Option<resolve::Resolved> {
+        let root = self.ctx.as_ref()?.root.as_ref()?;
+        let s = self.accepted.lock().unwrap().get(path).cloned()?;
+        if s.from != resolved_from(key) {
+            return None;
+        }
+        let read = || -> Result<resolve::Resolved> {
+            let g = stored::Geometry::decode(&root.join(&s.geometry).read()?)?;
+            let drawn = serde_json::from_slice(&root.join(&s.drawn).read()?)?;
+            Ok(resolve::Resolved { geometry: g, drawn, lakes: Default::default() })
+        };
+        read()
+            .map_err(|e| eprintln!("regions: {path}'s accepted resolution can't be read ({e:#}): resolved again"))
+            .ok()
     }
 }
 
@@ -166,22 +361,53 @@ impl Regions {
         if let Some(d) = &c.data {
             return Ok(Some(d));
         }
-        let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
-        let Some((root, s)) = c.data_from.as_ref().filter(|_| wanted) else { return Ok(None) };
+        let Some((root, s)) = self.data_from(folder)? else { return Ok(None) };
         let read = c.data_read.get_or_init(|| {
-            let read = || -> Result<Option<data::Datasets>> {
-                if let Some(why) = data::absent(root, s)? {
-                    eprintln!("regions: the datasets aren't there to read: {why}");
-                    return Ok(None);
-                }
-                data::Datasets::read(root, s, c.land_open(root)?)
-            };
-            read().map_err(|e| format!("{e:#}"))
+            (|| -> Result<Option<data::Datasets>> { data::Datasets::read(root, s, c.land_open(root)?) })()
+                .map_err(|e| format!("{e:#}"))
         });
         match read {
             Ok(d) => Ok(d.as_ref()),
             Err(e) => anyhow::bail!("the regions' datasets can't be read: {e}"),
         }
+    }
+
+    /// Where the datasets `data` reads are, when a region of `folder` names them and they're there
+    /// (told once: `Prepared::data_there`). None when they aren't to be read.
+    #[allow(clippy::type_complexity)]
+    fn data_from(
+        &self,
+        folder: &resolve::Folder,
+    ) -> Result<Option<&(store::nasfs::NasRoot, crate::inputs::sources::Sources)>> {
+        let Some(c) = self.ctx.as_ref() else { return Ok(None) };
+        let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
+        let Some(from) = c.data_from.as_ref().filter(|_| wanted) else { return Ok(None) };
+        let there = c.data_there.get_or_init(|| match data::absent(&from.0, &from.1) {
+            Ok(Some(why)) => {
+                eprintln!("regions: the datasets aren't there to read: {why}");
+                Ok(false)
+            }
+            Ok(None) => Ok(true),
+            Err(e) => Err(format!("{e:#}")),
+        });
+        match there {
+            Ok(true) => Ok(Some(from)),
+            Ok(false) => Ok(None),
+            Err(e) => anyhow::bail!("the regions' datasets can't be read: {e}"),
+        }
+    }
+
+    /// The datasets' names as the resolution's keys read them (`data`'s, `Datasets::names_of`),
+    /// without reading them: "" when none are read.
+    fn data_names(&self, folder: &resolve::Folder) -> Result<String> {
+        let Some(c) = self.ctx.as_ref() else { return Ok(String::new()) };
+        if let Some(d) = &c.data {
+            return Ok(d.names.clone());
+        }
+        Ok(match self.data_from(folder)? {
+            Some((_, s)) => data::Datasets::names_of(s, c.land.as_deref()).unwrap_or_default(),
+            None => String::new(),
+        })
     }
 }
 
@@ -206,6 +432,17 @@ fn current(manifest: &BTreeMap<String, String>) -> (Option<String>, Option<&Stri
     let o = date.as_ref().and_then(|d| manifest.get(&format!("sources/osm/{d}/outlines")));
     let e = date.as_ref().and_then(|d| manifest.get(&extract::logical(d)));
     (date, o, e)
+}
+
+/// The other passes' outline sets the records name (not `current`'s): each pass's date and its
+/// outline set's content name.
+fn others_in<'a>(manifest: &'a BTreeMap<String, String>, current: Option<&str>) -> Vec<(&'a str, &'a String)> {
+    manifest
+        .range("sources/osm/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("sources/osm/"))
+        .filter_map(|(l, c)| Some((l.strip_prefix("sources/osm/")?.strip_suffix("/outlines")?, c)))
+        .filter(|(d, _)| Some(*d) != current && crate::osmpass::is_date(d))
+        .collect()
 }
 
 /// A file check's fault as a finding.
@@ -399,9 +636,9 @@ impl Checks for Regions {
     }
 
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
-        let (folder, out) = self.resolve(v)?;
-        *self.needs.lock().unwrap() = out.needs.iter().map(|i| i.to_string()).collect();
-        let mut found: Vec<Finding> = out.problems.iter().map(problem_finding).collect();
+        let (folder, out) = self.outcome(v)?;
+        *self.needs.lock().unwrap() = out.needs();
+        let mut found: Vec<Finding> = out.problems().iter().map(problem_finding).collect();
         found.extend(symbol_findings(v, &folder)?);
         Ok(found)
     }
@@ -418,18 +655,29 @@ impl Checks for Regions {
     }
 
     fn derive(&self, v: &Version, keep: &BTreeSet<String>) -> Result<Derived> {
-        let (folder, out) = self.resolve(v)?;
+        let accepted: BTreeMap<String, String> =
+            self.accepted.lock().unwrap().iter().map(|(p, s)| (p.clone(), s.from.clone())).collect();
+        // (Resolved from what it was accepted from, by this version of the resolution: its accepted
+        // geometry stays, so terrain keyed by it doesn't move.)
+        let stays = |path: &str, key: Option<&String>| {
+            keep.contains(path) || key.is_some_and(|k| accepted.get(path) == Some(&resolved_from(k)))
+        };
+        // (An outcome recorded whose regions all stay: nothing to derive, nothing resolved.)
+        let (folder, got) = self.outcome(v)?;
+        let out = match got {
+            Got::Made(o) => o,
+            Got::Recorded(r) => {
+                if r.resolved.iter().all(|(id, k)| folder.regions.get(id).is_some_and(|(p, _)| stays(p, Some(k)))) {
+                    return Ok(Derived::default());
+                }
+                self.made(&folder, &r.key)?
+            }
+        };
         let mut d = Derived::default();
-        let accepted = self.accepted_from.lock().unwrap().clone();
         for (id, res) in &out.resolved {
             let path = &folder.regions[id].0;
-            if keep.contains(path) {
-                continue;
-            }
-            // (Resolved from what it was accepted from, by this version of the resolution: its
-            // accepted geometry stays, so terrain keyed by it doesn't move.)
             let from = out.keys.get(id).map(|k| resolved_from(k));
-            if from.is_some() && from.as_ref() == accepted.get(path) {
+            if stays(path, out.keys.get(id)) {
                 continue;
             }
             let g = res.geometry.encode();
@@ -459,14 +707,34 @@ impl Checks for Regions {
     }
 
     fn seed(&self, accepted: &super::Index) {
-        *self.accepted_from.lock().unwrap() = accepted
+        let fact = |e: &super::FileEntry, k: &str| Some(e.facts.get(k)?.as_str()?.to_string());
+        *self.accepted.lock().unwrap() = accepted
             .files
             .iter()
             // (An index of another version of the checks: everything derived again.)
             .filter(|_| accepted.checks == format!("{UNIT} {RESOLUTION}"))
-            .filter(|(_, e)| e.facts.contains_key("geometry") && e.facts.contains_key("drawn"))
-            .filter_map(|(p, e)| Some((p.clone(), e.facts.get("resolved_from")?.as_str()?.to_string())))
+            .filter_map(|(p, e)| {
+                Some((
+                    p.clone(),
+                    Stored {
+                        from: fact(e, "resolved_from")?,
+                        geometry: fact(e, "geometry")?,
+                        drawn: fact(e, "drawn")?,
+                    },
+                ))
+            })
             .collect();
+    }
+
+    fn recall(&self, memo: &serde_json::Value) {
+        // (Kept by an app whose memo this one can't read: none, resolved again.)
+        let m: Memo = serde_json::from_value(memo.clone()).unwrap_or_default();
+        *self.recalled.lock().unwrap() = m.outcomes.into_iter().map(|r| (r.key.clone(), r)).collect();
+    }
+
+    fn memo(&self) -> Option<serde_json::Value> {
+        let outcomes: Vec<Recorded> = self.recorded.lock().unwrap().values().cloned().collect();
+        (!outcomes.is_empty()).then(|| serde_json::to_value(Memo { fmt: 1, outcomes }).unwrap_or_default())
     }
 
     fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
@@ -488,6 +756,15 @@ impl Checks for Regions {
                 date.as_ref().and_then(|d| manifest.get(&land::logical(d))).map(String::as_str).unwrap_or("-")
             ),
             format!("regions data {data}"),
+            // (Other passes' outline sets: what a region pinned to one is compared with.)
+            format!(
+                "regions others {}",
+                others_in(manifest, date.as_deref())
+                    .into_iter()
+                    .map(|(d, c)| format!("{d} {c}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         ])
     }
 
@@ -515,12 +792,11 @@ pub fn prepare(
             .transpose()?;
         // (Other passes' outline sets in the records: what a pin naming one is compared with.)
         let mut others = BTreeMap::new();
-        for (l, c) in manifest.range("sources/osm/".to_string()..).take_while(|(l, _)| l.starts_with("sources/osm/")) {
-            let Some(d) = l.strip_prefix("sources/osm/").and_then(|r| r.strip_suffix("/outlines")) else { continue };
-            if Some(d) != date.as_deref() && crate::osmpass::is_date(d) {
-                if let Ok(x) = Outlines::open(&root.join(c)) {
-                    others.insert(d.to_string(), x);
-                }
+        let mut others_names = Vec::new();
+        for (d, c) in others_in(manifest, date.as_deref()) {
+            if let Ok(x) = Outlines::open(&root.join(c)) {
+                others.insert(d.to_string(), x);
+                others_names.push(format!("{d} {c}"));
             }
         }
         let land = date.as_ref().and_then(|d| manifest.get(&land::logical(d))).cloned();
@@ -559,7 +835,10 @@ pub fn prepare(
             others,
             data,
             data_from,
+            data_there: Default::default(),
             data_read: Default::default(),
+            root: Some(root.clone()),
+            others_names: others_names.join(", "),
             land,
             names,
             not_ready,
@@ -653,6 +932,8 @@ pub fn accept_fixture(
     name
 }
 
+#[cfg(test)]
+mod reuse_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

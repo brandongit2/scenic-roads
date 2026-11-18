@@ -106,8 +106,8 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
   repeat one), and when asked, whatever was checked since. A full check that can't run yet
   (`Checks::not_ready`: the regions before a pass's outline set) keeps its time all the same, so it
   isn't planned again every round.
-- What a check's key reads that can't be read now (the accepted sources, for the regions), or the
-  check's own state (`@listed`, for `full_at`): the unit waits, saying why, its last key kept; it
+- What a check's key reads that can't be read now (the accepted sources, for the regions and the
+  elevation datasets), or the check's own state (`@listed`, for `full_at`): the unit waits, saying why, its last key kept; it
   isn't checked under another key meanwhile.
 
 ### 4.3 Checking: a job like any other
@@ -115,9 +115,10 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtfs`):
 - **Key** (`inputs::check_key`): the checker versions (`INPUTS_V` and each input's), the listing,
   the unit's acceptances, and whatever else its checks read (`Checks::context`: the content names of
-  the pass's outlines, the accepted registers for the matches, the accepted regions and sources for
-  the elevation datasets; check.py for translations; the regions' pass, outline set, extract and
-  land, and the declarations of their datasets' roles, §6.1.7). It names only what the check reads
+  the pass's outlines, the accepted registers for the matches, the accepted regions and the accepted
+  geoid sources' declarations for the elevation datasets; check.py for translations; the regions'
+  pass, outline set, extract and land, the other passes' outline sets in the records (what a region
+  pinned to one is compared with), and the declarations of their datasets' roles, §6.1.7). It names only what the check reads
   and doesn't write itself: not the unit's own records (its accepted index, held report and
   `@listed`), so a check that takes in a version is done once its key is recorded, and isn't
   planned again for its own outcome. With no full check due, a check is done when its key is
@@ -158,9 +159,29 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      terrain keyed by it, stay. So `RESOLUTION` is bumped in the same commit as any change to the
      resolution's code that changes what an unchanged region resolves to; that, and only that,
      resolves every region again.
+     The regions' resolutions are reused, not only their stored geometry (task #1423). The
+     dependency rule is one function, `resolve::key`: a region without water reads what it's
+     resolved against (the pass, its outline set's, extract's and land's names), its file, the
+     pins, the shapes it names, the keys of the regions it names, and the datasets' names when it
+     names them; a region with water is resolved with every other (the coast shared between them,
+     the hand-outs, the slivers, the cover check), so it reads the whole folder (`whole_key_of`:
+     every file but the group files, their borders, and the same context). A region without water
+     whose key is the one its accepted geometry was resolved from takes that geometry and drawing
+     from the store rather than resolve again (`Context::reuse`); one changed resolves, with the
+     regions naming it and every region with water. The folder's whole outcome (its problems with
+     their words, what it needs of the extract, which regions resolve and from what) is kept in the
+     check's state for the next check (`@listed`'s `memo`, `Checks::memo`: `regions::Recorded`), by
+     its key (`resolve::outcome_key`: `whole_key_of`, the other passes' outline sets and
+     `RESOLUTION`), one per version the check resolved; a check that finds a version's key there
+     resolves nothing for it, and derives nothing while every region it resolves is stored from its
+     key (else it resolves, to have the geometry). Within a check the last outcome made is kept
+     whole by its key, so the candidate, the next version and what's derived from it, the same
+     version, resolve once. A daily full check with nothing changed, or held again as before, reads
+     every file and resolves nothing.
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
-     touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
+     touched so GC keeps it, §4.9), `@listed` (with what the check keeps for the next, the regions'
+     outcomes), and `@held` (the held report, or none). `@` starts
      no inputs-folder path component or unit name, so these never clash with copies or nested units.
 - **Threads and progress.** A check lasts hours, one target, so it takes its job's grant as the grant
   changes rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
@@ -742,7 +763,9 @@ Mac's server (§6.1.9).
   (within a twentieth of the distance).
 - **Progress:** a resolve counts its steps as it goes (`regions::progress`, task #1145): the regions
   without water, the land and the water (by region, the one under way by its cells), the lakes, the
-  coast's cells, splits and fills, each region's area, the hand-outs and the slivers (by region, the
+  coast's cells, splits and fills, each region's area, the hand-outs (by region, the one under way by
+  the cells of the unions of the members it hands to and of its stretches: a large stretch, or a
+  hand-out to a folder of many regions, had said nothing for an hour), the slivers (by region, the
   one under way by its stretches), the 200-nmi zones, the cover check's every cell, the gaps' land and
   shares, the fills, the rest inside the zones, the fit's every cell, the regions stored. Each step
   is an equal share of the resolve (a step the folder doesn't take passed over), its items done of

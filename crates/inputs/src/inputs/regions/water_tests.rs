@@ -173,13 +173,13 @@ fn boxes_areas_and_wide_buffers() {
 /// (2), an island I (3) between them nearer A, a far square D (4) that no region names. The land:
 /// A's coast (with a strip north of it no outline has), B's, I and D. Zones: 1 round A, B and I; 2
 /// a disputed square of its own. A big lake inside A.
-struct World {
-    _d: tempfile::TempDir,
-    o: buildstore::outlines::Outlines,
+pub(super) struct World {
+    pub(super) _d: tempfile::TempDir,
+    pub(super) o: buildstore::outlines::Outlines,
     data: Datasets,
 }
 
-fn world() -> World {
+pub(super) fn world() -> World {
     world_with(1.002)
 }
 
@@ -205,6 +205,20 @@ fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<g
             (4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0)),
         ],
     );
+    World {
+        o: buildstore::outlines::Outlines::open(&p).unwrap(),
+        data: world_data(north, more, zones, "fixture"),
+        _d: d,
+    }
+}
+
+/// The small world's datasets (`world_zones`), named `names`.
+pub(super) fn world_data(
+    north: f64,
+    more: Vec<Vec<geom::Ring>>,
+    zones: HashMap<u64, Vec<geom::Ring>>,
+    names: &str,
+) -> Datasets {
     let land =
         vec![bx(0.0, 0.0, 1.2, north), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
     let land = [land, more].concat();
@@ -212,8 +226,7 @@ fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<g
     let mut eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     eez.extend(zones);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
-    let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
-    World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
+    Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, names)
 }
 
 fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
@@ -233,6 +246,7 @@ fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Ste
         others: &others,
         memo: None,
         kept: None,
+        reuse: None,
         names: String::new(),
         data: Some(&w.data),
         progress: Default::default(),
@@ -264,35 +278,35 @@ fn a_resolve_counts_every_step_to_its_total() {
     assert_eq!(share, 1.0);
 }
 
-const A: &str = r#"id = "a"
+pub(super) const A: &str = r#"id = "a"
 name = "A"
 outline = ["osm:1"]
 water = [{ minus = [{ nearest = "eez:1", to = ["land:a"], than = ["land:b", "land:slice"] }, "region:isl"] }]
 "#;
-const B: &str = r#"id = "b"
+pub(super) const B: &str = r#"id = "b"
 name = "B"
 outline = ["osm:2"]
 minus = ["region:slice"]
 water = [{ minus = [{ nearest = "eez:1", to = ["land:b", "land:slice"], than = ["land:a"] }, "region:isl"] }]
 "#;
-const ISL: &str = r#"id = "isl"
+pub(super) const ISL: &str = r#"id = "isl"
 name = "Island"
 outline = ["osm:3"]
 water = [{ nearest = { intersect = [{ buffer = "osm:3", by = "12 nmi" }, "eez:1"] }, to = ["land:isl"], than = ["land:a", "land:b"] }]
 "#;
-const SLICE: &str = r#"id = "slice"
+pub(super) const SLICE: &str = r#"id = "slice"
 name = "Slice"
 outline = [{ intersect = ["osm:2", "box:2.0,0.0,3.0,0.5"] }]
 water = []
 "#;
-const DISPUTED: &str = "id = \"disputed\"\nname = \"Disputed zone\"\nwater = [\"eez:2\"]\n";
+pub(super) const DISPUTED: &str = "id = \"disputed\"\nname = \"Disputed zone\"\nwater = [\"eez:2\"]\n";
 const FAR: &str =
     "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n";
-const HIGH: &str = "id = \"high-seas\"\nname = \"High seas\"\nwater = [\"rest\"]\n";
-const PINS: (&str, &str) = ("_pins.toml", "osm = \"2026-09-28\"\n");
+pub(super) const HIGH: &str = "id = \"high-seas\"\nname = \"High seas\"\nwater = [\"rest\"]\n";
+pub(super) const PINS: (&str, &str) = ("_pins.toml", "osm = \"2026-09-28\"\n");
 const RULES: (&str, &str) = ("_rules.toml", "cover = \"earth\"\n");
 
-fn all() -> Vec<(&'static str, &'static str)> {
+pub(super) fn all() -> Vec<(&'static str, &'static str)> {
     vec![
         PINS,
         RULES,
@@ -399,6 +413,7 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
             others: &others,
             memo: None,
             kept,
+            reuse: None,
             names: String::new(),
             data: Some(&w.data),
             progress: Default::default(),
@@ -455,6 +470,7 @@ fn old_files_resolve_as_before_beside_new_ones() {
         others: &others,
         memo: None,
         kept: None,
+        reuse: None,
         names: String::new(),
         data: None,
         progress: Default::default(),

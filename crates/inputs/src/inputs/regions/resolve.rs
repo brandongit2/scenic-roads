@@ -263,6 +263,10 @@ pub struct Context<'a> {
     pub memo: Option<&'a Memo>,
     /// The resolutions kept as pieces (task #897), when the check keeps them.
     pub kept: Option<&'a super::kept::Kept>,
+    /// A region without water's resolution as the accepted version stores it, by its file's path
+    /// and its key, when the accepted one was resolved from that key (`Regions::accepted_resolution`):
+    /// taken, not made again.
+    pub reuse: Option<&'a (dyn Fn(&str, &str) -> Option<Resolved> + Sync)>,
     /// What the context is, for the memo's keys: the outline set's and the extract's names.
     pub names: String,
     /// The regions' datasets (sea zones, territorial seas, lakes, the coastline's land), when read.
@@ -298,6 +302,8 @@ pub struct Outcome {
     pub keys: BTreeMap<String, String>,
     /// How the regions with water fit, with `cover = "earth"` (the cover check's measures).
     pub fit: super::tiles::Fit,
+    /// The regions whose resolution was the accepted version's (`Context::reuse`), not made again.
+    pub reused: BTreeSet<String>,
 }
 
 /// Every region of `folder` resolved against `ctx`, in an order where each comes after those it
@@ -354,7 +360,8 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         if wave.is_empty() {
             break;
         }
-        let made: Vec<(String, Result<(Result<Resolved, Vec<Problem>>, Vec<Id>), Problem>)> = {
+        #[allow(clippy::type_complexity)]
+        let made: Vec<(String, Result<(Result<Resolved, Vec<Problem>>, Vec<Id>), Problem>, bool)> = {
             let done = &out.resolved;
             let held = &held;
             crate::inputs::pace::par_map(wave.iter().collect(), |(id, key)| {
@@ -371,9 +378,16 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                             files: vec![path.clone()],
                             message: format!("{id}: region:{dep} is held, and so this region with it"),
                         }),
+                        false,
                     );
                 }
                 let kept = ctx.memo.and_then(|m| m.lock().unwrap().get(key).cloned());
+                // (The accepted version's, resolved from this key: taken as it's stored.)
+                if kept.is_none() {
+                    if let Some(res) = ctx.reuse.and_then(|f| f(path, key)) {
+                        return (id.clone(), Ok((Ok(res), Vec::new())), true);
+                    }
+                }
                 let k = match kept {
                     Some(k) => k,
                     None => {
@@ -403,17 +417,22 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                             ),
                         };
                         // (Given up: not memoized, as nothing was resolved.)
-                        let Some((res, needs)) = got else { return (id.clone(), Ok((Err(Vec::new()), Vec::new()))) };
+                        let Some((res, needs)) = got else {
+                            return (id.clone(), Ok((Err(Vec::new()), Vec::new())), false);
+                        };
                         if let Some(m) = ctx.memo {
                             m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
                         }
                         (res, needs)
                     }
                 };
-                (id.clone(), Ok(k))
+                (id.clone(), Ok(k), false)
             })
         };
-        for (id, m) in made {
+        for (id, m, reused) in made {
+            if reused {
+                out.reused.insert(id.clone());
+            }
             match m {
                 Err(p) => {
                     out.problems.push(p);
@@ -449,17 +468,69 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
     out
 }
 
-/// The key of a region with water: the whole folder's (every file but the group files, of which only
-/// the borders are read) and the context's, as it's resolved with every other.
+/// The key of a region with water: the whole folder's (`whole_key_of`) against `ctx`.
 pub(super) fn whole_key(folder: &Folder, ctx: &Context) -> String {
-    let mut parts = vec![
-        ctx.names.clone(),
-        ctx.pass.unwrap_or("-").to_string(),
-        format!("{:?}", folder.pins),
-        ctx.data.map(|d| d.names.clone()).unwrap_or_default(),
-    ];
+    whole_key_of(folder, &Against::of(ctx))
+}
+
+/// What a folder is resolved against, as its keys read it: the outline set's, the extract's and the
+/// land's names (`Context::names`), the pass, and the datasets' names ("" when none are read).
+pub struct Against<'a> {
+    pub names: &'a str,
+    pub pass: Option<&'a str>,
+    pub data: &'a str,
+}
+
+impl<'a> Against<'a> {
+    pub fn of(ctx: &'a Context) -> Against<'a> {
+        Against { names: &ctx.names, pass: ctx.pass, data: ctx.data.map_or("", |d| d.names.as_str()) }
+    }
+}
+
+/// The key of a region with water: every file but the group files, of which only the borders are
+/// read, and what it's resolved against, as a region with water is resolved with every other (the
+/// coast shared, the hand-outs, the cover check). So it's the key of the folder's whole resolution
+/// too, but the other passes' outline sets (`outcome_key`).
+pub fn whole_key_of(folder: &Folder, a: &Against) -> String {
+    let mut parts =
+        vec![a.names.to_string(), a.pass.unwrap_or("-").to_string(), format!("{:?}", folder.pins), a.data.to_string()];
     parts.extend(folder.hashes.iter().map(|(p, h)| format!("{p} {h}")));
     parts.extend(folder.borders.iter().map(|(p, b)| format!("{p} border {b:?}")));
+    store::naming::hash16(parts.join("\n").as_bytes())
+}
+
+/// The key of a folder's whole outcome (its problems, what it needs of the extract, which regions
+/// resolve and from what): `whole_key_of`, the other passes' outline sets (`others`: what a region
+/// pinned to one is compared with, in its problem's words) and `RESOLUTION`. What a check recorded
+/// under it is that outcome (crate::inputs::regions's `Recorded`).
+pub fn outcome_key(folder: &Folder, a: &Against, others: &str) -> String {
+    let parts = [format!("outcome {}", super::RESOLUTION), whole_key_of(folder, a), others.to_string()];
+    store::naming::hash16(parts.join("\n").as_bytes())
+}
+
+/// What a region without water's resolution reads, as its key (docs/inputs.md §6.1.4): what it's
+/// resolved against, its file (its path and bytes), the pins, the shapes it names, the keys of the
+/// regions it names (`Folder::deps`, in `keys`), the datasets' names when it names them. A region
+/// with water's is the whole folder's (`whole_key_of`). The key is recorded with the region's
+/// accepted geometry (`resolved_from`): a check finding it as it was takes that geometry rather than
+/// resolve it again (`Context::reuse`).
+pub fn key(path: &str, r: &Region, folder: &Folder, a: &Against, keys: &BTreeMap<String, String>) -> String {
+    let mut parts = vec![
+        a.names.to_string(),
+        a.pass.unwrap_or("-").to_string(),
+        path.to_string(),
+        folder.hashes.get(path).cloned().unwrap_or_default(),
+        format!("{:?}", folder.pins),
+    ];
+    for n in r.shapes() {
+        parts.push(format!("{n} {:?}", folder.shapes.get(n).map(|s| folder.hashes.get(&s.0))));
+    }
+    for d in &folder.deps(r) {
+        parts.push(format!("{d} {:?}", keys.get(d)));
+    }
+    if r.needs_data() {
+        parts.push(a.data.to_string());
+    }
     store::naming::hash16(parts.join("\n").as_bytes())
 }
 
@@ -532,25 +603,7 @@ fn visit(
         held.insert(id.to_string());
         return;
     }
-    // What it's resolved from: its file, the pins, the shapes it names, those it names' own keys, the
-    // context.
-    let mut parts = vec![
-        ctx.names.clone(),
-        ctx.pass.unwrap_or("-").to_string(),
-        path.clone(),
-        folder.hashes.get(path).cloned().unwrap_or_default(),
-        format!("{:?}", folder.pins),
-    ];
-    for n in r.shapes() {
-        parts.push(format!("{n} {:?}", folder.shapes.get(n).map(|s| folder.hashes.get(&s.0))));
-    }
-    for d in &deps {
-        parts.push(format!("{d} {:?}", keys.get(d)));
-    }
-    if r.needs_data() {
-        parts.push(ctx.data.map(|d| d.names.clone()).unwrap_or_default());
-    }
-    let key = store::naming::hash16(parts.join("\n").as_bytes());
+    let key = key(path, r, folder, &Against::of(ctx), keys);
     keys.insert(id.to_string(), key.clone());
     order.push((id.to_string(), key));
 }
