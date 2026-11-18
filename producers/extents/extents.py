@@ -36,10 +36,11 @@ A reader per kind of service, none per source:
            (the zip fetched whole: GDAL reads no zip by range)
   none    no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
   overture  the build's own copy of Overture's buildings (`dataset`, an Overture source's name;
-           `holds`: footprints, storeys or heights; `share`): the piece is listed with a null
-           geometry and the class `mask`, its cells drawn by the build's step (bld::bld::extents)
+           `holds`: footprints, storeys or heights): the piece is listed with a null geometry and
+           the class `mask`, its cells drawn by the build's step by the cells' rule (bld::bld::extents)
 
-Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
+Every request goes through one fetcher: the app's User-Agent, one at a time, a host's paced from each
+request's start (--pause, or the host's own: Nominatim's 1 s), and no
 more than --max-gb (5) read for one source, its answers together (the run stops, naming it):
 headers, indexes and overviews, never a source's data but a small one's.
 
@@ -196,9 +197,14 @@ HOLDS = ("footprints", "storeys", "heights")
 M_PER_DEG = 111_320.0
 
 
+# A host's least interval between the starts of two requests, seconds, where its policy asks more
+# than the run's --pause: Nominatim's usage policy, an absolute maximum of one request a second.
+HOST_INTERVAL = {"nominatim.openstreetmap.org": 1.0}
+
+
 class Fetcher:
-    """Every request of a run: counted, paced, bounded, and kept (--cache) so a run made again asks
-    for nothing it has."""
+    """Every request of a run: counted, paced (per host, from each request's start: `interval`),
+    bounded, and kept (--cache) so a run made again asks for nothing it has."""
 
     def __init__(self, cache, max_bytes, pause):
         self.cache, self.max_bytes, self.pause = cache, max_bytes, pause
@@ -207,7 +213,8 @@ class Fetcher:
         self.spent = 0
         self.requests = self.bytes = 0
         self.lengths = {}
-        self.last = 0.0
+        # When the last request to each host started (time.monotonic()).
+        self.started = {}
         # A host's TLS context, where its chain needed completing (`tls_with`).
         self.tls = {}
         # A request's time limit: a piece block's `timeout_s`, else 180 s.
@@ -230,6 +237,11 @@ class Fetcher:
 
     def mark(self):
         return self.requests, self.bytes
+
+    def interval(self, host):
+        """The least time between the starts of two requests to `host`: the run's --pause, or the
+        host's own (HOST_INTERVAL) where longer."""
+        return max(self.pause, HOST_INTERVAL.get(host, 0.0))
 
     def keep(self):
         """The answer fetched last into the cache: what read it went on."""
@@ -258,12 +270,14 @@ class Fetcher:
         headers = {"User-Agent": UA}
         if rng:
             headers["Range"] = f"bytes={rng[0]}-{rng[1]}"
+        host = urllib.parse.urlsplit(url).hostname
         for attempt in range(4):
-            wait = self.last + self.pause - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
+            if host in self.started:
+                wait = self.started[host] + self.interval(host) - time.monotonic()
+                if wait > 0:
+                    time.sleep(wait)
+            self.started[host] = time.monotonic()
             try:
-                host = urllib.parse.urlsplit(url).hostname
                 with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=self.timeout, context=self.tls.get(host, TLS)) as r:
                     n = r.headers.get("Content-Length")
                     if n and int(n) > self.left():
@@ -306,8 +320,6 @@ class Fetcher:
                     # (A certificate refused is refused again: not tried four times.)
                     raise
                 time.sleep(5 * (attempt + 1))
-            finally:
-                self.last = time.monotonic()
         self.requests += 1
         self.bytes += len(body)
         self.spend(url, len(body))
@@ -529,7 +541,7 @@ def read_stac(net, b, _tol):
 def read_wfs(net, b, _tol):
     """A WFS feature type's features, paged (`page`, by `startIndex`), as GeoJSON or GML, whichever
     the server answers in the `format` asked for; `version` 2.0.0 (the default) or a 1.x's
-    (`typeName`, `maxFeatures`)."""
+    (`typeName`, `maxFeatures`); `sort`, the field to page in the order of, where the server asks one)."""
     page, off = int(b.get("page", 2000)), 0
     version = b.get("version", "2.0.0")
     old = version.startswith("1.")
@@ -539,6 +551,9 @@ def read_wfs(net, b, _tol):
              "startIndex": str(off)}
         if b.get("fields"):
             q["propertyName"] = ",".join(b["fields"])
+        if b.get("sort"):
+            # (A server that pages only in a stated order: 3DBAG's refuses `startIndex` without it.)
+            q["sortBy"] = b["sort"]
         body = net.get(b["url"] + ("&" if "?" in b["url"] else "?") + urllib.parse.urlencode(q))
         if b"ExceptionReport" in body[:1000]:
             sys.exit(f"{b['url']}: {body[:1000].decode('utf-8', 'replace')}")
@@ -847,7 +862,8 @@ def names_at(net, b, url):
             for e in x.iter(ns + "Key"):
                 yield e.text
             for e in x.iter(ns + "Prefix"):
-                if e.text != b.get("prefix", ""):
+                # (A bucket listed from its root answers an empty Prefix: no name.)
+                if e.text and e.text != b.get("prefix", ""):
                     yield e.text
             token = x.findtext(ns + "NextContinuationToken")
             if not token:
@@ -1391,7 +1407,7 @@ def block_pieces(net, decl, b, today):
     base = {"extent": cls, "availability": avail}
     if method in ("none", "overture"):
         # (No extent: `none`'s isn't known; `overture`'s is drawn by the build's step from its own
-        # copy of Overture's buildings, where they are `share` or more of a z14 tile's: bld::bld::extents.)
+        # copy of Overture's buildings, the z14 tiles the cells' rule gives it: bld::bld::extents.)
         vals = {k: metric(s, {})[0] for k, s in specs.items()}
         props = {"piece": b["id"], **base, **{k: v for k, v in vals.items() if v is not None}}
         if b.get("label"):
@@ -1399,10 +1415,11 @@ def block_pieces(net, decl, b, today):
         if method == "none":
             read = {"piece": b["id"], "method": "none", "why": b["why"], "date": today}
         else:
-            if not b.get("dataset") or b.get("holds") not in HOLDS or not 0 <= float(b.get("share", -1)) <= 1:
-                sys.exit(f"{decl['id']}/{b['id']}: an overture block names its dataset, what it holds ({', '.join(HOLDS)}) and its share")
+            if not b.get("dataset") or b.get("holds") not in HOLDS or "share" in b:
+                sys.exit(f"{decl['id']}/{b['id']}: an overture block names its dataset and what it holds ({', '.join(HOLDS)}), "
+                         "and no share (the cells' rule is the build's)")
             read = {"piece": b["id"], "method": "overture", "dataset": b["dataset"], "holds": b["holds"],
-                    "share": float(b["share"]), "grain": "z14 tiles", "date": today}
+                    "grain": "z14 tiles", "date": today}
         yield {"type": "Feature", "properties": props, "geometry": None}, read
         return
     if b.get("name") and b["name"] not in b.get("by", []):

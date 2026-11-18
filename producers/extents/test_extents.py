@@ -470,16 +470,16 @@ class Pieces(unittest.TestCase):
 
     def test_an_overture_piece_is_a_mask_the_build_draws(self):
         """An `overture` block's piece: listed with no geometry and the class `mask`, its cells the
-        build's step's to draw (bld::bld::extents), its block's dataset, holds and share read."""
-        b = {"id": "osm-heights", "method": "overture", "dataset": "OpenStreetMap", "holds": "heights", "share": 0.5,
+        build's step's to draw (bld::bld::extents), its block's dataset and holds read."""
+        b = {"id": "osm-heights", "method": "overture", "dataset": "OpenStreetMap", "holds": "heights",
              "metrics": {"detail": "heights", "measured": "mapped"}}
         out = list(extents.block_pieces(FakeNet({}), {"id": "overture", "availability": "open"}, b, "2026-01-01"))
         f, read = out[0]
         self.assertIsNone(f["geometry"])
         self.assertEqual(f["properties"], {"piece": "osm-heights", "extent": "mask", "availability": "open",
                                            "detail": "heights", "measured": "mapped"})
-        self.assertEqual((read["method"], read["dataset"], read["holds"], read["share"]), ("overture", "OpenStreetMap", "heights", 0.5))
-        for bad in ({"holds": "roofs"}, {"dataset": ""}, {"share": 1.5}):
+        self.assertEqual((read["method"], read["dataset"], read["holds"]), ("overture", "OpenStreetMap", "heights"))
+        for bad in ({"holds": "roofs"}, {"dataset": ""}, {"share": 0.5}):
             with self.assertRaises(SystemExit):
                 list(extents.block_pieces(FakeNet({}), {"id": "overture", "availability": "open"}, {**b, **bad}, "2026-01-01"))
 
@@ -599,6 +599,13 @@ class Listing(unittest.TestCase):
         net = FakeNet({"https://f/d/": page, "https://f/d/N00E000-N10E010_FABDEM_V1-2.zip": zip_of("N00E006_FABDEM_V1-2.tif")})
         b = {"url": "https://f/d/", "list": "zip", "links": True}
         self.assertEqual(list(extents.listed_names(net, b)), ["N00E006_FABDEM_V1-2.tif"])
+
+    def test_a_bucket_listed_from_its_root(self):
+        # Niedersachsen's LoD2 bucket: its root's listing answers an empty Prefix, no name.
+        listing = (b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Prefix></Prefix>'
+                   b'<Contents><Key>LoD2_32_342_5824_1_ni.gml</Key></Contents></ListBucketResult>')
+        net = FakeNet({"https://b/?list-type=2&prefix=": listing})
+        self.assertEqual(list(extents.listed_names(net, {"url": "https://b"})), ["LoD2_32_342_5824_1_ni.gml"])
 
     def test_a_spreadsheets_rows_with_their_dates(self):
         import io
@@ -1282,6 +1289,38 @@ class Cache(unittest.TestCase):
             answers[:] = [b"PK"]
             with self.assertRaises(SystemExit):
                 net.get("https://h/b.zip")
+
+
+class Pacing(unittest.TestCase):
+    def test_a_host_is_paced_from_each_requests_start(self):
+        """Two requests to one host start at least its interval apart, counted from the first's
+        start (a slow answer counts toward it); another host waits for nothing; Nominatim waits 1 s
+        whatever the run's pause."""
+        import time
+        import unittest.mock
+        import urllib.parse
+        clock = [100.0]
+        starts = []
+        def urlopen(req, timeout, context):
+            starts.append((urllib.parse.urlsplit(req.full_url).hostname, clock[0]))
+            clock[0] += 0.25  # (each answer takes a quarter second)
+            return Answer(b"{}")
+        def sleep(s):
+            clock[0] += s
+        with unittest.mock.patch("urllib.request.urlopen", urlopen), \
+                unittest.mock.patch.object(time, "monotonic", lambda: clock[0]), \
+                unittest.mock.patch.object(time, "sleep", sleep):
+            net = extents.Fetcher(None, 1 << 30, 0.3)
+            for u in ["https://a.test/1", "https://a.test/2", "https://b.test/1",
+                      "https://nominatim.openstreetmap.org/lookup?osm_ids=R1",
+                      "https://nominatim.openstreetmap.org/lookup?osm_ids=R2"]:
+                net.get(u)
+        self.assertEqual([h for h, _ in starts], ["a.test", "a.test", "b.test"] + ["nominatim.openstreetmap.org"] * 2)
+        t = [s for _, s in starts]
+        self.assertAlmostEqual(t[1] - t[0], 0.3)
+        self.assertAlmostEqual(t[2] - t[1], 0.25)
+        self.assertAlmostEqual(t[4] - t[3], 1.0)
+        self.assertEqual(extents.Fetcher(None, 1, 2.0).interval("nominatim.openstreetmap.org"), 2.0)
 
 
 def pem_blocks():
