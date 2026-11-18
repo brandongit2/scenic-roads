@@ -1249,16 +1249,16 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
     // The forecasts' archive's old days, one tar a month, kept for good (task #621).
     match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
         Ok(h) => {
-            meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64);
-            rep.forecast_days_archived = h.days_archived;
-            rep.warnings.extend(h.warnings);
+            meta(h.archive.listed, h.archive.stats, h.files_removed as u64 + h.archive.tmp_removed as u64);
+            rep.forecast_days_archived = h.archive.days_archived;
+            rep.warnings.extend(h.archive.warnings);
         }
         Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
     }
     // The forecast inputs' archive's days before the backtest's span (task #933).
     match super::fcinputs::prune(root, crate::agent::jobs::now_s(), dry_run) {
         Ok(h) => {
-            meta(h.listed, h.stats, h.files_removed as u64);
+            meta(h.listed, 0, h.files_removed as u64);
             rep.forecast_input_days_removed = h.files_removed;
         }
         Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),

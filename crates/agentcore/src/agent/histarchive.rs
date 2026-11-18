@@ -30,7 +30,6 @@ const TMP_OLD: Duration = Duration::from_secs(3600);
 #[derive(Debug, Default, PartialEq)]
 pub struct Report {
     pub days_archived: usize,
-    pub files_removed: usize,
     pub tmp_removed: usize,
     /// NAS metadata work, for the job's costs (buildstore::costin::meta): folders listed, files statted.
     pub listed: u64,
@@ -99,28 +98,6 @@ pub fn run(
 fn list(dir: &NasPath) -> io::Result<Vec<String>> {
     let d = dir.clone();
     nasread::with(dir, move || Ok(d.read_dir()?.into_iter().map(|e| e.name).collect()))
-}
-
-/// The folder's regular files (name, size), temporary ones left out, sorted; an error for anything
-/// that is not a file (the forecasts' archives: agent::fcarchive, fcinputs).
-pub(crate) fn files(dir: &NasPath) -> io::Result<Vec<(String, u64)>> {
-    let d = dir.clone();
-    nasread::with(dir, move || {
-        let mut v = Vec::new();
-        for e in d.read_dir()? {
-            let md = e.symlink_metadata()?;
-            let name = e.name;
-            if !md.is_file() {
-                return Err(io::Error::other(format!("{name} is not a file")));
-            }
-            if store::whole::is_tmp(Path::new(&name)) {
-                continue;
-            }
-            v.push((name, md.len()));
-        }
-        v.sort();
-        Ok(v)
-    })
 }
 
 /// Removes the archive folder's temporary files a stopped run left (older than `TMP_OLD`).

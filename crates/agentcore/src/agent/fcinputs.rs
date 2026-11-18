@@ -19,7 +19,7 @@
 //!   `gc` job removes the days before it (`prune`).
 
 use super::forecast::Record;
-use super::{fcarchive, fccheck, histarchive, nasread};
+use super::{fcarchive, fccheck, nasread};
 use crate::pool::journal;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -276,12 +276,19 @@ pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
     out
 }
 
+/// What `prune` did: folders listed (the job's costs, buildstore::costin::meta) and days removed.
+#[derive(Debug, Default)]
+pub struct Pruned {
+    pub listed: u64,
+    pub files_removed: usize,
+}
+
 /// Removes the days before `KEEP_S` back from `now` (`dry_run`: counts them).
-pub fn prune(root: &store::nasfs::NasRoot, now: u64, dry_run: bool) -> Result<histarchive::Report> {
-    let mut rep = histarchive::Report::default();
+pub fn prune(root: &store::nasfs::NasRoot, now: u64, dry_run: bool) -> Result<Pruned> {
+    let mut rep = Pruned::default();
     let Some(cut) = journal::day(now.saturating_sub(KEEP_S)) else { return Ok(rep) };
     let dir = root.join(DIR);
-    let listed = match histarchive::files(&dir) {
+    let listed = match fcarchive::files(&dir) {
         Ok(l) => l,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(rep),
         Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),

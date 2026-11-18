@@ -527,19 +527,49 @@ pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Entry> {
     out
 }
 
+/// What `pack` did: the archive's work (histarchive's, its temporary files swept among it) and the
+/// days' files removed once packed.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub archive: histarchive::Report,
+    pub files_removed: usize,
+}
+
+/// The folder's regular files (name, size), temporary ones left out, sorted; an error for anything
+/// that is not a file (the forecasts' days, and the forecast inputs': agent::fcinputs).
+pub(crate) fn files(dir: &store::nasfs::NasPath) -> io::Result<Vec<(String, u64)>> {
+    let d = dir.clone();
+    nasread::with(dir, move || {
+        let mut v = Vec::new();
+        for e in d.read_dir()? {
+            let md = e.symlink_metadata()?;
+            let name = e.name;
+            if !md.is_file() {
+                return Err(io::Error::other(format!("{name} is not a file")));
+            }
+            if store::whole::is_tmp(std::path::Path::new(&name)) {
+                continue;
+            }
+            v.push((name, md.len()));
+        }
+        v.sort();
+        Ok(v)
+    })
+}
+
 /// Packs the days before the history's window (histarchive::cutoff) into their months' tars and
 /// removes their files (each only if its size is still the one packed). `between` runs before each
 /// month (a safe point).
-pub fn pack(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<histarchive::Report> {
-    let mut rep = histarchive::Report::default();
+pub fn pack(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<Report> {
+    let mut rep = Report::default();
     let Some(cut) = histarchive::cutoff(now) else { return Ok(rep) };
     let dir = root.join(DIR);
-    let listed = match histarchive::files(&dir) {
+    let listed = match files(&dir) {
         Ok(l) => l,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(rep),
         Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
     };
-    rep.listed += 1;
+    rep.archive.listed += 1;
     let mut months: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
     for (name, size) in listed {
         let Some(day) = name.strip_suffix(".jsonl.zst") else { continue };
@@ -549,12 +579,12 @@ pub fn pack(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn
     }
     let arch = root.join(ARCHIVE);
     if !dry_run && !months.is_empty() {
-        histarchive::sweep_tmp(&arch, &mut rep);
+        histarchive::sweep_tmp(&arch, &mut rep.archive);
     }
     for (month, files) in months {
         between();
         if let Err(e) = pack_month(&dir, &arch, &month, &files, dry_run, &mut rep) {
-            rep.warnings.push(format!("forecasts of {month} not archived: {e:#}"));
+            rep.archive.warnings.push(format!("forecasts of {month} not archived: {e:#}"));
         }
     }
     Ok(rep)
@@ -566,12 +596,12 @@ fn pack_month(
     month: &str,
     files: &[(String, u64)],
     dry_run: bool,
-    rep: &mut histarchive::Report,
+    rep: &mut Report,
 ) -> Result<()> {
     let mut members = Vec::new();
     for (name, size) in files {
         let b = nasread::read(&dir.join(name)).with_context(|| format!("read {name}"))?;
-        rep.stats += 1;
+        rep.archive.stats += 1;
         anyhow::ensure!(b.len() as u64 == *size, "{name} read {} of {size} bytes", b.len());
         members.push((name.clone(), b));
     }
@@ -583,14 +613,14 @@ fn pack_month(
         let p = dir.join(name);
         let q = p.clone();
         let now = nasread::with(&p, move || q.metadata().map(|m| m.len()))?;
-        rep.stats += 1;
+        rep.archive.stats += 1;
         if now != *size {
-            rep.warnings.push(format!("{name} grew while it was packed (kept, packed again next run)"));
+            rep.archive.warnings.push(format!("{name} grew while it was packed (kept, packed again next run)"));
             continue;
         }
         p.remove_file().with_context(|| format!("remove {name}"))?;
         rep.files_removed += 1;
-        rep.days_archived += 1;
+        rep.archive.days_archived += 1;
     }
     Ok(())
 }
@@ -703,8 +733,8 @@ mod tests {
                 .unwrap();
         }
         let rep = pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
-        assert_eq!(rep.days_archived, 3, "{rep:?}");
-        assert!(rep.warnings.is_empty());
+        assert_eq!(rep.archive.days_archived, 3, "{rep:?}");
+        assert!(rep.archive.warnings.is_empty());
         assert!(day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(0)).exists());
         assert!(!day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(8)).exists());
         let sep = codecs::tar::list_tar(&std::fs::read(r.path().join(ARCHIVE).join("2026-09.tar")).unwrap()).unwrap();
@@ -712,7 +742,7 @@ mod tests {
         // All four read back, packed or not; again: nothing to do.
         assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 21 * 86_400, NOW + 60).len(), 4);
         assert_eq!(
-            pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap().days_archived,
+            pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap().archive.days_archived,
             0
         );
         // A late append to a packed day: merged into its month's tar next run.

@@ -30,8 +30,6 @@ state/         build/ (the records, their brief, the lead's declaration),
                pool/nas-probe/ (the NAS budget's probe's own folders: it measures the share),
                live-archive/ (each Mac's live measures, a file a
                day), backups/;
-               coord/history/ (the days an app before task #1119 wrote, to 12 Nov: read by
-               nothing, their events in the archive, to remove: docs/coordination.md §9);
                build/term/<E>/ (old forecast inputs the forecast's backtest still reads:
                docs/coordination.md §9)
 ```
