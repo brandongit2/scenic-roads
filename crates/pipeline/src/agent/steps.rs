@@ -1371,8 +1371,10 @@ pub const TABLE: [Step; 65] = [
     },
     // The data-available layers (terrain::available; docs/steps.md §14): a target per theme, its
     // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
-    // coastline, made again only where a piece or the land moved.
+    // coastline, made again only where a piece or the land moved. (Cost version 1: the cut, task
+    // #1361: its peak 2.75 → 3.34 GB on the mini.)
     Step {
+        cost_v: 1,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
         reads: &[In { name: "extents", of: idents::extents_pieces }, In { name: "land", of: idents::pass_land }],
         ..step(
@@ -1389,7 +1391,9 @@ pub const TABLE: [Step; 65] = [
     // coverage, the input check's measures, the store's fill masks and the pyramids' stores (it
     // waits for their fill), cut to the pass's coastline's land, made again only where a dataset or
     // the land moved. Any member's, as `available`'s: it reads the store's masks over the NAS.
+    // (Cost version 1: the cut, task #1361: a z6 tile all sea reads nothing, a z6 tile's mask held.)
     Step {
+        cost_v: 1,
         versions: &[("available-built", || terrain::available::built::KEY_V.to_string())],
         reads: &[
             In { name: "elevation", of: idents::built_datasets },

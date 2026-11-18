@@ -1,6 +1,9 @@
 //! The cut to one side of the coastline (docs/steps.md §14): a theme's layers hold a piece only on
 //! its side, whatever its outline (an index's coastal tiles, a 1° tile, a block drawn over the sea).
 //! The side is the theme's (`SIDES`): the terrain's the land, bathymetry's (planned) the water.
+//! **Planned (task #1351):** `Side::Sea` is the land's mask inverted, and the land here is the
+//! coastline's, which holds every lake: a bathymetry layer cut by it would lose every lake's depth
+//! (GLOBathy's and the like). Its side needs the water layer's lakes added to the sea first.
 //!
 //! - **The land** is the coastline's, the pass's own (inputs::inputs::regions::land, the
 //!   `regions-land` step's, by 2° cell): OSM's coastline, so a lake is land (the coastline goes round
@@ -73,7 +76,8 @@ impl<'a> Cut<'a> {
 
     /// The rows `r0..r1` of a plane `width` pixels wide (`f`: longitude, latitude → its pixels) as
     /// runs of 1 where a pixel is kept and 0 where it's cut, from the land's cells meeting any of
-    /// `boxes` (a pixel further off is cut: only those within the boxes are asked).
+    /// `boxes`; a pixel outside the boxes is answered as if its cells held no land (cut for the
+    /// land's side, kept for the sea's), so only those within the boxes are to be asked.
     pub fn mask(
         &self,
         boxes: &[[f64; 4]],

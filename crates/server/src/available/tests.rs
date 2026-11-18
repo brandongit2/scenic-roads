@@ -3,14 +3,6 @@ use axum::http::{header, HeaderValue};
 
 const SCORE: &[u8] = include_bytes!("../../../../producers/extents/terrain/score.toml");
 
-/// The whole Earth as the coastline's land, each 2° cell its box: the step's cut keeping everything.
-fn earth() -> inputs::inputs::regions::land::Land {
-    use inputs::inputs::regions::{geom, tiles};
-    inputs::inputs::regions::land::Land::Memory(
-        (-90..90).flat_map(|x| (-45..45).map(move |y| ((x, y), geom::box_area(tiles::cell_box((x, y)))))).collect(),
-    )
-}
-
 /// A box's ring, counter-clockwise.
 fn square(w: f64, s: f64, e: f64, n: f64) -> Value {
     json!([[[w, s], [e, s], [e, n], [w, n], [w, s]]])
@@ -311,7 +303,7 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
             pieces.extend(terrain::available::pieces(id, &b).unwrap());
         }
     }
-    let land = earth();
+    let land = inputs::inputs::regions::land::Land::earth();
     let cut = terrain::available::Cut::new(&land, terrain::available::cut::Side::Land).unwrap();
     terrain::available::build(&mut out, "terrain", &pieces, &cut, &|_, _| {}).unwrap();
     // The built set: two datasets over the whole world, the coarser one first in order.

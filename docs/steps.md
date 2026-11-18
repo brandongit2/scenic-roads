@@ -1079,7 +1079,9 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   parallel (rayon), their sets over the row's.
 - **The cut** (terrain::available::cut): every source's pieces are drawn only on the theme's side
   of the coastline (`cut::SIDES`: the terrain's the land; bathymetry's, planned, the sea, the same
-  mask inverted), so an index's coastal tiles, a 1° tile or a block drawn over the sea hold nothing
+  mask inverted: planned, task #1351, since the coastline's land holds every lake, so the mask
+  inverted would cut away every lake's depth, GLOBathy's too; bathymetry's side needs the water
+  layer's lakes added to the sea), so an index's coastal tiles, a 1° tile or a block drawn over the sea hold nothing
   there (New Brunswick's GeoNB blocks: 106,396 km² as outlines, 89,135 on the land; the rest is
   its neighbours' land under the blocks). The land is the pass's coastline's (docs/inputs.md
   §6.1.7, the `regions-land` step's, by 2° cell): OSM's coastline goes round no lake, so a lake is

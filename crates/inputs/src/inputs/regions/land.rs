@@ -486,6 +486,15 @@ impl Land {
         }
     }
 
+    /// The whole Earth as land, each 2° cell its box (tests: a cut to it keeps everything).
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn earth() -> Land {
+        use super::tiles::cell_box;
+        Land::Memory(
+            (-90..90).flat_map(|x| (-45..45).map(move |y| ((x, y), geom::box_area(cell_box((x, y)))))).collect(),
+        )
+    }
+
     /// Its cells holding any land.
     pub fn cells(&self) -> Vec<Cell> {
         let mut v: Vec<Cell> = match self {

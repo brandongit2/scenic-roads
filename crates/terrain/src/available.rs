@@ -772,12 +772,17 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &d
                 let mut band = Sets::default();
                 let (r0, r1) = (y * BAND, (y + 1) * BAND);
                 let boxes: Vec<[f64; 4]> = xs.iter().map(|&x| roadcore::geo::tile_box(fmt::PACK_Z, x, y)).collect();
-                let mask = cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?;
-                let runs: Vec<Runs> = row_runs(&polys, MERC_W, r0, r1, &mut band)
-                    .iter()
-                    .zip(&mask)
-                    .map(|(r, m)| cut::apply(r, m))
-                    .collect();
+                // (The mask and the uncut runs let go once the cut runs are made, before the
+                // quadtrees: the row's peak.)
+                let runs: Vec<Runs> = {
+                    let mask = cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?;
+                    row_runs(&polys, MERC_W, r0, r1, &mut band)
+                        .iter()
+                        .zip(&mask)
+                        .map(|(r, m)| cut::apply(r, m))
+                        .collect()
+                };
+                drop(boxes);
                 let band = std::sync::Arc::new(band);
                 let rows = Rows { runs: &runs, r0, width: MERC_W, zmax: fmt::MAXZ };
                 let made: Vec<Z6> = xs

@@ -1,18 +1,14 @@
 use super::cut::Side;
 use super::*;
 use codecs::available::Grid;
-use inputs::inputs::regions::{geom, land::Land, tiles};
+use inputs::inputs::regions::land::Land;
 use std::path::Path;
 use store::nasfs::NasRoot;
 
 /// The whole Earth as land, each 2° cell its box: a cut that keeps everything.
 pub(super) fn earth() -> &'static Land {
     static EARTH: std::sync::OnceLock<Land> = std::sync::OnceLock::new();
-    EARTH.get_or_init(|| {
-        Land::Memory(
-            (-90..90).flat_map(|x| (-45..45).map(move |y| ((x, y), geom::box_area(tiles::cell_box((x, y)))))).collect(),
-        )
-    })
+    EARTH.get_or_init(Land::earth)
 }
 
 /// The cut keeping the whole Earth.

@@ -44,6 +44,8 @@ ureq = "=3.4.2"
 bytemuck = { workspace = true }
 
 [dev-dependencies]
+# (Land::earth, the whole Earth as land, for the data-available step's cut.)
+inputs = { path = "../inputs", features = ["testkit"] }
 # The lead's map routes (maplog's tests serve them) and the room setting a test sets: the runtime's.
 agentcore = { path = "../agentcore" }
 store = { path = "../store", features = ["testkit"] }
