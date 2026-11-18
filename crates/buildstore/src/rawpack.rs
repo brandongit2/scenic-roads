@@ -540,8 +540,8 @@ impl Packer {
             let mut w = ArchiveWriter::create(&part, &self.meta)?;
             let mut b = Vec::new();
             for i in 0..n {
-                let k = tile(i, &mut b)?;
-                w.add((k >> 58) as u8, ((k >> 29) & 0x1fff_ffff) as u32, (k & 0x1fff_ffff) as u32, &b, b.len())?;
+                let (z, x, y) = roadcore::archive::tile_zxy(tile(i, &mut b)?);
+                w.add(z, x, y, &b, b.len())?;
             }
             w.finish()?;
             Ok(())
@@ -866,8 +866,8 @@ pub fn name_handed_places(
 
 /// The shard of the tile an archive's key is (roadcore::archive::tile_key).
 fn shard_of_key(key: u64) -> String {
-    let m = (1u64 << 29) - 1;
-    shard((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
+    let (z, x, y) = roadcore::archive::tile_zxy(key);
+    shard(z, x, y)
 }
 
 /// The stored pyramids' folder, under the build's root (terrain::pyramids::DIR).
@@ -1281,8 +1281,7 @@ pub fn check(store: &store::nasfs::NasPath, every: usize) -> Result<Checked> {
             Ok((true, (f, entries))) => {
                 c.tiles += entries.len();
                 for e in entries.iter().step_by(every.max(1)).take(if every == 0 { 0 } else { usize::MAX }) {
-                    let (z, x, y) =
-                        ((e.key >> 58) as u8, ((e.key >> 29) & 0x1fff_ffff) as u32, (e.key & 0x1fff_ffff) as u32);
+                    let (z, x, y) = roadcore::archive::tile_zxy(e.key);
                     let b = store::range::RangeRead::read_at(&f, e.offset, e.len as usize)?;
                     let loose = if b.is_empty() {
                         store.join(format!("{z}/{x}/{y}.none"))

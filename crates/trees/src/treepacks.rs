@@ -367,8 +367,7 @@ fn archive_tiles(p: &Path) -> Result<Vec<PackTile>> {
         .entries()
         .iter()
         .map(|e| {
-            let (z, x, y) =
-                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) = e.zxy();
             (z, x, y, arc.get_entry(e).to_vec(), e.raw_len)
         })
         .collect())

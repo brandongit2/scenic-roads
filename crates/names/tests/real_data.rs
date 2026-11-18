@@ -68,8 +68,7 @@ fn label_tiles_round_trip() {
     let step = (entries.len() / 400).max(1);
     let (mut n, mut same, mut features) = (0, 0, 0);
     for e in entries.iter().step_by(step) {
-        let (z, x, y) =
-            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) = e.zxy();
         let gz = a.get(z, x, y).expect("tile");
         let raw = gunzip_if_gzip(gz).expect("gunzip");
         same += usize::from(round_trip(&raw));

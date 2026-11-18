@@ -1661,8 +1661,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         let p = phase("writing road and rail packs");
         for (layer, enc) in [("roads", &roads), ("rails", &rails)] {
             let mut it = enc.iter().map(|e| {
-                let (z, x, y) =
-                    ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+                let (z, x, y) = roadcore::archive::tile_zxy(e.key);
                 (z, x, y, e.gz.clone(), e.raw_len as u32)
             });
             match layers::write_pack_local(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)? {
@@ -1799,11 +1798,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
                 road_tiles += r.len();
                 for (enc, w) in [(&r, &mut roads), (&l, &mut rails)] {
                     for e in enc {
-                        let (z, x, y) = (
-                            (e.key >> 58) as u8,
-                            ((e.key >> 29) & ((1 << 29) - 1)) as u32,
-                            (e.key & ((1 << 29) - 1)) as u32,
-                        );
+                        let (z, x, y) = roadcore::archive::tile_zxy(e.key);
                         w.add(z, x, y, &e.gz, e.raw_len as u32)?;
                     }
                 }
@@ -5328,7 +5323,7 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
         let own = files[4].as_ref().context("no work file for that tile")?;
         let mut by: BTreeMap<(u32, u32), u64> = BTreeMap::new();
         for e in &own.index {
-            let (_, x, y) = ::bld::bld::key_zxy(e.key);
+            let (_, x, y) = roadcore::archive::tile_zxy(e.key);
             *by.entry((x >> 6, y >> 6)).or_default() += e.count as u64;
         }
         by.into_iter().max_by_key(|(a, n)| (*n, std::cmp::Reverse(*a))).context("no buildings in that tile")?.0

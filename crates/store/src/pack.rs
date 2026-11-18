@@ -18,7 +18,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-pub use roadcore::archive::tile_key;
+use roadcore::archive::{tile_key, tile_zxy, valid_tile};
 
 pub const MAGIC: &[u8; 8] = b"RDPACK01";
 /// The format version written.
@@ -36,23 +36,11 @@ const FIRST_READ: u64 = 64 << 10;
 /// Magic of the local index cache encoding (`PackIndex::to_bytes`).
 const IDX_MAGIC: &[u8; 8] = b"RDPKIDX1";
 
-const MASK29: u64 = (1 << 29) - 1;
-
-/// The zoom, x and y of a tile key.
-pub fn tile_zxy(key: u64) -> (u8, u32, u32) {
-    ((key >> 58) as u8, ((key >> 29) & MASK29) as u32, (key & MASK29) as u32)
-}
-
-/// Whether z/x/y is a tile a key can hold: x and y below 2^z, z at most 29.
-pub fn valid_tile(z: u8, x: u32, y: u32) -> bool {
-    z <= 29 && u64::from(x) < 1 << z && u64::from(y) < 1 << z
-}
-
 /// One index entry (32 bytes, as stored).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
 pub struct Entry {
-    /// `tile_key(z, x, y)`.
+    /// `roadcore::archive::tile_key(z, x, y)`.
     pub key: u64,
     /// Absolute offset of the blob in the pack.
     pub offset: u64,
@@ -694,15 +682,5 @@ mod tests {
         let e = PackIndex::read_from(&std::fs::read(&q).unwrap()).unwrap();
         assert!(e.entries.is_empty());
         assert_eq!(PackIndex::from_bytes(&e.to_bytes()).unwrap(), e);
-    }
-
-    #[test]
-    fn keys() {
-        for (z, x, y) in [(0, 0, 0), (6, 32, 21), (14, 16383, 1), (29, (1 << 29) - 1, 7)] {
-            assert_eq!(tile_zxy(tile_key(z, x, y)), (z, x, y));
-            assert!(valid_tile(z, x, y));
-        }
-        assert!(!valid_tile(0, 1, 0));
-        assert!(!valid_tile(30, 0, 0));
     }
 }

@@ -107,8 +107,7 @@ fn main() -> anyhow::Result<()> {
         let mut slowest = (std::time::Duration::ZERO, String::new());
         let t0 = Instant::now();
         for e in entries.iter().step_by(step) {
-            let (z, x, y) =
-                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) = e.zxy();
             let Some(gz) = a.get(z, x, y) else { continue };
             let t = Instant::now();
             let raw = mvt::gunzip_if_gzip(gz)?;

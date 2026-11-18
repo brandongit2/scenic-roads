@@ -427,7 +427,7 @@ pub const ID_INDEX_BITS: u32 = 20;
 /// A building's or part's feature id from its place (`Feat::order`: its z14 tile's key, its index
 /// there): x << 34 | y << 20 | index, under 2^48 (a whole number in JavaScript).
 pub fn feature_id(order: (u64, u32)) -> Result<u64> {
-    let (_, x, y) = super::key_zxy(order.0);
+    let (_, x, y) = roadcore::archive::tile_zxy(order.0);
     anyhow::ensure!(order.1 < 1 << ID_INDEX_BITS, "z14 tile {x}/{y} has over 2^{ID_INDEX_BITS} records");
     Ok(((x as u64) << (14 + ID_INDEX_BITS)) | ((y as u64) << ID_INDEX_BITS) | order.1 as u64)
 }

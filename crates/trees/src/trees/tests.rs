@@ -360,15 +360,7 @@ fn the_z3_run_and_its_blocks_alike() {
 /// An archive's tiles: (z, x, y) → bytes.
 fn tiles_of(p: &Path) -> BTreeMap<(u8, u32, u32), Vec<u8>> {
     let a = Archive::open(p).unwrap();
-    a.entries()
-        .iter()
-        .map(|e| {
-            (
-                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32),
-                a.get_entry(e).to_vec(),
-            )
-        })
-        .collect()
+    a.entries().iter().map(|e| (e.zxy(), a.get_entry(e).to_vec())).collect()
 }
 
 #[test]

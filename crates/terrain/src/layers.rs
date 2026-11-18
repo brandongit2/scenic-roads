@@ -326,8 +326,7 @@ pub fn split_archive_with(
     let mut groups: BTreeMap<(&'static str, u8, u32, u32), Vec<usize>> = BTreeMap::new();
     let entries = arc.entries();
     for (i, e) in entries.iter().enumerate() {
-        let (z, x, y) =
-            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) = e.zxy();
         if z > max_z {
             continue;
         }
@@ -345,8 +344,7 @@ pub fn split_archive_with(
         }
         let mut it = idx.into_iter().map(|i| {
             let e = entries[i];
-            let (z, x, y) =
-                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) = e.zxy();
             let blob = arc.get(z, x, y).map(<[u8]>::to_vec).unwrap_or_default();
             (z, x, y, blob, e.raw_len)
         });

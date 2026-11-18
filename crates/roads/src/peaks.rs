@@ -346,8 +346,7 @@ pub struct Peak {
 pub fn coarse_tiles(arc: &Archive) -> HashMap<(u32, u32), Tile> {
     let mut z8: HashMap<(u32, u32), Tile> = HashMap::new();
     for e in arc.entries() {
-        let (z, x, y) =
-            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) = e.zxy();
         if z == COARSE_Z {
             if let Some(b) = arc.get(z, x, y) {
                 if let Ok(mut t) = decode_terrain(b) {

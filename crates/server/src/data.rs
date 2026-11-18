@@ -733,9 +733,9 @@ impl Data {
         use std::os::unix::fs::FileExt;
         let idx = self.index(key)?;
         // (Sorted by key: a zoom's tiles are together.)
-        let first = idx.entries.partition_point(|e| e.key >> 58 < u64::from(z));
+        let first = idx.entries.partition_point(|e| e.zxy().0 < z);
         let mut es: Vec<store::pack::Entry> =
-            idx.entries[first..].iter().take_while(|e| e.key >> 58 == u64::from(z)).copied().collect();
+            idx.entries[first..].iter().take_while(|e| e.zxy().0 == z).copied().collect();
         es.sort_by_key(|e| e.offset);
         fn end(e: &store::pack::Entry) -> u64 {
             e.offset + u64::from(e.len)

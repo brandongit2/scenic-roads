@@ -715,7 +715,7 @@ impl TerrainTiles {
     #[cfg(test)]
     pub fn hold(&mut self, content: &str, tiles: impl IntoIterator<Item = Tile>) {
         let mut t: Vec<(u64, u64)> =
-            tiles.into_iter().map(|(z, x, y, h)| (store::pack::tile_key(z, x, y), h)).collect();
+            tiles.into_iter().map(|(z, x, y, h)| (roadcore::archive::tile_key(z, x, y), h)).collect();
         t.sort_unstable();
         self.unread.remove(content);
         self.held.insert(content.to_string(), t.into());
@@ -731,7 +731,7 @@ fn compact(ix: &PackIndex) -> Held {
 /// terrain tiles a target reads (build::unit_deep_tiles, build::slope_tile_lines: "z/x/y xxh3", or
 /// "-" for a tile none of its packs has), hundreds of thousands a z6 tile's: as text they were
 /// 900 MB of the lead's memory on 4 Nov (task #930). Such a value is kept as its tiles, 16 bytes a
-/// line (the tile's key, store::pack::tile_key, and its XXH3), and given back as the same text;
+/// line (the tile's key, roadcore::archive::tile_key, and its XXH3), and given back as the same text;
 /// any other as it is.
 enum Kept {
     Text(Box<str>),
@@ -787,10 +787,10 @@ fn parse_line(l: &str) -> Option<(u64, u64)> {
     let (zxy, h) = l.split_once(' ')?;
     let mut it = zxy.split('/');
     let (z, x, y) = (it.next()?.parse::<u8>().ok()?, it.next()?.parse::<u32>().ok()?, it.next()?.parse::<u32>().ok()?);
-    if it.next().is_some() || h.len() != 16 || !store::pack::valid_tile(z, x, y) {
+    if it.next().is_some() || h.len() != 16 || !roadcore::archive::valid_tile(z, x, y) {
         return None;
     }
-    Some((store::pack::tile_key(z, x, y), u64::from_str_radix(h, 16).ok()?))
+    Some((roadcore::archive::tile_key(z, x, y), u64::from_str_radix(h, 16).ok()?))
 }
 
 /// A tile's line (`parse_line`) onto `s`.
@@ -799,7 +799,7 @@ fn write_line(s: &mut String, (key, h): (u64, u64)) {
     if key == NO_TILE {
         s.push('-');
     } else {
-        let (z, x, y) = store::pack::tile_zxy(key);
+        let (z, x, y) = roadcore::archive::tile_zxy(key);
         let _ = write!(s, "{z}/{x}/{y} {h:016x}");
     }
 }
@@ -873,11 +873,11 @@ impl<'a> Reader<'a> {
 
     /// Tile (z, x, y)'s XXH3 (None: there's no such tile).
     pub fn hash(&mut self, z: u8, x: u32, y: u32) -> Result<Option<u64>, Unread> {
-        if !store::pack::valid_tile(z, x, y) {
+        if !roadcore::archive::valid_tile(z, x, y) {
             return Ok(None);
         }
         let Some(t) = self.pack(z, x, y)? else { return Ok(None) };
-        let k = store::pack::tile_key(z, x, y);
+        let k = roadcore::archive::tile_key(z, x, y);
         Ok(t.binary_search_by_key(&k, |e| e.0).ok().map(|i| t[i].1))
     }
 
@@ -886,7 +886,7 @@ impl<'a> Reader<'a> {
         let d = terrain::terrain_deep::FIRST_Z;
         let k = d - terrain::terrain_deep::PACK_Z;
         Ok(match self.pack(d, t.0 << k, t.1 << k)? {
-            Some(ts) => ts.iter().map(|&(key, _)| store::pack::tile_zxy(key)).collect(),
+            Some(ts) => ts.iter().map(|&(key, _)| roadcore::archive::tile_zxy(key)).collect(),
             None => Vec::new(),
         })
     }

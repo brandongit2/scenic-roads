@@ -27,6 +27,7 @@ const QV: f32 = 64.0;
 /// w is stored as log2(1 + w) / WLOG x 65535 (a tower's edge texel holds walls 100 times its area).
 const WLOG: f32 = 12.0;
 
+/// roadcore::archive::tile_key (this hand-run tool is its own workspace, without roadcore).
 fn tile_key(z: u64, x: u64, y: u64) -> u64 {
     (z << 58) | (x << 29) | y
 }
@@ -326,10 +327,13 @@ fn wall(wd: &mut [f32], a: (f64, f64), b: (f64, f64), len_m: f64, wh: f64) {
     }
 }
 
+/// The Mercator world's width (m): MapLibre's, as web/src/merc.ts MERC_CIRC.
+const MERC_CIRC: f64 = 40075016.686;
+
 /// Metres a texel side at global texel row `y` of a grid of `n` rows (Web Mercator).
 fn side_m(y: f64, n: f64) -> f64 {
     let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
-    40075016.686 * lat.cos() / n
+    MERC_CIRC * lat.cos() / n
 }
 
 /// Height classes (by a building's or part's top, dm): under 8 m, 8–20, 20–40, 40–100, 100 m and up.

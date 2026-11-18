@@ -21,13 +21,14 @@ use super::field;
 use super::fill::{self, src, Near, Point};
 use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
-use super::{key_zxy, world7};
+use super::world7;
 use anyhow::{ensure, Context, Result};
 use buildstore::coverage::Coverage;
 use buildstore::out::Out;
 use codecs::legacy::TileId;
 use det::Det;
 use rayon::prelude::*;
+use roadcore::archive::tile_zxy;
 use roadcore::geo::MERC_C;
 use std::collections::BTreeMap;
 
@@ -149,7 +150,7 @@ fn country(cov: &Coverage, s: Option<usize>) -> &str {
 
 /// A z14 tile's box in E7.
 pub(super) fn box14(key: u64) -> [i32; 4] {
-    let (_, x, y) = key_zxy(key);
+    let (_, x, y) = tile_zxy(key);
     codecs::hipack::tile_bounds(14, x, y)
 }
 
@@ -160,7 +161,7 @@ pub(super) fn z8_blocks(files: &[Option<WorkFile>], t: TileId, a: (u32, u32)) ->
         f.index
             .iter()
             .filter(|e| {
-                let (_, x, y) = key_zxy(e.key);
+                let (_, x, y) = tile_zxy(e.key);
                 (x >> 6, y >> 6) == a
             })
             .map(|e| (4, *e))
@@ -210,7 +211,7 @@ pub fn z8_tiles_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
         .index
         .iter()
         .map(|e| {
-            let (_, x, y) = key_zxy(e.key);
+            let (_, x, y) = tile_zxy(e.key);
             (x >> 6, y >> 6)
         })
         .collect();
@@ -388,7 +389,7 @@ pub fn z8_tiles(
     let mut feet: Vec<field::Foot> = Vec::new();
     let mut own_feet: Vec<usize> = Vec::new();
     for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
-        let (_, x, y) = key_zxy(e.key);
+        let (_, x, y) = tile_zxy(e.key);
         for (i, fl) in filled[bi].iter().enumerate() {
             let own = bi < n_own;
             let Some(fl) = fl else {

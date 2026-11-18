@@ -59,7 +59,7 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: TileId, qs: &mut Vec<Q>, 
         .index
         .iter()
         .map(|e| {
-            let (_, x, y) = key_zxy(e.key);
+            let (_, x, y) = roadcore::archive::tile_zxy(e.key);
             (x >> 6, y >> 6)
         })
         .collect();

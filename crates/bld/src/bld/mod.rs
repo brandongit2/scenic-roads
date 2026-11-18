@@ -58,11 +58,6 @@ pub fn z14_key(p: [i32; 2]) -> u64 {
     roadcore::archive::tile_key(14, x, y)
 }
 
-/// A tile key's zoom, x and y.
-pub fn key_zxy(k: u64) -> (u8, u32, u32) {
-    ((k >> 58) as u8, ((k >> 29) & ((1 << 29) - 1)) as u32, (k & ((1 << 29) - 1)) as u32)
-}
-
 /// The logical name of z6 tile T's normalized file.
 pub fn work_logical(x: u32, y: u32) -> String {
     format!("work/bld/6-{x}-{y}")
@@ -81,7 +76,7 @@ mod tests {
     fn tiles_and_keys() {
         // Shinjuku station: z14 tile 14/14549/6451, in z6 tile 6/56/25.
         let p = [e7(139.7006), e7(35.6896)];
-        let (z, x, y) = key_zxy(z14_key(p));
+        let (z, x, y) = roadcore::archive::tile_zxy(z14_key(p));
         assert_eq!((z, x, y), (14, 14549, 6451));
         assert_eq!((x >> 8, y >> 8), (56, 25));
         let b = roadcore::geo::tile_box(14, x, y);

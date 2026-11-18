@@ -462,7 +462,7 @@ impl Prepped {
                 let (c, a) = centroid_area(&pts, &rings).ok_or(2u8)?;
                 let cen = [e7(c[0]), e7(c[1])];
                 let key = z14_key(cen);
-                let (_, x, y) = super::key_zxy(key);
+                let (_, x, y) = roadcore::archive::tile_zxy(key);
                 if (x >> 8, y >> 8) != (t.x, t.y) {
                     return Ok(None);
                 }

@@ -186,8 +186,7 @@ pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<(Vec<Tile>, Vec<u8
         let mut e = a.entries().to_vec();
         e.sort_unstable_by_key(|e| e.offset);
         for e in e {
-            let (z, x, y) =
-                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) = e.zxy();
             ensure!(
                 (ZBLOCK..=ZMAX).contains(&z) && (x >> (z - ZBLOCK), y >> (z - ZBLOCK)) == (bx, by),
                 "block 8/{bx}/{by}'s {l} tiles hold {z}/{x}/{y}"

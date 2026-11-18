@@ -17,9 +17,24 @@ use std::path::Path;
 
 pub const MAGIC: &[u8; 8] = b"RDTILES1";
 
+/// A tile's key, in an archive's index and a pack's (store::pack): z in the top 6 bits, then x and
+/// y in 29 bits each, so keys sort by zoom, then x, then y.
 #[inline]
 pub fn tile_key(z: u8, x: u32, y: u32) -> u64 {
     ((z as u64) << 58) | ((x as u64) << 29) | y as u64
+}
+
+const MASK29: u64 = (1 << 29) - 1;
+
+/// The zoom, x and y of a tile key: `tile_key`'s inverse.
+#[inline]
+pub fn tile_zxy(key: u64) -> (u8, u32, u32) {
+    ((key >> 58) as u8, ((key >> 29) & MASK29) as u32, (key & MASK29) as u32)
+}
+
+/// Whether z/x/y is a tile a key can hold: x and y below 2^z, z at most 29.
+pub fn valid_tile(z: u8, x: u32, y: u32) -> bool {
+    z <= 29 && u64::from(x) < 1 << z && u64::from(y) < 1 << z
 }
 
 #[repr(C)]
@@ -30,6 +45,13 @@ pub struct Entry {
     pub len: u32,
     /// Uncompressed size, useful for stats.
     pub raw_len: u32,
+}
+
+impl Entry {
+    /// The entry's tile: z, x, y.
+    pub fn zxy(&self) -> (u8, u32, u32) {
+        tile_zxy(self.key)
+    }
 }
 
 pub struct ArchiveWriter {
@@ -125,5 +147,23 @@ impl Archive {
     /// An entry's bytes.
     pub fn get_entry(&self, e: &Entry) -> &[u8] {
         &self.map[e.offset as usize..e.offset as usize + e.len as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys() {
+        for (z, x, y) in [(0, 0, 0), (6, 32, 21), (14, 16383, 1), (29, (1 << 29) - 1, 7)] {
+            assert_eq!(tile_zxy(tile_key(z, x, y)), (z, x, y));
+            assert!(valid_tile(z, x, y));
+        }
+        assert!(!valid_tile(0, 1, 0));
+        assert!(!valid_tile(30, 0, 0));
+        // (Today's keys, by value: a stored index's keys never move.)
+        assert_eq!(tile_key(6, 32, 21), (6 << 58) | (32 << 29) | 21);
+        assert_eq!(Entry { key: tile_key(9, 300, 7), offset: 0, len: 0, raw_len: 0 }.zxy(), (9, 300, 7));
     }
 }

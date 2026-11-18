@@ -247,7 +247,7 @@ pub fn take_z8(dir: &Path, a: TileId, add: &mut AddTile) -> Result<(Summary, fie
     let sum: Summary = serde_json::from_slice(&std::fs::read(dir.join(SUMMARY))?).context("a z8 tile's summary")?;
     let ar = Archive::open(&dir.join(TILES))?;
     for e in ar.entries() {
-        let (z, x, y) = super::key_zxy(e.key);
+        let (z, x, y) = roadcore::archive::tile_zxy(e.key);
         ensure!(
             z == super::ZOOM && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
             "z8 tile {}'s tiles hold {z}/{x}/{y}",
@@ -258,7 +258,7 @@ pub fn take_z8(dir: &Path, a: TileId, add: &mut AddTile) -> Result<(Summary, fie
     let mut f = field::Z8Field::default();
     let ar = Archive::open(&dir.join(FIELD))?;
     for e in ar.entries() {
-        let (z, x, y) = super::key_zxy(e.key);
+        let (z, x, y) = roadcore::archive::tile_zxy(e.key);
         ensure!(
             (field::LEVEL_HI_MIN..=field::LEVEL_MAX).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
             "z8 tile {}'s field holds {z}/{x}/{y}",
