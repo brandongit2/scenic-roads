@@ -639,12 +639,14 @@ folder's regions with land (every region under the folder but its waters regions
 `by` the pieces inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over
 the remainder, hold the folder naming both, `rg-ref`; under it the piece is the first's in id order);
 the rest to the nearest region (its land and lakes), split at the median line as a `nearest` is on a
-grid of `step`. Each piece is its region's land or lake as the coastline's land has it. So the
-declaration names no member and no neighbour: one region's outline changing moves the remainder's lines
-with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline reads a
-region's land before the remainders. The folder must have a region with land, every region of it a
-`water` key, none be held and every `by` name one of them; and no held region elsewhere may reach the
-remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
+grid of `step`. Each piece is its region's land or lake as the coastline's land has it. A speck under 1
+m² (`SPECK_M2`: what the land less the regions' land leaves where one line is cut twice) is no one's,
+and where a remainder gave a region pieces its land and lakes lose their rings and holes under it. So
+the declaration names no member and no neighbour: one region's outline changing moves the remainder's
+lines with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline
+reads a region's land before the remainders. The folder must have a region with land, every region of
+it a `water` key, none be held and every `by` name one of them; and no held region elsewhere may reach
+the remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
 naming anything else may reach anywhere: what it would take is free and can't be told). Else each is
 held, the file named (`rg-ref`). A paused check keeps each remainder as a piece (task #897,
 docs/pool.md), by the folder's whole key. Without `by` the whole remainder is split at the median line:
