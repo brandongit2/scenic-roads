@@ -1563,9 +1563,10 @@ fn cli_main() -> Result<()> {
                 }
                 Some(PoolCmd::Needs { costs }) => {
                     // Each step's model of what its jobs need (agentcore::needs::model_table). Read
-                    // only: the
-                    // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
-                    // agent's), its disk floors beside them.
+                    // only: the coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this
+                    // Mac's agent's), its disk floors and timings log beside them (each Mac's speed
+                    // and the jobs' records, as the coordinator reads them), at the pool's tuning
+                    // as this Mac's agent last had it, the lead's pace the one it keeps.
                     let p = costs.unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
                     let (costs, mut disks) =
                         agentcore::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
@@ -1574,14 +1575,22 @@ fn cli_main() -> Result<()> {
                         .and_then(|b| serde_json::from_slice(&b).ok())
                         .unwrap_or_default();
                     disks.extend(kept);
+                    let agent = app_home().join("agent");
+                    let mut tail = jobrt::timings::LogTail::default();
+                    tail.read(&p.with_file_name("timings.jsonl"));
+                    let lead = coordwire::lead::saved(&agent).map(|k| k.member).unwrap_or_else(store::sys::host_name);
+                    let paces = agentcore::paces::Paces::of(&tail.speeds(agentcore::paces::mac_of, |_| true), &lead);
+                    let records = tail.facts().clone();
+                    let tuning = jobrt::control::read_pool_settings(&agent).map(|s| s.needs()).unwrap_or_default();
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
+                    let inputs = agentcore::needs::Inputs { paces: &paces, records: &records, tuning };
                     print!(
                         "{}",
-                        agentcore::needs::model_table(&agentcore::needs::Book::with(
+                        agentcore::needs::model_table(&agentcore::needs::Book::pool(
                             pipeline::agent::theplan::the_plan(),
                             &costs,
-                            None,
-                            Some(&disks)
+                            Some(&disks),
+                            inputs
                         ))
                     );
                     // Where each step's memory peaks: the phase (a program it runs) that held the

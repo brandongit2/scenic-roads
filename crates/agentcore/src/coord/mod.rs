@@ -293,6 +293,7 @@ impl std::fmt::Display for CostKey<'_> {
 
 /// The memory a job of `step` for `target` is predicted to take (MB), by its step's model
 /// (crate::needs, its costs alone; `size` sizes its first guess, `first_guess`).
+#[cfg(test)]
 pub fn job_peak(
     the_plan: &'static dyn crate::agent::seam::Plan,
     costs: &BTreeMap<String, Cost>,
@@ -2672,9 +2673,12 @@ impl Coordinator {
         s.sched.set_paces(p);
     }
 
-    /// The paces the measures are read at (`set_starts`, `phase_sharer`).
-    pub fn paces(&self) -> crate::paces::Paces {
-        self.shared.lock().unwrap().sched.paces.clone()
+    /// What the measures are read by (crate::needs::Inputs: each Mac's speed, `set_starts` and
+    /// `phase_sharer`; the jobs' records; the pool's tuning), for a Book of the costs outside the
+    /// scheduler (`Book::pool`).
+    pub fn needs_inputs(&self) -> (crate::paces::Paces, crate::needs::Records, jobrt::needs::Tuning) {
+        let s = self.shared.lock().unwrap();
+        (s.sched.paces.clone(), s.sched.records.clone(), s.sched.tuning)
     }
 
     /// Placement by how crucial a job is on (`Some`: the forecast's slack; its draws weigh the paces,
@@ -9368,11 +9372,11 @@ mod tests {
         let empty = Offer { targets: o.targets[20..].to_vec(), ..o.clone() };
         assert_eq!(s.pick_every(&full, &a, now).len(), 10);
         assert_eq!(s.pick_every(&empty, &a, now).len(), 40);
-        // (A target of no source run, its area past its step's runs': by its step's runs a target,
-        // their low percentile, an empty one's second: every one offered.)
+        // (A target of no source run, what it holds not known: by the mean of its step's runs a
+        // target, 45.5 s, not their low percentile, an empty one's second: 19 in a quarter hour.)
         let none =
             Offer { targets: (200..240).map(|i| (format!("10/0/{i}"), String::new(), 0)).collect(), ..o.clone() };
-        assert_eq!(s.pick_every(&none, &a, now).len(), 40);
+        assert_eq!(s.pick_every(&none, &a, now).len(), 19);
     }
 
     /// Task #927: a Mac with no runs of the step is sized as before, and says so: a target's own

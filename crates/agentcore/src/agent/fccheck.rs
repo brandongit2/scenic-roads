@@ -524,7 +524,7 @@ pub fn recost(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecas
     let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
     let at = |c: &crate::coord::Cost, _: &str| forecast::at_lead(c, &st.paces, &speed);
     let sums = forecast::step_sums(the_plan, &st.costs, &at);
-    let book = crate::needs::Book::new(the_plan, &st.costs);
+    let book = crate::needs::Book::pool(the_plan, &st.costs, Some(&st.disks), st.inputs());
     let held: std::collections::BTreeSet<&str> =
         st.costs.keys().map(|k| crate::agent::memguard::step_of_key(k)).collect();
     let put = |step: &str, target: &str, c: &mut forecast::Cost| {

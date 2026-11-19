@@ -19,7 +19,11 @@ pub struct Tuning {
     pub high_pct: f64,
     /// A step's NAS bytes and metadata calls per unit of input: this percentile of its runs'.
     pub nas_pct: f64,
-    /// A step's newest runs its needs are learned from.
+    /// A step's newest runs its times (work, the rest, parallelism, the NAS rate) are learned
+    /// from, and checked against their predictions over (memory and disk read every run: a peak
+    /// is a run's, and only many runs show the rare large one). At most `KNOBS`' 5,000: each
+    /// prediction checked is inserted in its size bin's sorted runs, so a window's check grows as
+    /// its square: the cap bounds it.
     pub runs: u64,
     /// A run off its prediction by more than this many times past what its supply explains is
     /// flagged (new code, new data, a regression).
@@ -72,10 +76,10 @@ pub const KNOBS: [Knob<Tuning>; 6] = [
     },
     Knob {
         name: "needs-runs",
-        what: "a step's newest runs its needs are learned from",
+        what: "a step's newest runs its times are learned from and checked over",
         unit: "runs",
         least: 20.0,
-        most: 50000.0,
+        most: 5000.0,
         get: |k| k.runs as f64,
         set: |k, v| k.runs = v as u64,
     },

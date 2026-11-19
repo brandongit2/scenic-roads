@@ -898,9 +898,8 @@ impl Sched {
     /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
     /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
     pub(super) fn book(&self) -> crate::needs::Book<'_> {
-        crate::needs::Book::kept(self.the_plan, &self.costs, &self.floors, &self.disks, &self.needs, self.rev())
-            .paced(&self.paces)
-            .learned(&self.records, self.tuning)
+        let inputs = crate::needs::Inputs { paces: &self.paces, records: &self.records, tuning: self.tuning };
+        crate::needs::Book::kept(self.the_plan, &self.costs, &self.floors, &self.disks, inputs, &self.needs, self.rev())
     }
 
     /// Where the measures stand: it moves with each cost, floor or disk floor taken or cleared
@@ -989,7 +988,10 @@ impl Sched {
     }
 
     /// `target` of `step`'s memory by the book (a step never measured: its offered guess, `lease_mem`)
-    /// and `measured`; kept while the measures stand (`measured_of`).
+    /// and `measured`; kept while the measures stand (`measured_of`). At no thread count (the
+    /// model's peaks of its runs at whatever threads they had, no memory per thread added): it
+    /// is a target's, whichever job takes it; a job grown past the threads its grant covers
+    /// reserves `per_thread_mb` for each (`Grant::thread_mb`, docs/pool.md §7.1).
     fn measures(&self, step: &str, target: &str) -> (u64, Option<Measured>) {
         let rev = self.rev();
         let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
@@ -1009,7 +1011,7 @@ impl Sched {
         let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
         let m = (from != crate::needs::From::Table).then(|| Measured {
             mem_mb,
-            disk_mb: b.disk(step, target, 0).unwrap_or(0),
+            disk_mb: b.disk(step, target).unwrap_or(0),
             own: from == crate::needs::From::Measured,
         });
         g.1.entry(step.to_string()).or_default().insert(target.to_string(), (mem_mb, m));
@@ -1024,8 +1026,15 @@ impl Sched {
         }
     }
 
-    /// The jobs' records now (`records`): the models made again when they changed.
-    pub fn set_records(&mut self, r: crate::needs::Records) {
+    /// The jobs' records now (`records`): the models made again when they changed. Only those of
+    /// jobs the costs hold are kept, the only ones a model reads: the timings log's every job's
+    /// would grow without end, with each forecast's input archived (crate::agent::fcinputs) and
+    /// every model made again at each new job's. (A cost come after its record is read with it at
+    /// the next round's.)
+    pub fn set_records(&mut self, mut r: crate::needs::Records) {
+        let held: std::collections::BTreeSet<String> =
+            self.costs.values().filter_map(|c| c.job).map(|j| j.to_string()).collect();
+        r.retain(|j, _| held.contains(j));
         if r != self.records {
             self.records = r;
             self.needs_rev += 1;
@@ -1608,7 +1617,7 @@ impl Sched {
             }
         }
         let b = self.book();
-        let p = (b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)), b.disk(step, target, 0));
+        let p = (b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)), b.disk(step, target));
         let mut g = self.provisional_at.lock().unwrap_or_else(|e| e.into_inner());
         g.1.entry(step.to_string()).or_default().insert(target.to_string(), p);
         p
@@ -2826,6 +2835,11 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl State {
+    /// What a Book of its costs reads them by (crate::needs::Inputs): its paces, records and tuning.
+    pub fn inputs(&self) -> crate::needs::Inputs<'_> {
+        crate::needs::Inputs { paces: &self.paces, records: &self.records, tuning: self.tuning }
+    }
+
     /// The cores `a`'s Mac has past those busy outside the pool as its ask says (`outside_cores`,
     /// past the cores the jobs it holds here count for: each the cores the lead counted it as
     /// keeping busy now (`Leased::busy_tenths`, task #1094), else its targets' most kept busy
@@ -2833,7 +2847,7 @@ impl State {
     /// summed in tenths, within its threads, else its threads): the forecast's room for its jobs
     /// (task #684).
     pub fn cores_left(&self, the_plan: &'static dyn crate::agent::seam::Plan, a: &Ask) -> u32 {
-        let b = crate::needs::Book::new(the_plan, &self.costs);
+        let b = crate::needs::Book::pool(the_plan, &self.costs, Some(&self.disks), self.inputs());
         let ours: u32 = self
             .leases
             .iter()

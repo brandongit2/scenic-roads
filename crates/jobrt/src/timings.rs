@@ -2110,7 +2110,7 @@ pub fn blind_spots(sums: &[KindSum]) -> Vec<&KindSum> {
     sums.iter().filter(|k| k.unaccounted() > UNACCOUNTED_MAX).collect()
 }
 
-/// Where each kind's memory peaks (`scenic pool needs --fit`): over its last `last` runs, its
+/// Where each kind's memory peaks (`scenic pool needs`): over its last `last` runs, its
 /// top-level phase that held the most (`PhaseRec::peak_mb`), with its sub-phase (a child program's
 /// own phase) that did where one says; by kind. Only runs learned from (`learnable`); kinds whose
 /// runs carry no peaks are left out.

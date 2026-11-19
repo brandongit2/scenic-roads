@@ -2376,7 +2376,7 @@ impl Planner {
         let pace = |worker: Option<&str>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // (Each Mac's time against the lead's, the coordinator's (crate::paces, by the Macs' speeds): a
         // time put at the lead's pace by it; a Mac it doesn't know, by its speed.)
-        let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
+        let (paces, records, tuning) = self.coord.as_ref().map(|c| c.needs_inputs()).unwrap_or_default();
         let at_lead = |c: &crate::coord::Cost| forecast::at_lead(c, &paces, &pace);
         // Each shared step's mean of the targets measured (a z6 tile's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
@@ -2407,7 +2407,8 @@ impl Planner {
         let partial = |step: &str, t: &str| stopped.get(&(step.to_string(), t.to_string())).copied();
         // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
         // else its step's fit or largest, else `peak`'s first guess.)
-        let book = crate::needs::Book::new(self.o.the_plan, &costs);
+        let inputs = crate::needs::Inputs { paces: &paces, records: &records, tuning };
+        let book = crate::needs::Book::pool(self.o.the_plan, &costs, None, inputs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| {
             forecast::target_cost(&book, step, t, &|c, _| at_lead(c), &partial, &per, need_mb(step, t))

@@ -9516,8 +9516,9 @@ impl Agent {
             (eta as f64, "by its progress's pace")
         } else {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
-            let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
-            let book = crate::needs::Book::new(self.o.the_plan, &costs).paced(&paces);
+            let (paces, records, tuning) = self.coord.as_ref().map(|c| c.needs_inputs()).unwrap_or_default();
+            let inputs = crate::needs::Inputs { paces: &paces, records: &records, tuning };
+            let book = crate::needs::Book::pool(self.o.the_plan, &costs, None, inputs);
             let own = |step: &str| self.step_secs_here(step);
             // (On this Mac: at its pace.)
             let secs = |step: &str, t: &str| {

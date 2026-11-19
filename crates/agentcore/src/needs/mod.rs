@@ -337,6 +337,17 @@ type Rates = ByTarget<Option<jobrt::budget::nas::Rate>>;
 /// model learns from a run only where its job's record, if the lead's log still holds it, is clean.
 pub type Records = BTreeMap<String, jobrt::timings::JobFacts>;
 
+/// What a Book reads its costs by besides them, as the pool has them: each Mac's speed
+/// (crate::paces), the jobs' records (`Records`) and the needs model's tuning (the pool's settings,
+/// jobrt::needs::KNOBS). The scheduler holds them (crate::coord::sched::Sched, and its `State` for
+/// the forecast); `Book::pool` and `Book::kept` take them.
+#[derive(Clone, Copy)]
+pub struct Inputs<'a> {
+    pub paces: &'a crate::paces::Paces,
+    pub records: &'a Records,
+    pub tuning: jobrt::needs::Tuning,
+}
+
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key), each Mac's time against
 /// the lead's (crate::paces, from the Macs' speeds), the jobs' records (`Records`) and the model's
@@ -489,13 +500,28 @@ pub fn mean(v: &[u64]) -> Option<u64> {
 pub const PRIOR_RUNS: usize = 20;
 
 impl<'a> Book<'a> {
-    /// A Book over `costs` alone, keeping its own models.
+    /// A Book over `costs` alone, at no Mac's speed, of no records, at the default tuning (a
+    /// test's).
+    #[cfg(test)]
     pub fn new(the_plan: &'static dyn Plan, costs: &'a BTreeMap<String, Cost>) -> Self {
         Book::with(the_plan, costs, None, None)
     }
 
+    /// A Book over `costs` (and `disks`, the disk measures, where it has them) read as the pool
+    /// reads them (`Inputs`: each Mac's speed, the jobs' records, the pool's tuning), keeping its
+    /// own models: every Book outside the scheduler's (`kept`) is one, so the knobs take effect as
+    /// set everywhere.
+    pub fn pool(
+        the_plan: &'static dyn Plan,
+        costs: &'a BTreeMap<String, Cost>,
+        disks: Option<&'a BTreeMap<String, u64>>,
+        inputs: Inputs<'a>,
+    ) -> Self {
+        Book::with(the_plan, costs, None, disks).inputs(inputs)
+    }
+
     /// A Book over all three, keeping its own models.
-    pub fn with(
+    fn with(
         the_plan: &'static dyn Plan,
         costs: &'a BTreeMap<String, Cost>,
         floors: Option<&'a BTreeMap<String, Floor>>,
@@ -514,28 +540,38 @@ impl<'a> Book<'a> {
         }
     }
 
-    /// A Book whose models are kept in `cache` while its owner's change count is `rev`.
+    /// The scheduler's Book (crate::coord::sched::Sched::book): its floors and disk floors too,
+    /// read as the pool reads them (`Inputs`), its models kept in `cache` while its owner's change
+    /// count is `rev` (which moves with each of them).
     pub fn kept(
         the_plan: &'static dyn Plan,
         costs: &'a BTreeMap<String, Cost>,
         floors: &'a BTreeMap<String, Floor>,
         disks: &'a BTreeMap<String, u64>,
+        inputs: Inputs<'a>,
         cache: &'a Cache,
         rev: u64,
     ) -> Self {
-        Book { cache: CacheRef::Kept(cache), rev, ..Book::with(the_plan, costs, Some(floors), Some(disks)) }
+        Book {
+            cache: CacheRef::Kept(cache),
+            rev,
+            ..Book::with(the_plan, costs, Some(floors), Some(disks)).inputs(inputs)
+        }
     }
 
-    /// Its runs read, and its predictions made, at each Mac's time by `paces` (its owner's change
-    /// count, `rev`, moves with them: a kept model is of the paces it was made with).
-    pub fn paced(mut self, paces: &'a crate::paces::Paces) -> Self {
+    fn inputs(self, i: Inputs<'a>) -> Self {
+        self.paced(i.paces).learned(i.records, i.tuning)
+    }
+
+    /// Its runs read, and its predictions made, at each Mac's time by `paces`.
+    fn paced(mut self, paces: &'a crate::paces::Paces) -> Self {
         self.paces = Some(paces);
         self
     }
 
     /// Its runs learned from as their jobs' records say (`Records`), at the percentiles and windows
-    /// `tuning` says (its owner's change count moves with either).
-    pub fn learned(mut self, records: &'a Records, tuning: jobrt::needs::Tuning) -> Self {
+    /// `tuning` says.
+    fn learned(mut self, records: &'a Records, tuning: jobrt::needs::Tuning) -> Self {
         self.records = Some(records);
         self.tuning = tuning;
         self
@@ -651,12 +687,14 @@ impl<'a> Book<'a> {
         // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
         // its place against that guess, which the history doesn't keep.)
         let near = (!GUESS_FIRST.contains(&step)).then(|| Arc::new(Near::of_measures(self.places(step))));
-        // (Its disk measures, each by its target's sizes.)
+        // (Its disk measures, each by its target's sizes: those of a target whose cost line says
+        // an earlier way left out, as its memory is; a disk floor carries no way of its own, so one
+        // with no cost line counts.)
         let disks: Vec<model::Disk> = self
             .disks
             .into_iter()
             .flatten()
-            .filter(|(k, _)| step_of_key(k) == step)
+            .filter(|(k, _)| step_of_key(k) == step && self.costs.get(*k).is_none_or(|c| c.v >= v))
             .map(|(k, &d)| {
                 let mut sizes = sizes_of(k, self.costs.get(k));
                 sizes.insert(model::TARGET.to_string(), 1.0);
@@ -778,7 +816,7 @@ impl<'a> Book<'a> {
     /// None when none of its step was measured. A step reading a shared cache (`CACHES`): its own
     /// output alone, its disk floor at most its step's model's for it (a measure past it a cache's
     /// fill, reserved once per Mac apart).
-    pub fn disk(&self, step: &str, target: &str, _threads: u32) -> Option<u64> {
+    pub fn disk(&self, step: &str, target: &str) -> Option<u64> {
         let key = cost_key(step, target);
         let own = self.disks.and_then(|d| d.get(&key)).copied();
         if own.is_some() && cache_of(step).is_none() {
@@ -934,8 +972,9 @@ impl<'a> Book<'a> {
         r
     }
 
-    /// `nas` on `worker`: its own run's as it ran, else its step's model's moves over its time on
-    /// the worker's Mac (a Mac twice as slow moves the same bytes over twice the time).
+    /// `nas` on `worker`: its own run's as it ran, else its step's runs' of about its size, their
+    /// moves over their time together (`model::PerUnit::rate`), on the worker's Mac (a Mac twice as
+    /// slow moves the same bytes over twice the time).
     pub fn nas_for(&self, step: &str, target: &str, worker: &str) -> Option<jobrt::budget::nas::Rate> {
         self.nas_made(step, target, Some(worker))
     }
@@ -944,16 +983,16 @@ impl<'a> Book<'a> {
         if let Some(r) = self.nas_own(step, target) {
             return Some(r);
         }
-        let md = self.model(step);
-        let sizes = self.sizes(step, target, None);
-        let moves = md.needs.nas(&sizes)?;
-        let secs = md.needs.secs(&sizes, 0, self.ratio(worker), false).unwrap_or(1.0).max(1.0);
+        // (Its step's runs of about its size: their moves over their time together, at the lead's
+        // pace; a Mac `r` times the lead's time moves them over `r` times the time.)
+        let m = self.model(step).needs.rate(&self.sizes(step, target, None))?;
+        let r = self.ratio(worker).max(1e-9);
         Some(jobrt::budget::nas::Rate {
-            bytes_s: moves.bytes / secs,
-            creates_s: moves.creates / secs,
-            listed_s: moves.listed / secs,
-            stats_s: moves.stats / secs,
-            deletes_s: moves.deletes / secs,
+            bytes_s: m.bytes / r,
+            creates_s: m.creates / r,
+            listed_s: m.listed / r,
+            stats_s: m.stats / r,
+            deletes_s: m.deletes / r,
         })
     }
 
@@ -1006,7 +1045,7 @@ impl<'a> Book<'a> {
         Need {
             mem_mb,
             mem_from,
-            disk_mb: self.disk(step, target, threads),
+            disk_mb: self.disk(step, target),
             secs: self.secs(step, target, threads),
             cores: threads,
             io,
@@ -1057,8 +1096,9 @@ pub fn model_table(book: &Book) -> String {
         let since = n.since.as_deref().map_or(String::new(), |k| format!(", relearned from {k}"));
         let busy = n.par.busy.map_or("-".to_string(), |b| format!("{b:.1}"));
         out += &format!(
-            "{s:<14} {} runs{since}; parallelism {:.1} (floor {}, busy {busy}, of {} runs)\n",
+            "{s:<14} {} runs, its times from {}{since}; parallelism {:.1} (floor {}, busy {busy}, of {} runs)\n",
             n.runs,
+            n.learned,
             n.par.cores(),
             n.par.floor,
             n.par.runs
@@ -1238,7 +1278,7 @@ mod tests {
     }
 
     /// A target's NAS rate: its own run's bytes (read, written and read back) and creates over its
-    /// time, else its step's NAS bytes per unit (`Tuning::nas_pct`) over its predicted time; None
+    /// time, else its step's runs' of about its size, their moves over their time together; None
     /// with no run measured (none says `bytes`). A line that doesn't say what it read back (from
     /// before task #1142) read back its `wrote`; what it read of its local copies isn't the NAS's
     /// (task #551), but the NAS reads its page cache held are (task #1417).
@@ -1259,9 +1299,8 @@ mod tests {
             Some(jobrt::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
         );
         assert_eq!(b.nas("slope", "6/2/1"), b.nas("slope", "6/1/1"), "its `wrote` read back");
-        // (Bytes 200..1100 and 1000 the first two's: their 70th percentile 970, over the step's
-        // 10 s.)
-        assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s.round()), Some(97.0));
+        // (Bytes 200..1100 and 1000 the first two's, 8,500 in all, over their 120 s.)
+        assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s.round()), Some(71.0));
         assert_eq!(b.nas("lo", "3/1/1"), None);
         let mut costs = BTreeMap::new();
         let v = cost_version("depth");
@@ -1335,10 +1374,10 @@ mod tests {
         let costs: BTreeMap<String, Cost> =
             disks.keys().map(|k| (k.clone(), Cost { v: cost_version(step_of_key(k)), ..cost(100, 10, &[]) })).collect();
         let b = Book::with(crate::agent::seam::for_tests(), &costs, None, Some(&disks));
-        assert_eq!(b.disk("depth", "6/16/20", 0), Some(300), "the fill reserved apart, once per Mac");
-        assert_eq!(b.disk("depth", "6/1/0", 0), Some(100), "its own when under the step's");
-        assert_eq!(b.disk("depth", "6/9/9", 0), Some(300), "never measured: the step's");
-        assert_eq!(b.disk("peaks", "6/1/1", 0), Some(67_890), "no shared cache: its own whole");
+        assert_eq!(b.disk("depth", "6/16/20"), Some(300), "the fill reserved apart, once per Mac");
+        assert_eq!(b.disk("depth", "6/1/0"), Some(100), "its own when under the step's");
+        assert_eq!(b.disk("depth", "6/9/9"), Some(300), "never measured: the step's");
+        assert_eq!(b.disk("peaks", "6/1/1"), Some(67_890), "no shared cache: its own whole");
         assert_eq!(
             (cache_of("pack"), cache_of("lo"), cache_of("depth"), cache_of("slope")),
             (None, None, Some(buildstore::localread::CACHE), None)
@@ -1392,12 +1431,20 @@ mod tests {
             costs.get_mut(&format!("depth 6/{k}/0")).unwrap().sizes.insert("cpu_ms".into(), 10_000);
         }
         let p = crate::paces::Paces { lead: "mini".into(), lead_ginsn_s: 10.0, ..Default::default() };
-        let b = Book::new(crate::agent::seam::for_tests(), &costs).paced(&p).learned(&records, Default::default());
+        let b = Book::new(crate::agent::seam::for_tests(), &costs).inputs(Inputs {
+            paces: &p,
+            records: &records,
+            tuning: Default::default(),
+        });
         assert_eq!(b.model("depth").needs.runs, 10);
         assert_eq!(b.secs("depth", "6/99/0", 0), Some(100));
         // (The others' records counted 2000 G instructions at 10 G a second: 200 lead seconds.)
         records.extend((10..20u64).map(|k| (format!("1-{k}"), facts(true, 2000.0))));
-        let b = Book::new(crate::agent::seam::for_tests(), &costs).paced(&p).learned(&records, Default::default());
+        let b = Book::new(crate::agent::seam::for_tests(), &costs).inputs(Inputs {
+            paces: &p,
+            records: &records,
+            tuning: Default::default(),
+        });
         assert_eq!(b.secs("depth", "6/99/0", 0), Some(200));
     }
 
@@ -1509,7 +1556,9 @@ mod tests {
         let (small, from) = b.mem("bldprep", "6/63/63", 0, 2_000_000);
         let (big, _) = b.mem("bldprep", "6/63/63", 0, 30_000_000);
         assert_eq!(from, From::Model);
-        assert!(small < big && (1000..=1300).contains(&small) && (3800..=4300).contains(&big), "{small} {big}");
+        // (Each by the runs at or above its rows: 2 million's the 10 of 2 to 11 million, 500 to
+        // 1,400 MB; 30 million's those of 30 to 40.)
+        assert!(small < big && (1300..=1400).contains(&small) && (3800..=4300).contains(&big), "{small} {big}");
         assert_eq!(b.mem("bldtiles", "6/63/63", 0, 30_000_000), (0, From::Table));
     }
 
@@ -1568,9 +1617,13 @@ mod tests {
     fn a_kept_model_lasts_until_the_measures_change() {
         let cache = Cache::default();
         let (f, d) = (BTreeMap::new(), BTreeMap::new());
+        let (paces, records) = (crate::paces::Paces::default(), Records::new());
+        let inputs = Inputs { paces: &paces, records: &records, tuning: Default::default() };
         let mut costs = BTreeMap::from([("peaks 6/1/1".to_string(), cost(1000, 5, &[]))]);
         let mem = |costs: &BTreeMap<String, Cost>, rev| {
-            Book::kept(crate::agent::seam::for_tests(), costs, &f, &d, &cache, rev).mem("peaks", "6/9/9", 0, 0).0
+            Book::kept(crate::agent::seam::for_tests(), costs, &f, &d, inputs, &cache, rev)
+                .mem("peaks", "6/9/9", 0, 0)
+                .0
         };
         assert_eq!(mem(&costs, 1), 1000);
         costs.insert("peaks 6/1/2".into(), cost(5000, 5, &[]));
@@ -1743,7 +1796,12 @@ mod tests {
             let paces = crate::paces::Paces::of(&speeds, lead).with_starts(the_plan, &ev, &book_costs, t0);
             let records = tail.facts().clone();
             for ((_, tuning), out) in tunings.iter().zip(&mut outs) {
-                let book = Book::with(the_plan, &book_costs, None, None).paced(&paces).learned(&records, *tuning);
+                let book = Book::pool(
+                    the_plan,
+                    &book_costs,
+                    None,
+                    Inputs { paces: &paces, records: &records, tuning: *tuning },
+                );
                 if std::env::var("SCENIC_NEEDS_SHOW").is_ok_and(|s| s == d.to_string()) {
                     eprintln!("{}", model_table(&book));
                 }
