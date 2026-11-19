@@ -4135,7 +4135,8 @@ mod tests {
     /// the kept `build::plan` result, as `Planner::look` does); then a full plan of the same state.
     /// The jobs, the waits and the offers of the filtering are the full plan's: any line that
     /// differs is written to `SCENIC_FROZEN_OUT` and fails it; the three times are written there
-    /// too.
+    /// too. `SCENIC_FROZEN_APP` names its app (a state whose readers' switch was recorded on an app
+    /// newer than "development" builds nothing for it: give one at least that new).
     #[test]
     #[ignore]
     fn frozen_refilter_offers_a_full_plans() {
@@ -4194,8 +4195,8 @@ mod tests {
             lines.extend(offered.iter().map(|o| format!("offer {o:?}")));
             (lines, took)
         };
-        let (_, first) = plan(&p);
-        assert!(p.held_plan.has_kept(), "the first plan kept no build::plan result");
+        let (lines, first) = plan(&p);
+        assert!(p.held_plan.has_kept(), "the first plan kept no build::plan result: {lines:#?}");
         let was = p.granting();
         p.inp.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "frozen"));
         p.inp.placement = !p.inp.placement;
