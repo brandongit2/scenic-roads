@@ -204,13 +204,13 @@ impl Live {
     /// The cores its job kept busy over the `secs` since `base` (an earlier beat's view of it): its
     /// CPU time over the time it ran, `secs` less the time it was stopped (`stopped_ms`; an older
     /// agent's beat, which doesn't say it, none left out). None when either doesn't say its CPU
-    /// time, or it ran under a second of them (frozen or paused throughout: it reads nothing, not
-    /// no cores).
+    /// time, or it ran under the sampler's `EVERY` of them (its CPU time lags by that, so a shorter
+    /// reading is noise; a job frozen or paused throughout reads nothing, not no cores).
     pub fn cores_since(&self, base: &Live, secs: f64) -> Option<f64> {
         let stopped = self.stopped_ms.zip(base.stopped_ms).map_or(0.0, |(a, b)| a.saturating_sub(b) as f64 / 1000.0);
         let ran = secs - stopped;
         let cpu = self.cpu_ms?.saturating_sub(base.cpu_ms?) as f64 / 1000.0;
-        (ran >= 1.0).then(|| cpu / ran)
+        (ran >= super::memguard::EVERY.as_secs_f64()).then(|| cpu / ran)
     }
 
     /// What its job has moved on the NAS since it began: bytes read and written, files made,

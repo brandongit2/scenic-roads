@@ -85,6 +85,10 @@ pub struct Lease {
     /// afresh, those ended before gone), its views counted on from the last (in memory alone).
     #[serde(skip)]
     cpu_carry: u64,
+    /// The same for the time stopped (ms, `Live::stopped_ms`): a take-over's sampler counts its
+    /// stops afresh, and a fall there would leave the stops since out of `Live::cores_since`.
+    #[serde(skip)]
+    stopped_carry: u64,
     /// The cores (tenths) a record said its job kept busy (crate::coord::sched::Leased::busy_tenths;
     /// in memory alone): what a scheduler made from the record counts it for (crate::coord::sched's
     /// `busy_now`) while no beat of its own says.
@@ -678,6 +682,7 @@ impl Leases {
                 window: Default::default(),
                 first: None,
                 cpu_carry: 0,
+                stopped_carry: 0,
                 busy_said: None,
                 heard: None,
                 moved: None,
@@ -773,6 +778,13 @@ impl Leases {
                         *ms += l.cpu_carry;
                         if let Some(was) = l.live.as_ref().and_then(|w| w.cpu_ms).filter(|w| w > ms) {
                             l.cpu_carry += was - *ms;
+                            *ms = was;
+                        }
+                    }
+                    if let Some(ms) = v.stopped_ms.as_mut() {
+                        *ms += l.stopped_carry;
+                        if let Some(was) = l.live.as_ref().and_then(|w| w.stopped_ms).filter(|w| w > ms) {
+                            l.stopped_carry += was - *ms;
                             *ms = was;
                         }
                     }
@@ -1396,6 +1408,14 @@ mod tests {
         let l = ls.of(id).unwrap();
         assert_eq!((l.cores_lately(), l.cores_mean()), (None, Some(3.0)), "frozen a minute: no cores freed");
         assert_eq!(l.still(), Some(Duration::from_secs(180)), "its stopped time isn't a move");
+        // Its agent taken over while it's frozen, its stops counted afresh (from 120 s to 0), then
+        // frozen 120 s more: the views count on from where they fell, so that freeze is left out
+        // (180 CPU s over the 120 s it ran of 360, not over 240).
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 0)), at(240)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 60)), at(300)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 120)), at(360)));
+        let l = ls.of(id).unwrap();
+        assert_eq!((l.cores_lately(), l.cores_mean()), (None, Some(1.5)), "the further freeze isn't idle");
     }
 
     /// A job's pace by its beats' progress lines (task #990): each target's run of a line is a part;

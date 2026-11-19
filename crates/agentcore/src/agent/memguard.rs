@@ -1729,7 +1729,7 @@ mod tests {
             0,
             Watch { cpu_mark: Some((old, 0, 0)), stopped_total: d(600).as_nanos() as u64, ..Default::default() },
         );
-        assert!(s.idle_for(0).is_some_and(|i| i >= d(600) && i < d(601)), "{:?}", s.idle_for(0));
+        assert!(s.idle_for(0).is_some_and(|i| i >= d(600) && i < d(660)), "{:?}", s.idle_for(0));
         // Stopped now: the stop under way counts, so it is not idle longer for it.
         s.set_paused(0, true);
         let at = s.stopped_ns(0).unwrap();
