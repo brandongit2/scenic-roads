@@ -1414,20 +1414,30 @@ fn make_land(
     Ok(m)
 }
 
-/// The cells the folders' remainders' `of` reach (a remainder whose parts can't be read: none; the
-/// remainders say why).
+/// The cells the folders' remainders' `of` reach.
 fn remainder_cells(
     folder: &Folder,
     ctx: &super::resolve::Context,
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
 ) -> BTreeSet<Cell> {
+    remainder_supports(folder, ctx, others, out).into_values().flatten().collect()
+}
+
+/// By folder, the cells its remainder's `of` reaches (one whose parts can't be read: none; the
+/// remainders say why).
+fn remainder_supports(
+    folder: &Folder,
+    ctx: &super::resolve::Context,
+    others: &BTreeMap<String, TArea>,
+    out: &Outcome,
+) -> BTreeMap<String, BTreeSet<Cell>> {
     let none = BTreeMap::new();
-    let mut cells = BTreeSet::new();
-    for (path, rem) in folder.remainders.values() {
+    let mut cells = BTreeMap::new();
+    for (dir, (path, rem)) in &folder.remainders {
         let r = rem.as_region();
         if let Ok(env) = env_of(path, &r, false, folder, ctx, &none, others, out, &mut BTreeSet::new()) {
-            cells.extend(support(&rem.of, &env));
+            cells.insert(dir.clone(), support(&rem.of, &env));
         }
     }
     cells
@@ -1462,10 +1472,18 @@ fn remainders(
     order.sort_by_key(|(dir, (p, _))| (std::cmp::Reverse(dir.split('/').count()), p.clone()));
     let progress = &ctx.progress;
     progress.begin(Step::Remainders, order.len());
-    // (Each remainder taken so far: its folder, its file and its pieces by cell, for a later one
-    // whose folder neither holds nor is held by its to meet.)
+    // (Each remainder taken so far: its folder, its file and its pieces' land and lakes by cell, in
+    // the cells a later one's `of` reaches whose folder neither holds nor is held by its, for that
+    // one to meet; the rest of its pieces aren't kept.)
+    let supports = remainder_supports(folder, ctx, others, out);
     let mut given: Vec<(String, String, BTreeMap<Cell, Area>)> = Vec::new();
-    for (dir, (path, rem)) in order {
+    for (k, (dir, (path, rem))) in order.iter().enumerate() {
+        let shared: BTreeSet<Cell> = order[k + 1..]
+            .iter()
+            .filter(|(d, _)| !nested(dir, d))
+            .filter_map(|(d, _)| supports.get(*d).zip(supports.get(*dir)))
+            .flat_map(|(a, b)| a.intersection(b).copied().collect::<Vec<Cell>>())
+            .collect();
         let _one = progress.one_on_drop();
         let members: Vec<String> =
             folder.members(dir, "").into_iter().filter(|m| !folder.regions[m].1.is_waters()).collect();
@@ -1520,10 +1538,13 @@ fn remainders(
                 for (m, c, a) in v {
                     by.entry(c).or_default().entry(m).or_default().push(a);
                 }
-                type Cut = (Cell, Area, Vec<(String, Area, Area, Area)>);
+                type Cut = (Cell, Option<Area>, Vec<(String, Area, Area, Area)>);
                 let cut: Vec<Cut> = pace::par_map(by.into_iter().collect(), |(c, ms)| {
                     let (land, lakes) = land_and_lakes(data, c);
-                    let all: Vec<Area> = ms.values().flatten().cloned().collect();
+                    let all = shared.contains(&c).then(|| {
+                        let all: Vec<Area> = ms.values().flatten().cloned().collect();
+                        geom::union_all(&all).intersect(&land.union(&lakes))
+                    });
                     let v = ms
                         .into_iter()
                         .map(|(m, mut ps)| {
@@ -1532,11 +1553,13 @@ fn remainders(
                             (m, o.intersect(&land), o.intersect(&lakes), o)
                         })
                         .collect();
-                    (c, geom::union_all(&all), v)
+                    (c, all, v)
                 });
                 let mut mine = BTreeMap::new();
                 for (c, all, v) in cut {
-                    mine.insert(c, all);
+                    if let Some(a) = all.filter(|a| !a.is_empty()) {
+                        mine.insert(c, a);
+                    }
                     for (m, land, lakes, o) in v {
                         let x = made.get_mut(&m).unwrap();
                         x.land.set(c, land);
@@ -1544,7 +1567,9 @@ fn remainders(
                         x.outline.set(c, o);
                     }
                 }
-                given.push((dir.clone(), path.clone(), mine));
+                if !mine.is_empty() {
+                    given.push(((*dir).clone(), path.clone(), mine));
+                }
             }
             Err(ps) => {
                 out.problems.extend(ps);
