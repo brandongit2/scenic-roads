@@ -1084,8 +1084,8 @@ pub fn model_table(book: &Book) -> String {
     steps.dedup();
     let t = &book.tuning;
     let mut out = format!(
-        "per unit of its sizes, best first (the least spread of work per unit): work in the lead's CPU s and the rest of its time in s at the {}th percentile of its runs; memory at the {}th of its runs that size or more; NAS bytes at the {}th\n\n",
-        t.work_pct, t.high_pct, t.nas_pct
+        "per unit of its sizes, best first (the least spread of work per unit): work in the lead's CPU s and the rest of its time in s at the {}th percentile of its runs; memory at the {}th of its runs that size or more; NAS bytes a second (at the lead's pace) of its runs of about one unit, their bytes over their time\n\n",
+        t.work_pct, t.high_pct
     );
     for s in &steps {
         let md = book.model(s);
@@ -1106,7 +1106,7 @@ pub fn model_table(book: &Book) -> String {
         for p in n.by.iter().take(3) {
             let f = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x:.4}"));
             let mid = p.mem(1.0, 0).map_or("-".to_string(), |m| format!("{m} MB"));
-            let nas = p.nas.map_or("-".to_string(), |m| format!("{:.0} B", m.bytes));
+            let nas = p.rate(1.0).map_or("-".to_string(), |m| format!("{:.0} B/s", m.bytes));
             out += &format!(
                 "  per {:<10} {:>5} runs, spread {:.2}: work {} s, rest {:.4} s, NAS {nas}, memory at one {mid}, {:.0} MB a thread\n",
                 p.size,

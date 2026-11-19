@@ -17,8 +17,6 @@ pub struct Tuning {
     /// A step's memory, its disk and an update drain's wait: this percentile of its runs at the
     /// target's size or more.
     pub high_pct: f64,
-    /// A step's NAS bytes and metadata calls per unit of input: this percentile of its runs'.
-    pub nas_pct: f64,
     /// A step's newest runs its times (work, the rest, parallelism, the NAS rate) are learned
     /// from, and checked against their predictions over (memory and disk read every run: a peak
     /// is a run's, and only many runs show the rare large one). At most `KNOBS`' 5,000: each
@@ -34,19 +32,18 @@ pub struct Tuning {
 
 pub const WORK_PCT: f64 = 40.0;
 pub const HIGH_PCT: f64 = 95.0;
-pub const NAS_PCT: f64 = 70.0;
 pub const RUNS: u64 = 500;
 pub const OFF: f64 = 3.0;
 pub const RELEARN: u64 = 5;
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { work_pct: WORK_PCT, high_pct: HIGH_PCT, nas_pct: NAS_PCT, runs: RUNS, off: OFF, relearn: RELEARN }
+        Tuning { work_pct: WORK_PCT, high_pct: HIGH_PCT, runs: RUNS, off: OFF, relearn: RELEARN }
     }
 }
 
 /// The needs model's bounds as the pool's settings: each a number in its range, null its default.
-pub const KNOBS: [Knob<Tuning>; 6] = [
+pub const KNOBS: [Knob<Tuning>; 5] = [
     Knob {
         name: "needs-work-pct",
         what: "a step's work and the rest of its time per unit: this percentile of its runs of about a target's size",
@@ -64,15 +61,6 @@ pub const KNOBS: [Knob<Tuning>; 6] = [
         most: 100.0,
         get: |k| k.high_pct,
         set: |k, v| k.high_pct = v,
-    },
-    Knob {
-        name: "needs-nas-pct",
-        what: "a step's NAS bytes and calls per unit of input: this percentile of its runs",
-        unit: "%",
-        least: 10.0,
-        most: 100.0,
-        get: |k| k.nas_pct,
-        set: |k, v| k.nas_pct = v,
     },
     Knob {
         name: "needs-runs",

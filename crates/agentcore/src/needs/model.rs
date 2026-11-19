@@ -15,13 +15,12 @@
 //!   (`Obs::rest`: its waits, and what its CPU doesn't count) likewise.
 //! - **parallelism** (`Par`): a run that kept every thread busy while not waiting is a floor, at
 //!   least its threads; one that didn't, what it kept busy; its waits left out.
-//! - **memory**: the `high_pct` percentile of the peaks of its runs of about the target's size
-//!   (half to twice it; fewer than `MIN_RUNS` so, the nearest larger: never a smaller one) and its
-//!   threads or more (where enough ran so), plus its memory per thread past the threads they ran
-//!   (least squares over size and threads): a small or fast run can't lower it. Disk alike, by size
-//!   alone.
-//! - **NAS** (`Moves`): the bytes it asked of the NAS and its NAS calls per unit, the `nas_pct`
-//!   percentile.
+//! - **memory**: the `high_pct` percentile of the peaks of every run at or above the target's size
+//!   (`above`; past every run, the largest scaled up by size) and its threads or more (where enough
+//!   ran so), plus its memory per thread past the threads they ran (least squares over size and
+//!   threads): a small, fast or new run can't lower it. Disk alike, by size alone.
+//! - **NAS** (`Moves`): its runs' of about the target's size, their bytes asked of the NAS and NAS
+//!   calls over their time together (`PerUnit::rate`).
 //!
 //! The size a target is predicted by is the first of the step's sizes, best first (`by`: the least
 //! spread of its runs' work per unit), that the target has (its own earlier run's sizes, its tile's
@@ -52,18 +51,6 @@ pub struct Moves {
     pub listed: f64,
     pub stats: f64,
     pub deletes: f64,
-}
-
-impl Moves {
-    fn scaled(self, k: f64) -> Moves {
-        Moves {
-            bytes: self.bytes * k,
-            creates: self.creates * k,
-            listed: self.listed * k,
-            stats: self.stats * k,
-            deletes: self.deletes * k,
-        }
-    }
 }
 
 /// A disk measure (crate::needs::Book's `disks`): its target's sizes, `TARGET` among them, and
@@ -148,7 +135,6 @@ pub struct PerUnit {
     /// Its latest earlier way's times per unit, standing in where larger while the way it runs now
     /// has few runs (`Model::of`).
     stand_in: Option<Times>,
-    pub nas: Option<Moves>,
     /// Its runs' (size, moves, wall time at the lead's pace) by size: a target's NAS rate is its
     /// runs' of about its size, their moves over their time (`PerUnit::rate`).
     rates: Vec<(f64, Moves, f64)>,
@@ -358,19 +344,6 @@ impl PerUnit {
             let m = logs.iter().sum::<f64>() / logs.len() as f64;
             (logs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / logs.len() as f64).sqrt()
         };
-        let nas_of: Vec<(Moves, f64)> = have.iter().filter_map(|(o, u)| Some((o.nas?, *u))).collect();
-        let nas = (!nas_of.is_empty()).then(|| {
-            let p = |f: fn(&Moves) -> f64| {
-                pct(&sorted(nas_of.iter().map(|(m, u)| f(m) / u).collect()), t.nas_pct).unwrap_or(0.0)
-            };
-            Moves {
-                bytes: p(|m| m.bytes),
-                creates: p(|m| m.creates),
-                listed: p(|m| m.listed),
-                stats: p(|m| m.stats),
-                deletes: p(|m| m.deletes),
-            }
-        });
         let mut rates: Vec<(f64, Moves, f64)> = timed.iter().filter_map(|(o, u)| Some((*u, o.nas?, o.wall))).collect();
         rates.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut mem: Vec<(f64, u32, u64)> =
@@ -390,7 +363,6 @@ impl PerUnit {
             whole: Times::of(&time, t.work_pct, t.high_pct),
             time,
             stand_in: None,
-            nas,
             rates,
             mem,
             mem_per_thread,
@@ -545,12 +517,6 @@ impl Model {
     pub fn disk(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
         let (p, u) = self.unit_of(sizes, |p| !p.disk.is_empty())?;
         p.disk(u)
-    }
-
-    /// What a target of `sizes` moves on the NAS.
-    pub fn nas(&self, sizes: &BTreeMap<String, f64>) -> Option<Moves> {
-        let (p, u) = self.unit(sizes)?;
-        Some(p.nas?.scaled(u))
     }
 
     /// What a target of `sizes` moves on the NAS a second at the lead's pace (`PerUnit::rate`).
