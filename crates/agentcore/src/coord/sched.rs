@@ -290,13 +290,14 @@ pub struct Packing {
     held: BTreeMap<(String, Instant), std::sync::Arc<BTreeSet<String>>>,
 }
 
-/// What's kept of a leased job (`Sched::kept_leases`), of its worker and work: its NAS weight by
+/// What's kept of a leased job (`Sched::kept_leases`), of its worker, work and start's threads: its NAS weight by
 /// the limits it was weighed by (`Sched::lease_nas`), and its packing need and time
 /// (`Sched::lease_need`).
 #[derive(Debug)]
 pub struct LeaseKept {
     worker: String,
     work: Work,
+    start: u32,
     nas: Vec<(jobrt::budget::nas::Limits, (u32, bool))>,
     need: Option<(Need, Option<u64>)>,
 }
@@ -1226,10 +1227,16 @@ impl Sched {
             *g = (rev, Default::default());
         }
         let v = g.1.entry(l.id).or_default();
-        let k = match v.iter().position(|k| k.worker == l.worker && k.work == l.work) {
+        let k = match v.iter().position(|k| k.worker == l.worker && k.work == l.work && k.start == l.start_threads) {
             Some(k) => k,
             None => {
-                v.push(LeaseKept { worker: l.worker.clone(), work: l.work.clone(), nas: Vec::new(), need: None });
+                v.push(LeaseKept {
+                    worker: l.worker.clone(),
+                    work: l.work.clone(),
+                    start: l.start_threads,
+                    nas: Vec::new(),
+                    need: None,
+                });
                 v.len() - 1
             }
         };
@@ -1248,16 +1255,20 @@ impl Sched {
         got
     }
 
-    /// Leased job `l`'s (of `step` over `targets`) packing need on its worker (`pack_need`) and its
-    /// measured time there as it ran its threads (`batch_secs`), kept (`kept_leases`): each ask
-    /// packs beside every job its Mac holds.
+    /// Leased job `l`'s (of `step` over `targets`) packing need on its worker (`pack_need_on`: its
+    /// memory on the threads its grant was read at, the threads it starts on by the cost book or
+    /// those it was granted where more, a resumed job's the whole Mac's) and its measured time
+    /// there as it ran its threads (`batch_secs`), kept (`kept_leases`): each ask packs beside
+    /// every job its Mac holds.
     fn lease_need(&self, l: &Lease, step: &str, targets: &[(String, String)]) -> (Need, Option<u64>) {
         if let Some(n) = self.kept_lease(l, |k| k.need) {
             return n;
         }
         let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+        let start = if l.start_threads > 0 { l.start_threads } else { l.threads };
+        let on = self.start_threads(step, ts.iter().map(String::as_str)).max(start);
         let got = (
-            self.pack_need(step, &ts),
+            self.pack_need_on(step, &ts, Some(on)),
             self.batch_secs(step, ts.iter().map(String::as_str), &l.worker, 0).map(|s| s.0),
         );
         self.kept_lease(l, |k| k.need = Some(got));
@@ -1511,6 +1522,11 @@ impl Sched {
     /// cost book's (`book_cores`), the threads it starts on (its agent controls them from there:
     /// docs/pool.md §7.1, Threads controlled live).
     pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
+        self.pack_need_on(step, targets, None)
+    }
+
+    /// `pack_need` with its memory on `threads` (None: those it starts on, `job_need_on`).
+    pub(super) fn pack_need_on(&self, step: &str, targets: &[String], threads: Option<u32>) -> Need {
         // (A step whose jobs only change build records (task #838): one thread counted for no cores
         // (it waits on the NAS), no disk; its memory measured as any step's (task #979), so once
         // measured it goes beside any jobs, a long one's included.)
@@ -1523,7 +1539,7 @@ impl Sched {
             let m = Measured { disk_mb: 0, ..m };
             return Need { m, cores, cold, waits: false, idle: false, held: 0, busy_now: None };
         }
-        match self.job_need(step, targets) {
+        match self.job_need_on(step, targets, threads) {
             Some(m) => {
                 let cores = book_cores(&self.book(), step, targets);
                 Need { m, cores, cold: false, waits: false, idle: false, held: 0, busy_now: None }
@@ -2674,12 +2690,18 @@ impl Sched {
             }
         };
         add(&mut load, &first.0);
+        // (The job's memory as it's granted, each target added: its targets' together, on the
+        // threads the most of them starts on (`job_need`), not each on its own: one on few threads
+        // beside one starting on many runs on the many.)
+        let mut names: Vec<String> = vec![first.0.clone()];
         for (t, k, _) in &o.targets[start + 1..] {
             let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
             let Some((more, _)) = self.secs_on(&o.step, t, &a.worker, threads) else { break };
+            names.push(t.clone());
             if pick.len() >= JOB_MAX
                 || !open(t, k)
                 || !fits(&m)
+                || self.job_need(&o.step, &names).is_none_or(|b| b.mem_mb > a.mem_mb)
                 || !nas_fits(t, &load)
                 || s + more > self.batch_len()
                 || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)
@@ -2821,11 +2843,11 @@ impl Sched {
         })
     }
 
-    /// The memory (MB) a job under lease `l` takes: its heaviest target's, by the book's estimate
-    /// (a step never measured: the guess it was offered with, else 0).
+    /// The memory (MB) a job under lease `l` takes: what the packing counts it at (`lease_need`:
+    /// its targets together on the threads it started on; a cold start's, its provisional need).
     pub(super) fn lease_mem(&self, l: &Lease) -> u64 {
         let Work::Job { step, targets } = &l.work else { return 0 };
-        targets.iter().map(|t| self.measures(step, &t.0, None).0).max().unwrap_or(0)
+        self.lease_need(l, step, targets).0.m.mem_mb
     }
 
     /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`

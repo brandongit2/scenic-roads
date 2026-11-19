@@ -735,8 +735,9 @@ say no threads, so nothing is decided for them).
     minute's CPU, less the in-use share's, less what jobs grown before it this round took) and its
     memory: each thread past those its grant's memory covers adds `Grant::thread_mb` (the lead's
     `Sched::thread_mb`: its step's memory per thread by the needs model, `needs::Book::thread_mb`,
-    §7.7, Memory admission: fitted over its runs' sizes and threads, else its runs' peaks over their
-    threads, else its own run's; the whole figure a thread where none says; the threads covered,
+    §7.7, Memory admission: fitted over its runs' sizes and threads, at least `needs-thread-share`
+    of their peaks over their threads, else those peaks over their threads; at least its own run's
+    peak over its threads where it has one; the whole figure a thread where none says; the threads covered,
     `Grant::thread_covers`, the more of its starting threads, those its memory was read at, and
     those its own runs had (or the fewest a paced run was cut to under way where fewer, its cost
     line's `threads_least`, from the fewest its pace allowed, `jobrt::control::fewest_allowed`: its
@@ -745,7 +746,7 @@ say no threads, so nothing is decided for them).
     floor, a give-back's cool-down: `Capacity::mem_held_back`). A job its lead has no memory
     figure for (no peak: `thread_mb` 0) grows past none of the threads its grant covers; a task's
     grant says neither, so it grows past none. A job resumed on the Mac holding its progress is
-    granted them as a packed job is. So a grow never takes a Mac past its memory floor by the same
+    granted the whole Mac's threads, its memory read and covering them. So a grow never takes a Mac past its memory floor by the same
     count the lead admits work by, and the memory guard stands behind it.
     A job waiting on the NAS or the network a quarter of its minute or more is never grown, its
     threads all busy or not: more threads would wait there with it (pacing the NAS is its budget's,
@@ -773,7 +774,9 @@ say no threads, so nothing is decided for them).
   its file says, and what it used on them since it was last decided on), and the lead counts each
   at the more of the two: a grow at once (its next target may take them), a cut once a target runs
   on them. Its packing counts a held job's cores at that (`Need::held`, `Sched::need_cores`: a
-  grown job at its threads grown, not its grant) and adds what a grow
+  grown job at its threads grown, not its grant), its memory at its grant's figure (`Sched::lease_need`:
+  read on the threads it started on, the cost book's start or those it was granted where more, a
+  resumed job's the whole Mac's), and adds what a grow
   took past the threads its grant was admitted with (`Lease::start_threads`) and those its memory
   covers (`Sched::grown_mb`), at the same memory a thread its grant said. A job's threads may pass
   its Mac's cores while its threads wait (its busy cores fit, as a grant's do); a long target takes
@@ -1780,7 +1783,7 @@ offered by, its source's time below, and one a target):
 - **parallelism** (`model::Par`): a run that kept every thread busy while not waiting is a floor,
   at least its threads; one that didn't says what the step can use; its waits left out (Threads,
   §7.1, above).
-- **memory**: the `needs-mem-pct` percentile (95) of the peaks of its step's runs at or above its
+- **memory**: the `needs-mem-pct` percentile (98) of the peaks of its step's runs at or above its
   size (`model::above`: its size to twice it; fewer than `MIN_RUNS` so, the nearest `MIN_RUNS` at
   its size or more; fewer still, the largest `MIN_RUNS`, each peak scaled up by the target's size
   over its run's, so a target past every run is read as about proportional to them, not as the
@@ -1788,7 +1791,10 @@ offered by, its source's time below, and one a target):
   had, its step's memory per thread for each more, on as many or fewer its peak (a thread's share
   isn't known to come off, so more threads never read as less memory). The memory per thread is
   fitted (least squares over size and threads) where `MIN_RUNS` runs said their threads and those
-  differ; else none is fitted, and each run's own peak over its threads stands for it (as if its
+  differ, at least `needs-thread-share` (50 %) of the same percentile of their peaks over their
+  threads (`PerUnit::per_thread_of`: a peak varies with what a target holds far more than with its
+  threads, and the fit alone came out at nothing for bldprep, pack and peaks); else
+  none is fitted, and each run's own peak over its threads stands for it (as if its
   memory were its threads': a step of few runs, or all on one count, is read the cautious way).
   Of every run the way its step runs now, not a window of the newest, and not relearned: a small,
   fast or new run can't lower a large target's (a step whose newest runs are all small keeps its
@@ -1843,7 +1849,7 @@ the NAS rate of its runs of about one unit, its memory at one, its parallelism, 
 place, and its runs flagged.
 
 **The knobs** (`jobrt::needs::KNOBS`): every percentile and window above is a pool setting,
-`scenic pool set needs-work-pct|needs-high-pct|needs-mem-pct|needs-runs|needs-off|needs-relearn
+`scenic pool set needs-work-pct|needs-high-pct|needs-mem-pct|needs-thread-share|needs-runs|needs-off|needs-relearn
 <number>|off` or the build page's Settings ("Needs model"), each within its range; not set, its
 default. Every book reads them as the pool has them, with each Mac's speed and the jobs' records
 (`needs::Inputs`: the scheduler's, the forecast's and its backtest's, the plan's lanes, an update's
@@ -1918,68 +1924,87 @@ each thread past them costs. Memory is the cautious limit, and the memory guard 
 (§7.1, The memory floor) stand behind it.
 
 - **On its threads** (`Sched::measures`, `Sched::start_threads`): each target's memory
-  (`needs::Book::mem`, at the `needs-mem-pct` percentile, 99) is read on the threads a job of it
+  (`needs::Book::mem`, at the `needs-mem-pct` percentile, 98) is read on the threads a job of it
   starts on: the most of its targets' grants by the cost book (`Book::cores`: the cores its runs
   kept busy and a thread more), whatever cores the asking Mac has, so a target's memory is one
   figure everywhere: what `pack` packs it at beside the jobs a Mac holds, what room is held for it
   (`room_wait`), what a Mac's last ask is weighed by (`would_take_now`), and what flags it too big
   for every Mac (`too_big`). A target with its own run: that run's peak (never below its floor),
-  plus its step's memory per thread for each thread past those it ran on (`needs::own_threads`:
-  its threads, or the fewest a paced run was cut to); one without: its memory by place where that
-  is judged good (its nearest measured targets', `needs::Near`, as they ran), else its step's runs
-  at or above its size, each grown to those threads (What a step needs: memory, above); a grow past
-  them is counted either way (below). A job resumed on the Mac
-  holding its progress is granted the whole Mac and admitted on those threads.
+  plus its memory per thread (`Book::thread_mb`) for each thread past those it ran on
+  (`needs::own_threads`: its threads, or the fewest a paced run was cut to). One without: its floor
+  where it has one, else its memory by place where that is judged good (its nearest measured
+  targets', `needs::Near`), each grown to those threads by what its step's runs grow by from their
+  own threads to them (its step's model's memory on them past its memory as measured: a floor or
+  a place's figure says no threads); else its step's runs at or above its size, each grown to
+  those threads (What a step needs: memory, above). A grow past them is counted either way (below).
+- **A job's targets together** (`Sched::job_need`, `Sched::pick_run`): a job is admitted at the
+  most of its targets' memory, every one read on the threads the most of them starts on (a target
+  that ran on 2 threads beside one starting on 9 runs on the 9), and its targets are added one by
+  one only while that figure for them together fits the room (each target alone fitting doesn't
+  let a batch pass it).
 - **Grown** (`Sched::thread_mb`, `Sched::grown_mb`): its grant says what each thread past those
-  its memory covers adds (`Grant::thread_mb`: its step's memory per thread, fitted at its upper
-  bound where the runs say it, else its runs' peaks over their threads, else its own run's; the
-  whole figure a thread where none says) and the threads covered (`Grant::thread_covers`: those
-  it was read at, those it was granted, and those its own runs had, the most). Its agent grows it
-  only within its Mac's room by that (§7.1, Threads controlled live), and the lead counts each
-  thread grown past them at it, so a grow never takes the room a grant beside it was admitted in.
-  A cold start (its provisional need, below) has no memory per thread: each thread past its grant
-  its whole figure.
+  its memory covers adds (`Grant::thread_mb`: its targets' most, `Book::thread_mb`: its step's
+  memory per thread by the model, at least its own run's peak over its threads where it has one;
+  the whole figure a thread where none says) and the threads covered (`Grant::thread_covers`:
+  those it was read at, those it was granted, and those its own runs had, the most). Its agent
+  grows it only within its Mac's room by that (§7.1, Threads controlled live), and the lead counts
+  each thread grown past them at it, so a grow never takes the room a grant beside it was admitted
+  in. A cold start (its provisional need, below) has no memory per thread: each thread past its
+  grant its whole figure.
+- **Held** (`Sched::lease_need`, `Sched::lease_mem`): the lead counts a job it holds at its grant's
+  figure, read on the threads it started on (the cost book's start, or those it was granted where
+  more); a job resumed on the Mac holding its progress (§7.2, Resuming) is granted the whole Mac's
+  threads, admitted on them and counted held on them, so no grow past its start is added. The
+  packing (`pack`), a Mac's last ask (`would_take_now`) and the forecast's asks count it alike.
 - **Several jobs together**: each is counted at its own figure on its own threads (`pack`'s room
   less every job held and granted in the answer, never more than what its Mac's jobs hold now
   leaves), so jobs admitted on few threads don't add up past the room once each starts on its
   grant's.
-- **When the brake acts** (§7.1): a job it stops holding past the memory it was admitted at (its
-  grant's peak and what its grows reserve) has the estimate that let it in flagged in its stop's
-  words ("its estimate flagged: it held past the 4.0 GB it was admitted at", in its agent's log
-  and its lead's history), and the floor its give-back carries raises its targets' memory from
-  then. A stop of a job within its estimate (the Mac short for the other processes or the jobs
-  together) flags nothing.
+- **When the memory guard acts** (§7.1): a job it acts on holding past the memory it was admitted
+  at (its grant's peak and what its grows reserve) has the estimate that let it in flagged in the
+  act's words ("its estimate flagged: it held past the 4.0 GB it was admitted at", in its agent's
+  log; a stop's in its lead's history too): the brake's freeze, stop and give-back, a drain for the
+  jobs together or for it past the room alone, and a stop past a drain's grace. The floor its
+  give-back carries raises its targets' memory from then. An act on a job within its estimate (the
+  Mac short for the other processes or the jobs together) flags nothing.
 
 **The admission replay** (`needs`' `replay_admission_on_the_leads_records`, by hand): the lead's
 costs, floors, history and timings log as copied on 19 Nov (52,075 cost lines); for each day from
-12 Nov, a book of the runs that had ended before it, and each job granted that day (2,946 jobs on
-12, 15, 17, 18 and 19 Nov, its targets' costs; 12 cold starts, by their provisional need either
-way, left out), its memory as admitted on the threads it started on and as counted once grown
-to the threads it ran on, against the most its targets took. Before is the scheduler this
-replaced (each target at no thread count, the 95th percentile, and a grow past the threads its
-grant covered at its targets' own peak over their threads, else its whole figure a thread); its
-reserved memory over each job's time (GB h, at the threads it ran on), and what the jobs took past
-it:
+12 Nov, a book of the runs that had ended before it, and each job granted that day (2,985 jobs on
+12, 15, 17, 18 and 19 Nov, its targets' costs; 12 cold starts among them, at their offered guess
+either way), its memory as admitted on the threads it started on and as counted once grown to the
+threads it ran on (`at_ran`), against the most its targets took; then (`needs`'
+`replay_admission_packed_into_rooms`) each Mac's jobs packed into its room (its memory less its
+floor: the mini 31,744 MB, the M4 45,056, the M1 15,360), in the order they were granted, each
+started once its figure fits beside those of the jobs started before it and still running, and run
+its time. Before is the scheduler this replaced (each target at no thread count, the 95th
+percentile, and a grow past the threads its grant covered at its targets' own peak over their
+threads, else its whole figure a thread), its lines made on it the same way. Reserved: each job's
+figure over its time (GB h); taken past it: its peak past its figure over its time; waited: the
+hours the jobs waited past their grants for room (less is more work admitted):
 
-| `needs-mem-pct` | Reserved (GB h) | Taken past it (GB h) | Jobs past it | By over a GB |
-| --- | ---: | ---: | ---: | ---: |
-| before | 461.6 | 3.95 | 38 (1.3 %) | 7 (0.24 %) |
-| 95 | 324.2 | 4.03 | 58 (2.0 %) | 9 (0.31 %) |
-| 97 | 349.7 | 2.23 | 46 (1.6 %) | 6 (0.20 %) |
-| 98 | 365.0 | 1.62 | 43 (1.5 %) | 5 (0.17 %) |
-| 99 | 392.3 | 1.23 | 38 (1.3 %) | 4 (0.14 %) |
+| `needs-mem-pct` / `needs-thread-share` | Reserved (GB h) | Taken past it (GB h) | Jobs past it | By over a GB | Waited (h) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before | 467.4 | 3.97 | 53 (1.8 %) | 7 (0.23 %) | 265.0 |
+| 99 / 0 | 393.5 | 1.26 | 55 (1.8 %) | 4 (0.13 %) | 225.6 |
+| 95 / 50 | 400.1 | 4.00 | 35 (1.2 %) | 7 (0.23 %) | 195.8 |
+| 97 / 50 | 437.2 | 2.19 | 28 (0.94 %) | 4 (0.13 %) | 227.1 |
+| 98 / 40 | 436.6 | 1.56 | 27 (0.90 %) | 3 (0.10 %) | 240.6 |
+| 98 / 50 | 460.2 | 1.54 | 22 (0.74 %) | 2 (0.07 %) | 257.6 |
+| 98 / 60 | 485.8 | 1.54 | 22 (0.74 %) | 2 (0.07 %) | 272.0 |
+| 99 / 50 | 504.9 | 1.16 | 19 (0.64 %) | 2 (0.07 %) | 293.5 |
 
-At 99 it reserves 15 % less over the jobs' time (more work goes beside them) and the jobs took
-less than a third as much past it, no more of them past it and fewer by over a GB: the default.
-The memory per thread is read at its fitted coefficient plus two standard errors
-(`model::PER_THREAD_SE`), as part of the model's form: a peak varies with what a target holds far
-more than with its threads, and the coefficient alone came out at nothing for slope-deep, pack,
-peaks and bldprep. Where it does worse than before: slope-deep (14 jobs past it, 8 before) and
-peaks (8 and 2, 2 of them by over a GB): their jobs, grown a thread or two past their grants, took
-more than their targets' own runs or their step's runs at those threads, which a grow counted at
-their whole peak a thread had covered. The brake's 24 stops of 10–19 Nov aren't in it: a stopped
-job leaves no cost line of its run (nearly all of them were the other processes' growth, §7.1, the
-memory guard's replays).
+At 98 / 50, the defaults, the jobs waited 3 % less for room than before and took 39 % as much past
+their figures, fewer of them past it (22, 53 before) and fewer by over a GB (2, 7); no step had
+more jobs past it. Slope-deep: 0 jobs past it (11 before), its wait about the same (4.0 h, 3.9).
+Peaks: 2 jobs past it as before, none by over a GB, but 0.023 GB h past it (0.003 before): its
+targets that ran on 3 threads at 2 GB are read on the 1 they start on and grown at their step's
+memory per thread, 200 MB, where before a grow past an unmeasured target's threads took its
+whole figure a thread. A share of 0 (the fit alone) put 18 slope-deep jobs and 8 of peaks past it;
+at 98, a share of 40 or 45 left a peaks job past it by over a GB. In none did the jobs' peaks together pass a Mac's room
+(the figures are well above most peaks). The brake's stops aren't in it: a stopped job leaves no
+cost line of its run (nearly all of them were the other processes' growth, §7.1, the memory
+guard's replays).
 
 **Each Mac's speed** (`crate::paces`, tasks #926, #1418): each Mac's time against the lead's, the
 lead's speed over its own on its performance cores (`jobrt::timings::Speeds`: billions of

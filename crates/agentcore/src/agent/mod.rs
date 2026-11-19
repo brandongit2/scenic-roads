@@ -6244,8 +6244,9 @@ impl Agent {
             (Some(k), _) => Some((
                 k,
                 format!(
-                    "stopped by the memory guard: it reached no safe point in {} min while {short}",
-                    DRAIN_GRACE.as_secs() / 60
+                    "stopped by the memory guard: it reached no safe point in {} min while {short}{}",
+                    DRAIN_GRACE.as_secs() / 60,
+                    self.estimate_flag(k, held[k])
                 ),
             )),
             (None, memguard::Act::Nothing) => None,
@@ -6256,7 +6257,7 @@ impl Agent {
                     .max_by_key(|&b| (held[b], std::cmp::Reverse(b)))
                     .unwrap_or(0);
                 let beside = id_of(self, big);
-                let why = format!("{short}, with the jobs here holding {:.1} GB together: given back, it makes room for {beside} ({:.1} GB)", gb(total), gb(held[big].unwrap_or(0)));
+                let why = format!("{short}, with the jobs here holding {:.1} GB together: given back, it makes room for {beside} ({:.1} GB){}", gb(total), gb(held[big].unwrap_or(0)), self.estimate_flag(k, held[k]));
                 let id = id_of(self, k);
                 eprintln!("agent: memory guard: {id} stops at its next safe point: {why}");
                 self.guard_last = Some((now_s(), format!("{id} stopped at its next safe point: {why}")));
@@ -6268,7 +6269,7 @@ impl Agent {
             // (Under the brake `pressure` froze it already: here the brake is off.)
             (None, memguard::Act::Over(k)) => {
                 if !draining[k] {
-                    let why = format!("it holds {:.1} GB, more than the jobs here may hold above the floor ({:.1} GB): {short} (the brake not on: it stops at its next safe point; what it held is kept as the least its target takes)", gb(held[k].unwrap_or(0)), gb(room));
+                    let why = format!("it holds {:.1} GB, more than the jobs here may hold above the floor ({:.1} GB): {short} (the brake not on: it stops at its next safe point; what it held is kept as the least its target takes){}", gb(held[k].unwrap_or(0)), gb(room), self.estimate_flag(k, held[k]));
                     let id = id_of(self, k);
                     eprintln!("agent: memory guard: {id} stops at its next safe point: {why}");
                     self.guard_last = Some((now_s(), format!("{id} stopped at its next safe point: {why}")));
@@ -6377,9 +6378,10 @@ impl Agent {
                 // targets go to a Mac with room rather than wait here for good.)
                 _ if at.elapsed() >= self.grace => {
                     let why = format!(
-                        "given back by the memory guard: frozen {} min with the brake still acting, stopping it not worth it ({}); given back so another Mac may take its targets",
+                        "given back by the memory guard: frozen {} min with the brake still acting, stopping it not worth it ({}); given back so another Mac may take its targets{}",
                         at.elapsed().as_secs() / 60,
-                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str())
+                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str()),
+                        self.estimate_flag(k, held.get(k).copied().flatten())
                     );
                     return Some(self.guard_stop_as(k, "memory guard", &why, false));
                 }
@@ -6425,7 +6427,7 @@ impl Agent {
         self.sampler.freeze(k);
         let total: u64 = held.iter().flatten().sum();
         let whom = big.as_deref().map_or(String::new(), |b| format!(" for {b}"));
-        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then and that relieves the Mac, going on once the Mac is back above its floor", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
+        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then and that relieves the Mac, going on once the Mac is back above its floor{}", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs(), self.estimate_flag(k, held[k]));
         eprintln!("agent: memory guard: {mine} {why}");
         self.guard_last = Some((now_s(), format!("{mine} {why}")));
         let big = big.unwrap_or_else(|| mine.clone());
@@ -8048,12 +8050,13 @@ impl Agent {
         per * on.saturating_sub(u64::from(covers))
     }
 
-    /// The flag on the estimate that let slot `k`'s job in, for the brake's stop of it holding
-    /// `held` (MB): where it held past the memory its lead admitted it at (`Slot::peak_mb`, and the
-    /// threads it grew by, `grown_mb`), said in its stop's words (its lead's history keeps them,
-    /// and the floor its give-back carries raises its targets' memory); nothing where it held
-    /// within it (the Mac short for other reasons: its other processes, the jobs together) or its
-    /// grant said no figure.
+    /// The flag on the estimate that let slot `k`'s job in, for any act of the memory guard on it
+    /// holding `held` (MB: the brake's freeze, stop and give-back, a drain for the jobs together or
+    /// for it past the room alone, a stop past a drain's grace): where it held past the memory its
+    /// lead admitted it at (`Slot::peak_mb`, and the threads it grew by, `grown_mb`), said in the
+    /// act's words (its log; a stop's in its lead's history, and the floor its give-back carries
+    /// raises its targets' memory); nothing where it held within it (the Mac short for other
+    /// reasons: its other processes, the jobs together) or its grant said no figure.
     fn estimate_flag(&self, k: usize, held: Option<u64>) -> String {
         let (Some(peak), Some(held)) = (self.slots[k].peak_mb, held) else { return String::new() };
         let admitted = peak + self.grown_mb(k);
@@ -14927,9 +14930,19 @@ mod tests {
         a.grace = DRAIN_GRACE;
         // The larger past the limit by itself, the Mac not short of memory: it stops at its next safe
         // point; short of it, at once (the sampler froze it), given back, not failed, kept from this
-        // Mac for an hour; what it held its target's floor, a batch's (two targets).
+        // Mac for an hour; what it held its target's floor, a batch's (two targets). Admitted at 4
+        // GB, its estimate flagged in its drain's words (task #1415).
+        a.slots[0].peak_mb = Some(4 << 10);
         tick(&mut a, vec![Some(15 << 10), None], false);
         assert!(!a.guard() && a.slots[0].mem_drain.is_some() && a.slots[0].running.is_some());
+        assert!(
+            a.slots[0]
+                .mem_drain
+                .as_deref()
+                .is_some_and(|w| w.contains("its estimate flagged: it held past the 4.0 GB")),
+            "{:?}",
+            a.slots[0].mem_drain
+        );
         // (Past the time a pause gives a safe point, not short of memory: still only drained; a long
         // job alone may have none for hours.)
         a.grace = Duration::ZERO;

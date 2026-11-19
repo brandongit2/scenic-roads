@@ -1581,8 +1581,9 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
-    /// `sched::Sched::thread_mb`, its step's memory per thread by the needs model; 0: no figure, a
-    /// cold start's, so its job grows past none of them), and the threads the memory it was packed
+    /// `sched::Sched::thread_mb`, its step's memory per thread by the needs model, at least its
+    /// targets' own runs' peaks over their threads; 0: no figure, a cold start's, so its job grows
+    /// past none of them), and the threads the memory it was packed
     /// at covers (its threads and those its memory was read at, the more): its agent reserves that a thread for each one it
     /// grows the job past them (crate::agent::threads), as the lead counts it
     /// (`sched::Sched::grown_mb`). A task's: none of either, so it grows past none.
@@ -4767,12 +4768,14 @@ fn route(
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
                     let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                     let n = s.pack_need(&o.step, &ts);
-                    // (Its memory on the threads it's granted, the whole Mac's, a thread past them
-                    // and the threads that covers, as a packed job's: its threads the lease's, set
-                    // above.)
+                    // (Its memory on the threads it's granted, the whole Mac's (the cost book's
+                    // start where more), a thread past them and the threads that covers, as a
+                    // packed job's and as the lead counts it held (`Sched::lease_need`): its
+                    // threads the lease's, set above.)
                     let started = s.leases.of(lease).map_or(1, |l| l.threads);
-                    let mem_mb = s.job_need_on(&o.step, &ts, Some(started)).map_or(n.m.mem_mb, |m| m.mem_mb);
-                    let (thread_mb, covered) = s.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, started);
+                    let on = s.start_threads(&o.step, ts.iter().map(String::as_str)).max(started);
+                    let mem_mb = s.job_need_on(&o.step, &ts, Some(on)).map_or(n.m.mem_mb, |m| m.mem_mb);
+                    let (thread_mb, covered) = s.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, on);
                     let g = Grant {
                         lease,
                         epoch: s.leases.epoch,
@@ -4780,7 +4783,7 @@ fn route(
                         threads: ask_cores(&a),
                         peak_mb: mem_mb,
                         thread_mb,
-                        thread_covers: started.max(covered),
+                        thread_covers: covered,
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
@@ -11180,7 +11183,7 @@ mod tests {
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!((g.peak_mb, g.thread_mb, g.thread_covers), (2000, 2000u64.div_ceil(13), 13));
         // Begun on 13 and cut to 4 under way: its peak may have come on 4, so on the 13 it starts
-        // on, 9 threads more.
+        // on, 9 threads more, each at least its own peak over the 4 (500 MB).
         let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
         let set = |k: &str, n: u64| {
             let mut book = c.shared.lock().unwrap();
@@ -11192,8 +11195,9 @@ mod tests {
         set("threads_least", 4);
         let s = c.shared.lock().unwrap();
         let mem = s.sched.job_need("slope-hi", &ts).unwrap().mem_mb;
-        assert_eq!(mem, 2000 + 9 * 2000u64.div_ceil(13));
-        assert_eq!(s.sched.thread_mb("slope-hi", ts.iter().map(String::as_str), mem, 13), (2000u64.div_ceil(13), 13));
+        // (Each thread at least its own peak over the 4 it may have come on.)
+        assert_eq!(mem, 2000 + 9 * 500);
+        assert_eq!(s.sched.thread_mb("slope-hi", ts.iter().map(String::as_str), mem, 13), (500, 13));
         drop(s);
         // Measured at 1 thread instead: each thread past it its whole peak; grown from its 3 to 4,
         // past the 2 its memory covers (its start, a thread past its busy core), one more.
@@ -11350,6 +11354,77 @@ mod tests {
         drop(s);
         let g = w.ask(&ask(11_000, 1, None)).unwrap().unwrap();
         assert_eq!((g.peak_mb, g.thread_mb), (4000, 1000));
+    }
+
+    /// Task #1415: a job's targets are admitted together, on the threads the most of them starts
+    /// on, not each alone on its own. slope-hi's 6/1/1 ran on 2 threads at 6 GB (it starts on 3,
+    /// 9 GB) and 6/1/2 on 8 at 1 GB (it starts on 9, about 4 GB): each alone fits 11 GB, but one
+    /// job of the two runs on 9 threads, 6/1/1 on them past 25 GB. Granted 6/1/1 alone, within the
+    /// room; the two together are read on the 9.
+    #[test]
+    fn a_batch_is_admitted_at_its_targets_together_on_its_threads() {
+        let (_d, c, w, _clock) = every((0, 0));
+        for (t, th, mb) in [("6/1/1", 2u64, 6000u64), ("6/1/2", 8, 1000)] {
+            let sizes = [("threads".to_string(), th), ("cpu_ms".to_string(), th * 600_000)].into();
+            let cost =
+                Cost { peak_mb: mb, secs: 600, worker: None, v: cost_version("slope-hi"), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
+        }
+        let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "slope-hi".into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                job: None,
+            }],
+        );
+        {
+            let s = c.shared.lock().unwrap();
+            let alone = |t: &str| s.sched.job_need("slope-hi", &[t.to_string()]).unwrap().mem_mb;
+            assert!(alone("6/1/1") <= 11_000 && alone("6/1/2") <= 11_000, "{} {}", alone("6/1/1"), alone("6/1/2"));
+            assert_eq!(s.sched.start_threads("slope-hi", ts.iter().map(String::as_str)), 9);
+            let both = s.sched.job_need("slope-hi", &ts).unwrap().mem_mb;
+            assert!(both >= 6000 + 7 * 3000, "{both}");
+        }
+        let a = Ask {
+            cores: 14,
+            want: 1,
+            cap: Some(m1_cap(14, false, None)),
+            ..every_ask("m1", "slope-hi", 11_000, 100_000)
+        };
+        let g = w.ask(&a).unwrap().unwrap();
+        let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/1"]);
+        assert!(g.peak_mb <= 11_000, "{}", g.peak_mb);
+    }
+
+    /// Task #1415: a resumed job, granted the whole Mac's threads (crate::agent::resume), is
+    /// admitted at its memory on them, and the lead counts it held at that same figure
+    /// (`Sched::lease_need`, `lease_mem`), not at the cost book's start: its lease's start is the
+    /// whole Mac, so no grow past it is counted on top.
+    #[test]
+    fn a_resumed_job_is_counted_at_its_grants_memory() {
+        let (_d, c, w, _clock) = every((0, 0));
+        by_threads(&c, 12);
+        c.offer_resume(Some((
+            "m1".into(),
+            Offer { step: "slope-hi".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)], job: None },
+        )));
+        let a = Ask {
+            cores: 14,
+            want: 1,
+            cap: Some(m1_cap(14, false, None)),
+            ..every_ask("m1", "slope-hi", 30_000, 100_000)
+        };
+        let g = w.ask(&a).unwrap().unwrap();
+        // (On 14 threads: 3 GB on the 4 it starts on by the book and 500 MB each of 10 more.)
+        assert_eq!((g.threads, g.peak_mb, g.thread_mb, g.thread_covers), (14, 3000 + 10 * 500, 500, 14));
+        let s = c.shared.lock().unwrap();
+        let l = s.leases.of(g.lease).unwrap().clone();
+        assert_eq!(s.sched.lease_mem(&l), g.peak_mb);
+        let Work::Job { step, targets } = &l.work else { panic!("a job") };
+        assert_eq!(s.sched.grown_mb(&l, step, targets.iter().map(|t| t.0.as_str()), g.peak_mb), 0);
     }
 
     /// Task #1420, mixed versions: a member before live control beats without a capacity, or its

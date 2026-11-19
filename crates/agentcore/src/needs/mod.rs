@@ -784,7 +784,9 @@ impl<'a> Book<'a> {
 
     /// The memory (MB) a job of `step` for `target` needs on `threads` (0: as measured), and where
     /// it came from: `need`'s, alone (what the picks read). Its own run on fewer threads than
-    /// `threads` (`own_threads`): each thread more its step's `thread_mb`. `guess`: the caller's
+    /// `threads` (`own_threads`): each thread more its `thread_mb`. A floor, or its place's figure
+    /// (`near`), says no threads: each grown by its step's model's growth from its runs' threads
+    /// to `threads` (`model::Model::mem` on them past it as measured). `guess`: the caller's
     /// first guess (MB); for a step offered by an input measure (`OFFERED_BY`), that measure of the
     /// target, its memory guess none.
     pub fn mem(&self, step: &str, target: &str, threads: u32, guess: u64) -> (u64, From) {
@@ -804,15 +806,22 @@ impl<'a> Book<'a> {
             };
             return (mb + more, From::Measured);
         }
-        if let Some(f) = floor {
-            return (f, From::Measured);
-        }
         let md = self.model(step);
+        let sizes = self.sizes(step, target, offered);
+        // (A floor or a place's figure says no threads: grown by what the step's runs grow by from
+        // their own threads to `threads`, its model's figure on them past its figure as measured.)
+        let grown = |mb: u64| match (threads, md.needs.mem(&sizes, threads), md.needs.mem(&sizes, 0)) {
+            (1.., Some(on), Some(ran)) => mb + on.saturating_sub(ran),
+            _ => mb,
+        };
+        if let Some(f) = floor {
+            return (grown(f), From::Measured);
+        }
         if let Some(p) = md.near.as_ref().filter(|n| n.good()).and_then(|n| n.of(&key)) {
-            return (p, From::Near);
+            return (grown(p), From::Near);
         }
         let few = md.needs.runs < MIN_RUNS;
-        match md.needs.mem(&self.sizes(step, target, offered), threads) {
+        match md.needs.mem(&sizes, threads) {
             _ if few && guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
             Some(p) => (p, From::Model),
             None => (guess, From::Table),
@@ -820,16 +829,20 @@ impl<'a> Book<'a> {
     }
 
     /// What each thread a job of `step` for `target` grows by past the threads its memory (`mem`)
-    /// was read at adds to it (MB): its step's model's (`model::Model::thread_mb`), else its own
-    /// run's peak over its threads; None where neither says (a cold start's: its job grows past no
-    /// threads its grant doesn't cover, crate::agent::threads).
+    /// was read at adds to it (MB): its step's model's (`model::Model::thread_mb`), at least its own
+    /// run's peak over its threads where it has one (one target's own run says more of it than its
+    /// step's fit over all their sizes); None where neither says (a cold start's: its job grows
+    /// past no threads its grant doesn't cover, crate::agent::threads).
     pub fn thread_mb(&self, step: &str, target: &str) -> Option<u64> {
-        if let Some(t) = self.model(step).needs.thread_mb(&self.sizes(step, target, None)) {
-            return Some(t);
-        }
-        let c = self.own(step, target)?;
-        let ran = own_threads(c)?;
-        Some(c.peak_mb.div_ceil(u64::from(ran)))
+        let model = self.model(step).needs.thread_mb(&self.sizes(step, target, None));
+        let own = self.own(step, target).and_then(|c| {
+            Some(
+                c.peak_mb
+                    .max(self.current_floor(step, &cost_key(step, target)).unwrap_or(0))
+                    .div_ceil(u64::from(own_threads(c)?)),
+            )
+        });
+        model.into_iter().chain(own).max()
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
@@ -1598,7 +1611,7 @@ mod tests {
 
     /// Task #979: a cold start after its step's way changed is sized by its runs of the latest
     /// earlier way (that way's model's memory for it, its runs at or above its size: here all one
-    /// size, so their 99th percentile; or its own run of it, the larger), floors and older ways
+    /// size, so their 98th percentile; or its own run of it, the larger), floors and older ways
     /// left out; none without such a run.
     #[test]
     fn a_new_ways_cold_start_is_sized_by_its_earlier_ways_runs() {
@@ -1610,9 +1623,9 @@ mod tests {
         costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
         let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
         let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
-        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(991), "the 99th percentile");
+        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(982), "the 98th percentile");
         assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
-        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(991), "an older way's: nothing");
+        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(982), "an older way's: nothing");
         assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
@@ -1875,12 +1888,14 @@ mod tests {
     /// book of the runs that ended before it (and the floors of targets granted before it), and
     /// each job granted that day by its targets' costs: its memory as crate::coord::sched admits
     /// it, on the threads it starts on (`at_start`), and as counted once grown to the threads it
-    /// ran on (`at_ran`), with what it took (`peak`), its time and whether a cold start. Reads
+    /// ran on (`at_ran`), with what it took (`peak`), its grant (`at`), its time and whether a
+    /// cold start. Reads
     /// `costs.json` (`read_costs`), `floors.json` (the lead's floors by cost key), `history.jsonl`
     /// and `timings.jsonl` in `SCENIC_ADMIT_REPLAY`; writes `<SCENIC_ADMIT_LABEL>.jsonl` (default
-    /// `admit`), at `SCENIC_ADMIT_MEM_PCT` (`needs-mem-pct`; not set, its default). The "before"
-    /// of the docs' table was this test's lines on the scheduler it replaced (53b0f353c). Without
-    /// the folder it prints that it skipped and checks nothing.
+    /// `admit`), at `SCENIC_ADMIT_MEM_PCT` (`needs-mem-pct`) and `SCENIC_ADMIT_THREAD_SHARE`
+    /// (`needs-thread-share`; not set, their defaults); `replay_admission_packed_into_rooms` packs
+    /// them. The "before" of the docs' table was this test's lines on the scheduler it replaced
+    /// (b982e9797). Without the folder it prints that it skipped and checks nothing.
     #[test]
     fn replay_admission_on_the_leads_records() {
         use std::io::Write;
@@ -1939,7 +1954,12 @@ mod tests {
             let records = tail.facts().clone();
             let cache = Cache::default();
             let tuning = jobrt::needs::Tuning::of(|n| {
-                (n == "needs-mem-pct").then(|| std::env::var("SCENIC_ADMIT_MEM_PCT").ok()?.parse().ok()).flatten()
+                let var = match n {
+                    "needs-mem-pct" => "SCENIC_ADMIT_MEM_PCT",
+                    "needs-thread-share" => "SCENIC_ADMIT_THREAD_SHARE",
+                    _ => return None,
+                };
+                std::env::var(var).ok()?.parse().ok()
             });
             let book = Book::kept(
                 the_plan,
@@ -1992,13 +2012,125 @@ mod tests {
                 let secs: u64 = ts.iter().map(|t| t.2.secs).sum();
                 let worker = ts[0].2.worker.clone();
                 let line = serde_json::json!({
-                    "day": d, "job": job, "step": step, "worker": worker, "targets": ts.len(),
+                    "day": d, "job": job, "step": step, "worker": worker, "targets": ts.len(), "at": ts.iter().filter_map(|t| granted(t.2)).min(),
                     "ran": ran, "start": start, "at_start": at_start, "at_ran": at_ran, "per": per,
                     "peak": peak, "secs": secs, "cold": cold,
                 });
                 writeln!(out, "{line}").unwrap();
             }
             eprintln!("day {d}: book of {} costs, {} jobs", book_costs.len(), jobs.len());
+        }
+    }
+
+    /// By hand (task #1415): the admission replay's jobs packed into each Mac's room (docs/pool.md
+    /// §7.7, Memory admission). For each label of `SCENIC_ADMIT_PACK` (comma-separated), its
+    /// `<label>.jsonl` in `SCENIC_ADMIT_REPLAY` (`replay_admission_on_the_leads_records`'s, or the
+    /// scheduler's it replaced): on each Mac (its slots' workers together, `paces::mac_of`), by
+    /// `SCENIC_ADMIT_ROOMS` (`name=MB,...`: its memory less its floor), its jobs in the order they
+    /// were granted, each started once its figure (`at_ran`: as counted on the threads it ran on)
+    /// fits beside the figures of those started before it and still running (one past the room
+    /// alone: once none runs), never before its grant nor before the job granted before it, and
+    /// run its time. What was reserved and what the jobs took past it (GB h: each job's figure,
+    /// and its peak past it, over its time), the jobs past it and by over a GB; the hours jobs
+    /// waited past their grant for room (the work admitted: less wait, more admitted); what their
+    /// peaks together took past the room (GB h), and the jobs started while they did. Each step's
+    /// too. Writes `<label>-packed.json`.
+    #[test]
+    fn replay_admission_packed_into_rooms() {
+        let (Ok(dir), Ok(labels), Ok(rooms)) = (
+            std::env::var("SCENIC_ADMIT_REPLAY"),
+            std::env::var("SCENIC_ADMIT_PACK"),
+            std::env::var("SCENIC_ADMIT_ROOMS"),
+        ) else {
+            eprintln!("admission packing skipped: SCENIC_ADMIT_REPLAY, _PACK or _ROOMS unset (nothing checked)");
+            return;
+        };
+        let rooms: BTreeMap<String, u64> = rooms
+            .split(',')
+            .filter_map(|r| r.split_once('=').map(|(n, mb)| (n.to_string(), mb.parse().unwrap())))
+            .collect();
+        #[derive(Default, Clone, Copy, serde::Serialize)]
+        struct Sums {
+            jobs: u64,
+            work_h: f64,
+            wait_h: f64,
+            reserved_gbh: f64,
+            past_gbh: f64,
+            past: u64,
+            past_gb: u64,
+            over_room_gbh: f64,
+            over_room_jobs: u64,
+        }
+        for label in labels.split(',') {
+            let text = std::fs::read_to_string(std::path::Path::new(&dir).join(format!("{label}.jsonl"))).unwrap();
+            let lines: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            let mut by: BTreeMap<String, Sums> = BTreeMap::new();
+            let mut all = Sums::default();
+            // (Each Mac's jobs: granted at, time, figure, peak, step.)
+            let mut macs: BTreeMap<String, Vec<(u64, u64, u64, u64, String)>> = BTreeMap::new();
+            for l in &lines {
+                let (Some(w), Some(at)) = (l["worker"].as_str().map(crate::paces::mac_of), l["at"].as_u64()) else {
+                    continue;
+                };
+                if !rooms.contains_key(w) {
+                    continue;
+                }
+                let n = |k: &str| l[k].as_u64().unwrap_or(0);
+                let step = l["step"].as_str().unwrap_or("").to_string();
+                macs.entry(w.to_string()).or_default().push((at, n("secs"), n("at_ran"), n("peak"), step));
+            }
+            let gbh = |mb: u64, secs: u64| mb as f64 * secs as f64 / 1024.0 / 3600.0;
+            for (w, mut jobs) in macs {
+                let room = rooms[&w];
+                jobs.sort();
+                // (Started: start, end, figure, peak, granted.)
+                let mut started: Vec<(u64, u64, u64, u64, u64)> = Vec::new();
+                let mut after = 0u64;
+                for (at, secs, fig, peak, _) in &jobs {
+                    let mut t = (*at).max(after);
+                    loop {
+                        let beside: Vec<&(u64, u64, u64, u64, u64)> =
+                            started.iter().filter(|j| j.0 <= t && j.1 > t).collect();
+                        if beside.is_empty() || beside.iter().map(|j| j.2).sum::<u64>() + fig <= room {
+                            break;
+                        }
+                        t = beside.iter().map(|j| j.1).min().unwrap();
+                    }
+                    after = t;
+                    started.push((t, t + secs, *fig, *peak, *at));
+                }
+                for ((t, end, fig, peak, at), (.., step)) in started.iter().zip(&jobs) {
+                    let secs = end - t;
+                    let at_once: u64 = started.iter().filter(|j| j.0 <= *t && j.1 > *t).map(|j| j.3).sum();
+                    let s = by.entry(step.clone()).or_default();
+                    for s in [&mut *s, &mut all] {
+                        s.jobs += 1;
+                        s.work_h += secs as f64 / 3600.0;
+                        s.wait_h += (t - at) as f64 / 3600.0;
+                        s.reserved_gbh += gbh(*fig, secs);
+                        s.past_gbh += gbh(peak.saturating_sub(*fig), secs);
+                        s.past += u64::from(peak > fig);
+                        s.past_gb += u64::from(*peak > fig + 1024);
+                        s.over_room_jobs += u64::from(at_once > room);
+                    }
+                }
+                // (Their peaks together against the room.)
+                let mut ev: Vec<(u64, i64)> =
+                    started.iter().flat_map(|j| [(j.0, j.3 as i64), (j.1, -(j.3 as i64))]).collect();
+                ev.sort_by_key(|e| (e.0, e.1));
+                let (mut cur, mut last) = (0i64, 0u64);
+                for (t, d) in ev {
+                    all.over_room_gbh += gbh((cur - room as i64).max(0) as u64, t.saturating_sub(last));
+                    cur += d;
+                    last = t;
+                }
+            }
+            let out = serde_json::json!({ "all": all, "steps": by });
+            std::fs::write(std::path::Path::new(&dir).join(format!("{label}-packed.json")), out.to_string()).unwrap();
+            eprintln!("{label}: {}", serde_json::to_string(&all).unwrap());
+            for (step, s) in &by {
+                eprintln!("{label} {step}: {}", serde_json::to_string(s).unwrap());
+            }
         }
     }
 

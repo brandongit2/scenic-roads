@@ -18,9 +18,10 @@
 //! - **memory**: the `mem_pct` percentile, over every run at or above the target's size (`above`;
 //!   past every run, the largest scaled up by size), of each one's peak at the threads asked: past
 //!   the threads it ran on, its memory per thread for each more (least squares over size and
-//!   threads, at its upper bound, `PER_THREAD_SE`, where `MIN_RUNS` ran on differing threads; else
-//!   the run's peak over its threads, as if its memory were its threads'), never less on fewer: a
-//!   small, fast or new run can't lower it. Disk alike, by size alone, at `high_pct`.
+//!   threads where `MIN_RUNS` ran on differing threads, at least `thread_share` of the run's peak
+//!   over its threads; else that peak over its threads whole, as if its memory were its
+//!   threads'), never less on fewer: a small, fast or new run can't lower it. Disk alike, by size
+//!   alone, at `high_pct`.
 //! - **NAS** (`Moves`): its runs' of about the target's size, their bytes asked of the NAS and NAS
 //!   calls over their time together (`PerUnit::rate`).
 //!
@@ -149,6 +150,7 @@ pub struct PerUnit {
     work_pct: f64,
     high_pct: f64,
     mem_pct: f64,
+    thread_share: f64,
 }
 
 /// A run's times per unit of a size: its size, its work (the lead's CPU s), the rest of its time
@@ -253,27 +255,15 @@ pub fn sorted(mut v: Vec<f64>) -> Vec<f64> {
     v
 }
 
-/// How many standard errors over its fitted coefficient a step's memory per thread is read at
-/// (`per_thread`): a peak varies with what a target holds far more than with its threads, so the
-/// coefficient alone, a middle, comes out near nothing on a step whose runs say little of their
-/// threads (the lead's records of 12–19 Nov: slope-deep, pack, peaks, bldprep), and a job grown
-/// past its start would reserve nothing for the threads it took. Its upper bound, about the 98th
-/// percentile of what the runs allow, is what memory as the cautious limit reads.
-pub const PER_THREAD_SE: f64 = 2.0;
-
 /// The coefficient of t in the least squares of y over [1, x, t] (over [1, t] where the sizes x
-/// are all one), solved by its normal equations, plus `PER_THREAD_SE` of its standard errors (None:
-/// singular, or no more rows than coefficients).
+/// are all one), solved by its normal equations, to a millionth of a MB (an exact fit's rounding
+/// errors add no MB a thread; None: singular).
 fn per_thread(rows: &[(f64, f64, f64)]) -> Option<f64> {
     let one_size = rows.iter().all(|r| r.0 == rows[0].0);
     let n = if one_size { 2 } else { 3 };
-    let feats = |x: f64, t: f64| if one_size { [1.0, t, 0.0] } else { [1.0, x, t] };
-    // (The normal equations, their right side (column 3) and the identity beside them (columns 4
-    // to 6): Gauss–Jordan leaves the solution and the inverse, whose last diagonal scales the
-    // residuals' variance to the coefficient's.)
-    let mut a = [[0.0f64; 7]; 3];
+    let mut a = [[0.0f64; 4]; 3];
     for &(x, t, y) in rows {
-        let f = feats(x, t);
+        let f = if one_size { [1.0, t, 0.0] } else { [1.0, x, t] };
         for i in 0..n {
             for j in 0..n {
                 a[i][j] += f[i] * f[j];
@@ -281,43 +271,22 @@ fn per_thread(rows: &[(f64, f64, f64)]) -> Option<f64> {
             a[i][3] += f[i] * y;
         }
     }
-    for (i, row) in a.iter_mut().enumerate().take(n) {
-        row[4 + i] = 1.0;
-    }
     for c in 0..n {
         let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
         if a[p][c].abs() < 1e-9 {
             return None;
         }
         a.swap(c, p);
-        let d = a[c][c];
-        for k in 0..7 {
-            a[c][k] /= d;
-        }
         for r in 0..n {
             if r != c {
-                let f = a[r][c];
-                for k in 0..7 {
+                let f = a[r][c] / a[c][c];
+                for k in c..4 {
                     a[r][k] -= f * a[c][k];
                 }
             }
         }
     }
-    if rows.len() <= n {
-        return None;
-    }
-    let beta: Vec<f64> = (0..n).map(|i| a[i][3]).collect();
-    let rss: f64 = rows
-        .iter()
-        .map(|&(x, t, y)| {
-            let f = feats(x, t);
-            let e = y - (0..n).map(|i| f[i] * beta[i]).sum::<f64>();
-            e * e
-        })
-        .sum();
-    let var = rss / (rows.len() - n) as f64 * a[n - 1][4 + n - 1];
-    // (To a millionth of a MB: an exact fit's rounding errors don't add a MB a thread.)
-    Some(((beta[n - 1] + PER_THREAD_SE * var.max(0.0).sqrt()) * 1e6).round() / 1e6)
+    Some((a[n - 1][3] / a[n - 1][n - 1] * 1e6).round() / 1e6)
 }
 
 /// The runs of about `u` units among `v` (sorted by their size, `size`): those of half to twice
@@ -411,6 +380,7 @@ impl PerUnit {
             work_pct: t.work_pct,
             high_pct: t.high_pct,
             mem_pct: t.mem_pct,
+            thread_share: t.thread_share,
         }
     }
 
@@ -439,29 +409,33 @@ impl PerUnit {
         pct(&peaks, self.mem_pct).map(|p| p.ceil() as u64)
     }
 
+    /// Memory per thread given a run's (or a target's) peak over its threads, `linear`: the fit's,
+    /// at least `thread_share` of `linear` (a peak varies with what a target holds far more than
+    /// with its threads, so the fit, a middle, comes out near nothing for steps whose runs say
+    /// little of their threads, and shrinks toward that as runs pile up); `linear` itself where
+    /// none is fitted.
+    fn per_thread_of(&self, linear: f64) -> f64 {
+        self.mem_per_thread.map_or(linear, |f| f.max(self.thread_share / 100.0 * linear))
+    }
+
     /// A run's peak `peak` (MB) on `ran` threads (0: not said), at `threads`: past its own, its
-    /// memory per thread for each more (the fit's, else its own peak over its threads); on as many
-    /// or fewer, its peak (never less: a thread's share isn't known to come off).
+    /// memory per thread for each more (`per_thread_of` its peak over its threads); on as many or
+    /// fewer, its peak (never less: a thread's share isn't known to come off).
     fn at_threads(&self, peak: f64, ran: u32, threads: u32) -> f64 {
         if ran == 0 || threads <= ran {
             return peak;
         }
-        peak + self.mem_per_thread.unwrap_or(peak / f64::from(ran)) * f64::from(threads - ran)
+        peak + self.per_thread_of(peak / f64::from(ran)) * f64::from(threads - ran)
     }
 
     /// What each thread a job of a target of `u` units grows by adds to its memory at most (MB):
-    /// its memory per thread where fitted, else the `mem_pct` percentile of its runs' (at or above
-    /// `u` units, `above`) peaks over their threads. None: no run said its threads.
+    /// `per_thread_of` the `mem_pct` percentile of its runs' (at or above `u` units, `above`) peaks
+    /// over their threads. None: no run said its threads.
     pub fn thread_mb(&self, u: f64) -> Option<u64> {
-        let per = match self.mem_per_thread {
-            Some(p) => p,
-            None => {
-                let big = above(&self.mem, u, |m| m.0);
-                let each = big.iter().filter(|m| m.1 > 0).map(|m| scaled_up(m.2 as f64, m.0, u) / f64::from(m.1));
-                pct(&sorted(each.collect()), self.mem_pct)?
-            }
-        };
-        Some(per.ceil() as u64)
+        let big = above(&self.mem, u, |m| m.0);
+        let each = big.iter().filter(|m| m.1 > 0).map(|m| scaled_up(m.2 as f64, m.0, u) / f64::from(m.1));
+        let linear = pct(&sorted(each.collect()), self.mem_pct)?;
+        Some(self.per_thread_of(linear).ceil() as u64)
     }
 
     /// The disk (MB) a target of `u` units needs: the high percentile of the measures' at or above
@@ -818,13 +792,20 @@ mod tests {
     fn memory_by_threads_grows_and_few_runs_grow_as_their_threads() {
         let t = Tuning::default();
         let km = |u: f64| -> BTreeMap<String, f64> { [(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into() };
-        // (Fitted: 20 runs on 2 threads at 4,000 MB, 20 on 4 at 5,000: 500 MB a thread.)
+        // (Fitted: 20 runs on 2 threads at 4,000 MB, 20 on 4 at 5,000: 500 MB a thread, with no
+        // share of their peaks over their threads under it.)
         let mut runs: Vec<Obs> = (0..20).map(|i| obs(i, 100.0, 10.0, 2, 4000)).collect();
         runs.extend((20..40).map(|i| obs(i, 100.0, 10.0, 4, 5000)));
-        let m = Model::of(runs.clone(), &[], &[], &t);
+        let m = Model::of(runs.clone(), &[], &[], &Tuning { thread_share: 0.0, ..t });
         assert_eq!(m.thread_mb(&km(100.0)), Some(500));
         assert_eq!(m.mem(&km(100.0), 4), Some(5000));
         assert_eq!(m.mem(&km(100.0), 8), Some(7000));
+        // (The fit under the share of their peaks over their threads, half by default: half the
+        // 2-thread runs' 2,000 MB a thread, each of them grown by it.)
+        let m = Model::of(runs.clone(), &[], &[], &t);
+        assert_eq!(m.thread_mb(&km(100.0)), Some(1000));
+        assert_eq!(m.mem(&km(100.0), 4), Some(6000));
+        assert_eq!(m.mem(&km(100.0), 8), Some(10_000));
         // (More threads never less: ten runs on 8 threads at 1,000 MB don't take a target on 8
         // below what its 2- and 4-thread runs grown to 8 hold.)
         runs.extend((40..50).map(|i| obs(i, 100.0, 10.0, 8, 1000)));
@@ -903,7 +884,7 @@ mod tests {
         assert_eq!(m.by[0].size, "km2");
         assert!(mb(&m, 100.0) >= 10_000, "{}", mb(&m, 100.0));
         // (At or above: 200 runs of 60 to 66 km² at 3,000 MB, 2 of 100 km² at 6,000, under the
-        // percent the 99th percentile leaves out; a 60 km² target is the many's, 3,000.)
+        // 2 percent the 98th percentile leaves out; a 60 km² target is the many's, 3,000.)
         let mut runs: Vec<Obs> =
             (0..200).map(|i| obs(i, 60.0 + (i % 7) as f64, 60.0 + (i % 7) as f64, 1, 3000)).collect();
         runs.extend((200..202).map(|i| obs(i, 100.0, 100.0, 1, 6000)));

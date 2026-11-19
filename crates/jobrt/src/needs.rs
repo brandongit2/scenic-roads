@@ -20,6 +20,11 @@ pub struct Tuning {
     /// A job's memory as the pool admits and packs it (agentcore::coord::sched): this percentile of
     /// its step's runs at the target's size or more, each at the threads the job runs on.
     pub mem_pct: f64,
+    /// A thread a job grows by past its runs' threads adds at least this share (%) of their peak
+    /// over their threads to its memory, whatever the fit over sizes and threads says (a peak
+    /// varies with what a target holds far more than with its threads: the fit alone came out near
+    /// nothing for steps whose runs say little of their threads).
+    pub thread_share: f64,
     /// A step's newest runs its times (work, the rest, parallelism, the NAS rate) are learned
     /// from, and checked against their predictions over (memory and disk read every run: a peak
     /// is a run's, and only many runs show the rare large one). At most `KNOBS`' 5,000: each
@@ -35,21 +40,33 @@ pub struct Tuning {
 
 pub const WORK_PCT: f64 = 40.0;
 pub const HIGH_PCT: f64 = 95.0;
-/// Picked by the admission replay on the lead's records of 12–19 Nov (docs/pool.md §7.7, Memory
-/// admission): the least that reserved no more of what the jobs took past it than before.
-pub const MEM_PCT: f64 = 99.0;
+/// With `THREAD_SHARE`, picked by the admission replay on the lead's records of 12–19 Nov packed
+/// into each Mac's room (docs/pool.md §7.7, Memory admission): of the pairs whose jobs waited no
+/// longer for room than under the scheduler it replaced, the one whose jobs took the least past
+/// their memory, no step with more jobs past it than before.
+pub const MEM_PCT: f64 = 98.0;
+/// Picked with `MEM_PCT` by the same replay.
+pub const THREAD_SHARE: f64 = 50.0;
 pub const RUNS: u64 = 500;
 pub const OFF: f64 = 3.0;
 pub const RELEARN: u64 = 5;
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { work_pct: WORK_PCT, high_pct: HIGH_PCT, mem_pct: MEM_PCT, runs: RUNS, off: OFF, relearn: RELEARN }
+        Tuning {
+            work_pct: WORK_PCT,
+            high_pct: HIGH_PCT,
+            mem_pct: MEM_PCT,
+            thread_share: THREAD_SHARE,
+            runs: RUNS,
+            off: OFF,
+            relearn: RELEARN,
+        }
     }
 }
 
 /// The needs model's bounds as the pool's settings: each a number in its range, null its default.
-pub const KNOBS: [Knob<Tuning>; 6] = [
+pub const KNOBS: [Knob<Tuning>; 7] = [
     Knob {
         name: "needs-work-pct",
         what: "a step's work and the rest of its time per unit: this percentile of its runs of about a target's size",
@@ -76,6 +93,15 @@ pub const KNOBS: [Knob<Tuning>; 6] = [
         most: 100.0,
         get: |k| k.mem_pct,
         set: |k, v| k.mem_pct = v,
+    },
+    Knob {
+        name: "needs-thread-share",
+        what: "a thread a job grows by adds at least this share of its runs' peak over their threads to its memory",
+        unit: "%",
+        least: 0.0,
+        most: 100.0,
+        get: |k| k.thread_share,
+        set: |k, v| k.thread_share = v,
     },
     Knob {
         name: "needs-runs",
@@ -135,10 +161,11 @@ mod tests {
             "needs-work-pct" => Some(25.0),
             "needs-high-pct" => Some(101.0),
             "needs-mem-pct" => Some(97.0),
+            "needs-thread-share" => Some(25.0),
             "needs-runs" => Some(80.0),
             _ => None,
         });
-        assert_eq!((k.work_pct, k.high_pct, k.mem_pct, k.runs), (25.0, HIGH_PCT, 97.0, 80));
+        assert_eq!((k.work_pct, k.high_pct, k.mem_pct, k.thread_share, k.runs), (25.0, HIGH_PCT, 97.0, 25.0, 80));
         for n in &KNOBS {
             let d = (n.get)(&Tuning::default());
             assert!((n.least..=n.most).contains(&d), "{}'s default {d} in its range", n.name);
