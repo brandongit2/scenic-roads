@@ -1951,7 +1951,7 @@ fn run_on(
             pruned_at = t;
             let now = pool.clock(t).now;
             let mut g = pool.sched.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-            g.retain(|_, (_, last)| now.saturating_duration_since(*last) < Duration::from_secs(120));
+            g.retain(|_, (_, last, _)| now.saturating_duration_since(*last) < Duration::from_secs(120));
         }
         // (Those ended by now: what waits on them counted down, ready once nothing else is left;
         // the jobs' leases ended.)

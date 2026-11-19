@@ -631,8 +631,9 @@ impl Shared {
     /// stale one only from a Mac holding leased jobs; `me`'s read from this Mac's live store now),
     /// whether a Mac holding leased jobs whose app sends answers (`nas_at` set) gave none fresh,
     /// and the NAS's disks (`disks`; None: not read)
-    /// against the target `pct`, beside the weight the pool's leased jobs hold now and the least a
-    /// target waiting for the budget weighs (`Sched::nas_wants`), weighed by the limits as probed;
+    /// against the target `pct`, beside the weight the pool's leased jobs hold now (weighed by the
+    /// limits as probed) and the least room a job held back for the budget needed of the window, as
+    /// its refusal weighed it (`Sched::nas_wants`);
     /// the window it gives, and whether a job beside nothing goes (`Pace::lone`), set in `nas` and
     /// `nas_own`.
     fn pace_nas(&mut self, me: &str, disks: Option<&[f64]>, pct: u32, k: &jobrt::budget::nas::Tuning) {
@@ -641,7 +642,7 @@ impl Shared {
             l.answer_in(c, t, k);
         }
         let (in_use, wants) =
-            self.nas_room(now, true).map_or((0, None), |(nw, running, _, _)| (running, self.nas_wants(&nw, now)));
+            self.nas_room(now, true).map_or((0, None), |(_, running, _, _)| (running, self.nas_wants(now)));
         let own = self.own_cap.iter().map(|c| (me.to_string(), c.clone()));
         let caps: Vec<(String, Capacity)> =
             own.chain(self.workers_around().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)))).collect();
@@ -1443,7 +1444,9 @@ pub struct NasView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_pct: Option<f64>,
     pub target_pct: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The pacing's last reading; one this app can't read (a lead on another app's way of writing
+    /// it) is None, never read as some other reading.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "reading_or_none")]
     pub pace: Option<jobrt::budget::nas::Reading>,
     pub window: u32,
     pub tuning: jobrt::budget::nas::Tuning,
@@ -1454,6 +1457,12 @@ pub struct NasView {
     /// The NAS's mount (the project folder's filesystem), as the prober last read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mount: Option<NasMount>,
+}
+
+/// `NasView::pace` as written, or None where this app can't read it.
+fn reading_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<jobrt::budget::nas::Reading>, D::Error> {
+    let v: Option<serde_json::Value> = Deserialize::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 /// The filesystem holding the NAS's project folder (store::sys::mount_of): the server's name as
@@ -2552,10 +2561,10 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         let mut g = s.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-        g.retain(|_, (_, last)| now.saturating_duration_since(*last) < Duration::from_secs(120));
+        g.retain(|_, (_, last, _)| now.saturating_duration_since(*last) < Duration::from_secs(120));
         g.iter()
-            .filter(|(_, (first, _))| now.saturating_duration_since(*first) >= Duration::from_secs(NAS_WAIT_SAY_S))
-            .map(|((st, t), (first, _))| (st.clone(), t.clone(), now.saturating_duration_since(*first).as_secs() / 60))
+            .filter(|(_, (first, ..))| now.saturating_duration_since(*first) >= Duration::from_secs(NAS_WAIT_SAY_S))
+            .map(|((st, t), (first, ..))| (st.clone(), t.clone(), now.saturating_duration_since(*first).as_secs() / 60))
             .collect()
     }
 
@@ -7693,6 +7702,12 @@ mod tests {
         assert_eq!(v.disks_pct, vec![50.0]);
         let back: NasView = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(back, v);
+        // A lead on an app writing its reading another way (a held one without its reason, as
+        // 20261119-1219-c25a53c5f wrote it): read as none, never as a held reading saying no why.
+        let old = serde_json::json!({"window": 50, "pace": {"at": 1795100241, "past": false, "load_pct": 10.4,
+            "in_use": 0, "fresh": true, "verdict": "held"}});
+        let back: NasView = serde_json::from_value(old).unwrap();
+        assert_eq!((back.pace, back.window), (None, 50));
     }
 
     fn handoff(units: &[(&str, &str)]) -> Handoff {
@@ -10795,7 +10810,7 @@ mod tests {
             let now = s.now();
             assert_eq!(s.quiet_waits.lock().unwrap().get("gc").map(|q| q.1), Some(400));
             let (nw, ..) = s.nas_room(now, true).unwrap();
-            assert!(s.nas_wants(&nw, now).is_some_and(|w| w <= 400), "its wait counted");
+            assert!(s.nas_wants(now).is_some_and(|w| w <= 400), "its wait counted");
             assert!(s.nas_reserved(&nw, now).is_none_or(|r| r.0 != "gc"), "never holding room");
         }
         age(jobrt::budget::nas::OWN_AGE * 3);
@@ -12839,7 +12854,7 @@ mod tests {
             s.own_cap = Some(cap);
             s.pace_nas(&lead, Some(&[2.0]), 85, &k);
             let l = s.nas_own.unwrap();
-            (l.window, l.alone, s.nas_pace.last.as_ref().unwrap().hold)
+            (l.window, l.alone, s.nas_pace.last.as_ref().unwrap().verdict.hold())
         };
         assert!(!c.nas_waiting(), "nothing held back yet");
         // (A light job runs on m2 for an `OWN_AGE` and more, its answers ten times its best; the
@@ -12897,6 +12912,72 @@ mod tests {
             assert!(s.leases.renew(heavy, "m3", None, now));
         }
         assert!(went.is_some(), "grown back on its answers: a light job goes beside the heavy one");
+    }
+
+    /// Task #1417 round 4: what the pacing reads as the room the work held back needs is what its
+    /// refusal weighed, not the targets weighed again one by one. The lead's own planned job of two
+    /// targets (800 and 40 of the NAS alone, 420 as the job), held back beside nothing by a window
+    /// of 300 while the lone way is held, needs 420: the window is what limits, and on answers near
+    /// their best it grows (weighed target by target, it needed the lighter one's 40, read as not
+    /// what limits, and never grew).
+    #[test]
+    fn the_pacing_reads_the_room_its_refusal_needed() {
+        use jobrt::budget::nas::{Hold, State, Tuning, Verdict};
+        let (_d, c, _w, clock) = every((0, 0));
+        let limits =
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        let k = Tuning::default();
+        let cost = |bytes: u64| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version("rail"),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+            ..Default::default()
+        };
+        packable(&c, "rail", 2, Some(1));
+        // (80 and 4 MB/s, ten minutes each: 800 and 40 of the NAS, 420 together.)
+        c.add_costs_by(
+            &[(cost_key("rail", "6/1/1"), cost(48_000_000_000)), (cost_key("rail", "6/1/2"), cost(2_400_000_000))],
+            "m4",
+        );
+        let ts = ["6/1/1", "6/1/2"].map(|t| (t.to_string(), format!("k {t}"), 0)).to_vec();
+        c.offer("p", vec![Offer { step: "rail".into(), targets: ts, job: Some("rail 6/1".into()) }]);
+        let lead = {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            // (Cut to 300 just now, the lone way held.)
+            let t = s.wall_s();
+            let kept = State {
+                at: t,
+                window: 300.0,
+                threshold: Some(300.0),
+                cut_at: Some(t),
+                settled_at: Some(t),
+                lone_at: Some(t),
+                lone_n: 1,
+            };
+            assert!(s.nas_pace.restore(&kept, t, k.restore_s));
+            s.lead_name.clone()
+        };
+        // (A reading: the lead's own answers `ms` over a 2-ms floor, the disks quiet.)
+        let read = |ms: f64| {
+            clock.advance(Duration::from_secs(k.read_s));
+            let mut s = c.shared.lock().unwrap();
+            let at = s.wall_s();
+            s.own_cap =
+                Some(Capacity { at, nas_ms: Some(ms), nas_floor_ms: Some(2.0), nas_at: at, ..Default::default() });
+            s.pace_nas(&lead, Some(&[2.0]), 85, &k);
+            s.nas_pace.last.clone().unwrap()
+        };
+        let r = read(20.0);
+        assert_eq!(r.verdict, Verdict::Held(Hold::HoldOff));
+        let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "420 past a window of 300, the lone way held");
+        let r = read(2.5);
+        assert_eq!(r.wants, Some(420), "the job's room, as its refusal weighed it");
+        assert_eq!(r.verdict, Verdict::Grew, "the window what limits: grown on answers near their best");
+        assert!(c.shared.lock().unwrap().nas_pace.window() > 300);
     }
 
     /// A stale answer from a Mac holding no leased jobs (paused, or gone quiet) is left out: it

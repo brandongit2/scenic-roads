@@ -109,9 +109,10 @@ function paint() {
   draw(parts.budget.c, { ...pool, unit: "%", series: [
     { points: s.pool_nas_used_pct, colour: nr, fill: true, label: "in use", unit: "%" },
     { points: s.pool_nas_window_pct, colour: acc, label: "window", unit: "%" }] });
-  const did = { grew: "growing", cut: "cut", held: "holding", unread: "nothing read" }[pr?.verdict] || "";
-  // (Why it held: jobrt::budget::nas::Hold.)
-  const held = { "hold-off": "a cut's hold-off", "not-near": "not near its best", "not-fresh": "readings stale", started: "jobs just started", "not-limiting": "not what limits" }[pr?.hold] || "";
+  // (Held, the verdict says why: `{held: <jobrt::budget::nas::Hold>}`.)
+  const why = pr?.verdict?.held;
+  const did = why ? "holding" : { grew: "growing", cut: "cut", unread: "nothing read" }[pr?.verdict] || "";
+  const held = { "hold-off": "a cut's hold-off", "no-answer": "no Mac's answers", "not-near": "not near its best", "not-fresh": "readings stale", started: "jobs just started", "not-limiting": "not what limits" }[why] || "";
   words(parts.budget.v, [used == null ? "not paced yet" : `${fmt(used, "%")} in use`, [win == null ? "" : `window ${fmt(win, "%")}`, did, held, v?.tuning ? `jobs under ${fmt(v.tuning.small / 10, "%")} unpaced` : ""].filter(Boolean).join(" · ")],
     pr?.verdict === "cut" ? "bad" : win != null && used != null && used >= win ? "warn" : "");
 

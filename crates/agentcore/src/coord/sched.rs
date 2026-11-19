@@ -232,9 +232,11 @@ pub struct Sched {
     /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
     /// budget lets a member's job go past the whole while the lead's own alone hold weight.
     pub lead_name: String,
-    /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
-    /// status (`Coordinator::nas_waits`); a target granted is let go.
-    pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
+    /// Targets passed over for the NAS budget alone ((step, target) → (first, last time, the room
+    /// its last refusal needed of the window beside what was in use: `NasRefused::need`; None:
+    /// taken up from a record, not refused since)), for the status (`Coordinator::nas_waits`) and
+    /// the pacing (`nas_wants`); a target granted is let go.
+    pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant, Option<u32>)>>,
     /// `nas_reserved`'s wait (since when, step and target) as last worked out, at which time: kept
     /// while the time stands, an aged wait passed over again taking its place when it was held
     /// back first, worked out again when the one kept is granted (task #544: a pick weighs it for
@@ -1369,11 +1371,11 @@ impl Sched {
                     .unwrap_or_else(|e| e.into_inner())
                     .iter()
                     // (Aged `OWN_AGE` and passed over in the last two minutes, as instants compared.)
-                    .filter(|(_, (since, last))| {
+                    .filter(|(_, (since, last, _))| {
                         aged_by.is_some_and(|a| *since <= a) && fresh_from.is_none_or(|f| *last > f)
                     })
                     .min_by(|x, y| (x.1 .0, x.0).cmp(&(y.1 .0, y.0)))
-                    .map(|(k, (since, _))| (*since, k.clone()));
+                    .map(|(k, (since, ..))| (*since, k.clone()));
                 *self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, held.clone()));
                 held.map(|h| h.1)
             }
@@ -1402,45 +1404,33 @@ impl Sched {
             })
     }
 
-    /// The least a job passed over for the NAS budget alone in the last two minutes weighs, more
-    /// than nothing (at the lead's pace, `nw`'s weights), a quiet step's held back for a quiet NAS
-    /// among them (`quiet_waits`): what the pacing's window must leave room for beside what's in
-    /// use to be what limits (jobrt::budget::nas::Pace::read). While room is held for a target aged
-    /// in the budget (`nas_reserved`), its weight: no job starts unless it leaves that room
-    /// (`nas_reserve_ok`), so the least the window must take beside what's in use is the room
-    /// itself, however light the jobs held back behind it (task #1417: a cut window, nothing
-    /// running, the light jobs held back for an aged heavy one's room weighing within it, read as
-    /// the window not limiting, and it never grew). None: none waits.
-    pub(super) fn nas_wants(&self, nw: &NasWeigher, now: Instant) -> Option<u32> {
-        if let Some((_, _, rw)) = self.nas_reserved(nw, now).filter(|r| r.2 > 0) {
-            return Some(rw);
-        }
+    /// The least room a job passed over for the NAS budget alone in the last two minutes needed of
+    /// the window beside what was in use, as the refusal itself weighed it (`nas_wait`'s `need`: at
+    /// the asker's pace, the whole job it would have made, the room held for an aged target added
+    /// where that held it back, `nas_reserve_ok`), a quiet step's held back for a quiet NAS among
+    /// them (`quiet_waits`): what the pacing's window must take beside what's in use to be what
+    /// limits (jobrt::budget::nas::Pace::read). One number from the decision that held the work
+    /// back, never weighed again another way (task #1417 round 4: weighed again per target at the
+    /// lead's pace, the lead's own job of two held back read as needing its lighter target's room,
+    /// and the window, read as not what limits, never grew). None: none waits.
+    pub(super) fn nas_wants(&self, now: Instant) -> Option<u32> {
         let fresh = |last: &Instant| now.saturating_duration_since(*last) < Duration::from_secs(120);
-        let waits: Vec<(String, String)> = self
+        let waits: Vec<u32> = self
             .nas_waits
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|(_, (_, last))| fresh(last))
-            .map(|(k, _)| k.clone())
-            .collect();
-        let quiet: Vec<u32> = self
-            .quiet_waits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .values()
-            .filter(|q| fresh(&q.0))
-            .map(|q| q.1)
+            .filter(|w| fresh(&w.1))
+            .filter_map(|w| w.2)
             .collect();
-        waits.iter().map(|(st, t)| nw.weight(st, t, None)).chain(quiet).filter(|&w| w > 0).min()
+        let quiet = self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner());
+        waits.into_iter().chain(quiet.values().filter(|q| fresh(&q.0)).map(|q| q.1)).min()
     }
 
     /// Whether a target, or a quiet step, was passed over for the NAS budget alone in the last two
-    /// minutes (as `nas_wants` counts them): the pacing has work to judge.
+    /// minutes (`nas_wants`): the pacing has work to judge.
     pub(super) fn nas_waiting(&self, now: Instant) -> bool {
-        let fresh = |last: &Instant| now.saturating_duration_since(*last) < Duration::from_secs(120);
-        self.nas_waits.lock().unwrap_or_else(|e| e.into_inner()).values().any(|w| fresh(&w.1))
-            || self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).values().any(|q| fresh(&q.0))
+        self.nas_wants(now).is_some()
     }
 
     /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).
@@ -1448,10 +1438,14 @@ impl Sched {
         self.nas_waits.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|w| w.1 == now).count()
     }
 
-    /// Notes `target` of `step` passed over for the NAS budget alone now.
-    pub(super) fn nas_wait(&self, step: &str, target: &str, now: Instant) {
+    /// Notes `target` of `step` passed over for the NAS budget alone now, the refusal needing
+    /// `need` of the window beside what was in use (`nas_wants`).
+    pub(super) fn nas_wait(&self, step: &str, target: &str, need: u32, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-        let e = g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
+        let e = g
+            .entry((step.to_string(), target.to_string()))
+            .and_modify(|e| (e.1, e.2) = (now, Some(need)))
+            .or_insert((now, now, Some(need)));
         let since = e.0;
         drop(g);
         let aged = now.saturating_duration_since(since) >= jobrt::budget::nas::OWN_AGE;
@@ -2185,7 +2179,7 @@ impl Sched {
             let aged: Vec<String> = g
                 .range(from..)
                 .take_while(|((st, _), _)| *st == o.step)
-                .filter(|(_, (since, _))| aged_by.is_some_and(|a| *since <= a))
+                .filter(|(_, (since, ..))| aged_by.is_some_and(|a| *since <= a))
                 .map(|((_, t), _)| t.clone())
                 .collect();
             if !aged.is_empty() {
@@ -2487,28 +2481,26 @@ impl Sched {
                 now.saturating_duration_since(since) < jobrt::budget::nas::QUIET_AGE
             };
             let waited = waited || (quiet_step && measured && !quiet);
-            let fits = if quiet {
+            let rules = if quiet {
                 jobrt::budget::nas::Limits::fits_quiet(running, w, nw.limits.win())
             } else {
                 jobrt::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited, nw.limits.win())
-            } && nw.limits.paced(running, w)
-                && (alone
-                    || Self::nas_reserve_ok(
-                        self.nas_reserved(&nw, now).as_ref(),
-                        &o.step,
-                        &ts,
-                        running,
-                        w,
-                        nw.limits.window,
-                    ));
+            } && nw.limits.paced(running, w);
+            let reserved = if alone { None } else { self.nas_reserved(&nw, now) };
+            let reserve_ok = Self::nas_reserve_ok(reserved.as_ref(), &o.step, &ts, running, w, nw.limits.window);
+            let fits = rules && reserve_ok;
+            // (Held back, the room it needs of the window beside what's in use, as weighed here:
+            // the job's, and the room held for an aged target where that held it back.)
+            let need = w.saturating_add(if reserve_ok { 0 } else { reserved.map_or(0, |r| r.2) });
             if !fits && !alone && !quiet {
                 for t in &ts {
-                    self.nas_wait(&o.step, t, now);
+                    self.nas_wait(&o.step, t, need, now);
                 }
             }
-            // (A quiet step held back: for the pacing's growth alone, `nas_wants`.)
-            if !fits && !alone && quiet {
-                self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).insert(o.step.clone(), (now, w));
+            // (A quiet step held back where a window would take it: for the pacing's growth alone,
+            // `nas_wants`. Weighing nothing, only nothing running lets it go: no window helps.)
+            if !fits && !alone && quiet && need > 0 {
+                self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).insert(o.step.clone(), (now, need));
             }
             fits
         })
@@ -2572,42 +2564,39 @@ impl Sched {
         // (The lead's own asks held within the window, or alone; a member's past it beside the
         // lead's own alone: jobrt::budget::nas::Limits. Weighed as the job it would make: `t` added
         // to the targets picked before it, `with`, task #939.)
-        let nas_fits = |t: &str, with: &JobLoad| {
-            nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
-                let mut j = *with;
-                nw.add(&mut j, &o.step, t, Some(&a.worker));
-                let w = nw.job(&j);
-                // (The window cut under the whole by the NAS's latency or load: what fits it alone,
-                // jobrt::budget::nas::Pace.)
-                if !nw.limits.paced(*running, w) {
-                    return false;
-                }
-                // (Room held for a target aged in the budget left to it: `nas_reserved`.)
-                if !Self::nas_reserve_ok(
-                    self.nas_reserved(nw, now).as_ref(),
-                    &o.step,
-                    &[t.to_string()],
-                    *running,
-                    w,
-                    nw.limits.window,
-                ) {
-                    return false;
-                }
-                // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's
-                // only once aged (`fits_own_target`): the room held for it is always let go.)
-                let waited = {
-                    let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-                    g.get(&(o.step.clone(), t.to_string()))
-                        .is_some_and(|e| now.duration_since(e.0) >= jobrt::budget::nas::OWN_AGE)
-                };
-                if lead {
-                    let own = running.saturating_sub(*members);
-                    jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited, nw.limits.win())
-                } else {
-                    jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited, nw.limits.win())
-                }
-            })
+        // (Held back: Some(the room it needs of the window beside what's in use, as weighed here),
+        // `nas_wants`'s.)
+        let nas_need = |t: &str, with: &JobLoad| -> Option<u32> {
+            let (nw, running, members, _, most) = nas.as_ref()?;
+            let mut j = *with;
+            nw.add(&mut j, &o.step, t, Some(&a.worker));
+            let w = nw.job(&j);
+            // (The window cut under the whole by the NAS's latency or load: what fits it alone,
+            // jobrt::budget::nas::Pace.)
+            if !nw.limits.paced(*running, w) {
+                return Some(w);
+            }
+            // (Room held for a target aged in the budget left to it: `nas_reserved`.)
+            let reserved = self.nas_reserved(nw, now);
+            if !Self::nas_reserve_ok(reserved.as_ref(), &o.step, &[t.to_string()], *running, w, nw.limits.window) {
+                return Some(w.saturating_add(reserved.map_or(0, |r| r.2)));
+            }
+            // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's only
+            // once aged (`fits_own_target`): the room held for it is always let go.)
+            let waited = {
+                let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+                g.get(&(o.step.clone(), t.to_string()))
+                    .is_some_and(|e| now.duration_since(e.0) >= jobrt::budget::nas::OWN_AGE)
+            };
+            let fits = if lead {
+                let own = running.saturating_sub(*members);
+                jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited, nw.limits.win())
+            } else {
+                jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited, nw.limits.win())
+            };
+            (!fits).then_some(w)
         };
+        let nas_fits = |t: &str, with: &JobLoad| nas_need(t, with).is_none();
         let takeable = |i: usize| {
             let (t, k, _) = &o.targets[i];
             // (Its wait noted only when this asker would take it but for the budget: a target no
@@ -2620,12 +2609,15 @@ impl Sched {
                     // its measure before the step fans out.)
                     None => held.is_empty() && self.cold_fits(&o.step, std::slice::from_ref(t), a, now),
                 }
-                && (nas_fits(t, &JobLoad::default()) || {
-                    if note {
-                        self.nas_wait(&o.step, t, now);
+                && match nas_need(t, &JobLoad::default()) {
+                    None => true,
+                    Some(need) => {
+                        if note {
+                            self.nas_wait(&o.step, t, need, now);
+                        }
+                        false
                     }
-                    false
-                })
+                }
         };
         let after = self
             .last
@@ -3001,7 +2993,7 @@ impl Sched {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .map(|((s, t), (a, b))| (s.clone(), t.clone(), age(*a), age(*b)))
+                .map(|((s, t), (a, b, _))| (s.clone(), t.clone(), age(*a), age(*b)))
                 .collect(),
             quiet_since: self
                 .quiet_since
@@ -3087,7 +3079,7 @@ impl Sched {
             nas_waits: Mutex::new(
                 s.nas_waits
                     .iter()
-                    .map(|(st, t, a, b)| ((st.clone(), t.clone()), (ago(now, *a), ago(now, *b))))
+                    .map(|(st, t, a, b)| ((st.clone(), t.clone()), (ago(now, *a), ago(now, *b), None)))
                     .collect(),
             ),
             nas_reserved_at: Default::default(),

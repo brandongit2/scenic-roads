@@ -13629,7 +13629,7 @@ mod tests {
         {
             let s = co.shared.lock().unwrap();
             let now = s.now();
-            s.nas_waits.lock().unwrap().insert(("slope-hi".into(), "6/1/1".into()), (now, now));
+            s.nas_waits.lock().unwrap().insert(("slope-hi".into(), "6/1/1".into()), (now, now, Some(500)));
         }
         a.tend_live(Some(&nas), &Conditions::default());
         assert!(l.samples_nas(), "work held back for the budget: sampled");

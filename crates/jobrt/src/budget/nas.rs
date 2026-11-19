@@ -120,8 +120,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   back;
 /// - **between**, or nothing read: it holds.
 ///
-/// Each reading keeps why it held (`Hold`: the first of those gates it failed), for the lead's
-/// status (`Reading::line`).
+/// A reading that held says why (`Verdict::Held`'s `Hold`: the first of those gates it failed),
+/// for the lead's status (`Reading::line`): a held reading without its reason can't be made.
 ///
 /// A job beside nothing that the window doesn't take goes all the same, but not for
 /// `Tuning::lone_s` from a reading past the knee (`Pace::lone`: beside an outside load near the
@@ -189,9 +189,8 @@ impl Default for State {
 /// One reading of the pacing (`Pace::read`): when (unix s), the Mac whose answers counted and its
 /// ratio (one more than its excess over the least floor, at most `RATIO_MOST`), whether it was past
 /// the knee, the disks' smoothed load, the weight in use and the room the next job waiting needs
-/// (`Sample::wants`), what it did and why it held
-/// (`Hold`; None: it grew or cut), the slow start's threshold after it, and until when a job beside
-/// nothing is held back (`Pace::lone`; None: it isn't).
+/// (`Sample::wants`), what it did (and why, where it held), the slow start's threshold after it,
+/// and until when a job beside nothing is held back (`Pace::lone`; None: it isn't).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Reading {
@@ -208,15 +207,12 @@ pub struct Reading {
     pub wants: Option<u32>,
     pub verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hold: Option<Hold>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lone_until: Option<u64>,
 }
 
-/// Why a reading held the window (`Reading::hold`; `Verdict::Held`): the first of `Pace::read`'s
-/// gates it failed.
+/// Why a reading held the window (`Verdict::Held`): the first of `Pace::read`'s gates it failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Hold {
@@ -256,16 +252,16 @@ impl Reading {
     /// the reading's ratio and disk load, its verdict and why it held, and the lone way's hold.
     pub fn line(&self, window: u32, now: u64) -> String {
         let th = self.threshold.map_or(String::new(), |t| format!(" (threshold {})", pct(t)));
-        let wants =
-            self.wants.map_or(", nothing waiting".to_string(), |w| format!(", the next job waiting needs {}", pct(w)));
+        let wants = self.wants.map_or(", none held back for it".to_string(), |w| {
+            format!(", the next job held back for it needs {}", pct(w))
+        });
         let ratio = self.ratio.map_or(String::new(), |x| format!(", answers {x:.1}× their best"));
         let load = self.load_pct.map_or(String::new(), |l| format!(", disks {l:.0} % busy"));
-        let verdict = match (self.verdict, self.hold) {
-            (Verdict::Grew, _) => "grew".to_string(),
-            (Verdict::Cut, _) => "cut".to_string(),
-            (Verdict::Unread, _) => "nothing read".to_string(),
-            (_, Some(h)) => format!("held: {}", h.words()),
-            (_, None) => "held".to_string(),
+        let verdict = match self.verdict {
+            Verdict::Grew => "grew".to_string(),
+            Verdict::Cut => "cut".to_string(),
+            Verdict::Unread => "nothing read".to_string(),
+            Verdict::Held(h) => format!("held: {}", h.words()),
         };
         let lone = self.lone_until.map_or(String::new(), |u| {
             format!("; a job beside nothing held back {} min more", u.saturating_sub(now).div_ceil(60))
@@ -324,11 +320,22 @@ pub enum Verdict {
     Grew,
     /// Past the knee: cut.
     Cut,
-    /// Between, the window not what limits, its readings not fresh, a cut's hold-off.
-    #[default]
-    Held,
+    /// Held, and why: between, the window not what limits, its readings not fresh, a cut's
+    /// hold-off.
+    Held(Hold),
     /// Nothing read (no Mac's answer time, no disk reading): held.
+    #[default]
     Unread,
+}
+
+impl Verdict {
+    /// Why it held (None: it didn't).
+    pub fn hold(self) -> Option<Hold> {
+        match self {
+            Verdict::Held(h) => Some(h),
+            _ => None,
+        }
+    }
 }
 
 /// What the lead reads each `Tuning::read_s` (`Pace::read`): at `t` (unix s), every Mac's answers
@@ -704,7 +711,7 @@ impl Pace {
         };
         let verdict = match hold {
             _ if unread => Verdict::Unread,
-            Some(_) => Verdict::Held,
+            Some(h) => Verdict::Held(h),
             None if past => {
                 let to = (in_use * k.decrease).max(step);
                 st.window = st.window.min(to).max(step);
@@ -734,7 +741,6 @@ impl Pace {
             in_use: s.in_use,
             wants: s.wants,
             verdict,
-            hold,
             threshold,
             lone_until,
         });
@@ -755,7 +761,7 @@ impl Pace {
                 (Some(a), _, Some(x)) if x > self.tuning.slow => {
                     format!("answering {} in {:.0} ms, {:.1}× its best", a.mac, a.ms, x)
                 }
-                _ => match r.hold {
+                _ => match r.verdict.hold() {
                     Some(h) => format!("cut lately, not grown since: {}", h.words()),
                     None => "cut lately".to_string(),
                 },
@@ -1309,7 +1315,7 @@ mod tests {
         let mut p = Pace::default();
         assert_eq!(p.window(), STEP);
         // (Not what limits: nothing waits, and the weight in use is far under it.)
-        assert_eq!(at(&mut p, 0, 5.0, 0, None), Verdict::Held);
+        assert!(matches!(at(&mut p, 0, 5.0, 0, None), Verdict::Held(_)));
         let mut t = 0;
         for _ in 0..6 {
             t += 10;
@@ -1319,7 +1325,7 @@ mod tests {
         // (Jobs started: no growth until they've run a span, their answers in the reading.)
         for _ in 0..3 {
             t += 10;
-            assert_eq!(at(&mut p, t, 5.0, 700, Some(150)), Verdict::Held);
+            assert!(matches!(at(&mut p, t, 5.0, 700, Some(150)), Verdict::Held(_)));
         }
         for _ in 0..12 {
             t += 10;
@@ -1328,7 +1334,7 @@ mod tests {
         assert_eq!(p.window(), 4 * 2 * STEP, "slow start: doubling a minute");
         // (Between `NEAR` and `SLOW` of its floor: held.)
         t += 10;
-        assert_eq!(at(&mut p, t, 10.0, 700, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, t, 10.0, 700, Some(150)), Verdict::Held(_)));
         assert_eq!(p.window(), 400);
         // (Past the knee: half what's in use, at once; not again while the jobs out before it run.)
         t += 10;
@@ -1339,12 +1345,12 @@ mod tests {
             "NAS work paced to 40 % of the NAS, 80 % in use (the NAS answering m1 in 16 ms, 3.2× its best)"
         );
         t += 10;
-        assert_eq!(at(&mut p, t, 16.0, 700, Some(150)), Verdict::Held, "the jobs out before the cut");
+        assert!(matches!(at(&mut p, t, 16.0, 700, Some(150)), Verdict::Held(_)), "the jobs out before the cut");
         // (Fallen to the window: cut again once its answers had a span to show it.)
         t += 10;
-        assert_eq!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held(_)));
         t += 20;
-        assert_eq!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held(_)));
         t += 10;
         assert_eq!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Cut);
         assert_eq!(p.window(), 150, "the NAS still slow: half what's left");
@@ -1364,7 +1370,10 @@ mod tests {
         at(&mut q, 0, 5.0, 0, None);
         assert_eq!(at(&mut q, 10, 40.0, 400, None), Verdict::Cut);
         assert_eq!((q.window(), q.st.threshold), (STEP, Some(200.0)));
-        assert_eq!(at(&mut q, 20, 5.0, 400, None), Verdict::Held, "the jobs started at the cut not run a span yet");
+        assert!(
+            matches!(at(&mut q, 20, 5.0, 400, None), Verdict::Held(_)),
+            "the jobs started at the cut not run a span yet"
+        );
         for t in [40, 100, 160] {
             assert_eq!(at(&mut q, t, 5.0, 400, None), Verdict::Grew);
         }
@@ -1373,7 +1382,7 @@ mod tests {
         assert_eq!(q.window(), 250, "then a step a minute");
         // (A lead starting beside jobs already leased: from what they weigh.)
         let mut q = Pace::default();
-        assert_eq!(at(&mut q, 0, 5.0, 700, None), Verdict::Held);
+        assert!(matches!(at(&mut q, 0, 5.0, 700, None), Verdict::Held(_)));
         assert_eq!(q.window(), 700);
     }
 
@@ -1387,10 +1396,13 @@ mod tests {
             p.read(&Sample { t, answers: &[], blind: false, busy, pct: 85, in_use: 100, wants: Some(150) }, &k)
         };
         assert_eq!(disks(&mut p, 0, None), Verdict::Unread);
-        assert_eq!(disks(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Held, "within the target, but no answers: held");
-        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NoAnswer));
+        assert!(
+            matches!(disks(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Held(_)),
+            "within the target, but no answers: held"
+        );
+        assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NoAnswer));
         assert_eq!(p.load, Some(60.0));
-        assert_eq!(disks(&mut p, 40, Some(&[95.0])), Verdict::Held, "smoothed: one busy reading isn't over");
+        assert!(matches!(disks(&mut p, 40, Some(&[95.0])), Verdict::Held(_)), "smoothed: one busy reading isn't over");
         let cut = (5..10).map(|k| disks(&mut p, k * 10, Some(&[95.0]))).filter(|v| *v == Verdict::Cut).count();
         assert_eq!(cut, 1, "cut once: its jobs out before the cut still run");
         assert_eq!(p.window(), 50, "half the 100 in use");
@@ -1440,8 +1452,8 @@ mod tests {
         // (A stale answer, or a Mac holding jobs and giving none: held, never grown.)
         let mut q = Pace::default();
         let stale = Answer { fresh: false, ..ans("m6", 40.0, 40.0) };
-        assert_eq!(read(&mut q, 0, &[ans("m1", 5.0, 5.0), stale.clone()], 0, Some(150)), Verdict::Held);
-        assert_eq!(read(&mut q, 30, &[ans("m1", 5.0, 5.0), stale], 0, Some(150)), Verdict::Held);
+        assert!(matches!(read(&mut q, 0, &[ans("m1", 5.0, 5.0), stale.clone()], 0, Some(150)), Verdict::Held(_)));
+        assert!(matches!(read(&mut q, 30, &[ans("m1", 5.0, 5.0), stale], 0, Some(150)), Verdict::Held(_)));
         let s = Sample {
             t: 40,
             answers: &[ans("m1", 5.0, 5.0)],
@@ -1451,8 +1463,8 @@ mod tests {
             in_use: 0,
             wants: Some(150),
         };
-        assert_eq!(q.read(&s, &Tuning::default()), Verdict::Held);
-        assert_eq!(q.last.as_ref().unwrap().hold, Some(Hold::NotFresh));
+        assert!(matches!(q.read(&s, &Tuning::default()), Verdict::Held(_)));
+        assert_eq!(q.last.as_ref().unwrap().verdict.hold(), Some(Hold::NotFresh));
         // (Stale, but past the knee: cut all the same.)
         let s = Sample { t: 50, answers: &[Answer { fresh: false, ..ans("m1", 50.0, 5.0) }], ..s };
         assert_eq!(q.read(&s, &Tuning::default()), Verdict::Cut);
@@ -1481,7 +1493,7 @@ mod tests {
         );
         let mut q = Pace::default();
         assert!(q.restore(&kept, 20 + RESTORE_S - 1, RESTORE_S));
-        assert_eq!(at(&mut q, 20 + RESTORE_S - 1, 40.0, 800, None), Verdict::Held, "its hold-off kept");
+        assert!(matches!(at(&mut q, 20 + RESTORE_S - 1, 40.0, 800, None), Verdict::Held(_)), "its hold-off kept");
         assert_eq!(q.window(), 400, "not lifted to the 800 out");
         let mut q = Pace::default();
         assert!(!q.restore(&kept, 20 + RESTORE_S, RESTORE_S));
@@ -1562,31 +1574,31 @@ mod tests {
     /// way's hold.
     #[test]
     fn a_reading_says_why_it_held() {
-        let hold = |p: &Pace| p.last.as_ref().unwrap().hold;
+        let hold = |p: &Pace| p.last.as_ref().unwrap().verdict.hold();
         let mut p = Pace::default();
         assert_eq!(read(&mut p, 0, &[], 0, Some(150)), Verdict::Unread);
         assert_eq!(hold(&p), None);
-        assert_eq!(at(&mut p, 10, 5.0, 0, None), Verdict::Held);
+        assert!(matches!(at(&mut p, 10, 5.0, 0, None), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::NotLimiting), "nothing waits, nothing in use");
         assert_eq!(at(&mut p, 20, 5.0, 0, Some(150)), Verdict::Grew);
         assert_eq!(hold(&p), None);
-        assert_eq!(at(&mut p, 30, 5.0, 100, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, 30, 5.0, 100, Some(150)), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::Started), "a job just started");
-        assert_eq!(at(&mut p, 70, 10.0, 100, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, 70, 10.0, 100, Some(150)), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::NotNear));
         let stale = Answer { fresh: false, ..ans("m1", 5.0, 5.0) };
-        assert_eq!(read(&mut p, 80, &[stale], 100, Some(150)), Verdict::Held);
+        assert!(matches!(read(&mut p, 80, &[stale], 100, Some(150)), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::NotFresh));
         assert_eq!(at(&mut p, 90, 40.0, 400, Some(150)), Verdict::Cut);
         assert_eq!(hold(&p), None);
-        assert_eq!(at(&mut p, 100, 40.0, 400, Some(150)), Verdict::Held);
+        assert!(matches!(at(&mut p, 100, 40.0, 400, Some(150)), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::HoldOff), "the jobs out before the cut still run");
         let r = p.last.clone().unwrap();
         assert_eq!((r.threshold, r.wants), (Some(200), Some(150)));
         assert_eq!(r.lone_until, Some(90 + LONE_S), "past the knee: a lone job held back");
         assert_eq!(
             r.line(p.window(), 160),
-            "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the next job waiting needs 15 %; last reading 60 s \
+            "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the next job held back for it needs 15 %; last reading 60 s \
              ago, answers 8.0× their best: held: past the knee, within the last cut's hold-off; a job beside \
              nothing held back 9 min more"
         );
@@ -1613,8 +1625,8 @@ mod tests {
         // (Idle, the disks quiet, a 300 job waiting: held for want of answers.)
         let mut p = Pace::default();
         for t in (0..600).step_by(10) {
-            assert_eq!(disks_only(&mut p, t, 0), Verdict::Held);
-            assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NoAnswer));
+            assert!(matches!(disks_only(&mut p, t, 0), Verdict::Held(_)));
+            assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NoAnswer));
         }
         assert_eq!(p.window(), STEP);
         // (Answers near the best, nothing in use: doubling to that one job, no further.)
@@ -1623,7 +1635,7 @@ mod tests {
             assert!(p.window() <= 300);
         }
         assert_eq!(p.window(), 300);
-        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NotLimiting));
+        assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NotLimiting));
         // (Cut at 400 in use: at the threshold, a step a minute to one job past the weight in use,
         // never past it.)
         at(&mut p, 1200, 5.0, 400, Some(300));
@@ -1634,13 +1646,12 @@ mod tests {
             assert!(p.window() <= 700);
         }
         assert_eq!(p.window(), 700, "400 in use and the 300 waiting");
-        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NotLimiting));
+        assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NotLimiting));
     }
 
     /// The re-review's probe: cut at 300 in use (window and threshold 150), one 150 job running
     /// and another waiting, the NAS near its best for two hours. Past the threshold the window
-    /// grows a step a minute to one job past the weight in use, so the second goes; a ceiling of a
-    /// step past it held it at 200 for good, the pool one heavy job at a time after any cut.
+    /// grows a step a minute to one job past the weight in use, so the second goes.
     #[test]
     fn past_a_cut_the_window_grows_back_to_take_one_more_job() {
         let mut p = Pace::default();
