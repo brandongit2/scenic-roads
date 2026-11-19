@@ -447,7 +447,6 @@ fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget:
     })
 }
 
-
 /// What run `c` of `step` moved on the NAS (`model::Moves`), as `nas_rate` counts it, its totals: a
 /// `HALO_STEPS` step's reads its job's (`nas_read`), shared among the `shared` targets of its job
 /// in the book. None where it doesn't say its `bytes`.
@@ -644,7 +643,8 @@ impl<'a> Book<'a> {
         let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max();
         let older_obs = way.map(|w| self.obs(step, w)).unwrap_or_default();
         let older = way.and_then(|w| {
-            let peaks = self.costs.iter().filter(|(k, c)| of(k, c) && c.v == w && c.peak_mb > 0).map(|(_, c)| c.peak_mb);
+            let peaks =
+                self.costs.iter().filter(|(k, c)| of(k, c) && c.v == w && c.peak_mb > 0).map(|(_, c)| c.peak_mb);
             let peaks = model::sorted(peaks.map(|p| p as f64).collect());
             model::pct(&peaks, self.tuning.high_pct).map(|p| (w, p.ceil() as u64))
         });
@@ -923,7 +923,14 @@ impl<'a> Book<'a> {
         }
         // (Worked out unlocked: the model takes its own lock.)
         let r = self.nas_made(step, target, None);
-        cache.rates.lock().unwrap_or_else(|e| e.into_inner()).1.entry(step.to_string()).or_default().insert(target.to_string(), r);
+        cache
+            .rates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1
+            .entry(step.to_string())
+            .or_default()
+            .insert(target.to_string(), r);
         r
     }
 
@@ -1325,7 +1332,8 @@ mod tests {
         disks.insert(cost_key("depth", "6/16/20"), 67_890);
         disks.insert(cost_key("depth", "6/1/0"), 100);
         disks.insert(cost_key("peaks", "6/1/1"), 67_890);
-        let costs: BTreeMap<String, Cost> = disks.keys().map(|k| (k.clone(), Cost { v: cost_version(step_of_key(k)), ..cost(100, 10, &[]) })).collect();
+        let costs: BTreeMap<String, Cost> =
+            disks.keys().map(|k| (k.clone(), Cost { v: cost_version(step_of_key(k)), ..cost(100, 10, &[]) })).collect();
         let b = Book::with(crate::agent::seam::for_tests(), &costs, None, Some(&disks));
         assert_eq!(b.disk("depth", "6/16/20", 0), Some(300), "the fill reserved apart, once per Mac");
         assert_eq!(b.disk("depth", "6/1/0", 0), Some(100), "its own when under the step's");
@@ -1683,7 +1691,8 @@ mod tests {
         let dir = std::path::Path::new(&dir);
         let (all, _) = read_costs(&dir.join("costs.json")).unwrap();
         let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
-        let events: Vec<crate::coord::history::Event> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let events: Vec<crate::coord::history::Event> =
+            text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
         let log = std::fs::read_to_string(dir.join("timings.jsonl")).unwrap();
         let recs: Vec<(f64, &str)> = log
             .lines()

@@ -1151,7 +1151,9 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
             let (now, default) = ((k.get)(now), (k.get)(&Default::default()));
             match s.values.get(k.name).filter(|v| !v.value.is_null()) {
                 Some(v) => println!("{}: {now} {} ({}; set {} by {})", k.name, k.unit, k.what, ago(v.at), v.by),
-                None => println!("{}: {default} {}, the default ({}; {} to {})", k.name, k.unit, k.what, k.least, k.most),
+                None => {
+                    println!("{}: {default} {}, the default ({}; {} to {})", k.name, k.unit, k.what, k.least, k.most)
+                }
             }
         }
     }

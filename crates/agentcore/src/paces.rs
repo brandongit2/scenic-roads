@@ -64,7 +64,8 @@ impl Paces {
     /// cores alone, by those). A Mac not measured, or a lead not measured, at the lead's.
     pub fn of(speeds: &jobrt::timings::Speeds, lead: &str) -> Paces {
         let lead = mac_of(lead);
-        let speed = |m: &jobrt::timings::MacSpeed| m.p.as_ref().or(m.e.as_ref()).map(|k| k.ginsn_s).filter(|&s| s > 0.0);
+        let speed =
+            |m: &jobrt::timings::MacSpeed| m.p.as_ref().or(m.e.as_ref()).map(|k| k.ginsn_s).filter(|&s| s > 0.0);
         let at = speeds.macs.get(lead).and_then(speed);
         let mut out = Paces { lead: lead.to_string(), lead_ginsn_s: at.unwrap_or(0.0), ..Default::default() };
         if let Some(l) = at {

@@ -2409,8 +2409,9 @@ impl Planner {
         // else its step's fit or largest, else `peak`'s first guess.)
         let book = crate::needs::Book::new(self.o.the_plan, &costs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
-        let cost =
-            |step: &str, t: &str| forecast::target_cost(&book, step, t, &|c, _| at_lead(c), &partial, &per, need_mb(step, t));
+        let cost = |step: &str, t: &str| {
+            forecast::target_cost(&book, step, t, &|c, _| at_lead(c), &partial, &per, need_mb(step, t))
+        };
         // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
         // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
         let drop_cost = |step: &str, t: &str| -> Cost {

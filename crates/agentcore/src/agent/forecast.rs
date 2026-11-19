@@ -563,11 +563,7 @@ pub fn busy_s(eta: f64, left: f64) -> f64 {
 /// lead's (crate::paces: a Mac not measured the lead's; a cost of no worker as it is);
 /// with no paces worked out (no coordinator, a record before code 4), times its worker's `speed`
 /// (the forecast's, against the lead's: `speeds`).
-pub fn at_lead(
-    c: &crate::coord::Cost,
-    paces: &crate::paces::Paces,
-    speed: &dyn Fn(Option<&str>) -> f64,
-) -> f64 {
+pub fn at_lead(c: &crate::coord::Cost, paces: &crate::paces::Paces, speed: &dyn Fn(Option<&str>) -> f64) -> f64 {
     if !paces.known() {
         return c.secs as f64 * speed(c.worker.as_deref());
     }

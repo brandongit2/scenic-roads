@@ -4994,7 +4994,8 @@ fn route(
                 }
             }
             // (The knobs, by their names with `_`: `nas_step`, `needs_work_pct`, …)
-            let names = jobrt::budget::nas::KNOBS.iter().map(|k| k.name).chain(jobrt::needs::KNOBS.iter().map(|k| k.name));
+            let names =
+                jobrt::budget::nas::KNOBS.iter().map(|k| k.name).chain(jobrt::needs::KNOBS.iter().map(|k| k.name));
             for name in names {
                 if let Some(v) = said(&name.replace('-', "_"))? {
                     settings::set_knob(&home, name, &v, &by)?;
@@ -9327,11 +9328,8 @@ mod tests {
     #[test]
     fn a_slow_mac_gets_smaller_batches() {
         let (_d, c, o) = sized_offer(&[(0..200, 100)], &[("m1", 0..20, 60), ("m2 #2", 20..40, 20)], 40..200);
-        let paces = crate::paces::Paces {
-            lead: "m2".into(),
-            macs: [("m1".to_string(), 3.0)].into(),
-            ..Default::default()
-        };
+        let paces =
+            crate::paces::Paces { lead: "m2".into(), macs: [("m1".to_string(), 3.0)].into(), ..Default::default() };
         c.shared.lock().unwrap().sched.set_paces(paces);
         let n = |w: &str| {
             let s = c.shared.lock().unwrap();

@@ -302,7 +302,7 @@ impl PerUnit {
             .collect();
         time.sort_by(|a, b| a.0.total_cmp(&b.0));
         // (The spread of its work per unit, or its wall time's where it doesn't say its CPU.)
-        let logs: Vec<f64> = time.iter().filter_map(|s| s.1.or(s.3).filter(|&w| w > 0.0).map(f64::ln)).collect();
+        let logs: Vec<f64> = time.iter().filter_map(|s| s.1.or(s.3).filter(|&w| w > 0.0).map(det::Det::dln)).collect();
         let spread = if logs.len() < 2 {
             f64::INFINITY
         } else {
@@ -311,7 +311,9 @@ impl PerUnit {
         };
         let nas_of: Vec<(Moves, f64)> = have.iter().filter_map(|(o, u)| Some((o.nas?, *u))).collect();
         let nas = (!nas_of.is_empty()).then(|| {
-            let p = |f: fn(&Moves) -> f64| pct(&sorted(nas_of.iter().map(|(m, u)| f(m) / u).collect()), t.nas_pct).unwrap_or(0.0);
+            let p = |f: fn(&Moves) -> f64| {
+                pct(&sorted(nas_of.iter().map(|(m, u)| f(m) / u).collect()), t.nas_pct).unwrap_or(0.0)
+            };
             Moves {
                 bytes: p(|m| m.bytes),
                 creates: p(|m| m.creates),
@@ -369,7 +371,8 @@ impl PerUnit {
     pub fn mem(&self, u: f64, threads: u32) -> Option<u64> {
         let big = about(&self.mem, u, |m| m.0);
         let wide: Vec<&(f64, u32, u64)> = big.iter().filter(|m| m.1 >= threads).collect();
-        let these: Vec<&(f64, u32, u64)> = if threads > 0 && wide.len() >= MIN_RUNS { wide } else { big.iter().collect() };
+        let these: Vec<&(f64, u32, u64)> =
+            if threads > 0 && wide.len() >= MIN_RUNS { wide } else { big.iter().collect() };
         let peaks = sorted(these.iter().map(|m| m.2 as f64).collect());
         let p = pct(&peaks, self.high_pct)?;
         let most = these.iter().map(|m| m.1).max().unwrap_or(0);
