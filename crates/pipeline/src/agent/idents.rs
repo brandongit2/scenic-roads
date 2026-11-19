@@ -216,10 +216,44 @@ pub fn extract(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [format!("sources/osm/{}/pieces/{}", x.date, u.dash())])
 }
 
-/// The coverage a candidates' z6 tile clips to: its rings over the tile and 10 km around it.
+/// What target `t` of step `step` asked of the coverage, as the coverage answers it now
+/// (buildstore::asked::target_line): `geo`, what its key reads of the coverage by geometry, while
+/// it has no record (its line before it asked); its record's line while `geo` reads as its run's
+/// did (the record's head, `TerrainTiles::asked_head`) or the coverage answers what it asked the
+/// same (`reask` its questions asked whole), the record read and asked again once a `geo` and
+/// record (`TerrainTiles::memo`); else a new line. None while the record can't be read now.
+fn target_asked(
+    step: &str,
+    t: &str,
+    geo: String,
+    x: &KeyCtx,
+    reask: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let Some(c) = x.m.get(&buildstore::asked::target_logical(step, t)) else { return Some(geo) };
+    let (version, line) = x.tiles.asked_head(c)?;
+    if version == geo {
+        return Some(line);
+    }
+    x.tiles
+        .memo(&format!("coverage:asked {step} {t}"), &format!("{c} {geo}"), || {
+            let r = x.tiles.target_asked(c)?;
+            buildstore::asked::target_line(x.cov, &geo, Some((c, &r)), reask)
+                .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
+        })
+        .ok()
+}
+
+/// What a candidates' z6 tile's key reads of the coverage by geometry: its rings over the tile and
+/// 10 km around it (`Coverage::fingerprint`).
+pub fn clip_geo(cov: &buildstore::coverage::Coverage, u: TileId) -> String {
+    cov.fingerprint(roadcore::geo::grown_e7(u.z, u.x, u.y, 10.0))
+}
+
+/// The coverage a candidates' z6 tile clips to: what its candidates asked of it (`target_asked`,
+/// its `clip_geo` the cheap test).
 pub fn coverage_clip(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(vec![x.cov.fingerprint(roadcore::geo::grown_e7(u.z, u.x, u.y, 10.0))])
+    Some(vec![target_asked("pois", t, clip_geo(x.cov, u), x, &|_| None)?])
 }
 
 /// The pass's hiking-route ends (the trailends step's), when made.
@@ -420,13 +454,14 @@ pub fn roads(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(named(x, [format!("sources/osm/{}/roads/{}", x.date, u.dash())]))
 }
 
-/// What a z6 tile's roads read of the reach and the coverage: the coverage as its ways meet it
-/// (`Reach::coverage_key`), the location rules over its extent (inputs::rules), which of the cells
-/// its ways start in a fine dataset covers (`Fine::key`).
+/// What a z6 tile's roads read of the reach and the coverage: the coverage as its ways asked it
+/// (`target_asked`, the cheap test `Reach::coverage_key`: the coverage over its tile and around it,
+/// and which of its long ways touch it), the location rules over its extent (inputs::rules), which
+/// of the cells its ways start in a fine dataset covers (`Fine::key`).
 pub fn ways(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let (u, r, fine) = unit_of(t, x)?;
     Some(vec![
-        format!("coverage {}", r.coverage_key(x.cov, u, &*fine)),
+        format!("coverage {}", target_asked("unit", t, r.coverage_key(x.cov, u, &*fine), x, &|_| None)?),
         format!("rules {}", inputs::rules::versions_meeting(r.extent(u))),
         format!("spacing {}", fine.key(&r.cells)),
     ])
@@ -608,10 +643,27 @@ pub fn trees_mids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     )
 }
 
-/// The coverage inside a tree cover z6 tile (`Coverage::fingerprint` over it).
+/// What a tree cover z6 tile's key reads of the coverage by geometry: its rings inside the tile
+/// (`Coverage::fingerprint`).
+pub fn inside_geo(cov: &buildstore::coverage::Coverage, u: TileId) -> String {
+    cov.fingerprint(codecs::hipack::tile_bounds(u.z, u.x, u.y))
+}
+
+/// A tree cover z6 tile's one question of the coverage asked whole
+/// (buildstore::asked::Record::also), answered by `mask_answer`.
+pub const MASK_QUESTION: &str = "mask";
+
+/// The answer to a tree cover z6 tile's `MASK_QUESTION`: its pixels inside the coverage, as the
+/// trees program burns them (trees::treepacks::mask_digest).
+pub fn mask_answer(cov: &buildstore::coverage::Coverage, u: TileId, q: &str) -> Option<String> {
+    (q == MASK_QUESTION).then(|| trees::treepacks::mask_digest(cov, u))
+}
+
+/// The coverage inside a tree cover z6 tile: its mask (`target_asked`, its `inside_geo` the cheap
+/// test).
 pub fn coverage_inside(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(vec![x.cov.fingerprint(codecs::hipack::tile_bounds(u.z, u.x, u.y))])
+    Some(vec![target_asked("trees", t, inside_geo(x.cov, u), x, &|q| mask_answer(x.cov, u, q))?])
 }
 
 /// The canopy and leaf-type declarations a tree cover z6 tile reads where they aren't as staged
@@ -816,11 +868,18 @@ pub fn bld_prepared(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     ))
 }
 
-/// The coverage's shapes over a 3D buildings z6 tile grown by 1 km, with their countries
-/// (`Coverage::shapes_key`, as `build::bld_tiles` keeps them); None for a tile not meeting it.
+/// What a 3D buildings z6 tile's key reads of the coverage by geometry: its shapes over the tile
+/// grown by 1 km, with their countries (`Coverage::shapes_key`).
+pub fn shapes_geo(cov: &buildstore::coverage::Coverage, u: TileId) -> String {
+    cov.shapes_key(codecs::hipack::grow(codecs::hipack::tile_bounds(6, u.x, u.y), 1.0))
+}
+
+/// What a 3D buildings z6 tile's buildings asked of the coverage (`target_asked`, its `shapes_geo`
+/// the cheap test, as `build::bld_tiles` keeps it); None for a tile not meeting it.
 pub fn coverage_shapes(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    super::build::bld_tiles(x.cov).iter().find(|(a, b, _)| (*a, *b) == (u.x, u.y))?.2.clone().map(|s| vec![s])
+    let geo = super::build::bld_tiles(x.cov).iter().find(|(a, b, _)| (*a, *b) == (u.x, u.y))?.2.clone()?;
+    Some(vec![target_asked("bldtiles", t, geo, x, &|_| None)?])
 }
 
 /// The newest pass's heritage slices of a 3D buildings z6 tile: its sites and its World Heritage

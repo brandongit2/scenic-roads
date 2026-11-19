@@ -98,6 +98,7 @@ fn timetables_todo_reruns_only_where_a_region_change_changes_an_answer() {
         let asked = buildstore::asked::Run::start(&out, "timetables-todo", cov, &|_| None).unwrap();
         let r = run(&mut out, asked.asking(), &root).unwrap();
         asked.put(&mut out, Vec::new()).unwrap();
+        out.save().unwrap();
         r.ferry
     };
     let first = plan(&reykjavik);

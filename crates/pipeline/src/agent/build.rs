@@ -3238,7 +3238,7 @@ fn pack_lo_targets(
 
 /// What the coverage no longer builds (`units`: the z6 tiles it does): the outputs of z6 tiles it doesn't
 /// (their base pack, road values and English), and the candidates and peaks of z6 tiles out of the
-/// candidates' set, as prune targets ("unit 6/x/y", "pois 6/x/y"). Catalogues then stop listing them
+/// candidates' set, and what either asked of the coverage, as prune targets ("unit 6/x/y", "pois 6/x/y"). Catalogues then stop listing them
 /// and GC frees them.
 fn prune_units(
     cov: &Coverage,
@@ -3257,6 +3257,8 @@ fn prune_units(
             (buildstore::out::ROAD_IDS, &built, "unit"),
             ("work/pois/", &cands, "pois"),
             ("work/peaks/", &cands, "pois"),
+            ("work/asked/unit/", &built, "unit"),
+            ("work/asked/pois/", &cands, "pois"),
         ] {
             if let Some(u) = l.strip_prefix(prefix).and_then(TileId::parse) {
                 if !set.contains(&u.dash()) {
@@ -3710,7 +3712,7 @@ pub fn bld_targets(x: &KeyCtx) -> BldTargets {
 }
 
 /// The z6 tiles within 1 km of the coverage, each with, when it meets the coverage itself, the
-/// coverage's shapes over it grown by 1 km (`Coverage::shapes_key`): what `bld_targets` reads of
+/// coverage's shapes over it grown by 1 km (`idents::shapes_geo`): what `bld_targets` reads of
 /// the coverage. Kept for the coverage last asked about (the plan, the checklist and the forecast
 /// each ask, several times a loop; the shapes' fingerprints over 380 tiles are seconds of work).
 type BldTiles = std::sync::Arc<Vec<(u32, u32, Option<String>)>>;
@@ -3737,7 +3739,7 @@ pub(crate) fn bld_tiles(cov: &Coverage) -> BldTiles {
             let b = codecs::hipack::tile_bounds(6, x, y);
             let near = codecs::hipack::grow(b, 1.0);
             if cov.meets_rect(near) {
-                v.push((x, y, cov.meets_rect(b).then(|| cov.shapes_key(near))));
+                v.push((x, y, cov.meets_rect(b).then(|| super::idents::shapes_geo(cov, TileId { z: 6, x, y }))));
             }
         }
     }
@@ -3758,7 +3760,7 @@ pub(crate) fn bld_around(x: u32, y: u32) -> Vec<(Option<u32>, Option<u32>)> {
 }
 
 /// The normalized files and tiles no target has any more (the coverage shrank): prune targets
-/// ("bldprep 6/x/y", "bldtiles 6/x/y": its packs and the field's mid, "bldfield-lo 3/x/y"). The
+/// ("bldprep 6/x/y", "bldtiles 6/x/y": its packs, the field's mid and what it asked of the coverage, "bldfield-lo 3/x/y"). The
 /// files only while the sources read (an index missing would make every tile seem to read nothing).
 fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Option<Work> {
     let prep: BTreeSet<String> = tt.prep.iter().map(|t| t.0.replace('/', "-")).collect();
@@ -3774,6 +3776,7 @@ fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Op
         (pack.as_str(), &tiles, "bldtiles"),
         (fpack.as_str(), &tiles, "bldtiles"),
         ("work/bldfield-mid/", &tiles, "bldtiles"),
+        ("work/asked/bldtiles/", &tiles, "bldtiles"),
         (flo.as_str(), &lo, "bldfield-lo"),
     ]) {
         if kind == "bldprep" && !sources {
@@ -4812,6 +4815,153 @@ mod tests {
     use buildstore::recipes::Recipe;
     use roads::reach::{LongWay, Reach};
     use terrain::depth::build::depth_hi_box_read;
+
+    /// Task #1473: the z6 tiles' steps keyed on what each asked of the coverage (pois, trees,
+    /// bldtiles here; unit's in `a_units_coverage_line_moves_only_with_an_answer`). With no record,
+    /// a target's coverage line is its geometry's, the line it had before: no key moves until its
+    /// own run records what it asked, so no target is re-keyed or run again by the change. With its
+    /// run's record, a redraw that answers nothing differently keeps its key; one that flips an
+    /// answer moves it.
+    #[test]
+    fn a_z6_tiles_coverage_line_moves_only_with_an_answer() {
+        use crate::agent::idents;
+        use buildstore::asked::{target_line, target_logical, Record};
+        use buildstore::coverage::Asking;
+        let d = tempfile::tempdir().unwrap();
+        let cov_of = |places: &[&str]| {
+            let recipes: Vec<Recipe> = places
+                .iter()
+                .enumerate()
+                .map(|(i, p)| Recipe {
+                    id: format!("r{i}"),
+                    name: format!("R{i}"),
+                    outline: vec![format!("place:{p}")],
+                })
+                .collect();
+            Coverage::fixture(&recipes, None, d.path()).unwrap()
+        };
+        let reykjavik = cov_of(&["-21.9,64.13,20"]);
+        // Its outline a little wider with a region inside it (its pixels moved, no point asked
+        // answered differently); with a region inside it alone (the same pixels too); grown past
+        // a point asked 25 km east.
+        let redrawn = cov_of(&["-21.9,64.13,20.5", "-21.9,64.13,5"]);
+        let inner = cov_of(&["-21.9,64.13,20", "-21.9,64.13,5"]);
+        let grown = cov_of(&["-21.9,64.13,30"]);
+        let (middle, east) = ([-219_000_000, 641_300_000], [-213_860_000, 641_300_000]);
+        let u = TileId { z: 6, x: 28, y: 17 };
+        let t = u.slash();
+        let inputs = BTreeMap::new();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut tiles = TerrainTiles::default();
+        {
+            let x = KeyCtx::new(&reykjavik, "d", &m, &inputs, None, &tiles);
+            assert_eq!(idents::coverage_clip(&t, &x).unwrap(), [idents::clip_geo(&reykjavik, u)]);
+            assert_eq!(idents::coverage_inside(&t, &x).unwrap(), [idents::inside_geo(&reykjavik, u)]);
+            assert_eq!(idents::coverage_shapes(&t, &x).unwrap(), [idents::shapes_geo(&reykjavik, u)]);
+        }
+        // Each step's run: its questions asked of Reykjavik under the line it has no record for.
+        let none = |_: &str| None;
+        let mask = |c: &Coverage, q: &str| idents::mask_answer(c, u, q);
+        let geos: [(&str, fn(&Coverage, TileId) -> String); 3] =
+            [("pois", idents::clip_geo), ("trees", idents::inside_geo), ("bldtiles", idents::shapes_geo)];
+        let mut lines = BTreeMap::new();
+        for (k, (step, geo)) in geos.into_iter().enumerate() {
+            let g = geo(&reykjavik, u);
+            let line = target_line(&reykjavik, &g, None, &none).unwrap();
+            let a = Asking::new(&reykjavik);
+            let mut also = Vec::new();
+            match step {
+                "pois" => {
+                    assert!(a.contains(middle) && !a.contains(east));
+                }
+                "trees" => {
+                    also.push((idents::MASK_QUESTION.to_string(), mask(&reykjavik, idents::MASK_QUESTION).unwrap()))
+                }
+                _ => {
+                    assert!(a.country_at(middle).is_some() && a.country_at(east).is_none());
+                }
+            }
+            let rec = Record::read_as(&reykjavik, g, a.asked(), also, line.clone());
+            let content =
+                format!("{}.{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}{k}.json.zst", target_logical(step, &t));
+            m.insert(target_logical(step, &t), content.clone());
+            tiles.hold_asked(&content, rec);
+            lines.insert(step, line);
+        }
+        let now = |step: &str, c: &Coverage| {
+            let x = KeyCtx::new(c, "d", &m, &inputs, None, &tiles);
+            match step {
+                "pois" => idents::coverage_clip(&t, &x),
+                "trees" => idents::coverage_inside(&t, &x),
+                _ => idents::coverage_shapes(&t, &x),
+            }
+        };
+        for (step, line) in &lines {
+            assert_eq!(now(step, &reykjavik).unwrap(), [line.clone()], "{step}");
+            assert_ne!(now(step, &grown).unwrap(), [line.clone()], "{step}");
+        }
+        for c in [&redrawn, &inner] {
+            assert_ne!(idents::clip_geo(c, u), idents::clip_geo(&reykjavik, u));
+            assert_eq!(now("pois", c).unwrap(), [lines["pois"].clone()]);
+            assert_eq!(now("bldtiles", c).unwrap(), [lines["bldtiles"].clone()]);
+        }
+        // The trees' mask: the same pixels through a region inside, not through one a little wider.
+        assert_eq!(now("trees", &inner).unwrap(), [lines["trees"].clone()]);
+        assert_ne!(now("trees", &redrawn).unwrap(), [lines["trees"].clone()]);
+    }
+
+    /// Task #1473, a z6 tile's roads (`unit`): its coverage line is `Reach::coverage_key`'s with no
+    /// record, as before; with its run's record (its ways' points asked, `Asking::touches`), it
+    /// moves only once a way's answer does.
+    #[test]
+    fn a_units_coverage_line_moves_only_with_an_answer() {
+        use crate::agent::idents;
+        use buildstore::asked::{target_line, target_logical, Record};
+        use buildstore::coverage::Asking;
+        let d = tempfile::tempdir().unwrap();
+        let cov_of = |places: &[&str]| {
+            let recipes: Vec<Recipe> = places
+                .iter()
+                .enumerate()
+                .map(|(i, p)| Recipe {
+                    id: format!("r{i}"),
+                    name: format!("R{i}"),
+                    outline: vec![format!("place:{p}")],
+                })
+                .collect();
+            Coverage::fixture(&recipes, None, d.path()).unwrap()
+        };
+        let reykjavik = cov_of(&["-21.9,64.13,20"]);
+        let redrawn = cov_of(&["-21.9,64.13,20.5", "-21.9,64.13,5"]);
+        let grown = cov_of(&["-21.9,64.13,30"]);
+        let (middle, east, further) =
+            ([-219_000_000, 641_300_000], [-213_860_000, 641_300_000], [-213_000_000, 641_400_000]);
+        let reach = reach();
+        let u = TileId { z: 6, x: 28, y: 16 };
+        let t = u.slash();
+        let r = reach.get(u).unwrap();
+        let fine = inputs::dem::spacing::Fine::default();
+        let inputs = BTreeMap::new();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut tiles = TerrainTiles::default();
+        let line = |c: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles| {
+            idents::ways(&t, &KeyCtx::new(c, "d", m, &inputs, Some(&reach), tiles)).unwrap()[0].clone()
+        };
+        let geo = r.coverage_key(&reykjavik, u, &fine);
+        assert_eq!(line(&reykjavik, &m, &tiles), format!("coverage {geo}"));
+        // Its run: a way from the middle out east (in), one further east (out).
+        let l = target_line(&reykjavik, &geo, None, &|_| None).unwrap();
+        let a = Asking::new(&reykjavik);
+        assert!(a.touches(&[east, middle]) && !a.touches(&[east, further]));
+        let content = format!("{}.7777777777777777.json.zst", target_logical("unit", &t));
+        m.insert(target_logical("unit", &t), content.clone());
+        tiles.hold_asked(&content, Record::read_as(&reykjavik, geo, a.asked(), Vec::new(), l.clone()));
+        let ran = format!("coverage {l}");
+        assert_eq!(line(&reykjavik, &m, &tiles), ran);
+        assert_ne!(r.coverage_key(&redrawn, u, &fine), r.coverage_key(&reykjavik, u, &fine));
+        assert_eq!(line(&redrawn, &m, &tiles), ran);
+        assert_ne!(line(&grown, &m, &tiles), ran);
+    }
 
     /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:
     /// its lines' points) keeps its key through a region change far from every point it asked, and

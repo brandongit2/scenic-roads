@@ -86,9 +86,15 @@ pub struct TerrainTiles {
     /// The terrain-deep targets and their levels' digests worked out so far (`deep`,
     /// terrain::terrain_deep::Kept). Shared by the copies, as `memo` is.
     deep: std::sync::Arc<terrain::terrain_deep::Kept>,
-    /// What the steps keyed on what they asked of the coverage last asked (buildstore::asked: the
-    /// records `m` names under `work/asked/`), by content name (None: it can't be read now).
+    /// What the world steps keyed on what they asked of the coverage last asked (buildstore::asked:
+    /// the records `m` names, `asked::logical`), by content name (None: it can't be read now).
     asked: HashMap<String, Option<std::sync::Arc<buildstore::asked::Record>>>,
+    /// Of what each target keyed so last asked (`asked::target_logical`), by content name: what it
+    /// read of the coverage by geometry and the line it ran under (`Record::version`, `line`), all
+    /// a key reads of it while that geometry reads the same; the record itself is read again only
+    /// once it doesn't (`target_asked`). Read once each, several at a time (one that can't be read
+    /// now: tried again with the next load).
+    asked_heads: HashMap<String, (String, String)>,
     /// The root the last load read from: where `outlines` opens the outlines a record's question
     /// names, only when asked (never held open: a coverage of the version a record asked asks
     /// nothing again).
@@ -351,12 +357,37 @@ impl TerrainTiles {
     /// Holds the coverage records `m` names (buildstore::asked::logical), each read once by content
     /// name (one that can't be read now: tried again with the next load).
     fn load_asked(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
+        use rayon::prelude::*;
         self.root = Some(root.clone());
-        let want: BTreeSet<&String> = m
-            .range("work/asked/".to_string()..)
-            .take_while(|(l, _)| l.starts_with("work/asked/"))
-            .map(|(_, c)| c)
+        let all = || m.range("work/asked/".to_string()..).take_while(|(l, _)| l.starts_with("work/asked/"));
+        // (The targets' records: their heads.)
+        let heads: BTreeSet<&String> = all().filter(|(l, _)| !buildstore::asked::is_world(l)).map(|(_, c)| c).collect();
+        self.asked_heads.retain(|c, _| heads.contains(c));
+        let missing: Vec<&String> = heads.into_iter().filter(|c| !self.asked_heads.contains_key(*c)).collect();
+        let got: Vec<(&String, anyhow::Result<buildstore::asked::Record>)> = missing
+            .par_iter()
+            .map(|c| {
+                (
+                    *c,
+                    root.join(c)
+                        .read()
+                        .map_err(anyhow::Error::from)
+                        .and_then(|b| buildstore::asked::Record::from_bytes(&b)),
+                )
+            })
             .collect();
+        for (c, r) in got {
+            match r {
+                Ok(r) => {
+                    self.unread.remove(c);
+                    self.asked_heads.insert(c.clone(), (r.version, r.line));
+                }
+                Err(e) => {
+                    self.unread.insert(c.clone(), format!("{e:#}"));
+                }
+            }
+        }
+        let want: BTreeSet<&String> = all().filter(|(l, _)| buildstore::asked::is_world(l)).map(|(_, c)| c).collect();
         self.asked.retain(|c, r| want.contains(c) && r.is_some());
         for c in want {
             if self.asked.contains_key(c) {
@@ -381,6 +412,30 @@ impl TerrainTiles {
     /// The coverage record of content name `c` (buildstore::asked), None while it can't be read now.
     pub fn asked(&self, c: &str) -> Option<std::sync::Arc<buildstore::asked::Record>> {
         self.asked.get(c)?.clone()
+    }
+
+    /// What a target's record of content name `c` read of the coverage by geometry and the line it
+    /// ran under (`asked_heads`), None while it can't be read now.
+    pub fn asked_head(&self, c: &str) -> Option<(String, String)> {
+        match (self.asked_heads.get(c), self.asked.get(c)) {
+            (Some(h), _) => Some(h.clone()),
+            (None, Some(Some(r))) => Some((r.version.clone(), r.line.clone())),
+            _ => None,
+        }
+    }
+
+    /// A target's record of content name `c`, read now (one held, `hold_asked`: that).
+    pub fn target_asked(&self, c: &str) -> Result<std::sync::Arc<buildstore::asked::Record>, Unread> {
+        if let Some(Some(r)) = self.asked.get(c) {
+            return Ok(r.clone());
+        }
+        let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
+        root.join(c)
+            .read()
+            .map_err(anyhow::Error::from)
+            .and_then(|b| buildstore::asked::Record::from_bytes(&b))
+            .map(std::sync::Arc::new)
+            .map_err(|e| Unread(format!("{c}: {e:#}")))
     }
 
     /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`

@@ -1996,11 +1996,19 @@ pub fn outside_by(e: &agentcore::pool::journal::Entry, writes: &dyn Fn(&str, boo
 /// a z3 tile's lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
 /// z3 tile's whole run: a lease of the scheme before z6 tiles); a z6 tile's normalized buildings
 /// and their side file (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid
-/// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`). False for the other steps.
+/// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`); and what a z6 tile of a step keyed on
+/// what each target asked asked of the coverage (`ASKED_PER_TARGET`, buildstore::asked). False for
+/// the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = TileId::parse(target);
     let step = current(step);
+    if ASKED_PER_TARGET.contains(&step)
+        && tile.is_some_and(|t| t.z == 6)
+        && l == buildstore::asked::target_logical(step, target)
+    {
+        return true;
+    }
     match step {
         "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
@@ -2394,24 +2402,27 @@ fn w_polar_root(l: &str, _: bool) -> bool {
     polar_pack(l, "terrain", "root") || polar_pack(l, "slope", "root")
 }
 
-/// The tree layers' hi packs and a z6 tile's mid (a z6 tile); a z3 tile's whole run their lo packs
-/// too.
+/// The tree layers' hi packs, a z6 tile's mid and what it asked of the coverage (a z6 tile); a
+/// z3 tile's whole run their lo packs too.
 fn w_trees(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| trees::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
         || matches!(parts(l).as_slice(), ["work", "trees-mid", t] if tile(t, 6))
+        || asked_of(l, "trees")
 }
 
 fn w_trees_lo(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| trees::treepacks::LAYERS.contains(&ly), &["lo"])
 }
 
-/// A z6 tile's files (roads::unit::saved_files), of a z6 tile.
+/// A z6 tile's files (roads::unit::saved_files) and what it asked of the coverage, of a z6 tile.
 fn w_unit(l: &str, _: bool) -> bool {
     l.rsplit_once('/').is_some_and(|(_, t)| tile(t, 6) && roads::unit::saved_files(t).iter().any(|f| f == l))
+        || asked_of(l, "unit")
 }
 
+/// A z6 tile's candidates and what they asked of the coverage.
 fn w_pois(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["work", "pois", t] if tile(t, 6))
+    matches!(parts(l).as_slice(), ["work", "pois", t] if tile(t, 6)) || asked_of(l, "pois")
 }
 
 fn w_peaks(l: &str, _: bool) -> bool {
@@ -2508,15 +2519,26 @@ fn w_bldprep(l: &str, _: bool) -> bool {
     bld::bld::PREPARED.iter().any(|p| l.strip_prefix(p).is_some_and(|t| !t.contains('/') && tile(t, 6)))
 }
 
-/// The 3D buildings' hi packs, their field's and its mids.
+/// The 3D buildings' hi packs, their field's and its mids, and what a tile asked of the coverage.
 fn w_bldtiles(l: &str, _: bool) -> bool {
     pack(l, bld::bld::LAYER, &["hi"])
         || pack(l, bld::bld::field::LAYER, &["hi"])
         || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
+        || asked_of(l, "bldtiles")
 }
 
 fn w_bldfield_lo(l: &str, _: bool) -> bool {
     pack(l, bld::bld::field::LAYER, &["lo"])
+}
+
+/// The steps whose z6 tiles each record what they asked of the coverage (buildstore::asked::
+/// target_logical), their keys' coverage lines (agent::idents::coverage_clip, ways,
+/// coverage_inside, coverage_shapes) reading it.
+pub const ASKED_PER_TARGET: [&str; 4] = ["pois", "unit", "trees", "bldtiles"];
+
+/// What a z6 tile of step `step` asked of the coverage (buildstore::asked::target_logical).
+fn asked_of(l: &str, step: &str) -> bool {
+    matches!(parts(l).as_slice(), ["work", "asked", s, t] if *s == step && tile(t, 6))
 }
 
 /// What the regions no longer cover, removed: a z6 tile's files, candidates and peaks, map tiles, the

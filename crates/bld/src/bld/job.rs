@@ -23,7 +23,7 @@ use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
 use super::world7;
 use anyhow::{ensure, Context, Result};
-use buildstore::coverage::Coverage;
+use buildstore::coverage::{Asking, Coverage};
 use buildstore::out::Out;
 use codecs::tile::TileId;
 use det::Det;
@@ -652,28 +652,63 @@ pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
     Ok(s)
 }
 
-/// Runs `bldtiles T`: its hi pack, its field's hi pack and its field's mid made and uploaded (or,
-/// with no building touching the coverage, those it had dropped). With `offload` (the lead's coordinator), some of its z8 tiles are
-/// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
-/// every z8 tile's tiles go into the pack in its turn, the same bytes wherever it was made.
-pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&offload::Offload>) -> Result<Summary> {
-    let sum = build_later(out, cov, t, offload)?;
-    out.save()?;
-    out.claim_into_costin();
-    Ok(sum)
+/// What z6 tile `t`'s run asks of the coverage, asked through `cov` (buildstore::asked): the
+/// country of every record of the blocks its z8 tiles read (`z8_blocks`, T's work file and its
+/// neighbours' in `files`), as `shape_of` asks it. A block's z14 tile asked whole where its
+/// neighbourhood is one answer (`Asking::country_cell`): its records' centroids' and, with no shape
+/// there, their vertices' in it; any other point asked alone (`Asking::country_at`). More than
+/// its z8 tiles ask (a record around a z8 tile not filled there is asked only when its floors
+/// are read), never less.
+pub fn ask(files: &[Option<WorkFile>], cov: &Asking, t: TileId) -> Result<()> {
+    ensure!(files.len() == 9, "T and its 8 neighbours");
+    let mut seen: std::collections::HashSet<(usize, u64)> = Default::default();
+    for a in z8_tiles_of(files) {
+        let (list, _) = z8_blocks(files, t, a);
+        let todo: Vec<(usize, IndexEntry)> = list.into_iter().filter(|(fi, e)| seen.insert((*fi, e.key))).collect();
+        todo.par_iter().try_for_each(|(fi, e)| -> Result<()> {
+            let (_, x, y) = tile_zxy(e.key);
+            let cell = [x, y];
+            // (Every centroid's shape, one of the cell's: none asked again. With none, their
+            // vertices are asked as `shape_of` asks them: those in the cell's neighbourhood
+            // answered by it.)
+            let whole = match cov.country_cell(cell) {
+                Some(Some(_)) => return Ok(()),
+                Some(None) => true,
+                None => false,
+            };
+            let b = files[*fi].as_ref().context("a block's file")?.block(e)?;
+            for i in 0..b.len() {
+                if !whole && cov.country_at(b.cen[i]).is_some() {
+                    continue;
+                }
+                for &p in b.verts_of(i) {
+                    if !(whole && buildstore::coverage::in_cell(cell, p)) && cov.country_at(p).is_some() {
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
-/// `build`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside what the job
-/// does next, and the tile is saved (and noted done) by a later save (`Out::save_upto` the mark
-/// after it). Its summary names the files as they'll land (their content names, made here).
-pub fn build_later(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&offload::Offload>) -> Result<Summary> {
+/// Runs `bldtiles T`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside
+/// what the job does next, and the tile is saved (and noted done) by a later save (`Out::save_upto`
+/// the mark after it). Its hi pack, its field's hi pack and its field's mid made and uploaded (or,
+/// with no building touching the coverage, those it had dropped), the coverage asked through `cov`
+/// (`ask`). With `offload` (the lead's coordinator), some of its z8 tiles are offered to workers as
+/// tasks (`super::task::Offers`) while the others are made here, in order; every z8 tile's tiles go
+/// into the pack in its turn, the same bytes wherever it was made. Its summary names the files as
+/// they'll land (their content names, made here).
+pub fn build_later(out: &mut Out, cov: &Asking, t: TileId, offload: Option<&offload::Offload>) -> Result<Summary> {
     build_later_keeping(out, cov, t, offload, jobrt::resume_log::on())
 }
 
 /// `build_later`, its z8 tiles kept as pieces with `keep` (jobrt::resume_log::Pieces).
 pub fn build_later_keeping(
     out: &mut Out,
-    cov: &Coverage,
+    asking: &Asking,
     t: TileId,
     offload: Option<&offload::Offload>,
     keep: bool,
@@ -684,6 +719,10 @@ pub fn build_later_keeping(
     let p = phase("reading the normalized files");
     let files = work_files(out, t)?;
     drop(p);
+    let p = phase("asking the coverage the buildings' countries");
+    ask(&files, asking, t)?;
+    drop(p);
+    let cov = asking.coverage();
     let logical = super::pack_logical(t.x, t.y);
     let local = out.scratch_file(&format!("{logical}.pack"));
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
@@ -849,6 +888,51 @@ mod tests {
         WorkFile::open(&path).unwrap()
     }
 
+    /// Task #1473: what a z6 tile's run asks of the coverage (`ask`) is answered the same through a
+    /// region redrawn past no building, or one added far from them, and not through one grown over
+    /// a building, or another country.
+    #[test]
+    fn what_a_tile_asks_moves_with_its_buildings_places() {
+        let t = TileId { z: 6, x: 32, y: 22 };
+        let d = tempfile::tempdir().unwrap();
+        // Buildings at Paris's middle, 20 km and 40 km east, and one 150 km away (all in 6/32/22).
+        let bs: Vec<B> = [(2.3470, 48.8580), (2.62, 48.858), (2.89, 48.858), (4.4, 48.4)]
+            .iter()
+            .enumerate()
+            .map(|(k, &(lon, lat))| B {
+                id: 1 + k as u128,
+                rings: vec![square(lon, lat, 0.0004)],
+                height: 20.0,
+                ..Default::default()
+            })
+            .collect();
+        let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
+        files[4] = Some(work(d.path(), t, &bs));
+        let regions = |outlines: &[(&str, &str)]| {
+            let d = tempfile::tempdir().unwrap();
+            let rs: Vec<Recipe> = outlines
+                .iter()
+                .enumerate()
+                .map(|(i, (o, _))| Recipe { id: format!("r{i}"), name: format!("R{i}"), outline: vec![o.to_string()] })
+                .collect();
+            let mut c = Coverage::fixture(&rs, None, d.path()).unwrap();
+            for (s, (_, cc)) in c.shapes.iter_mut().zip(outlines) {
+                s.country = cc.to_string();
+            }
+            c
+        };
+        let paris = regions(&[("place:2.35,48.86,30", "FR")]);
+        let a = Asking::new(&paris);
+        ask(&files, &a, t).unwrap();
+        let asked = a.asked();
+        assert!(!asked.country_cells.is_empty(), "{asked:?}");
+        let was = paris.answers(&asked);
+        assert_eq!(regions(&[("place:2.35,48.86,31", "FR")]).answers(&asked), was);
+        assert_eq!(regions(&[("place:2.35,48.86,30", "FR"), ("place:10.0,50.0,20", "DE")]).answers(&asked), was);
+        assert_ne!(regions(&[("place:2.35,48.86,45", "FR")]).answers(&asked), was);
+        assert_ne!(regions(&[("place:2.35,48.86,30", "BE")]).answers(&asked), was);
+    }
+
     /// Task #889: a z6 tile's buildings paused at every one of their safe points (each z8 tile
     /// kept), resumed each time, upload the same packs and mid as a run never paused; and its z3
     /// tile's field likewise (each z6 tile's levels kept).
@@ -892,14 +976,14 @@ mod tests {
         let lo = [field::lo_logical(4, 2)];
         let q = TileId { z: 3, x: 4, y: 2 };
         let mut fresh = open("fresh");
-        build_later_keeping(&mut fresh, &c, t, None, false).unwrap();
+        build_later_keeping(&mut fresh, &Asking::new(&c), t, None, false).unwrap();
         fresh.save().unwrap();
         build_lo_keeping(&mut fresh, q, false).unwrap();
         let mut out = open("paused");
         let mut stops = 0;
         loop {
             STOP_AFTER.set(Some(1));
-            let r = build_later_keeping(&mut out, &c, t, None, true);
+            let r = build_later_keeping(&mut out, &Asking::new(&c), t, None, true);
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {

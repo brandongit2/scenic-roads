@@ -1503,30 +1503,80 @@ pub fn fingerprint_of(shapes: &[Shape], b: [i32; 4]) -> String {
 
 // ---- what a run asked of the coverage ------------------------------------------------------------
 
-/// What a run asked of the coverage (`Asking`), each question once, sorted: the points it asked
-/// about (`contains`), the boxes it asked of the land (`meets_rect`) and of every shape
-/// (`meets_rect_all`), E7. `Coverage::answers` answers them all again: the same answers, the same
-/// run.
+/// The zoom of the cells a run's point questions are kept by (`Asking::asked`): a cell whose
+/// neighbourhood answers every point in it alike is kept as that one answer, not its points. A
+/// cell's question is of its box and its neighbours' (`cell_box` 1), asked whole only where the
+/// ring of cells around those answers alike too (`cell_box` 2): an outline moving less than a cell
+/// near it doesn't make it two answers (z14: 2.4 km at the equator, 1.5 km at 50°).
+pub const CELL_Z: u8 = 14;
+
+/// What a run asked of the coverage (`Asking`), each question once, sorted, E7: the points it
+/// asked about (`contains`), and the cells (x, y at `CELL_Z`) whose neighbourhood's every point it
+/// asked about (`contains_cell` of `cell_box` 1); the boxes it asked of the land (`meets_rect`) and
+/// of every shape (`meets_rect_all`); the points it asked the country of (`country_at`), and the
+/// cells whose neighbourhood's every point's country it asked (`country_cell` of `cell_box` 1).
+/// `Coverage::answers` answers them all again: the same answers, the same run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asked {
     pub points: Vec<[i32; 2]>,
     pub land: Vec<[i32; 4]>,
     pub all: Vec<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub countries: Vec<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub country_cells: Vec<[u32; 2]>,
+}
+
+/// The cell (`CELL_Z`) a point is in.
+pub fn cell_of(p: [i32; 2]) -> [u32; 2] {
+    let (x, y) = roadcore::geo::tile_of(roadcore::geo::merc_clamped(p[0] as f64 * 1e-7, p[1] as f64 * 1e-7), CELL_Z);
+    [x, y]
+}
+
+/// A cell's box (E7) grown by `k` times its own size on each side (`k` rings of cells around it),
+/// a few units over its rounded edges, so it holds every point `cell_of` puts in those cells.
+pub fn cell_box(c: [u32; 2], k: i32) -> [i32; 4] {
+    let b = codecs::hipack::tile_bounds(CELL_Z, c[0], c[1]);
+    let (w, h) = ((b[2] - b[0]) * k, (b[3] - b[1]) * k);
+    [b[0] - w - 2, b[1] - h - 2, b[2] + w + 2, b[3] + h + 2]
+}
+
+/// Whether point `p` is in cell `c`'s neighbourhood, its question's box (`cell_box` 1).
+pub fn in_cell(c: [u32; 2], p: [i32; 2]) -> bool {
+    let b = cell_box(c, 1);
+    p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]
 }
 
 /// The coverage asked through, each question kept (`asked`). A run whose key names what the
 /// coverage answered it (buildstore::asked) reads it only through this, so nothing it reads goes
-/// unkept: a point or a box, never the shapes themselves.
+/// unkept: a point, a cell or a box, never the shapes themselves.
 pub struct Asking<'a> {
     cov: &'a Coverage,
     points: std::sync::Mutex<std::collections::HashSet<[i32; 2]>>,
     land: std::sync::Mutex<std::collections::HashSet<[i32; 4]>>,
     all: std::sync::Mutex<std::collections::HashSet<[i32; 4]>>,
+    countries: std::sync::Mutex<std::collections::HashSet<[i32; 2]>>,
+    country_cells: std::sync::Mutex<std::collections::HashSet<[u32; 2]>>,
 }
 
 impl<'a> Asking<'a> {
     pub fn new(cov: &'a Coverage) -> Asking<'a> {
-        Asking { cov, points: Default::default(), land: Default::default(), all: Default::default() }
+        Asking {
+            cov,
+            points: Default::default(),
+            land: Default::default(),
+            all: Default::default(),
+            countries: Default::default(),
+            country_cells: Default::default(),
+        }
+    }
+
+    /// The coverage asked, for what a run reads of it otherwise (bld::bld::job: its z8 tiles,
+    /// made here or by other workers, read it whole; what they ask of it, asked through this first).
+    pub fn coverage(&self) -> &'a Coverage {
+        self.cov
     }
 
     /// `Coverage::contains`.
@@ -1552,14 +1602,63 @@ impl<'a> Asking<'a> {
         self.cov.meets_rect_all(b)
     }
 
-    /// What was asked.
+    /// `Coverage::country_at`.
+    pub fn country_at(&self, p: [i32; 2]) -> Option<&'a str> {
+        self.countries.lock().unwrap().insert(p);
+        self.cov.country_at(p)
+    }
+
+    /// The country of every point of cell `c`'s neighbourhood (`CELL_Z`, `cell_box` 1), when it's
+    /// one answer there and in the ring of cells around (`Coverage::country_cell`), kept as one
+    /// question; None otherwise, nothing asked (its points then each asked, `country_at`).
+    pub fn country_cell(&self, c: [u32; 2]) -> Option<Option<&'a str>> {
+        let a = self.cov.country_cell(cell_box(c, 1))?;
+        (self.cov.country_cell(cell_box(c, 2))? == a).then(|| {
+            self.country_cells.lock().unwrap().insert(c);
+            a
+        })
+    }
+
+    /// What was asked, its points kept by cell: those of a cell whose neighbourhood and the ring of
+    /// cells around answer every point alike (`Coverage::contains_cell` of `cell_box` 1 and 2) kept
+    /// as the cell's one question.
     pub fn asked(self) -> Asked {
+        use rayon::prelude::*;
         fn sorted<T: Ord>(s: std::sync::Mutex<std::collections::HashSet<T>>) -> Vec<T> {
             let mut v: Vec<T> = s.into_inner().unwrap().into_iter().collect();
             v.sort_unstable();
             v
         }
-        Asked { points: sorted(self.points), land: sorted(self.land), all: sorted(self.all) }
+        let cov = self.cov;
+        let mut by_cell: std::collections::HashMap<[u32; 2], Vec<[i32; 2]>> = Default::default();
+        for p in self.points.into_inner().unwrap() {
+            by_cell.entry(cell_of(p)).or_default().push(p);
+        }
+        let by_cell: Vec<([u32; 2], Vec<[i32; 2]>)> = by_cell.into_iter().collect();
+        let whole: Vec<bool> = by_cell
+            .par_iter()
+            .map(|(c, _)| {
+                cov.contains_cell(cell_box(*c, 1)).is_some_and(|a| cov.contains_cell(cell_box(*c, 2)) == Some(a))
+            })
+            .collect();
+        let (mut points, mut cells) = (Vec::new(), Vec::new());
+        for ((c, ps), w) in by_cell.into_iter().zip(whole) {
+            if w {
+                cells.push(c);
+            } else {
+                points.extend(ps);
+            }
+        }
+        points.sort_unstable();
+        cells.sort_unstable();
+        Asked {
+            points,
+            land: sorted(self.land),
+            all: sorted(self.all),
+            cells,
+            countries: sorted(self.countries),
+            country_cells: sorted(self.country_cells),
+        }
     }
 }
 
@@ -1569,9 +1668,41 @@ impl Coverage {
         self.shapes.iter().any(|s| s.meets_rect(b))
     }
 
+    /// `contains` of every point of the box w, s, e, n (E7), when it's one answer for them all: a
+    /// shape holding them all (`Shape::contains_box`), or none holding any. None otherwise.
+    pub fn contains_cell(&self, b: [i32; 4]) -> Option<bool> {
+        let mut out = Some(false);
+        for s in &self.shapes {
+            match s.contains_box(b) {
+                Some(true) => return Some(true),
+                Some(false) => {}
+                None => out = None,
+            }
+        }
+        out
+    }
+
+    /// The country of the shape a point is of (`shape_at`; "" for a shape of no known country),
+    /// None when it's of none.
+    pub fn country_at(&self, p: [i32; 2]) -> Option<&str> {
+        self.shape_at(p).map(|i| self.shapes[i].country.as_str())
+    }
+
+    /// `country_at` of every point of the box w, s, e, n (E7), when it's one answer for them all:
+    /// no shape holding any of them (`Shape::contains_box`), or one shape all their shape
+    /// (`box_shape`). None otherwise.
+    pub fn country_cell(&self, b: [i32; 4]) -> Option<Option<&str>> {
+        if self.shapes.iter().all(|s| s.contains_box(b) == Some(false)) {
+            return Some(None);
+        }
+        self.box_shape(b).map(|i| Some(self.shapes[i].country.as_str()))
+    }
+
     /// The coverage's answers to what `a` asked, each asked again, as a digest: equal answers to
     /// the same questions, the same run. Which shapes give an answer never enters it, so water given
-    /// from one region to another, or a region split in two, answers the same.
+    /// from one region to another, or a region split in two, answers the same. A cell asked whole
+    /// that the coverage now answers point by point answers as no run's do (a run asks a cell whole
+    /// only where it's one answer).
     pub fn answers(&self, a: &Asked) -> String {
         use rayon::prelude::*;
         let bits = |v: Vec<bool>| -> Vec<u8> {
@@ -1585,6 +1716,28 @@ impl Coverage {
         ] {
             h.update(&(n as u64).to_le_bytes());
             h.update(&b);
+        }
+        // (No cell or country asked, as before there were such questions: the digest as it was.)
+        if !(a.cells.is_empty() && a.countries.is_empty() && a.country_cells.is_empty()) {
+            let cells: Vec<u8> =
+                a.cells.par_iter().map(|&c| self.contains_cell(cell_box(c, 1)).map_or(2, u8::from)).collect();
+            h.update(&(a.cells.len() as u64).to_le_bytes());
+            h.update(&cells);
+            let named = |c: Option<Option<&str>>| match c {
+                None => "\u{1}mixed".to_string(),
+                Some(None) => "\u{0}none".to_string(),
+                Some(Some(c)) => c.to_string(),
+            };
+            let countries: Vec<String> = a.countries.par_iter().map(|&p| named(Some(self.country_at(p)))).collect();
+            let country_cells: Vec<String> =
+                a.country_cells.par_iter().map(|&c| named(self.country_cell(cell_box(c, 1)))).collect();
+            for v in [countries, country_cells] {
+                h.update(&(v.len() as u64).to_le_bytes());
+                for s in v {
+                    h.update(&(s.len() as u64).to_le_bytes());
+                    h.update(s.as_bytes());
+                }
+            }
         }
         store::naming::hex16(&h.finalize())
     }

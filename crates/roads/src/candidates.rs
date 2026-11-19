@@ -4,7 +4,7 @@
 //! sorted by key as `work/pois/<u>` (zstd JSON lines).
 
 use anyhow::{Context, Result};
-use buildstore::coverage::Coverage;
+use buildstore::coverage::Asking;
 use codecs::marks::Cand;
 use codecs::tile::TileId;
 use std::collections::BTreeMap;
@@ -21,8 +21,9 @@ pub fn parse_ele(v: Option<&str>) -> Option<f32> {
 }
 
 /// The candidates in extract's `pois.json` (made with `--candidates`) that unit `u` owns and the
-/// coverage holds: a point by its position, a way when one of its nodes is inside.
-pub fn from_pois(pois_json: &[u8], u: TileId, cov: &Coverage) -> Result<Vec<Cand>> {
+/// coverage holds: a point by its position, a way when one of its nodes is inside (each asked of
+/// the coverage through `cov`, kept for its key: buildstore::asked).
+pub fn from_pois(pois_json: &[u8], u: TileId, cov: &Asking) -> Result<Vec<Cand>> {
     let v: serde_json::Value = serde_json::from_slice(pois_json).context("pois.json")?;
     let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
     let mut out = Vec::new();
@@ -95,6 +96,7 @@ pub fn read<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<Cand>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buildstore::coverage::Coverage;
 
     #[test]
     fn clipped_to_the_unit_and_the_coverage() {
@@ -118,7 +120,7 @@ mod tests {
           {"geometry":{"coordinates":[-21.0,64.13]},"properties":{"kind":"peak","name":"Far","osm":"n3","tags":{}}},
           {"geometry":{"coordinates":[-21.6,64.13]},"properties":{"kind":"covered_bridge","name":"B","osm":"w4","tags":{},"length_m":61,"nodes":[[-219100000,641300000],[-210000000,641300000]]}},
           {"geometry":{"coordinates":[-21.9,64.14]},"properties":{"kind":"trailhead","name":"T","key":"trail:9:8","tags":{}}}]}"#;
-        let c = from_pois(pois, u, &cov).unwrap();
+        let c = from_pois(pois, u, &buildstore::coverage::Asking::new(&cov)).unwrap();
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["n2:peak", "trail:9:8:trailhead", "w4:covered_bridge"]);
         assert_eq!(

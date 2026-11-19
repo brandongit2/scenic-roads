@@ -161,6 +161,30 @@ pub fn coverage_json(cov: &Coverage, t: TileId) -> serde_json::Value {
     serde_json::json!({ "shapes": shapes })
 }
 
+/// What a z6 tile's run reads of the coverage, as a digest: the blocks its rings' boxes meet
+/// (crate::trees::blocks_of) and each one's pixels inside the coverage (crate::trees::mask::inside),
+/// from the coverage file its run is given (`coverage_json`), as the trees program reads it. The
+/// same digest, the same mask and blocks (its key's question asked whole, buildstore::asked). A
+/// coverage file the program can't read either: a digest of why.
+pub fn mask_digest(cov: &Coverage, t: TileId) -> String {
+    use crate::trees::{blocks_of, mask, ZBLOCK};
+    use rayon::prelude::*;
+    let shapes = match mask::Shapes::parse(&coverage_json(cov, t).to_string()) {
+        Ok(s) => s,
+        Err(e) => return store::naming::hash16(format!("unread {e:#}").as_bytes()),
+    };
+    let blocks = blocks_of(&shapes, t.z, t.x, t.y);
+    let lines: Vec<String> = blocks
+        .par_iter()
+        .map(|&(bx, by)| {
+            let b = roadcore::geo::tile_box(ZBLOCK, bx, by);
+            let m = mask::inside(&shapes.meeting(b), b);
+            format!("{bx} {by} {}\n", store::naming::hash16(bytemuck::cast_slice(&m)))
+        })
+        .collect();
+    store::naming::hash16(lines.concat().as_bytes())
+}
+
 /// A fresh scratch folder for tile `t`'s run, with its coverage file (`coverage_json`); None (and
 /// no folder) when no ring of the coverage meets the tile, unless `always`.
 fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Option<PathBuf>> {
@@ -479,10 +503,14 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
     out.save()
 }
 
-/// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run); how many.
+/// Drops z6 tile `t`'s hi packs, mid and what its run asked of the coverage (a "none" z6 tile's run);
+/// how many.
 pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
-    let all: Vec<String> =
-        LAYERS.iter().map(|l| terrain::layers::hi_logical(l, t.x, t.y)).chain([mid_logical(t.x, t.y)]).collect();
+    let all: Vec<String> = LAYERS
+        .iter()
+        .map(|l| terrain::layers::hi_logical(l, t.x, t.y))
+        .chain([mid_logical(t.x, t.y), buildstore::asked::target_logical("trees", &t.slash())])
+        .collect();
     let n = terrain::layers::drop(out, &all);
     out.save()?;
     Ok(n)
@@ -604,6 +632,32 @@ mod tests {
         assert_eq!(names(&t2.lo), ["3/3/2", "3/4/2 none"]);
         assert_eq!(t2.pieces_of("3/4/2").count(), 0);
         assert_eq!(z3_of("6/33/23").as_deref(), Some("3/4/2"));
+    }
+
+    /// Task #1473: a z6 tile's mask digest (its key's question asked whole) is the same through a
+    /// coverage whose shapes differ but burn the same pixels (a region inside another; one far
+    /// away), and moves when a pixel does.
+    #[test]
+    fn a_masks_digest_moves_only_with_its_pixels() {
+        let regions = |outlines: &[&str]| {
+            let d = tempfile::tempdir().unwrap();
+            let rs: Vec<Recipe> = outlines
+                .iter()
+                .enumerate()
+                .map(|(i, o)| Recipe { id: format!("r{i}"), name: format!("R{i}"), outline: vec![o.to_string()] })
+                .collect();
+            Coverage::fixture(&rs, None, d.path()).unwrap()
+        };
+        let t = TileId { z: 6, x: 28, y: 17 };
+        let was = mask_digest(&regions(&["place:-21.9,64.13,20"]), t);
+        let inner = regions(&["place:-21.9,64.13,20", "place:-21.9,64.13,5"]);
+        assert_ne!(
+            inner.fingerprint(codecs::hipack::tile_bounds(6, t.x, t.y)),
+            cov("place:-21.9,64.13,20").fingerprint(codecs::hipack::tile_bounds(6, t.x, t.y))
+        );
+        assert_eq!(mask_digest(&inner, t), was);
+        assert_eq!(mask_digest(&regions(&["place:-21.9,64.13,20", "place:10.0,50.0,20"]), t), was);
+        assert_ne!(mask_digest(&regions(&["place:-21.9,64.13,21"]), t), was);
     }
 
     #[test]

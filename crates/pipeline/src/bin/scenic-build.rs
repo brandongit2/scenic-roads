@@ -1054,6 +1054,20 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 if u.z == 3 {
                     ::trees::treepacks::build_with(&mut out, &cov, u, &chm, &scratch, workers, &writing)?;
                 } else {
+                    // (What it reads of the coverage, its mask, recorded with its packs: its key
+                    // moves only once the mask does, buildstore::asked.)
+                    use pipeline::agent::idents::{inside_geo, mask_answer, MASK_QUESTION};
+                    let reask = |q: &str| mask_answer(&cov, u, q);
+                    let asked = buildstore::asked::Run::start_target(
+                        &out,
+                        "trees",
+                        &u.slash(),
+                        &cov,
+                        inside_geo(&cov, u),
+                        &reask,
+                    )?;
+                    let mask = ::trees::treepacks::mask_digest(&cov, u);
+                    asked.put(&mut out, vec![(MASK_QUESTION.to_string(), mask)])?;
                     ::trees::treepacks::build_piece(
                         &mut out,
                         &cov,
@@ -1284,6 +1298,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let asked = buildstore::asked::Run::start(&out, "timetables-todo", &cov, &|_| None)?;
             let r = roads::timetables::run(&mut out, asked.asking(), &to)?;
             asked.put(&mut out, Vec::new())?;
+            out.save()?;
             eprintln!("timetables-todo: {} rail and {} ferry lines with no timetable ({:.0} km), {} routes matching nothing on the map", r.rail, r.ferry, r.km, r.unmatched);
         }
         "terrain-root" => {
@@ -2897,12 +2912,17 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_dir_all(&dir).ok();
         let pois = pois.map_err(|e| jobrt::control::stop_if_paused("pois", e))?;
         let p = phase("keeping the candidates in the coverage and writing them");
-        let cands = roads::candidates::from_pois(&pois, u, &cov)?;
+        // (Its candidates asked of the coverage, recorded with them: its key moves only once an
+        // answer does, buildstore::asked.)
+        let geo = pipeline::agent::idents::clip_geo(&cov, u);
+        let asked = buildstore::asked::Run::start_target(out, "pois", &u.slash(), &cov, geo, &|_| None)?;
+        let cands = roads::candidates::from_pois(&pois, u, asked.asking())?;
         let file = scratch.join(format!("pois-{}.jsonl.zst", u.dash()));
         roads::candidates::write(&file, &cands)?;
         drop(p);
         let p = phase("uploading the candidates");
         out.put_file(&format!("work/pois/{}", u.dash()), "jsonl.zst", &file)?;
+        asked.put(out, Vec::new())?;
         drop(p);
         out.save()?;
         pieces.finish();
@@ -4162,10 +4182,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let reach = roads::reach::Reaches::load(out.root(), &out.manifest, &date)
         .map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?
         .context("no reaches for the pass (the reach step)")?;
+    // (The spacing its ways are densified by, as the plan's keys read it: build::builds,
+    // idents::ways.)
+    let a = tools.elevation.as_ref().context("the declared elevation datasets' accepted version")?;
+    let fine = ::inputs::dem::spacing::Fine::of_accepted(&::inputs::dem::declared::accepted(a)?);
     if units.is_empty() {
         let reach = &reach;
-        let a = tools.elevation.as_ref().context("the declared elevation datasets' accepted version")?;
-        let fine = ::inputs::dem::spacing::Fine::of_accepted(&::inputs::dem::declared::accepted(a)?);
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
             let u = TileId::parse(k).context("unit")?;
             if pipeline::agent::build::builds(&cov, reach, u, &fine) {
@@ -4385,17 +4407,31 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
                 s.end();
             }
+            // (Its ways asked of the coverage, recorded in its folder for its commit: its key moves
+            // only once an answer does, buildstore::asked. With no reach, it's no target: nothing
+            // recorded.)
+            let asked = reach
+                .get(u)
+                .map(|r| {
+                    let geo = r.coverage_key(&cov, u, &fine);
+                    buildstore::asked::Run::start_target(o, "unit", &u.slash(), &cov, geo, &|_| None)
+                })
+                .transpose()?;
+            let plain = buildstore::coverage::Asking::new(&cov);
             let rep = prepare_folder(
                 u,
                 &roads::staging::Area::of(u, reach.get(u)),
                 &local_piece,
                 &dir,
-                &cov,
+                asked.as_ref().map_or(&plain, |a| a.asking()),
                 &layers_source(o, &pilot, Some(&blobs)),
                 &tools,
                 &heritage,
                 Some(&carry),
             )?;
+            if let Some(a) = asked {
+                std::fs::write(dir.join(UNIT_ASKED), a.record(Vec::new()).1.to_bytes())?;
+            }
             Ok(serde_json::to_vec(&rep)?)
         });
         std::fs::remove_file(&local_piece).ok();
@@ -4592,6 +4628,10 @@ struct Built {
     pieces: jobrt::resume_log::Pieces,
 }
 
+/// Where a z6 tile's folder keeps what its ways asked of the coverage (buildstore::asked::Record),
+/// from its preparing (kept with the folder for its run resumed) to its commit.
+const UNIT_ASKED: &str = "coverage-asked.json.zst";
+
 /// A tail's time on the lead until it has timed its stages (seconds).
 const TAIL_GUESS_S: f64 = 120.0;
 
@@ -4686,6 +4726,17 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
             p.finish();
         }
     };
+    // What its ways asked of the coverage (its folder's `UNIT_ASKED`), saved with its files. None
+    // there (a folder kept from before they were recorded): its record from before goes, never
+    // one of another run's questions.
+    let asked = buildstore::asked::target_logical("unit", &u.slash());
+    match std::fs::read(dir.join(UNIT_ASKED)) {
+        Ok(b) => {
+            out.put_bytes(&asked, "json.zst", &b)?;
+        }
+        Err(_) if out.get(&asked).is_some() => out.remove(&asked),
+        Err(_) => {}
+    }
     // Grids its packs lacked (new coverage), made in the folder: the z6 tile's own z6 tile's go up,
     // for later z6 tiles and packs. (The canopy step made canopy and cover for every tile.) Their
     // uploads, and its base pack's, are put off: they go on beside the rest of its last part, and
@@ -4869,8 +4920,14 @@ fn prune(out: &mut Out, targets: &[String]) -> Result<usize> {
         let tile = TileId::parse(at).with_context(|| format!("{t:?}: not a tile"))?;
         let d = tile.dash();
         let logicals = match kind {
-            "unit" => buildstore::out::UNIT_OUTPUTS.iter().map(|p| format!("{p}{d}")).collect(),
-            "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
+            "unit" => buildstore::out::UNIT_OUTPUTS
+                .iter()
+                .map(|p| format!("{p}{d}"))
+                .chain([buildstore::asked::target_logical("unit", at)])
+                .collect(),
+            "pois" => {
+                vec![format!("work/pois/{d}"), format!("work/peaks/{d}"), buildstore::asked::target_logical("pois", at)]
+            }
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
             "bldprep" => ::bld::bld::prepared_logicals(tile.x, tile.y),
@@ -4878,6 +4935,7 @@ fn prune(out: &mut Out, targets: &[String]) -> Result<usize> {
                 format!("layers/{}/hi/{d}", ::bld::bld::LAYER),
                 format!("layers/{}/hi/{d}", ::bld::bld::field::LAYER),
                 format!("work/bldfield-mid/{d}"),
+                buildstore::asked::target_logical("bldtiles", at),
             ],
             "bldfield-lo" => vec![format!("layers/{}/lo/{d}", ::bld::bld::field::LAYER)],
             k => bail!("{t:?}: unknown prune target {k:?}"),
@@ -5079,7 +5137,8 @@ fn bld_fetch_step(out: &mut Out, args: &[String]) -> Result<()> {
     let sources = ::inputs::inputs::sources::read(out.root(), &out.manifest)?;
     let asked = buildstore::asked::Run::start(out, "bld-fetch", &cov, &|_| None)?;
     ::bld::bld::fetch::run(::bld::bld::fetch::Args { root: out.root(), sources: &sources, cov: asked.asking() })?;
-    asked.put(out, Vec::new())
+    asked.put(out, Vec::new())?;
+    out.save()
 }
 
 /// bldprep <T …>: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md §3.1,
@@ -5121,9 +5180,17 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         landing.safe_point(out, "bldtiles", || ())?;
         jobrt::jobs::part(k, &names);
         let c = cost_start("bldtiles", &t.slash());
-        // (Paused at a z8 tile kept: the uploading tile landed, the run resumed there.)
+        // (Paused at a z8 tile kept: the uploading tile landed, the run resumed there. Its buildings'
+        // countries asked of the coverage, recorded with its packs: its key moves only once an
+        // answer does, buildstore::asked.)
         let sum = landing
-            .after(out, |out| ::bld::bld::job::build_later(out, &cov, t, offload.as_ref()))
+            .after(out, |out| {
+                let geo = pipeline::agent::idents::shapes_geo(&cov, t);
+                let asked = buildstore::asked::Run::start_target(out, "bldtiles", &t.slash(), &cov, geo, &|_| None)?;
+                let sum = ::bld::bld::job::build_later(out, asked.asking(), t, offload.as_ref())?;
+                asked.put(out, Vec::new())?;
+                Ok(sum)
+            })
             .map_err(|e| jobrt::control::stop_if_paused("bldtiles", e))?;
         // (Its inputs' measures: the buildings and parts read, drawn or not, and the rows they are
         // together, the measure its targets are offered by: agentcore::needs::OFFERED_BY.)
@@ -6222,6 +6289,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     drop(p);
     out.save()?;
     asked.put(out, vec![(rail::countries_question(&outlines_content, &own), countries.join(","))])?;
+    out.save()?;
     std::fs::remove_dir_all(&found).ok();
     eprintln!("rail-feeds: {new} zips fetched");
     Ok(())
@@ -6425,6 +6493,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     out.save()?;
     asked.put(out, Vec::new())?;
+    out.save()?;
     drop(ways);
     std::fs::remove_dir_all(&dir).ok();
     for f in inputs.into_iter().chain([poly, scratch.join("feeds.json")]) {

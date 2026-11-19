@@ -536,7 +536,8 @@ pub fn build_folder(
     heritage: HeritageInputs,
     carry: Option<&mapview::scache::Carry>,
 ) -> Result<Report> {
-    let rep = prepare_folder(u, area, piece, dir, cov, src, tools, heritage, carry)?;
+    let rep =
+        prepare_folder(u, area, piece, dir, &buildstore::coverage::Asking::new(cov), src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
         run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
     }
@@ -544,7 +545,7 @@ pub fn build_folder(
 }
 
 /// A z6 tile's build up to its tail (docs/coordinator.md: what needs the NAS): its ways from the extract,
-/// those touching the coverage, the global-source layers staged from the packs over `area` with the deep terrain
+/// those touching the coverage (each asked through `cov`, kept for its key: buildstore::asked), the global-source layers staged from the packs over `area` with the deep terrain
 /// under its vertices and the datasets' codes (what its elevations read: terrain::road_terrain), the
 /// heritage inputs, area flags and land cover; then its scenic results from its last run restored
 /// (`carry`), as the tail's canopy and view steps read them.
@@ -554,7 +555,7 @@ pub fn prepare_folder(
     area: &crate::staging::Area,
     piece: &Path,
     dir: &Path,
-    cov: &Coverage,
+    cov: &buildstore::coverage::Asking,
     src: &crate::staging::ReadFrom,
     tools: &Tools,
     heritage: HeritageInputs,
