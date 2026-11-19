@@ -9269,7 +9269,7 @@ mod tests {
     /// Task #1417: the pool's NAS-heavy jobs are paced by the NAS's answers. A coordinator starting
     /// holds the window at a step, a job beside nothing going all the same; while the NAS has room
     /// (the disks quiet, the answers not rising with the load) and a job waits, it doubles a
-    /// minute until that job fits, once the load the job out rose to is judged; once the answers
+    /// minute until that job fits, once the job out has run a span; once the answers
     /// pass the knee rising with the load it drops to half what's in use, holding back what fit
     /// before, and the lead's waiting line says why; calm again, it grows a step a minute.
     #[test]
@@ -9307,21 +9307,22 @@ mod tests {
                 break;
             }
         }
-        // (Its load judged a span and a growth cadence, 10 readings; then 50 to 1000 doubling a
-        // minute, 26.)
+        // (The answers at no load were the lead's alone, m4's, and once m1 holds the job its own
+        // count: no level of m1's to judge the load against, so a span for the job's answers, 3
+        // readings; then 50 to 1000 doubling a minute, 26.)
         assert!(
-            (35..=38).contains(&readings),
-            "doubling a minute from a step, once the load the job out rose to is judged: {readings} readings"
+            (29..=32).contains(&readings),
+            "doubling a minute from a step, once the job out has run a span: {readings} readings"
         );
         let g2 = w.ask(&a).unwrap().expect("two halves now");
-        // (The NAS answering four times its best as the load rose: half what's in use, once a
-        // span's readings show it.)
+        // (The NAS answering four times its best as the load rose: half what's in use, once the
+        // load is judged against m1's at 500, a span and a growth cadence's readings.)
         let mut cut = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..9 {
             assert!(w.beat(g1.lease, None).unwrap() && w.beat(g2.lease, None).unwrap());
             cut.push(read(20.0));
         }
-        assert_eq!(cut, [1000, 1000, 1000, 1000, 1000, 500]);
+        assert_eq!(cut, [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 500]);
         assert!(!c.shared.lock().unwrap().nas_own.unwrap().alone, "past the knee: no job beside nothing a while");
         let why = c.nas_paced().unwrap();
         assert!(
@@ -9336,7 +9337,10 @@ mod tests {
             assert!(w.ask(&a).unwrap().is_none());
             win = read(5.0);
         }
-        assert!((501..=550).contains(&win), "calm again, once its load is judged: a step a minute at most: {win}");
+        // (Fallen to 500, under every level a step: nothing to judge, so a step a minute over the
+        // 80 s read, at most.)
+        let most = 500 + jobrt::budget::nas::STEP * 80 / 60;
+        assert!((501..=most).contains(&win), "calm again: a step a minute at most: {win}");
     }
 
     /// Task #939: a job of several targets is weighed by what they move over their times together,
