@@ -56,10 +56,18 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   another crate by `#[path]` (agentcore's tests, which run on the plan, after an edit of pipeline's
   agent/build.rs, steps.rs, idents.rs, theplan.rs or tiles.rs: they reach it through
   `seam::for_tests`, not by name), or from outside its own src/ (inputs' build/checks_code_tests.rs),
-  and a package's whole tests when a file its build script says it reads changed (its
-  `rerun-if-changed` lines, check-reuse.py's `script_reads`: a literal path, that path; a path made
-  as it runs, the package and every crate its manifests reach by path; inputs' digests read those,
-  so a change in store runs inputs' unit tests). A moved file counts at its old path too (`--no-renames`, as in
+  and a package's whole tests when its build script's own code changed (the script, its `#[path]`
+  modules and what they `include_*!`: cargo runs a script it compiled anew; agentcore's sets the cfg
+  its tests compile under) or a file the script says it reads (its `rerun-if-changed` lines,
+  check-reuse.py's `script_reads`: a literal path, that path; a path made as it runs, the package,
+  every crate its manifests reach by path, the registry crates the root manifest patches to a path
+  (`[patch]`, `[replace]`) and the root Cargo.toml; inputs' digests read those, so a change in store
+  runs inputs' unit tests). `cargo test -p` takes the workspace's members only: a hit in a package
+  outside them (crates/geos-src, excluded and patched in for crates.io's) runs instead the whole
+  tests of the members whose own dependencies reach it, as Cargo.lock records them (landmarks, and
+  terrain through geos and geos-sys), not the members reaching those. What the manifests can't tell
+  (no Python 3.11 for tomllib, a manifest or Cargo.lock it can't read) runs every member's tests
+  whole; the script takes mise's Python when the PATH's is older. A moved file counts at its old path too (`--no-renames`, as in
   check.sh's own triggers). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
   or `<a>..<b>` shows the set for past work.

@@ -47,10 +47,14 @@ Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the
 reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_*; and
 OUT_DIR, `include!(concat!(env!("OUT_DIR"), …))`, a build script's output, only in a package whose
 build script, with the files its #[path] modules are, reads nothing outside the package's folder as
-`reads` sees it: then what it writes is made from the build's inputs). What a build script says it
-reads by its `rerun-if-changed` lines (`script_reads`: crates/inputs' digests read every crate its
-manifest reaches) is a source of its package: a change there runs the package's tests, as
-affected-tests.sh lists them.
+`reads` sees it: then what it writes is made from the build's inputs). A build script's own code
+(the script, its #[path] modules, what they include_*!: cargo runs a script it compiled anew) and
+what it says it reads by its `rerun-if-changed` lines (`script_reads`: crates/inputs' digests read
+every crate its manifests reach by path, the root Cargo.toml and the registry crates it patches to a
+path by [patch] or [replace]) are sources of its package: a change there runs the tests of the
+programs linking it, and affected-tests.sh lists the package's tests whole. A package the root
+manifest patches in for a registry crate (crates/geos-src) links into programs through registry
+crates `linking` doesn't follow: a change in it runs the whole part.
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -124,20 +128,25 @@ def records(path):
 
 # ---- the Rust build's inputs, from the sources ----
 
+def listed(key, files):
+    """The folders the root manifest's [workspace] `key` list (members, exclude) names, its globs read."""
+    m = re.search(r"^%s\s*=\s*\[([^\]]*)\]" % key, read("Cargo.toml"), re.M)
+    dirs = []
+    for g in re.findall(r'"([^"]+)"', m.group(1)) if m else []:
+        if "*" not in g:
+            dirs.append(g); continue
+        if not g.endswith("/*") or "*" in g[:-2]:
+            raise Doubt("Cargo.toml's %s has a glob this doesn't read: %s" % (key, g))
+        pre = g[:-1]
+        dirs += sorted({pre + f[len(pre):].split("/")[0] for f in files if f.startswith(pre) and "/" in f[len(pre):]})
+    return dirs
+
+
 def packages(files):
     """The workspace's package folders: its members, excluded crates and path dependencies."""
     root = read("Cargo.toml")
-    dirs = []
-    for key in ("members", "exclude"):
-        m = re.search(r"^%s\s*=\s*\[([^\]]*)\]" % key, root, re.M)
-        for g in re.findall(r'"([^"]+)"', m.group(1)) if m else []:
-            if "*" not in g:
-                dirs.append(g); continue
-            if not g.endswith("/*") or "*" in g[:-2]:
-                raise Doubt("Cargo.toml's %s has a glob this doesn't read: %s" % (key, g))
-            pre = g[:-1]
-            dirs += sorted({pre + f[len(pre):].split("/")[0] for f in files if f.startswith(pre) and "/" in f[len(pre):]})
-    # The root manifest's own paths: [workspace.dependencies], [patch].
+    dirs = listed("members", files) + listed("exclude", files)
+    # The root manifest's own paths: [workspace.dependencies], [patch], [replace].
     for rel in re.findall(r'\bpath\s*=\s*"([^"]+)"', root):
         p = norm("", rel)
         if p is None:
@@ -189,21 +198,29 @@ RERUN_ANY = re.compile(r"rerun-if-(?:env-)?changed=")
 
 
 def script_reads(pkgs):
-    """{a package folder: the repo prefixes its build script reads} for each package with one, as its
-    own `rerun-if-changed` lines say (what cargo reruns it on, so what its output is made from):
-    a literal path, that path; a path made as it runs (crates/inputs' digest of its sources and
-    every crate its manifest reaches, build/checks_code.rs), what a script can find from its
-    package: the package's folder, every package its manifests reach by path (dependencies and
-    build-dependencies, a registry crate the root manifest patches to a path) and the root
-    manifest; none at all, cargo's default: the package's folder. A script naming only
-    `rerun-if-env-changed` reads no file (agentcore's)."""
-    graph, _, _, patches = manifests(pkgs)
+    """{a package folder: the repo prefixes its build script reads} for each package with one: the
+    script's own code (the script, the files its #[path] modules are, what they include_str!,
+    include_bytes! or include!: cargo compiles the script again when one changes, and runs a script
+    it compiled anew), and what its `rerun-if-changed` lines say (what cargo reruns it on, so what
+    its output is made from): a literal path, that path; a path made as it runs (crates/inputs'
+    digest of its sources and every crate its manifest reaches, build/checks_code.rs), what a script
+    can find from its package: the package's folder, every package its manifests reach by path
+    (dependencies and build-dependencies, a registry crate the root manifest patches to a path by
+    [patch] or [replace]) and the root manifest; no rerun line at all, cargo's default: the
+    package's folder. A script naming only `rerun-if-env-changed` reads only its own code
+    (agentcore's, which sets the cfg its tests compile under; geos-src's, which compiles GEOS's
+    source/Version.txt in)."""
+    graph = manifests(pkgs)[0]
     out = {}
     for d, s in sorted(build_scripts(pkgs).items()):
-        code = "".join(blank(read(g), strings=False) for g in script_files(s))
+        own = script_files(s)
+        code = "".join(blank(read(g), strings=False) for g in own)
         if not code:
             continue
-        pre = set() if RERUN_ANY.search(code) else {d}
+        pre = set(own) | {p for g in own for m in INCLUDE.finditer(read(g)) if m.group(2)
+                          for p in [norm(posixpath.dirname(g), m.group(3))] if p is not None}
+        if not RERUN_ANY.search(code):
+            pre.add(d)
         for rel in RERUN.findall(code):
             if rel and "{" not in rel:
                 p = norm(d, rel)
@@ -218,8 +235,7 @@ def script_reads(pkgs):
                     seen.add(q)
                     todo += graph.get(q, ())
             pre |= seen | {"Cargo.toml"}
-        if pre:
-            out[d] = sorted(pre)
+        out[d] = sorted(pre)
     return out
 
 
@@ -227,8 +243,8 @@ SCRIPT = "'s build script reads it"   # (after the package folder: "crates/input
 
 
 def build_inputs(files, pkgs):
-    """(prefix, why) for every repo path the build reads; the build scripts and proc-macro package
-    folders; and each file include_str!d or include_bytes!d: [(the source, the macro's offset)]."""
+    """(prefix, why) for every repo path the build reads; the build scripts' code (script_files) and
+    the proc-macro package folders; and each file include_str!d or include_bytes!d: [(the source, the macro's offset)]."""
     ins = [(p, "the Rust build") for p in BUILD + pkgs] + [(p, "runs the part") for p in RUNNER]
     # Build scripts: a package's build.rs, or its manifest's `build = "…"`, and what each says it
     # reads; and every source of a proc-macro package (it runs as the crates using it compile).
@@ -279,7 +295,7 @@ def build_inputs(files, pkgs):
         if f in runs or any(under(f, k) for k in macros):
             for p, _ in reads(f, src):
                 ins.append((p, "%s (a build script or proc macro) reads it" % f))
-    return ins, scripts, macros, data
+    return ins, runs, macros, data
 
 
 def script_files(s):
@@ -334,6 +350,8 @@ def manifests(pkgs):
     root = toml("Cargo.toml")
     table = root.get("workspace", {}).get("dependencies", {})
     patch = {n: norm("", v["path"]) for t in root.get("patch", {}).values() for n, v in t.items() if "path" in v}
+    # ([replace]'s keys are "<name>:<version>", as crates/inputs' build/checks_code.rs reads them.)
+    patch.update({k.split(":")[0]: norm("", v["path"]) for k, v in root.get("replace", {}).items() if "path" in v})
 
     def deps(d, m, kinds, patched):
         out = set()
@@ -378,6 +396,53 @@ def linking(pkgs):
     return out
 
 
+def outside_users(pkgs, files):
+    """{a package folder outside the workspace's members (an excluded crate, a path dependency of
+    none, a registry crate patched to a path): the members whose own dependencies reach it without
+    going through another member}, as Cargo.lock records the dependencies (a registry crate's are
+    named only there: terrain reaches crates/geos-src through geos and geos-sys, which name it by
+    version). cargo test -p takes members only; these are its nearest tests."""
+    try:
+        import tomllib
+    except ImportError:
+        raise Doubt("this python3 has no tomllib to read Cargo.lock")
+    try:
+        lock = tomllib.loads(open("Cargo.lock", encoding="utf-8").read()).get("package", [])
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise Doubt("Cargo.lock can't be read: %s" % e)
+
+    def find(dep):   # a dependency's entry: "<name>", "<name> <version>" or "<name> <version> (<source>)"
+        t = dep.split(" ", 2)
+        c = [i for i, p in enumerate(lock) if p.get("name") == t[0] and (len(t) < 2 or p.get("version") == t[1])
+             and (len(t) < 3 or "(%s)" % p.get("source") == t[2])]
+        if len(c) != 1:
+            raise Doubt("Cargo.lock's dependency %r names %d packages" % (dep, len(c)))
+        return c[0]
+
+    def path_pkg(name):   # (a package from the repo has no source)
+        c = [i for i, p in enumerate(lock) if p.get("name") == name and "source" not in p]
+        return c[0] if len(c) == 1 else None
+
+    names = manifests(pkgs)[1]
+    members = {d: path_pkg(names[d]) for d in listed("members", files) if d in names}
+    ours = set(members.values())
+    out = {d: [] for d in pkgs if d in names and d not in members}
+    at = {path_pkg(names[d]): d for d in out}
+    for m, i in sorted(members.items()):
+        if i is None:
+            raise Doubt("Cargo.lock has no package %s from the repo" % names[m])
+        seen, todo = set(), [find(x) for x in lock[i].get("dependencies", [])]
+        while todo:
+            j = todo.pop()
+            if j in seen or j in ours:
+                continue
+            seen.add(j)
+            todo += [find(x) for x in lock[j].get("dependencies", [])]
+        for j in seen & set(at):
+            out[at[j]].append(m)
+    return out
+
+
 def traced(f, whys, scripts, macros, data, files, links):
     """What a change of f since the pass (main's or the branch's own), a Rust build input, affects
     beyond what affected-tests.sh gives for it: (test units, packages all of whose test programs
@@ -387,8 +452,8 @@ def traced(f, whys, scripts, macros, data, files, links):
     tests (a source test reading agent/build.rs); outside them, in a crate's source or an
     integration test: as that source (web/buildpage's pages in coord/mod.rs). A file a crate's source
     declares a module by #[path]: a source of that crate too (agentcore's unit tests compile the
-    plan, pipeline's agent/build.rs …, in). A file a build script says it reads (`script_reads`):
-    as a source of the script's package. Not: one include!d or named in a macro, or read by a
+    plan, pipeline's agent/build.rs …, in). A build script's code and a file it says it reads
+    (`script_reads`): as a source of the script's package. Not: one include!d or named in a macro, or read by a
     build script otherwise (its `reads`)."""
     units, linked = [], set()
 
@@ -405,6 +470,8 @@ def traced(f, whys, scripts, macros, data, files, links):
             if not link(None, w[:-len(SCRIPT)]):
                 return None
         elif w == PLAIN:
+            if f in scripts or any(g in scripts for g, _ in data.get(f, [])):
+                continue   # (a build script's code, or a file it compiles in: its package's, by its SCRIPT reason)
             if source(f, "src", scripts, macros):
                 if not link(f):
                     return None
@@ -412,11 +479,15 @@ def traced(f, whys, scripts, macros, data, files, links):
                 return None
         elif w.endswith(PATHED):
             g = w[:-len(PATHED)]
+            if g in scripts:
+                continue   # (a build script's module: its package's, by its SCRIPT reason)
             if not source(g, "src", scripts, macros) or not link(g):
                 return None
         elif not w.endswith(DATA):
             return None
     for g, at in data.get(f, []):
+        if g in scripts:
+            continue   # (in a build script's code: its package's, by its SCRIPT reason)
         src = read(g)
         if enclosing(src, at) is None:
             if not (source(g, "src", scripts, macros) or source(g, "tests", scripts, macros)) or not link(g):

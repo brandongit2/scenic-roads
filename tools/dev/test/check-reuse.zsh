@@ -328,6 +328,13 @@ fresh "OUT_DIR in a package without a build script" s docs 'cargo test -p a --li
 s() { many; w crates/a/build.rs 'fn main() { println!("cargo::rerun-if-changed=../u/src/lib.rs"); }' }
 m() { print '// 2' >> crates/u/src/lib.rs }
 fresh "a file a build script says it reads, in a crate it doesn't link" s m 'cargo test -p b --lib|cargo test -p d --lib' run partial $'cargo test -p b --lib\ncargo test -p d --lib'
+# (#1480: a build script's own code is a source of its package, whatever its rerun lines name.)
+s() { many; w crates/b/build.rs 'const _V: &str = include_str!("v.txt");
+fn main() { println!("cargo::rerun-if-env-changed=B_RERUN"); }'; w crates/b/v.txt 1 }
+m() { print '// 2' >> crates/b/build.rs }
+fresh "a build script naming a variable alone: its own code" s m 'cargo test -p c --lib|cargo test -p u --lib' run partial 'cargo test -p c --lib'
+m() { print 2 >> crates/b/v.txt }
+fresh "a build script naming a variable alone: a file it compiles in" s m 'cargo test -p c --lib|cargo test -p u --lib' run partial 'cargo test -p c --lib'
 
 # -- affected-tests.sh: a file a build script says it reads runs its package's tests (#1467: inputs'
 # digests read every crate its manifest reaches; a change in store alone listed none of its tests, and
@@ -337,7 +344,10 @@ fresh "a file a build script says it reads, in a crate it doesn't link" s m 'car
 affected() {  # affected <name> <main's edit> <want commands, |-separated>
   local d=$(mktemp -d) out
   ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
-members = ["crates/a", "crates/b", "crates/c", "crates/d", "crates/e"]'
+members = ["crates/a", "crates/b", "crates/c", "crates/d", "crates/e", "crates/f", "crates/g", "crates/h"]
+exclude = ["crates/x"]
+[patch.crates-io]
+x = { path = "crates/x" }'
     w crates/a/Cargo.toml '[package]
 name = "a"'; w crates/a/src/lib.rs 'pub fn v() {}'; w data/x.txt 1
     for p in b c d e; do w crates/$p/Cargo.toml "[package]
@@ -348,8 +358,32 @@ fn t() {}'; done
     w crates/b/build.rs 'fn main() { for f in ["../a/src/lib.rs"] { println!("cargo::rerun-if-changed={f}"); } }'
     w crates/c/build.rs 'fn main() { println!("cargo::rerun-if-changed=../../data/x.txt"); }'
     w crates/d/build.rs 'fn main() { println!("cargo::rerun-if-env-changed=D_RERUN"); }'
-    w crates/e/build.rs '// Not `rerun-if-changed=build.rs`: a variable.
+    w crates/e/build.rs '// Not `rerun-if-changed={f}`: a variable.
 fn main() { println!("cargo::rerun-if-env-changed=E_RERUN"); }'
+    w crates/x/Cargo.toml '[package]
+name = "x"
+version = "1.0.0"'; w crates/x/source/Version.txt 1; w crates/x/src/lib.rs '#[test]
+fn t() {}'
+    w crates/x/build.rs 'const _V: &str = include_str!("source/Version.txt");
+fn main() { println!("cargo::rerun-if-env-changed=X_RERUN"); }'
+    w crates/f/Cargo.toml '[package]
+name = "f"
+[dependencies]
+xsys = "1"'; w crates/g/Cargo.toml '[package]
+name = "g"
+[dependencies]
+x = "1"'; w crates/h/Cargo.toml '[package]
+name = "h"
+[dependencies]
+f = { path = "../f" }'
+    for p in f g h; do w crates/$p/src/lib.rs '#[test]
+fn t() {}'; done
+    { print 'version = 4'
+      for p in a b c d e f g h x xsys; do
+        print "[[package]]\nname = \"$p\"\nversion = \"$([[ $p == x* ]] && print 1.0.0 || print 0.0.0)\""
+        case $p in [bcde]) print 'dependencies = ["a"]' ;; f) print 'dependencies = ["xsys"]' ;; g) print 'dependencies = ["x"]' ;;
+          h) print 'dependencies = ["f"]' ;; xsys) print 'source = "registry+https://github.com/rust-lang/crates.io-index"\ndependencies = ["x"]' ;; esac
+      done } > Cargo.lock
     g add -A; g commit -m b0; $2; g add -A; g commit -m main
     zsh $here/../affected-tests.sh HEAD 2>&1 ) > $d/out
   out=$(grep -v '^#' $d/out); rm -rf $d
@@ -362,6 +396,14 @@ m() { print 2 >> data/x.txt }
 affected "a file a build script names" m 'cargo test -p c --lib'
 m() { print '// 2' >> crates/b/src/lib.rs }
 affected "the build script's own package" m 'cargo test -p b --lib'
+m() { print '// 2' >> crates/d/build.rs }
+affected "a build script naming a variable alone: its own code" m 'cargo test -p d --lib'
+m() { print 2 >> crates/x/source/Version.txt }
+affected "a file a script outside the members compiles in: the members reaching it" m 'cargo test -p f --lib|cargo test -p g --lib'
+m() { print '// 2' >> crates/x/src/lib.rs }
+affected "a source outside the members: the members reaching it" m 'cargo test -p f --lib|cargo test -p g --lib'
+m() { print '[[package' >> Cargo.lock }
+affected "a Cargo.lock it can't read: every member's tests, not a failure" m 'cargo test -p a --lib|cargo test -p b --lib|cargo test -p c --lib|cargo test -p d --lib|cargo test -p e --lib|cargo test -p f --lib|cargo test -p g --lib|cargo test -p h --lib'
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them

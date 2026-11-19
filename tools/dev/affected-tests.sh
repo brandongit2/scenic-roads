@@ -14,8 +14,9 @@
 # runs that module's own tests. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
 # changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests);
-# one outside its crate's src/, or another crate's, runs the declaring crate's unit tests whole. A file a
-# build script says it reads (`rerun-if-changed`) runs that package's tests whole.
+# one outside its crate's src/, or another crate's, runs the declaring crate's unit tests whole. A build
+# script's own code, and a file it says it reads (`rerun-if-changed`), run that package's tests whole.
+# A package outside the workspace's members (crates/geos-src) runs the members reaching it instead.
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
 #   tools/dev/affected-tests.sh --nextest <file>  reads such `cargo test` lines from the file and
 #                                          prints the `cargo nextest run` lines running the same tests (#969, below)
@@ -26,6 +27,13 @@ case $#:${1:-} in
   0:|1:[^-]*|2:--nextest) ;;
   *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
+# Its Python reads the manifests with tomllib, 3.11's: where the python3 first on the PATH is older,
+# mise's, as check.sh's. (tools/dev/test-guard.py runs this in Claude Code's environment: the desktop
+# app gives its sessions the login shell's PATH, mise's python3 first, but a PATH of the system's alone
+# has /usr/bin's 3.9, and brew's rg and mise only from the line below.) Without one, every member's
+# tests run, whole (below): never a failure blocking the run.
+path=($path /opt/homebrew/bin)
+python3 -c 'import tomllib' 2>/dev/null || eval "$(mise env -C ${0:A:h:h:h} -s zsh 2>/dev/null)" 2>/dev/null
 SCENIC_AFFECTED_HERE=${0:A:h} exec python3 - "$@" <<'PY'
 import glob, os, re, subprocess, sys
 from collections import OrderedDict
@@ -126,18 +134,37 @@ for f in sorted(r.stdout.split()):
         p = os.path.normpath(os.path.join(os.path.dirname(f), m.group(1)))
         if p in cs and reuse.enclosing(src, m.start()) is None:
             included.append((f, p)); break
-# A file a build script says it reads (its `rerun-if-changed` lines, check-reuse.py's script_reads:
-# crates/inputs' digests of its own sources and of every crate its manifest reaches) runs its
-# package's tests whole (#1467's guard failed publish after a change in store, which no test here
-# named): what the script makes of it is compiled into the package, which no module names.
+# A build script's own code (the script, its #[path] modules, what they include_*!: agentcore's sets
+# the cfg its tests compile under) and a file it says it reads (its `rerun-if-changed` lines:
+# crates/inputs' digests of its own sources and of every crate its manifest reaches), check-reuse.py's
+# script_reads, run its package's tests whole (#1467's guard failed publish after a change in store,
+# which no test here named): what the script makes of it is compiled into the package, which no
+# module names.
+# cargo test -p takes the workspace's members: a test of a package outside them (crates/geos-src,
+# excluded and patched in for crates.io's) runs instead the members whose own dependencies reach it,
+# whole, as Cargo.lock records them (check-reuse.py's outside_users: landmarks names geos-src,
+# terrain reaches it through geos and geos-sys); the members reaching those aren't traced.
+# What can't be told from the manifests (check-reuse.py's Doubt: no tomllib, a manifest or Cargo.lock
+# it can't read) runs every member's tests whole: wide, never failing the run.
+files = git("ls-files", "-z").split("\0")
+try: members = reuse.listed("members", files)
+except reuse.Doubt as e: sys.exit("affected-tests.sh: the workspace's members: %s" % e)
 try:
-    scripted = [(d, hit) for d, pres in reuse.script_reads(reuse.packages(git("ls-files", "-z").split("\0"))).items()
+    pkgs = reuse.packages(files)
+    scripted = [(d, hit) for d, pres in reuse.script_reads(pkgs).items()
                 if d.startswith("crates/") and (hit := next((f for f in dict.fromkeys(changed) if any(reuse.under(f, p) for p in pres)), None))]
+    outside = reuse.outside_users(pkgs, files) if set(pkgs) - set(members) else {}
+    wide = None
 except reuse.Doubt as e:
-    sys.exit("affected-tests.sh: the build scripts' reads: %s" % e)
+    wide = str(e)
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)
+if wide is not None:
+    print("# the manifests can't be read (%s): every member's tests, whole" % wide)
+    for d in members:
+        print("cargo test -p %s %s" % (d.split("/")[1], " ".join(sorted(crate_targets(d.split("/")[1])))))
+    sys.exit()
 if not changed and not scan_hits and not included and not scripted:
     print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 
@@ -205,6 +232,12 @@ def filters_for(c, path, f):
 want = OrderedDict()   # (crate, target flag) -> filters; None = the whole target
 why = []
 def add(c, tgt, filt, reason):
+    d = "crates/" + c
+    if d not in members:   # (cargo test -p takes members: the nearest members' tests instead)
+        for m in outside.get(d, []):
+            for t in sorted(crate_targets(crate_of(m + "/"))): add(crate_of(m + "/"), t, None, "%s, in %s, which it reaches" % (reason, d))
+        if not outside.get(d): why.append("#   %s: in %s, which no member reaches" % (reason, d))
+        return
     want.setdefault((c, tgt), set()).add(filt)
     why.append("#   -p %s %s %s  (%s)" % (c, tgt, filt or "(whole)", reason))
 def add_file(f, reason):
@@ -312,6 +345,8 @@ def trace(c, path, kids, reason):
 
 for f in changed:
     c = crate_of(f)
+    if "crates/" + c not in members:   # (a package outside the members: its users' tests, whole, by add)
+        add(c, "--lib", None, "changed: " + f); continue
     if f.startswith("crates/%s/tests/" % c):
         rel = f[len("crates/%s/tests/" % c):]
         if "/" not in rel: add(c, "--test " + rel.removesuffix(".rs"), None, "changed")
