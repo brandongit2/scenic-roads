@@ -1231,7 +1231,7 @@ impl Freeable {
 }
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
-/// member's its loose raw tiles left out; the pageview months the NAS has, only
+/// member's leaves its loose raw tiles out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`
 /// ones, as far as the NAS can be asked: the heritage clip while it can be made again, the answers
 /// the NAS has all of, only when `root` is given); and what a freeing can do with them

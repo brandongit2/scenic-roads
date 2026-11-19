@@ -1747,6 +1747,11 @@ pub struct Agent {
     cache_sized: (std::sync::mpsc::Sender<(Instant, room::Sizes)>, std::sync::mpsc::Receiver<(Instant, room::Sizes)>),
     /// The count under way on its thread (`count_start`): one at a time.
     count_thread: std::cell::RefCell<Option<std::thread::JoinHandle<()>>>,
+    /// When the count `cache_size` holds began: a result is taken in only when it began later
+    /// (`counts_in`), so a count asked for while one runs leaves the running one's.
+    counted_from: std::cell::Cell<Option<Instant>>,
+    /// A count asked for (`count_caches`) and not started yet (`count_start`).
+    count_wanted: std::cell::Cell<bool>,
     /// A clear, a freeing toward the room target or room-making under way.
     caches_task: Option<CachesTask>,
     /// The lead's: the pass's answers this Mac has sent to the NAS as the agent starts
@@ -2174,6 +2179,8 @@ impl Agent {
             cache_size: Default::default(),
             cache_sized: std::sync::mpsc::channel(),
             count_thread: Default::default(),
+            counted_from: Default::default(),
+            count_wanted: Default::default(),
             caches_task: None,
             answers_seed: None,
             answers_seeded: false,
@@ -6736,13 +6743,15 @@ impl Agent {
         })
     }
 
-    /// The caches' counts done on threads of their own taken in (`cache_size`); not over a count
-    /// begun since, or asked for (`count_caches`). One showing less to delete now than the last
-    /// freeing that fell short left ends what it left (`TowardLeft`: some of it went).
+    /// The caches' counts done on threads of their own taken in (`cache_size`): each that began
+    /// later than the one it holds (`counted_from`; a freeing's, which begins last, over one that
+    /// ran beside it). One showing less to delete now than the last freeing that fell short left
+    /// ends what it left (`TowardLeft`: some of it went).
     fn counts_in(&self) {
         while let Ok((at, n)) = self.cache_sized.1.try_recv() {
             let mut c = self.cache_size.borrow_mut();
-            if c.0 == Some(at) {
+            if self.counted_from.get().is_none_or(|f| at > f) {
+                self.counted_from.set(Some(at));
                 if self
                     .toward_left
                     .get()
@@ -6761,7 +6770,7 @@ impl Agent {
     fn resources(&self, root: Option<&store::nasfs::NasRoot>) -> cond::Resources {
         self.counts_in();
         let counted = self.cache_size.borrow().0;
-        if counted.is_none_or(|t| t.elapsed() >= CACHE_COUNT)
+        if (self.count_wanted.get() || counted.is_none_or(|t| t.elapsed() >= CACHE_COUNT))
             && !self.caches_task.as_ref().is_some_and(|t| t.toward.is_some())
         {
             self.count_start(root);
@@ -6823,11 +6832,12 @@ impl Agent {
             let (member, sized, nas) = (self.is_member(), self.cache_sized.0.clone(), root.cloned());
             if self.caches_start_toward(toward, move || {
                 let f = room::toward(&cache, &s, at, &hints);
-                sized.send((counted, room::sizes(&cache, member, nas.as_ref()))).ok();
+                sized.send((Instant::now(), room::sizes(&cache, member, nas.as_ref()))).ok();
                 f
             }) {
                 self.toward_tried = Some((goal, now_s()));
                 self.cache_size.borrow_mut().0 = Some(counted);
+                self.count_wanted.set(false);
             }
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
@@ -7215,12 +7225,12 @@ impl Agent {
     /// Asks for this Mac's caches to be counted again (after a clear, room-making or a job that
     /// ran), for the status and what they can free (`cheap_now`, `towardable`): on the counting
     /// thread with the NAS, as the loop's status next takes up (`resources`, `count_start`: a walk
-    /// of their files with a lock test of each, never on the loop); a count under way passed over.
-    /// Not while a freeing toward the target runs: its thread counts them as it ends, and that
-    /// count, what it left, isn't to be passed over (`toward_record`).
+    /// of their files with a lock test of each, never on the loop), after the one under way if
+    /// any, whose result is kept. Not while a freeing toward the target runs: its thread counts
+    /// them as it ends (`toward_record`).
     fn count_caches(&self) {
         if !self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
-            self.cache_size.borrow_mut().0 = None;
+            self.count_wanted.set(true);
         }
     }
 
@@ -7242,6 +7252,7 @@ impl Agent {
             Ok(h) => {
                 *t = Some(h);
                 self.cache_size.borrow_mut().0 = Some(now);
+                self.count_wanted.set(false);
             }
             Err(e) => eprintln!("agent: counting the caches: its thread didn't start: {e}"),
         }
@@ -12528,7 +12539,7 @@ mod tests {
         a.worked("terrain-hi 3/1/1");
         a.count_caches();
         a.mem.worked_at = now_s() + 1;
-        assert_eq!(a.cache_size.borrow().0, None, "a count asked for");
+        assert!(a.count_wanted.get(), "a count asked for");
         a.counted(Some(&nas));
         assert_eq!((a.toward_due(), a.towardable()), (None, Some(0)), "an unchanged count");
         // What it left stands `TOWARD_RETRY` at most: past that, with no change to the caches,
@@ -12623,12 +12634,31 @@ mod tests {
         t.join().unwrap();
         a.counts_in();
         assert_eq!(a.cache_size.borrow().1.as_ref().map(|s| s.free.now), Some(1000));
-        // (One at a time: none started over one under way.)
-        *a.count_thread.borrow_mut() = Some(std::thread::spawn(|| std::thread::sleep(Duration::from_millis(500))));
+        // A count asked for while one runs: none started over it, its result kept (task #1478
+        // re-review: job ends faster than a count had thrown each away), and the asked one after.
         a.count_caches();
         a.resources(Some(&nas));
-        assert_eq!(a.cache_size.borrow().0, None, "waits for the count under way");
+        let running = a.cache_size.borrow().0;
+        assert!(running.is_some() && a.count_thread.borrow().is_some());
+        put(&home.join("cache/blobs/sources/x/z.bin"), &[0; 2000]);
+        a.count_caches();
+        *a.count_thread.borrow_mut() = Some({
+            let t = a.count_thread.take().unwrap();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                t.join().unwrap()
+            })
+        });
+        a.resources(Some(&nas));
+        assert_eq!((a.cache_size.borrow().0, a.count_wanted.get()), (running, true), "waits for the one under way");
         a.count_thread.take().unwrap().join().unwrap();
+        a.counts_in();
+        assert_eq!(a.counted_from.get(), running, "the running one's result kept");
+        a.resources(Some(&nas));
+        assert!(!a.count_wanted.get() && a.cache_size.borrow().0 > running, "the asked one follows");
+        a.count_thread.take().unwrap().join().unwrap();
+        a.counts_in();
+        assert_eq!(a.cache_size.borrow().1.as_ref().map(|s| s.free.now), Some(3000));
     }
 
     /// A job's end the lead doesn't take (it doesn't answer, or its round failed already) is owed,
@@ -15073,7 +15103,7 @@ mod tests {
         );
         assert!(!asked(&home));
         // (Counted again on the counting thread, as the loop's status starts it: task #1478.)
-        assert_eq!(a.cache_size.borrow().0, None, "a count asked for");
+        assert!(a.count_wanted.get(), "a count asked for");
         a.counted(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert_eq!(a.cache_size.borrow().1, Some(room::Sizes::default()), "counted again: nothing left to clear");
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
