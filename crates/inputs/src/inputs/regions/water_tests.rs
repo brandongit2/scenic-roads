@@ -647,6 +647,34 @@ fn a_remainder_over_the_seaward_half_of_a_coast_strip_leaves_no_land_behind() {
     assert!(land_left(&files) < 0.01, "the inland half too, with the remainder");
 }
 
+/// A remainder's edge is a coast only for land that touched the coastline (task #1451 review): a
+/// strip of land in no region well inland, between a region and the land a remainder gave across
+/// it, is still a gap, as it is without the remainder: it has no coast to be handed along.
+#[test]
+fn an_inland_strip_beside_a_remainders_land_is_still_a_gap() {
+    let w = world_more(1.0, vec![bx(29.9, 19.9, 31.1, 20.9)]);
+    let box_region =
+        |id: &str, b: &str| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"box:{b}\"]\nwater = []\n");
+    let regions = [
+        ("p/l.toml", box_region("l", "29.9,19.9,30.2,20.8")),
+        ("p/m.toml", box_region("m", "30.2,19.9,30.8,20.5")),
+        ("p/r.toml", box_region("r", "30.8,19.9,31.1,20.8")),
+        ("p/n.toml", box_region("n", "29.9,20.6,31.1,20.9")),
+    ];
+    let rem = "of = \"box:30.2,20.504,30.8,20.6\"\n";
+    let land_left = |remainder: bool| -> f64 {
+        let mut files = all();
+        files.extend(regions.iter().map(|(p, t)| (*p, t.as_str())));
+        if remainder {
+            files.push(("p/_remainder.toml", rem));
+        }
+        run(&w, &files).fit.gaps.iter().map(|g| g.land_km2).sum()
+    };
+    let (without, with) = (land_left(false), land_left(true));
+    assert!(without > 200.0, "the band between m and n is in no region: {without}");
+    assert!(with > 20.0 && with < 40.0, "the strip the remainder left is still a gap: {with}");
+}
+
 /// Task #1427: a county missing from a divided place is a gap at a point inside it, naming the
 /// counties round it, and none of them takes it; two counties both having a strip is an overlap
 /// naming them, each keeping it.

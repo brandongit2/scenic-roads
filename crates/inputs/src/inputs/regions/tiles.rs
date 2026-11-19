@@ -15,8 +15,8 @@
 //!   water, after those its water names whole; its lakes, those in its outline that no other region's
 //!   water names; the three together its area, kept by cell and stored as the cells' rings.
 //! - One coastline: the outlines' coastal edges taken from the coastline (the pass's land).
-//!   What lies in no region along it (the edge of land a remainder gave counts, where it took the
-//!   seaward part of a stretch), land past an outline's coast or sea short of the water's
+//!   What lies in no region along it (for land that touched the coastline before the remainders ran, the
+//!   edge of land a remainder gave counts, where it took the seaward part of the stretch), land past an outline's coast or sea short of the water's
 //!   parts, joined across the cells' edges, goes, where all of a stretch is within
 //!   `COAST_REACH_M` of regions, to the nearest of them (split at the median line), if it has water.
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
@@ -810,6 +810,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     }
     trace("remainders");
     // 1b. Remainders: what of a folder's `of` no outline takes, to its regions.
+    // (Before the remainders: the land in no region that touches the coastline, in the cells they reach,
+    // for the coast step to tell what a remainder cut off the coast from what never had one.)
+    let coastal = coastal_free_land(data, &made, &others, &keep);
     let taken = remainders(folder, ctx, data, &whole, &mut made, &others, out, &mut held, &mut needs);
     for m in made.values_mut() {
         m.outline = TArea::default();
@@ -933,7 +936,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             .collect()
     });
     // 3b. One coastline: what lies in no region between a region's coast and the coastline's.
-    coast(data, folder, &mut made, &others, &taken, progress);
+    coast(data, folder, &mut made, &others, &taken, &coastal, progress);
     // Each region's area by cell: land, water, lakes.
     // (Fanned out over (region, cell) pairs, not regions: one large region still uses every thread
     // allowed, its cells' unions being the work.)
@@ -1934,6 +1937,56 @@ pub const COAST_REACH_M: f64 = 1_000.0;
 /// point inside it; a larger one is split at the median line.
 pub const SPECK_KM2: f64 = 0.01;
 
+/// The land in no region that touches the coastline, by cell, before the remainders run, in the
+/// cells `keep` (the remainders' own): each piece of the cell's land that no region's land or lakes
+/// take, with an edge on the coastline (never a cell's edge). `coast` accepts a piece's edge on
+/// land a remainder gave as coast only for land in these.
+fn coastal_free_land(
+    data: &super::data::Datasets,
+    made: &BTreeMap<String, Made>,
+    others: &BTreeMap<String, TArea>,
+    keep: &BTreeSet<Cell>,
+) -> TArea {
+    let mut t = TArea::default();
+    for (c, a) in pace::par_map(keep.iter().copied().collect(), |c| {
+        let land = land_and_lakes(data, c).0;
+        let none = Area::default();
+        if land.is_empty() {
+            return (c, none);
+        }
+        let all: Vec<Area> = made
+            .values()
+            .flat_map(|m| [m.land.cells.get(&c), m.lakes.cells.get(&c)])
+            .chain(others.values().map(|t| Some(t.cells.get(&c).unwrap_or(&none))))
+            .flatten()
+            .cloned()
+            .collect();
+        let free = land.minus(&geom::union_all(&all));
+        let coastline = SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
+        let bx = cell_box(c);
+        let coastal: Vec<Vec<Ring>> = free
+            .polys
+            .into_iter()
+            .filter(|poly| {
+                poly.iter().any(|r| {
+                    (0..r.len()).any(|k| {
+                        let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                        let edge = (a[0] == b[0] && (a[0] == bx[0] || a[0] == bx[2]))
+                            || (a[1] == b[1] && (a[1] == bx[1] || a[1] == bx[3]));
+                        !edge && coastline.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
+                    })
+                })
+            })
+            .collect();
+        (c, Area { polys: coastal })
+    }) {
+        if !a.is_empty() {
+            t.set(c, a);
+        }
+    }
+    t
+}
+
 /// One coastline for land and water: the outlines' coastal edges taken from the coastline (OSM's
 /// land, the pass's). What no region takes along the coastline, on either side of it — its land where
 /// an outline's coast lay inland of it, its sea where the water's parts stopped short of it — is
@@ -1949,6 +2002,7 @@ fn coast(
     made: &mut BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
     taken: &TArea,
+    coastal: &TArea,
     progress: &Progress,
 ) {
     let cells: BTreeSet<Cell> = made
@@ -2059,6 +2113,18 @@ fn coast(
                         !edge && (coastline.on(mid).is_some() || (!sea && given.on(mid).is_some()))
                     })
                 });
+                // (An edge shared with a remainder's land is a coast only for land that touched the
+                // coastline before the remainders: an inland strip beside a remainder's land is no
+                // coast's, and stays in no region for the cover check to say.)
+                let on_coast = on_coast
+                    && (sea
+                        || poly.iter().any(|r| {
+                            (0..r.len()).any(|k| {
+                                let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                                coastline.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
+                            })
+                        })
+                        || coastal.get(c).contains(interior(&poly)));
                 if !on_coast {
                     continue;
                 }

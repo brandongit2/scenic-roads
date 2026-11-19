@@ -592,7 +592,7 @@ order where a region comes after those its water names whole (`region:`, `group:
 coastline, with or without `cover`: the outlines' coastal edges are taken from the coastline. What
 lies in no region along the coastline, on either side of it — land where an outline's coast lay
 inland of the coastline's, sea where the water's parts stopped short of it (the coastline: the
-land's edge, the big lakes' shores included, and the edge of land a remainder gave, where it took the seaward part of a stretch of free land: its rest borders it, no longer the sea; never a cell's edge) — is joined across the cells'
+land's edge, the big lakes' shores included, and, for land in no region that touched the coastline before the remainders ran, the edge of land a remainder gave, where it took the seaward part of such a stretch: its rest borders that, no longer the sea; an inland strip beside a remainder's land is no coast's, and stays in no region for the cover check to say; never a cell's edge) — is joined across the cells'
 edges into stretches; a stretch whose every point (its vertices and a point inside each piece) is
 within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or, for a stretch of sea, its
 water and, when it has any water, its land (land dominates the sea: sea off a region's shore is
@@ -627,7 +627,7 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 
 | Field | Type | |
 |---|---|---|
-| `of` | a part: the place (`osm:<relation>`, or a union of it with the islets round its coast: a zone's `eez:` buffered 1 km, which fills the holes the zone's polygon leaves round them), naming no region, land, group, line or `rest`. The buffer also grows the zone 1 km into its neighbours' zones and onto their land at a land border, where the first remainder (deepest folder, then path) takes what is free: subtract each land neighbour's relation, as `{ union = ["osm:1403916", { minus = [{ buffer = "eez:5677", by = "1 km" }, "osm:1311341", "osm:365331"] }] }` (metropolitan France: its relation, its zone's islets, less Spain and Italy) | required |
+| `of` | a part: the place (`osm:<relation>`, or a union of it with the islets round its coast: a zone's `eez:` buffered 1 km, which fills the holes the zone's polygon leaves round them), naming no region, land, group, line or `rest`. The buffer also grows the zone 1 km into its neighbours' zones and onto their land at a land border, where the first remainder (deepest folder, then path) takes what is free: subtract each land neighbour's relation, as `{ union = ["osm:1403916", { minus = [{ buffer = "eez:5677", by = "1 km" }, <each land neighbour's "osm:…">] }] }` (metropolitan France: its relation, its zone's islets, less each land neighbour's relation) | required |
 | `[by]` | region id = a part: the official division's piece of each region of the folder that has one (a national boundary file's polygon, its lines run into the lake) | optional |
 | `step` | the median line's grid, as a `nearest`'s (100 m to 20 km) | optional, default `1 km` |
 
@@ -674,7 +674,7 @@ was at most 0.0093 km² a pair, the largest piece 0.0015 km²; a real disagreeme
 the hair passes too; land is judged by its pieces, not the hair: any land piece of a gap or an
 overlap larger than `LAND_MIN_KM2`, 0.0004 km², a square of the 20 m the coastline's rings are
 simplified within, `data::SIMPLIFY_M`, the coastline's own precision, and at least half that wide
-(twice its area over its perimeter, the cells' edges left out), counts whatever the size of
+(twice its area over its perimeter, the cells' edges left out of the perimeter: so an island cut by a cell's line into parts each under that size, up to about 0.0008 km² together, is judged by its parts and not reported, and a strip ending on a whole-degree line, whose end isn't counted, is judged twice as wide as it is), counts whatever the size of
 the stretch or overlap it lies in; narrower or smaller land counts toward the hair only: a strip
 of land a few metres wide along a border is two sources' lines disagreeing), each is an
 error (`rg-cover`), at a point inside it, naming the regions round it by the edge they share with
