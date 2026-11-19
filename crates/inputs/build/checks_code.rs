@@ -285,7 +285,8 @@ impl World {
             }
             for n in item.holds.calls.iter().filter(|n| called.insert(n.to_string())) {
                 for j in self.impls.by_name.get(n).into_iter().flatten() {
-                    if matches!(&self.item(j).kind, Kind::Method(h, _) if seen.contains(&(j.0.clone(), j.1.clone(), *h))) {
+                    if matches!(&self.item(j).kind, Kind::Method(h, _) if seen.contains(&(j.0.clone(), j.1.clone(), *h)))
+                    {
                         found.push(j.clone());
                     }
                 }
