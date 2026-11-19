@@ -3537,8 +3537,7 @@ fn landmarks_work(
     // (Each of a step's stale targets that can run, the rest held, said.)
     let mut take = |step: &str, targets: Vec<(String, String)>, left: &Left, out: &mut Vec<Work>| {
         let mut worked = Worked::default();
-        let (go, wait): (Vec<_>, Vec<_>) =
-            targets.into_iter().partition(|(t, _)| ready_in(step, t, left, &mut worked));
+        let (go, wait): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, _)| ready_in(step, t, left, &mut worked));
         if let Some(n) = held_note(step, wait.iter().map(|(t, _)| t.as_str()), left, &mut worked) {
             held.push((step.to_string(), n));
         }
@@ -9139,7 +9138,10 @@ mod tests {
                     one == planned(&kept_back(&made()), &m, &done),
                     "a coverage read back in place, state {states}"
                 );
-                assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled, state {states}");
+                assert!(
+                    one == planned(&first, &m, &done),
+                    "the first coverage again, its memos filled, state {states}"
+                );
             }
             let p = &one.1;
             most = most.max(p.regions.len().min(p.built.len()).min(p.regions.iter().map(|r| r.units.len()).sum()));

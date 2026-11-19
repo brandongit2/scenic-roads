@@ -454,8 +454,8 @@ fn whole_left(step: &str, view: &dyn View, worked: &mut Worked) -> bool {
     if let Some(&l) = worked.whole.get(step) {
         return l;
     }
-    let l = view.any_left(step)
-        || read_steps(step).into_iter().any(|(s, passes)| passes && whole_left(s, view, worked));
+    let l =
+        view.any_left(step) || read_steps(step).into_iter().any(|(s, passes)| passes && whole_left(s, view, worked));
     worked.whole.insert(step.to_string(), l);
     l
 }
