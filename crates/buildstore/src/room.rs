@@ -117,10 +117,11 @@ pub fn nas_free(root: &store::nasfs::NasRoot) -> std::io::Result<u64> {
 pub fn disk_free(path: &Path) -> std::io::Result<u64> {
     // (A test's disk is its own, never this Mac's: what's free here, with other suites running,
     // decides nothing. 1 TB unless the test says. A crate's unit tests, `out::testing`: as
-    // `cfg(test)` decided it while this was pipeline's.)
+    // `cfg(test)` decided it while this was pipeline's. A disk of `TestDisk` is the folder's alone:
+    // the tests of a process run on threads, and one's disk is no other's.)
     if crate::out::testing() {
-        if let Some((dir, size)) = test_disk::TEST_DISK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            return Ok(size.saturating_sub(test_disk::bytes_under(&dir)));
+        if let Some(free) = test_disk::free_at(path) {
+            return Ok(free);
         }
         return Ok(TEST_FREE.with(|c| c.get()).unwrap_or(1 << 40));
     }
@@ -136,33 +137,42 @@ mod test_disk {
         pub static TEST_FREE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     }
 
-    /// A test's disk that follows its files, for every thread of its process (a freeing's on a
-    /// thread of its own): a folder and the disk's size, its free space that less what the
-    /// folder's files hold (their lengths). Before `TEST_FREE`. Set only through `TestDisk`.
-    pub(super) static TEST_DISK: std::sync::Mutex<Option<(std::path::PathBuf, u64)>> = std::sync::Mutex::new(None);
+    /// The test disks set, each its folder and size (`TestDisk`).
+    static DISKS: std::sync::Mutex<Vec<(std::path::PathBuf, u64)>> = std::sync::Mutex::new(Vec::new());
 
-    /// One test's turn with `TEST_DISK`, the tests of a process taking theirs one at a time.
-    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// `TEST_DISK` set for a test while this lives, cleared as it drops (a failed test's too), and
-    /// no other test of its process (threads, as `cargo test` runs them) setting it meanwhile.
-    pub struct TestDisk {
-        _turn: std::sync::MutexGuard<'static, ()>,
-    }
+    /// A test's disk that follows its files, for every thread of its test (a freeing's on a thread
+    /// of its own): a folder and the disk's size, its free space that less what the folder's files
+    /// hold (their lengths). Before `TEST_FREE`. It answers only for the folder and the paths about
+    /// it (inside it, or holding it: the agent's home asks of the folder its cache is in), so the
+    /// tests of a process, on threads, each have a disk of their own.
+    pub struct TestDisk(std::path::PathBuf);
 
     impl TestDisk {
-        /// The disk at `dir` of `size` bytes (`TEST_DISK`), waiting for another test's to drop.
+        /// The disk at `dir` of `size` bytes, until this drops.
         pub fn set(dir: std::path::PathBuf, size: u64) -> TestDisk {
-            let turn = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            *TEST_DISK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((dir, size));
-            TestDisk { _turn: turn }
+            DISKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((dir.clone(), size));
+            TestDisk(dir)
         }
     }
 
     impl Drop for TestDisk {
         fn drop(&mut self) {
-            *TEST_DISK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            let mut d = DISKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(i) = d.iter().position(|(dir, _)| *dir == self.0) {
+                d.remove(i);
+            }
         }
+    }
+
+    /// The free space of the test disk `path` is about, if any.
+    pub(super) fn free_at(path: &std::path::Path) -> Option<u64> {
+        let (dir, size) = DISKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(dir, _)| path.starts_with(dir) || dir.starts_with(path))
+            .cloned()?;
+        Some(size.saturating_sub(bytes_under(&dir)))
     }
 
     pub(super) fn bytes_under(dir: &std::path::Path) -> u64 {
@@ -224,6 +234,28 @@ mod tests {
             ),
             (None, 100 << 30)
         );
+        TEST_FREE.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn a_test_disk_answers_for_its_folder_alone() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir_all(a.path().join("home/cache")).unwrap();
+        std::fs::write(a.path().join("home/cache/f"), [0; 1000]).unwrap();
+        let disk = testkit::TestDisk::set(a.path().join("home/cache"), 5000);
+        // Its folder and the folder its folder is in: its free space, less its files.
+        assert_eq!(disk_free(&a.path().join("home/cache")).unwrap(), 4000);
+        assert_eq!(disk_free(&a.path().join("home")).unwrap(), 4000);
+        // Another test's folder, or the same thread's other disk: not its.
+        TEST_FREE.with(|c| c.set(Some(77)));
+        assert_eq!(disk_free(b.path()).unwrap(), 77);
+        let other = testkit::TestDisk::set(b.path().join("cache"), 9000);
+        assert_eq!(disk_free(b.path()).unwrap(), 9000);
+        assert_eq!(disk_free(&a.path().join("home")).unwrap(), 4000);
+        drop(other);
+        assert_eq!(disk_free(b.path()).unwrap(), 77);
+        drop(disk);
+        assert_eq!(disk_free(&a.path().join("home")).unwrap(), 77);
         TEST_FREE.with(|c| c.set(None));
     }
 }
