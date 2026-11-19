@@ -6,8 +6,9 @@
 //! While a page has asked in the last `ASKED_FOR_S`, a thread of the agent (`spawn`) asks the
 //! view of the lead's coordinator, in process, every `LEAD_EVERY` (`tick_lead`, `Lead`): its
 //! status, its coordinator's view, the pause, the Macs' addresses (each member's broker: where a
-//! page reads its `/api/live`), and the forecast's input and the page's regions when their time
-//! changed. A view that can't be had leaves the last one, said with its age. It keeps one
+//! page reads its `/api/live`); and the forecast's input and the page's regions as its coordinator
+//! holds them, shared (`Lead::page`). A view that can't be had leaves the last one, said with its
+//! age. It keeps one
 //! snapshot: the view and the forecast run here (`forecast::Record::forecast`) with its time
 //! brought to now, this Mac's own lanes as its slots are now (`Inputs::own`, worked out as the
 //! lead works out its own: forecast::SlotJob). The forecast runs on a thread of its own (`Runs`,
@@ -193,9 +194,10 @@ impl Runs {
 #[derive(Default)]
 struct State {
     snap: Option<Snap>,
-    /// The forecast's input as last read, by its file's time.
+    /// The forecast's input as last read, by when its agent handed it.
     record: Option<(SystemTime, Arc<Record<'static>>)>,
-    /// The lead's regions for the page (crate::agent::regionsview) as last read, by its file's time.
+    /// The lead's regions for the page (crate::agent::regionsview) as last read, by when its agent
+    /// handed them.
     regions: Option<(SystemTime, Arc<Value>)>,
     /// When the lead was last asked.
     lead_last: Option<Instant>,
@@ -282,8 +284,9 @@ impl PageView {
     }
 
     /// Asks the lead for its view (`Lead::view`) with what it has, and takes it in: its status,
-    /// view, pause, Macs, and the forecast's input and regions when they changed. One that can't be
-    /// asked: the last view kept, said with its age (`lead_failed`).
+    /// view, pause, Macs; and the forecast's input and regions as the lead holds them, shared
+    /// (`Lead::page`). One that can't be asked: the last view kept, said with its age
+    /// (`lead_failed`).
     fn ask_lead(&self, lead: &dyn Lead, now: u64) {
         let ask = {
             let st = self.state.lock().unwrap();

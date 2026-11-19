@@ -706,8 +706,9 @@ pub fn with_edges<T>(f: impl FnOnce(&mut Vec<[i32; 4]>) -> T) -> T {
     out
 }
 
-/// The most edges a thread's list keeps room for between calls (`with_edges`): 16 MB. A list
-/// larger is of the allocator's large blocks, which go back to the system when freed.
+/// The most edges a thread's list keeps room for between calls (`with_edges`): 16 MB, kept for the
+/// thread's life (up to that much a thread that asked for so many edges). A list larger is of the
+/// allocator's large blocks, which go back to the system when freed.
 const EDGES_KEPT: usize = 1 << 20;
 
 /// Whether segment a–b meets the box w, s, e, n (edges included).
@@ -2466,7 +2467,7 @@ mod tests {
         with_edges(|e| assert!(e.is_empty() && e.capacity() >= 1000, "given again empty, its room kept"));
         // (A list past `EDGES_KEPT` is let go of down to it.)
         with_edges(|e| e.extend(std::iter::repeat_n([0; 4], EDGES_KEPT + 1)));
-        with_edges(|e| assert!(e.capacity() <= EDGES_KEPT.next_power_of_two(), "{}", e.capacity()));
+        with_edges(|e| assert!(e.capacity() <= EDGES_KEPT, "{}", e.capacity()));
     }
 
     #[test]

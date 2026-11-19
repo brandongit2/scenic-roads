@@ -2948,8 +2948,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
   the lead's log's map (`agent::publish::Here`: the head's catalogue, made of the map while a
   reader holds it; the plan's regions on the map, the map updates' times,
   `pubtimes::PlannedNotes`, and this view read the same one). regions.json is about 0.96 MB. Handed by
-  the lead's pool step to its coordinator for its page (`Coordinator::page`), read by the page's
-  data when its time changes. Every Mac's port answers `POST /api/regions` with
+  the lead's pool step to its coordinator for its page (`Coordinator::page`), read shared by the
+  page's data at each ask. Every Mac's port answers `POST /api/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; a page that has the
   outlines of the answer's version says so (`{"have": version}`) and gets it without `fill` and
   `edge` (asked again with each map update for its sizes, as often as each poll while the lead
