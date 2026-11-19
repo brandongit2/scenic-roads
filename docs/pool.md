@@ -1855,49 +1855,53 @@ time 30 s against a fetching one's 4,950 s), while its own target keeps its own 
 lead's costs, history and timings log as copied on 19 Nov (52,075 cost lines; the log holds the
 last 38 h, its records' instructions since 18 Nov 17:33, the Macs' supply since 19 Nov 08:23); for
 each day from 12 Nov, a book of the runs that had ended before it predicting each target granted
-that day (7,323 on 12, 15, 17, 18 and 19 Nov) on the Mac and threads it ran with, against the
+that day (7,396 on 12, 15, 17, 18 and 19 Nov) on the Mac and threads it ran with, against the
 cost book it replaced (its fits, priors, source bins and pace pairs) on the same days. Each
 target's run is out of the book that predicts it, and a source that ran the same day is too (the
-book is a day's), for both. Time, the median |log(predicted / took)| over the targets: 1.06 before,
-0.72 now (0.69 at `needs-work-pct` 50, 0.81 at 30); memory, the targets predicted under what they
-took 6.2 % before and 4.6 % now, by over a GB 1.0 % and 0.5 %, reserved 4.52× and 4.36× what they
-took; NAS bytes, the median |log error| 2.36 and 1.83. By step (time; memory missed; NAS):
+book is a day's), for both. Time, the median |log(predicted / took)| over the targets: 1.05 before,
+0.72 now; memory, the targets predicted under what they took 6.2 % before and 3.1 % now, by over a
+GB 1.1 % and 0.4 %, reserved 4.49× and 4.65× what they took; NAS bytes, the median |log error| 2.36
+and 1.62, the median log(predicted / moved) +2.21 and +0.88 (both over: the bias column, by step).
+By step (time; memory missed, and by over a GB; NAS):
 
-| Step | Targets | Time before / now | Memory missed before / now | NAS before / now |
-| --- | ---: | --- | --- | --- |
-| bldprep | 1,738 | 1.50 / 1.10 | 17.0 % / 8.5 % | 2.48 / 2.21 |
-| pois | 1,262 | 0.69 / 0.00 | 0.0 % / 1.0 % | 1.94 / 1.82 |
-| trees | 1,226 | 0.69 / 0.69 | 0.2 % / 0.2 % | 2.90 / 1.83 |
-| bldtiles | 896 | 2.20 / 1.23 | 1.3 % / 1.3 % | 5.21 / 3.92 |
-| unit | 866 | 1.44 / 0.69 | 0.7 % / 3.0 % | 2.87 / 1.33 |
-| terrain-deep | 493 | 0.96 / 0.76 | 2.0 % / 2.0 % | 1.51 / 0.65 |
-| slope-deep | 208 | 0.99 / 3.09 | 11.1 % / 11.1 % | 1.54 / 0.88 |
-| pack | 158 | 0.69 / 0.00 | 38.6 % / 38.6 % | 2.74 / 2.18 |
-| lake-depth | 109 | 0.67 / 0.69 | 0.0 % / 0.0 % | 1.20 / 0.05 |
-| peaks | 63 | 0.51 / 1.39 | 19.0 % / 19.0 % | 4.59 / 1.85 |
-| terrain-hi | 59 | 0.73 / 0.75 | 0.0 % / 0.0 % | 0.67 / 0.99 |
-| slope-hi | 42 | 0.78 / 0.62 | 0.0 % / 0.0 % | 1.46 / 1.26 |
-| bldtile | 28 | 0.81 / 1.02 | 3.6 % / 3.6 % | – |
-| trees-lo | 26 | 1.13 / 1.28 | 0.0 % / 0.0 % | 1.03 / 5.38 |
-| depth | 21 | 0.59 / 0.83 | 33.3 % / 19.0 % | 2.26 / 0.75 |
-| terrainsub | 19 | 0.69 / 0.00 | 0.0 % / 0.0 % | – |
-| treeblock | 18 | 0.96 / 0.97 | 5.6 % / 5.6 % | – |
-| bldfield-lo | 17 | 1.22 / 1.46 | 35.3 % / 35.3 % | 1.53 / 4.04 |
-| lo | 17 | 1.13 / 0.69 | 17.6 % / 11.8 % | 1.66 / 1.32 |
-| tail | 16 | 4.72 / 0.31 | 0.0 % / 0.0 % | – |
-| pyramids-fill | 15 | 2.72 / 1.90 | 0.0 % / 0.0 % | 3.15 / 3.97 |
-| terrain-lo | 12 | 0.84 / 0.29 | 0.0 % / 0.0 % | 0.67 / 0.32 |
+| Step | Targets | Time before / now | Memory missed before / now | By over a GB | NAS before / now | NAS bias before / now |
+| --- | ---: | --- | --- | --- | --- | --- |
+| bldprep | 1,741 | 1.50 / 0.69 | 17.2 % / 5.2 % | 3.8 % / 1.0 % | 2.46 / 2.12 | +2.31 / +0.37 |
+| pois | 1,262 | 0.69 / 0.69 | 0.0 % / 1.0 % | 0.0 % / 0.0 % | 1.94 / 1.49 | +1.78 / +0.88 |
+| trees | 1,226 | 0.69 / 0.83 | 0.2 % / 0.2 % | 0.0 % / 0.0 % | 2.90 / 2.16 | +2.90 / +2.10 |
+| bldtiles | 938 | 2.21 / 1.10 | 1.2 % / 1.2 % | 0.0 % / 0.0 % | 5.27 / 2.38 | +5.27 / +2.08 |
+| unit | 866 | 1.44 / 1.07 | 0.7 % / 1.0 % | 0.3 % / 0.5 % | 2.87 / 1.43 | +2.87 / +1.39 |
+| terrain-deep | 517 | 0.96 / 0.56 | 1.9 % / 1.9 % | 0.0 % / 0.0 % | 1.50 / 0.85 | +1.50 / −0.06 |
+| slope-deep | 209 | 0.99 / 1.21 | 11.0 % / 11.0 % | 0.0 % / 0.0 % | 1.54 / 0.90 | +1.51 / +0.06 |
+| pack | 158 | 0.69 / 0.92 | 38.6 % / 21.5 % | 2.5 % / 1.3 % | 2.74 / 1.43 | −2.56 / −0.97 |
+| lake-depth | 112 | 0.66 / 0.69 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 1.22 / 0.15 | +1.22 / +0.15 |
+| peaks | 63 | 0.51 / 0.51 | 19.0 % / 19.0 % | 4.8 % / 4.8 % | 4.59 / 3.18 | +4.59 / +2.69 |
+| terrain-hi | 59 | 0.73 / 0.85 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 0.67 / 0.50 | +0.35 / +0.26 |
+| slope-hi | 42 | 0.78 / 0.61 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 1.46 / 1.02 | +1.46 / +0.56 |
+| bldtile | 28 | 0.81 / 1.02 | 3.6 % / 3.6 % | 0.0 % / 0.0 % | – | – |
+| trees-lo | 26 | 1.13 / 1.28 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 1.03 / 1.99 | +0.47 / −1.34 |
+| depth | 21 | 0.59 / 0.77 | 33.3 % / 9.5 % | 0.0 % / 0.0 % | 2.26 / 1.38 | +2.26 / +1.38 |
+| terrainsub | 19 | 0.69 / 0.00 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | – | – |
+| treeblock | 18 | 0.96 / 0.97 | 5.6 % / 0.0 % | 0.0 % / 0.0 % | – | – |
+| bldfield-lo | 17 | 1.22 / 0.89 | 35.3 % / 17.6 % | 0.0 % / 0.0 % | 1.53 / 1.38 | −0.63 / −0.96 |
+| lo | 17 | 1.13 / 1.04 | 17.6 % / 11.8 % | 11.8 % / 11.8 % | 1.66 / 0.92 | −0.86 / +0.36 |
+| tail | 16 | 4.72 / 0.31 | 0.0 % / 6.2 % | 0.0 % / 0.0 % | – | – |
+| pyramids-fill | 15 | 2.72 / 1.90 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 3.15 / 4.23 | −3.15 / −4.23 |
+| terrain-lo | 12 | 0.84 / 0.65 | 0.0 % / 0.0 % | 0.0 % / 0.0 % | 0.67 / 0.30 | +0.67 / +0.28 |
 
-(pack, pois and terrainsub: most of their targets took a second or less, as predicted.) Where it does worse:
-179 of slope-deep's 208 targets, granted on 18–19 Nov, had their terrain-deep run the same day, so
-neither book knew their source; by its runs a target, most of them empty, the low percentile is an
-empty one's (the cost book's mean sat nearer); peaks, trees-lo and bldfield-lo, few targets each.
-On the last day alone (2,834 targets, each Mac's speed measured from its records): time 1.10 and
-0.92, memory missed 11.8 % and 8.0 % (by over a GB 2.1 % and 0.8 %), reserved 3.24× and 2.58×,
-NAS 2.40 and 1.62. The defaults were picked by the same test, run before a target's times were read
-of the runs of about its size (which moves neither its memory nor its NAS bytes): `needs-high-pct`
-95 missed 4.5 % of the targets' memory where 90 missed 6.4 %; `needs-nas-pct` 70 erred 1.89 where
-50 erred 2.34; `needs-runs` 100 missed 8.6 %.
+(pois and terrainsub: most of their targets took a second or less, as predicted.) Where it
+does worse: slope-deep, 179 of whose 208 targets, granted on 18–19 Nov, had their terrain-deep run
+the same day, so neither book knew their source (by the mean of its runs a target now, not their
+low percentile, an empty one's: 1.21 against the cost book's 0.99); trees-lo
+and pyramids-fill's NAS (26 and 15 targets: their bytes under what they moved, the cost book's
+nearer); the time of trees (its targets took a median 9 s, predicted 23: 0.83 against 0.69), pack
+and terrain-hi. On the last day alone (2,962
+targets, each Mac's speed measured from its records): time 1.10 and 0.83, memory missed 11.4 % and
+5.1 % (by over a GB 2.1 % and 0.6 %), reserved 3.26× and 3.22×, NAS 2.38 and 1.47. The defaults
+were picked by the same test, run before a target's times were read of the runs of about its size
+and its memory of every run at or above it: `needs-high-pct` 95 missed 4.5 % of the targets'
+memory where 90 missed 6.4 %; `needs-nas-pct` 70 erred 1.89 where 50 erred 2.34; `needs-runs` 100
+missed 8.6 %.
 
 **Each Mac's speed** (`crate::paces`, tasks #926, #1418): each Mac's time against the lead's, the
 lead's speed over its own on its performance cores (`jobrt::timings::Speeds`: billions of
