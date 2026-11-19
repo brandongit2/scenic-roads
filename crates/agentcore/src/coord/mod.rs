@@ -625,9 +625,10 @@ impl Shared {
     /// One reading of the pacing (jobrt::budget::nas::Pace, task #1417), the lead's prober's every
     /// `Tuning::read_s`, by the bounds the pool's settings give (`k`): every Mac's NAS answers
     /// (`pool_answers`: the capacities of `me` and of the workers around, whatever their asks' age,
-    /// as each beat keeps their answers new and a reading judges them by their own `nas_at`; `me`'s
-    /// read from this Mac's live store now), whether a Mac holding leased jobs whose app sends
-    /// answers (`nas_at` set) gave none fresh, and the NAS's disks (`disks`; None: not read)
+    /// as each beat keeps their answers new and a reading judges them by their own `nas_at`, a
+    /// stale one only from a Mac holding leased jobs; `me`'s read from this Mac's live store now),
+    /// whether a Mac holding leased jobs whose app sends answers (`nas_at` set) gave none fresh,
+    /// and the NAS's disks (`disks`; None: not read)
     /// against the target `pct`, beside the weight the pool's leased jobs hold now and the least a
     /// target waiting for the budget weighs (`Sched::nas_wants`), weighed by the limits as probed;
     /// the window it gives, and whether a job beside nothing goes (`Pace::lone`), set in `nas` and
@@ -642,9 +643,9 @@ impl Shared {
         let own = self.own_cap.iter().map(|c| (me.to_string(), c.clone()));
         let caps: Vec<(String, Capacity)> =
             own.chain(self.workers_around().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)))).collect();
-        let answers = pool_answers(&caps, t, k);
-        let sends = |m: &str| caps.iter().any(|(n, c)| crate::paces::mac_of(n) == m && c.nas_at != 0);
         let holding: BTreeSet<&str> = self.leases.live(now).map(|l| crate::paces::mac_of(&l.worker)).collect();
+        let answers = pool_answers(&caps, &holding, t, k);
+        let sends = |m: &str| caps.iter().any(|(n, c)| crate::paces::mac_of(n) == m && c.nas_at != 0);
         let blind = holding.iter().any(|m| sends(m) && !answers.iter().any(|a| a.mac == *m && a.fresh));
         let s = jobrt::budget::nas::Sample { t, answers: &answers, blind, busy: disks, pct, in_use, wants };
         self.nas_pace.read(&s, k);
@@ -1487,24 +1488,32 @@ pub fn pool_calls(caps: &[(String, Capacity)]) -> Option<[f64; 3]> {
 }
 
 /// Each Mac's NAS answers at `t` (unix s; jobrt::budget::nas::Answer), by its name, from its
-/// capacity: those measuring them; fresh when no older than the pacing's span and a beat
-/// (crate::agent::beat::EVERY: each beat sets them) and its floor not young (`nas_young`), its
-/// calls missed when it missed any a second lately (`nas_calls`).
+/// capacity: those measuring them, a stale one (older than the pacing's span and a beat,
+/// crate::agent::beat::EVERY: each beat sets them) only from a Mac `holding` leased jobs (a paused
+/// Mac, or one gone quiet, holding none says nothing of the NAS now: it neither cuts nor holds the
+/// window); fresh when not stale and its floor not young (`nas_young`), its calls missed when it
+/// missed any a second lately (`nas_calls`).
 pub fn pool_answers(
     caps: &[(String, Capacity)],
+    holding: &BTreeSet<&str>,
     t: u64,
     k: &jobrt::budget::nas::Tuning,
 ) -> Vec<jobrt::budget::nas::Answer> {
     let fresh_s = k.span_s + crate::agent::beat::EVERY.as_secs();
     caps.iter()
         .filter_map(|(n, c)| {
+            let mac = crate::paces::mac_of(n);
+            let new = c.nas_at + fresh_s >= t;
+            if !new && !holding.contains(mac) {
+                return None;
+            }
             Some(jobrt::budget::nas::Answer {
-                mac: crate::paces::mac_of(n).to_string(),
+                mac: mac.to_string(),
                 home: c.home,
                 ms: c.nas_ms?,
                 floor_ms: c.nas_floor_ms?,
                 missed: c.nas_calls.is_some_and(|x| x[1] > 0.0),
-                fresh: c.nas_at + fresh_s >= t && !c.nas_young,
+                fresh: new && !c.nas_young,
             })
         })
         .collect()
@@ -2094,6 +2103,17 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         s.leases.all(now).len()
+    }
+
+    /// Whether work was held back for the NAS budget in the last two minutes (`Sched::nas_waiting`):
+    /// the lead's agent samples the NAS's answers then too (crate::agent's `tend_live`), as with
+    /// leases out. With nothing running anywhere no Mac lists the NAS, and a pacing reading no
+    /// answers never sees it near its best, to end a lone job's hold or grow the window for the
+    /// work waiting.
+    pub fn nas_waiting(&self) -> bool {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.nas_waiting(now)
     }
 
     /// Stops answering (this process no longer leads): its runtime shut down, its listeners closed
@@ -7580,7 +7600,7 @@ mod tests {
             s.nas_probes = vec![p];
             s.nas_own = jobrt::budget::nas::Probes(vec![p]).limits(None);
             let k = jobrt::budget::nas::Tuning::default();
-            let answers = super::pool_answers(&s.capacities(&c.me), unix_now(), &k);
+            let answers = super::pool_answers(&s.capacities(&c.me), &BTreeSet::new(), unix_now(), &k);
             let m4 = jobrt::budget::nas::Answer {
                 mac: "m4".into(),
                 ms: 6.5,
@@ -12675,6 +12695,124 @@ mod tests {
         end(&c, big);
         end(&c, held);
         assert_eq!(take(&c, "m4", 4).len(), 1, "they ended: the smaller one goes");
+    }
+
+    /// Task #1417 follow-up, as the live lead stood on 19 Nov: the window cut to a step by a lone
+    /// job's slow answers, a heavy target aged in the budget holding its room, the light ones held
+    /// back behind it, nothing running and no Mac listing the NAS. The light ones' weight fits the
+    /// window, but the room held for the heavy one doesn't: the window is what limits, and grows
+    /// for it (it read the light ones' and held, the pool idle till the lone job's hold ended). The
+    /// lead's own answers near its best end that hold at once, and the heavy one goes beside
+    /// nothing; the lead samples them while work waits for the budget.
+    #[test]
+    fn a_cut_window_grows_back_for_the_room_held_once_the_pool_is_idle() {
+        use jobrt::budget::nas::{Hold, State, Tuning, STEP};
+        let (_d, c, _w, clock) = every((0, 0));
+        heavy_slope(&c);
+        // (6/1/1 weighs 500; 6/1/2 to 6/1/5 40 each.)
+        for i in 2..=5 {
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 2_400_000_000)];
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope-hi"),
+                sizes: sizes.into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
+        }
+        let limits =
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        let k = Tuning::default();
+        let (offer, lead) = {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            // (Cut to a step by a lone job, its lone way held for a second time.)
+            let t = s.wall_s();
+            let kept = State {
+                at: t,
+                window: STEP.into(),
+                threshold: Some(STEP.into()),
+                cut_at: Some(t),
+                settled_at: Some(t),
+                lone_at: Some(t),
+                lone_n: 2,
+            };
+            assert!(s.nas_pace.restore(&kept, t, k.restore_s));
+            (s.offers[0].clone(), s.lead_name.clone())
+        };
+        let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
+        let take = |w: &str, i: usize| {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.pick_every(&one(i), &every_ask(w, "slope-hi", 64_000, 100_000), now)
+        };
+        // (A reading: the lead's own answers `ms` over a 2-ms floor, None while it lists nothing;
+        // the disks quiet.)
+        let read = |ms: Option<f64>| {
+            clock.advance(Duration::from_secs(k.read_s));
+            let mut s = c.shared.lock().unwrap();
+            let at = s.wall_s();
+            let cap = Capacity { at, nas_ms: ms, nas_floor_ms: ms.map(|_| 2.0), nas_at: at, ..Default::default() };
+            s.own_cap = Some(cap);
+            s.pace_nas(&lead, Some(&[2.0]), 85, &k);
+            let l = s.nas_own.unwrap();
+            (l.window, l.alone, s.nas_pace.last.as_ref().unwrap().hold)
+        };
+        assert!(!c.nas_waiting(), "nothing held back yet");
+        // (A light job runs on m2 for an `OWN_AGE` and more, its answers ten times its best; the
+        // heavy one asked for all along, held back for the budget, ages.)
+        let light = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let ts = vec![(offer.targets[1].0.clone(), String::new())];
+            s.leases.grant("m2", Work::Job { step: "slope-hi".into(), targets: ts }, now)
+        };
+        for _ in 0..=jobrt::budget::nas::OWN_AGE.as_secs() / k.read_s {
+            let (window, alone, _) = read(Some(20.0));
+            assert_eq!((window, alone), (STEP, false));
+            assert!(take("m3", 0).is_empty(), "500 beside 40 in a window of 50");
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            assert!(s.leases.renew(light, "m2", None, now));
+        }
+        assert!(c.nas_waiting(), "held back lately: the lead samples the NAS's answers");
+        c.shared.lock().unwrap().leases.cancel(light);
+        // (Idle: nothing running, nothing listing. The light ones held back for the heavy one's
+        // room, the heavy one for the lone way's hold.)
+        let mut grew = 0;
+        for _ in 0..6 {
+            assert!(take("m4", 2).is_empty(), "40 leaves no room for the aged 500");
+            assert!(take("m3", 0).is_empty(), "500 past the window, beside nothing held back");
+            let (window, alone, hold) = read(None);
+            assert!(!alone);
+            assert_ne!(hold, Some(Hold::NotLimiting), "the room held for the aged one is what the window lacks");
+            grew = window;
+        }
+        assert_eq!(grew, 2 * STEP, "at the threshold: a step a minute");
+        // (The lead's own answers near its best: the hold ends, and the heavy one goes alone.)
+        let (_, alone, _) = read(Some(2.5));
+        assert!(alone, "near the best: a job beside nothing goes");
+        assert_eq!(take("m3", 0).len(), 1, "the aged heavy one goes beside nothing");
+    }
+
+    /// A stale answer from a Mac holding no leased jobs (paused, or gone quiet) is left out: it
+    /// neither cuts the window nor keeps it from growing. One from a Mac holding jobs stays,
+    /// stale: it may cut, never grow.
+    #[test]
+    fn a_stale_answer_counts_only_from_a_mac_holding_jobs() {
+        let k = jobrt::budget::nas::Tuning::default();
+        let t = 10_000;
+        let cap = |at: u64| Capacity { nas_ms: Some(40.0), nas_floor_ms: Some(5.0), nas_at: at, ..Default::default() };
+        let caps = [("m1".to_string(), cap(t)), ("m4".to_string(), cap(t - 3600))];
+        let answers = pool_answers(&caps, &BTreeSet::new(), t, &k);
+        assert_eq!(answers.iter().map(|a| (a.mac.as_str(), a.fresh)).collect::<Vec<_>>(), [("m1", true)]);
+        let answers = pool_answers(&caps, &BTreeSet::from(["m4"]), t, &k);
+        assert_eq!(
+            answers.iter().map(|a| (a.mac.as_str(), a.fresh)).collect::<Vec<_>>(),
+            [("m1", true), ("m4", false)]
+        );
     }
 
     /// Task #444 review: a target over the budget that fits no asking member (its measured memory

@@ -115,6 +115,9 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   `grow_s`;
 /// - **between**, or nothing read: it holds.
 ///
+/// Each reading keeps why it held (`Hold`: the first of those gates it failed), for the lead's
+/// status (`Reading::line`).
+///
 /// A job beside nothing that the window doesn't take goes all the same, but not for
 /// `Tuning::lone_s` from a reading past the knee (`Pace::lone`: beside an outside load near the
 /// cliff, each lone job would take the NAS over it, and the hold is all that keeps it off), each
@@ -180,8 +183,10 @@ impl Default for State {
 
 /// One reading of the pacing (`Pace::read`): when (unix s), the Mac whose answers counted and its
 /// ratio (one more than its excess over the least floor, at most `RATIO_MOST`), whether it was past
-/// the knee, the disks' smoothed load, the weight in use, whether every Mac holding jobs answered
-/// fresh, and what it did.
+/// the knee, the disks' smoothed load, the weight in use and the least a job waiting needs
+/// (`Sample::wants`), whether every Mac holding jobs answered fresh, what it did and why it held
+/// (`Hold`; None: it grew or cut), the slow start's threshold after it, and until when a job beside
+/// nothing is held back (`Pace::lone`; None: it isn't).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Reading {
@@ -194,8 +199,78 @@ pub struct Reading {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_pct: Option<f64>,
     pub in_use: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wants: Option<u32>,
     pub fresh: bool,
     pub verdict: Verdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<Hold>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lone_until: Option<u64>,
+}
+
+/// Why a reading held the window (`Reading::hold`; `Verdict::Held`): the first of `Pace::read`'s
+/// gates it failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Hold {
+    /// Past the knee within the last cut's hold-off: the weight in use not yet down to the window,
+    /// or no `Tuning::span_s` since it fell there.
+    HoldOff,
+    /// Under the knee, not near the best.
+    NotNear,
+    /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
+    NotFresh,
+    /// The jobs last started haven't run a `Tuning::span_s`.
+    Started,
+    /// The window isn't what limits: the least a job waiting needs fits beside what's in use (none
+    /// waiting: the weight in use more than a step under it).
+    NotLimiting,
+}
+
+impl Hold {
+    /// What it says, for the lead's status.
+    pub fn words(self) -> &'static str {
+        match self {
+            Hold::HoldOff => "past the knee, within the last cut's hold-off",
+            Hold::NotNear => "the answers counted not near their best",
+            Hold::NotFresh => "not every Mac's answers fresh",
+            Hold::Started => "the jobs last started not a span old",
+            Hold::NotLimiting => "the window not what limits",
+        }
+    }
+}
+
+impl Reading {
+    /// The pacing's line in the lead's status at `now` (unix s), its window `window`: the window,
+    /// its threshold, the weight in use and the least a job waiting needs, the reading's ratio and
+    /// disk load, its verdict and why it held, and the lone way's hold.
+    pub fn line(&self, window: u32, now: u64) -> String {
+        let pct = |w: u32| format!("{:.0} %", f64::from(w) / 10.0);
+        let th = self.threshold.map_or(String::new(), |t| format!(" (threshold {})", pct(t)));
+        let wants =
+            self.wants.map_or(", nothing waiting".to_string(), |w| format!(", the least job waiting {}", pct(w)));
+        let ratio = self.ratio.map_or(String::new(), |x| format!(", answers {x:.1}× their best"));
+        let load = self.load_pct.map_or(String::new(), |l| format!(", disks {l:.0} % busy"));
+        let verdict = match (self.verdict, self.hold) {
+            (Verdict::Grew, _) => "grew".to_string(),
+            (Verdict::Cut, _) => "cut".to_string(),
+            (Verdict::Unread, _) => "nothing read".to_string(),
+            (_, Some(h)) => format!("held: {}", h.words()),
+            (_, None) => "held".to_string(),
+        };
+        let lone = self.lone_until.map_or(String::new(), |u| {
+            format!("; a job beside nothing held back {} min more", u.saturating_sub(now).div_ceil(60))
+        });
+        format!(
+            "NAS pacing: window {}{th}, {} in use{wants}; last reading {} s ago{ratio}{load}: {verdict}{lone}",
+            pct(window),
+            pct(self.in_use),
+            now.saturating_sub(self.at)
+        )
+    }
 }
 
 /// A Mac's NAS answers as the lead reads them: its NAS answer time (ms, its mean over its span)
@@ -599,34 +674,58 @@ impl Pace {
         }
         let dt = self.last.as_ref().map_or(k.read_s, |r| t.saturating_sub(r.at)).min(k.grow_s) as f64
             / k.grow_s.max(1) as f64;
-        let verdict = if ratio.is_none() && self.load.is_none() {
-            Verdict::Unread
+        let unread = ratio.is_none() && self.load.is_none();
+        let hold = if unread {
+            None
         } else if past {
-            if st.cut_at.is_none() || st.settled_at.is_some_and(|at| t >= at + k.span_s) {
+            (st.cut_at.is_some() && st.settled_at.is_none_or(|at| t < at + k.span_s)).then_some(Hold::HoldOff)
+        } else if !near {
+            Some(Hold::NotNear)
+        } else if !fresh {
+            Some(Hold::NotFresh)
+        } else if self.rose_at.is_some_and(|r| t < r + k.span_s) {
+            Some(Hold::Started)
+        } else if in_use + s.wants.map_or(step, f64::from) <= st.window {
+            Some(Hold::NotLimiting)
+        } else {
+            None
+        };
+        let verdict = match hold {
+            _ if unread => Verdict::Unread,
+            Some(_) => Verdict::Held,
+            None if past => {
                 let to = (in_use * k.decrease).max(step);
                 st.window = st.window.min(to).max(step);
                 st.threshold = Some(to);
                 st.cut_at = Some(t);
                 st.settled_at = (in_use <= st.window).then_some(t);
                 Verdict::Cut
-            } else {
-                Verdict::Held
             }
-        } else if near
-            && fresh
-            && self.rose_at.is_none_or(|r| t >= r + k.span_s)
-            && in_use + s.wants.map_or(step, f64::from) > st.window
-        {
-            match st.threshold {
-                Some(th) if st.window >= th => st.window += step * dt,
-                th => st.window = (st.window * det::Det::dexp2(dt)).min(th.unwrap_or(f64::INFINITY)).max(st.window),
+            None => {
+                match st.threshold {
+                    Some(th) if st.window >= th => st.window += step * dt,
+                    th => st.window = (st.window * det::Det::dexp2(dt)).min(th.unwrap_or(f64::INFINITY)).max(st.window),
+                }
+                Verdict::Grew
             }
-            Verdict::Grew
-        } else {
-            Verdict::Held
         };
+        let threshold = st.threshold.map(|th| th.round() as u32);
         let load_pct = self.load.map(|l| (l * 10.0).round() / 10.0);
-        self.last = Some(Reading { at: t, counted, ratio, past, load_pct, in_use: s.in_use, fresh, verdict });
+        let lone_until = self.st.lone_at.map(|at| at + self.lone_for()).filter(|&u| t < u);
+        self.last = Some(Reading {
+            at: t,
+            counted,
+            ratio,
+            past,
+            load_pct,
+            in_use: s.in_use,
+            wants: s.wants,
+            fresh,
+            verdict,
+            hold,
+            threshold,
+            lone_until,
+        });
         verdict
     }
 
@@ -644,7 +743,10 @@ impl Pace {
                 (Some(a), _, Some(x)) if x > self.tuning.slow => {
                     format!("answering {} in {:.0} ms, {:.1}× its best", a.mac, a.ms, x)
                 }
-                _ => "slowed lately".to_string(),
+                _ => match r.hold {
+                    Some(h) => format!("cut lately, not grown since: {}", h.words()),
+                    None => "cut lately".to_string(),
+                },
             };
             format!("NAS work paced to {} % of the NAS, {} % in use (the NAS {cause})", w / 10, r.in_use / 10)
         })
@@ -1440,6 +1542,49 @@ mod tests {
             (n == "nas-lone-minutes").then_some(120.0).or((n == "nas-lone-most-minutes").then_some(10.0))
         });
         assert_eq!((k.lone_s, k.lone_most_s), (7200, 7200), "the longest hold never under one");
+    }
+
+    /// Each reading says why it held the window (the first gate it failed), and the lead's status
+    /// line says the window, its threshold, what's in use and waits, the verdict, why, and the lone
+    /// way's hold.
+    #[test]
+    fn a_reading_says_why_it_held() {
+        let hold = |p: &Pace| p.last.as_ref().unwrap().hold;
+        let mut p = Pace::default();
+        assert_eq!(read(&mut p, 0, &[], 0, Some(150)), Verdict::Unread);
+        assert_eq!(hold(&p), None);
+        assert_eq!(at(&mut p, 10, 5.0, 0, None), Verdict::Held);
+        assert_eq!(hold(&p), Some(Hold::NotLimiting), "nothing waits, nothing in use");
+        assert_eq!(at(&mut p, 20, 5.0, 0, Some(150)), Verdict::Grew);
+        assert_eq!(hold(&p), None);
+        assert_eq!(at(&mut p, 30, 5.0, 100, Some(150)), Verdict::Held);
+        assert_eq!(hold(&p), Some(Hold::Started), "a job just started");
+        assert_eq!(at(&mut p, 70, 10.0, 100, Some(150)), Verdict::Held);
+        assert_eq!(hold(&p), Some(Hold::NotNear));
+        let stale = Answer { fresh: false, ..ans("m1", 5.0, 5.0) };
+        assert_eq!(read(&mut p, 80, &[stale], 100, Some(150)), Verdict::Held);
+        assert_eq!(hold(&p), Some(Hold::NotFresh));
+        assert_eq!(at(&mut p, 90, 40.0, 400, Some(150)), Verdict::Cut);
+        assert_eq!(hold(&p), None);
+        assert_eq!(at(&mut p, 100, 40.0, 400, Some(150)), Verdict::Held);
+        assert_eq!(hold(&p), Some(Hold::HoldOff), "the jobs out before the cut still run");
+        let r = p.last.clone().unwrap();
+        assert_eq!((r.threshold, r.wants), (Some(200), Some(150)));
+        assert_eq!(r.lone_until, Some(90 + LONE_S), "past the knee: a lone job held back");
+        assert_eq!(
+            r.line(p.window(), 160),
+            "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the least job waiting 15 %; last reading 60 s \
+             ago, answers 8.0× their best: held: past the knee, within the last cut's hold-off; a job beside \
+             nothing held back 9 min more"
+        );
+        assert!(p.why().unwrap().ends_with("(the NAS answering m1 in 40 ms, 8.0× its best)"), "{:?}", p.why());
+        // (Between near and the knee after the cut: why says so in place of a cause it can't see.)
+        at(&mut p, 110, 10.0, 400, Some(150));
+        assert_eq!(
+            p.why().unwrap(),
+            "NAS work paced to 5 % of the NAS, 40 % in use (the NAS cut lately, not grown since: the answers \
+             counted not near their best)"
+        );
     }
 
     /// The pacing's bounds are the pool's settings: each within its range, else its default;

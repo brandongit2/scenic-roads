@@ -8526,8 +8526,9 @@ impl Agent {
 
     /// The live store (crate::agent::live), each loop: answered on this Mac's port (its coordinator,
     /// broker or viewer), and the NAS's latency sampled while a build runs here (a job of this
-    /// Mac's, or its coordinator's leases out); the power and the owner's idleness as this loop
-    /// read them (`c`), recorded.
+    /// Mac's, or its coordinator's leases out) or the pacing has work waiting for the NAS budget
+    /// (`Coordinator::nas_waiting`: its readings then have the lead's own answers); the power and
+    /// the owner's idleness as this loop read them (`c`), recorded.
     fn tend_live(&mut self, root: Option<&store::nasfs::NasRoot>, c: &Conditions) {
         let Some(l) = &self.live else { return };
         let t = now_s();
@@ -8556,7 +8557,8 @@ impl Agent {
         if let Some(b) = self.broker.as_ref().filter(|b| !b.has_live()) {
             b.set_live(l.clone());
         }
-        let building = self.running_jobs() > 0 || self.coord.as_ref().is_some_and(|c| c.leases_out() > 0);
+        let building =
+            self.running_jobs() > 0 || self.coord.as_ref().is_some_and(|c| c.leases_out() > 0 || c.nas_waiting());
         l.set_nas(root.filter(|_| building));
         l.set_root(root);
     }
@@ -10317,7 +10319,7 @@ mod tests {
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w[1].why.starts_with("waiting 48 min") && w[1].what == "depth-lo 3/1/3", "{w:?}");
         // (Held by the pacing: a line for the NAS, and each target's says why.)
-        let held = Some("NAS work paced to 35 % of the NAS, 70 % in use (the NAS slowed lately)".to_string());
+        let held = Some("NAS work paced to 35 % of the NAS, 70 % in use (the NAS cut lately, not grown since: the answers counted not near their best)".to_string());
         nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 50)], held.clone());
         assert_eq!(w.len(), 3, "{w:?}");
         assert!(w[1].what == "the NAS" && w[1].why.starts_with("NAS work paced to 35 %"), "{w:?}");

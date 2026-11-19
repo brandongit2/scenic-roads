@@ -498,7 +498,7 @@ The Jobs tab's stages are the one exception.
   `pool_nas_held_cap` dashed: the most the Macs hold past their deadline, their caps summed), **timed out** (`pool_nas_missed`, a minute; the range's count),
   **NAS budget** (`pool_nas_used_pct` filled, the weight the pool's jobs hold, against
   `pool_nas_window_pct`, the pacing's window, both shares of the NAS as probed; what its last
-  reading did, `nas.pace.verdict`, whether its readings were fresh, `nas.pace.fresh`, and the
+  reading did, `nas.pace.verdict`, why it held, `nas.pace.hold` (stale readings among them), and the
   least a paced job weighs, `nas.tuning.small`: docs/pool.md §7.7), **answers vs best**
   (`pool_nas_answer_x`, the counted Mac's ratio: one more than its answer time less its floor,
   over the least floor among those answering (the second-highest with two Macs or more), against `nas.tuning.slow` and `nas.tuning.near` dashed; the Mac, its time

@@ -1373,8 +1373,16 @@ impl Sched {
     /// The least a job passed over for the NAS budget alone in the last two minutes weighs, more
     /// than nothing (at the lead's pace, `nw`'s weights), a quiet step's held back for a quiet NAS
     /// among them (`quiet_waits`): what the pacing's window must leave room for beside what's in
-    /// use to be what limits (jobrt::budget::nas::Pace::read). None: none waits.
+    /// use to be what limits (jobrt::budget::nas::Pace::read). While room is held for a target aged
+    /// in the budget (`nas_reserved`), its weight: no job starts unless it leaves that room
+    /// (`nas_reserve_ok`), so the least the window must take beside what's in use is the room
+    /// itself, however light the jobs held back behind it (task #1417: a cut window, nothing
+    /// running, the light jobs held back for an aged heavy one's room weighing within it, read as
+    /// the window not limiting, and it never grew). None: none waits.
     pub(super) fn nas_wants(&self, nw: &NasWeigher, now: Instant) -> Option<u32> {
+        if let Some((_, _, rw)) = self.nas_reserved(nw, now).filter(|r| r.2 > 0) {
+            return Some(rw);
+        }
         let fresh = |last: &Instant| now.saturating_duration_since(*last) < Duration::from_secs(120);
         let waits: Vec<(String, String)> = self
             .nas_waits
@@ -1393,6 +1401,14 @@ impl Sched {
             .map(|q| q.1)
             .collect();
         waits.iter().map(|(st, t)| nw.weight(st, t, None)).chain(quiet).filter(|&w| w > 0).min()
+    }
+
+    /// Whether a target, or a quiet step, was passed over for the NAS budget alone in the last two
+    /// minutes (as `nas_wants` counts them): the pacing has work to judge.
+    pub(super) fn nas_waiting(&self, now: Instant) -> bool {
+        let fresh = |last: &Instant| now.saturating_duration_since(*last) < Duration::from_secs(120);
+        self.nas_waits.lock().unwrap_or_else(|e| e.into_inner()).values().any(|w| fresh(&w.1))
+            || self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).values().any(|q| fresh(&q.0))
     }
 
     /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).

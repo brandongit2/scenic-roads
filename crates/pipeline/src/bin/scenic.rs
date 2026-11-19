@@ -766,6 +766,11 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
     for l in macs_lines(&st) {
         println!("{l}");
     }
+    // The NAS pacing as its last reading left it (jobrt::budget::nas::Reading::line): the window,
+    // its threshold, the verdict and why it held.
+    if let Some((r, n)) = st.nas.as_ref().and_then(|n| Some((n.pace.as_ref()?, n))) {
+        println!("{}", r.line(n.window, now_s()));
+    }
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
     }

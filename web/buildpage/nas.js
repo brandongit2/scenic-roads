@@ -110,8 +110,9 @@ function paint() {
     { points: s.pool_nas_used_pct, colour: nr, fill: true, label: "in use", unit: "%" },
     { points: s.pool_nas_window_pct, colour: acc, label: "window", unit: "%" }] });
   const did = { grew: "growing", cut: "cut", held: "holding", unread: "nothing read" }[pr?.verdict] || "";
-  const stale = pr && pr.fresh === false ? "readings stale" : "";
-  words(parts.budget.v, [used == null ? "not paced yet" : `${fmt(used, "%")} in use`, [win == null ? "" : `window ${fmt(win, "%")}`, did, stale, v?.tuning ? `jobs under ${fmt(v.tuning.small / 10, "%")} unpaced` : ""].filter(Boolean).join(" · ")],
+  // (Why it held: jobrt::budget::nas::Hold.)
+  const held = { "hold-off": "a cut's hold-off", "not-near": "not near its best", "not-fresh": "readings stale", started: "jobs just started", "not-limiting": "not what limits" }[pr?.hold] || "";
+  words(parts.budget.v, [used == null ? "not paced yet" : `${fmt(used, "%")} in use`, [win == null ? "" : `window ${fmt(win, "%")}`, did, held, v?.tuning ? `jobs under ${fmt(v.tuning.small / 10, "%")} unpaced` : ""].filter(Boolean).join(" · ")],
     pr?.verdict === "cut" ? "bad" : win != null && used != null && used >= win ? "warn" : "");
 
   // Answers against their best: the counted Mac's, with the knee and near dashed.
