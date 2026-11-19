@@ -969,19 +969,27 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   answer, else its centroids and vertices), trees its mask in its blocks' live cells, asked whole
   (`treepacks::mask_question` and `mask_answer`: the blocks its rings' boxes meet, and each one's
   pixels inside in the cells its run found live; a block it has no cells of, all its pixels), so a
-  mask that moves over the sea keeps its key. A point is kept by its z14 cell: a
+  mask that moves over the sea keeps its key (the question names its cells' side, so it reads
+  as asked whatever `LIVE_CELL` is later). A point is kept by its z14 cell: a
   cell whose neighbourhood and the ring of cells around it answer every point alike is kept as
   that one answer (`coverage::cell_box`), so a record holds points only near an edge; a cell no
-  longer one answer counts as an answer flipped. The record's cheap test is the line the key had
+  longer one answer counts as an answer flipped. The record names its cells' zoom (`cell_z`) and
+  is answered at it. The record's cheap test is the line the key had
   before it asked, the coverage's geometry there (`in coverage:clip`: the tile and 10 km around;
   `coverage:ways`: `Reach::coverage_key`; `coverage:inside`: the tile; `coverage:shapes`:
   `Coverage::shapes_key` of the tile and 1 km around): with no record the key's line is that, so
   the keying itself moved no key; with one, the record's line while that geometry reads as its run
-  read it (the record's head, read once per record as the plan loads) or the coverage answers what
-  it asked the same (the record read and asked again once per geometry and record); else a new
-  line naming the record. A z6 tile's roads keep the record in their folder from preparing to
+  read it (the record's head, read once per record as the plan loads and kept in the agent's
+  folder by content hash, `<hash>.asked-head`, so a start reads only new ones) or the coverage
+  answers what it asked the same (the record read and asked again once per geometry and record,
+  every target's on rayon's threads as the plan begins, `idents::warm_asked`: a trees tile's mask
+  takes 30–130 ms); else a new line naming the record. A record that reads but doesn't parse, or
+  asks a question that can't be answered now (a form since changed), takes that new line too,
+  plan and run alike: its target re-runs once, never waits for good; only a record that can't be
+  read waits. A z6 tile's roads keep the record in their folder from preparing to
   their commit (resumed with it); with none there, the record from before goes. A prune and a
-  "none" tile's drop remove it with the tile's files.
+  "none" tile's drop remove it with the tile's files, and a z3 tile's whole tree run (`put_z3`,
+  which asks nothing) its z6 tiles'.
 - **water:** its version and the pass's basemap.
 - **bld-fetch** (network): its version, the release and the coverage as its run asked it (each row
   group's and GHSL tile's box grown by 20 km, `bld::fetch::Near`).

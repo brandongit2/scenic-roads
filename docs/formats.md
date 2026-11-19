@@ -1478,10 +1478,11 @@ the id with the clicked point. A reader takes version 8 only.
   `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/asked/<step>.json.zst` (what a run of rail-feeds,
   rail, timetables-todo or bld-fetch asked of the coverage, `buildstore::asked::Record`, zstd'd JSON:
   `{"asked": {"points": [[x, y]…], "land": [[w, s, e, n]…], "all": […], "cells": [[x, y]…],
-  "countries": [[x, y]…], "country_cells": [[x, y]…]}, "also": [[question, answer]…], "answers",
-  "version", "line"}`, E7, cells z14 tiles, the last three only when asked; docs/steps.md §12) and
+  "countries": [[x, y]…], "country_cells": [[x, y]…], "cell_z"}, "also": [[question, answer]…], "answers",
+  "version", "line"}`, E7, cells tiles of zoom `cell_z` (14 where it's missing), the three cell and
+  country lists only when asked; docs/steps.md §12) and
   `work/asked/<step>/<z-x-y>.json.zst` (the same, of a z6 tile of pois, unit, trees or bldtiles,
-  `version` its key's geometric line; a trees tile's one `also` question `mask <x>,<y>:<hex>;…`, each
+  `version` its key's geometric line; a trees tile's one `also` question `mask <side> <x>,<y>:<hex>;…` (`side` the cells' in pixels), each
   block's live cells as its `trees-live.bin` holds them, none where none is live); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,

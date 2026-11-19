@@ -92,9 +92,11 @@ pub struct TerrainTiles {
     /// Of what each target keyed so last asked (`asked::target_logical`), by content name: what it
     /// read of the coverage by geometry and the line it ran under (`Record::version`, `line`), all
     /// a key reads of it while that geometry reads the same; the record itself is read again only
-    /// once it doesn't (`target_asked`). Read once each, several at a time (one that can't be read
-    /// now: tried again with the next load).
-    asked_heads: HashMap<String, (String, String)>,
+    /// once it doesn't (`target_asked`). Read once each, several at a time, and kept in this Mac's
+    /// folder by content hash (`<hash>.asked-head`), so an agent's start reads only those new since
+    /// (one that can't be read now: tried again with the next load). None: one that reads but
+    /// doesn't parse (buildstore::asked::Prev::Unparsed).
+    asked_heads: HashMap<String, Option<(String, String)>>,
     /// The root the last load read from: where `outlines` opens the outlines a record's question
     /// names, only when asked (never held open: a coverage of the version a record asked asks
     /// nothing again).
@@ -364,23 +366,43 @@ impl TerrainTiles {
         let heads: BTreeSet<&String> = all().filter(|(l, _)| !buildstore::asked::is_world(l)).map(|(_, c)| c).collect();
         self.asked_heads.retain(|c, _| heads.contains(c));
         let missing: Vec<&String> = heads.into_iter().filter(|c| !self.asked_heads.contains_key(*c)).collect();
-        let got: Vec<(&String, anyhow::Result<buildstore::asked::Record>)> = missing
+        let dir = self.dir.clone();
+        let kept = |c: &str| {
+            let n = store::naming::parse_content_name(c)?;
+            Some(dir.as_deref()?.join(format!("{}.asked-head", n.hash16)))
+        };
+        // (Its head kept here, else read whole and kept; an I/O error tried again, a record that
+        // doesn't parse taken as one, never tried again.)
+        let got: Vec<(&String, std::io::Result<Option<(String, String)>>)> = missing
             .par_iter()
             .map(|c| {
-                (
-                    *c,
-                    root.join(c)
-                        .read()
+                let k = kept(c);
+                if let Some(h) =
+                    k.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok())
+                {
+                    return (*c, Ok(Some(h)));
+                }
+                let head = root
+                    .join(c)
+                    .read()
+                    .map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| (r.version, r.line)));
+                if let (Ok(Some(h)), Some(p)) = (&head, &k) {
+                    let b = serde_json::to_vec(h).expect("a head serializes");
+                    if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
                         .map_err(anyhow::Error::from)
-                        .and_then(|b| buildstore::asked::Record::from_bytes(&b)),
-                )
+                        .and_then(|()| store::whole::write(p, &b))
+                    {
+                        eprintln!("tiles: {c}'s head not kept: {e:#}");
+                    }
+                }
+                (*c, head)
             })
             .collect();
         for (c, r) in got {
             match r {
-                Ok(r) => {
+                Ok(h) => {
                     self.unread.remove(c);
-                    self.asked_heads.insert(c.clone(), (r.version, r.line));
+                    self.asked_heads.insert(c.clone(), h);
                 }
                 Err(e) => {
                     self.unread.insert(c.clone(), format!("{e:#}"));
@@ -415,27 +437,21 @@ impl TerrainTiles {
     }
 
     /// What a target's record of content name `c` read of the coverage by geometry and the line it
-    /// ran under (`asked_heads`), None while it can't be read now.
-    pub fn asked_head(&self, c: &str) -> Option<(String, String)> {
-        match (self.asked_heads.get(c), self.asked.get(c)) {
-            (Some(h), _) => Some(h.clone()),
-            (None, Some(Some(r))) => Some((r.version.clone(), r.line.clone())),
-            _ => None,
-        }
+    /// ran under (`asked_heads`): Some(None) for one that doesn't parse, None while it can't be
+    /// read now.
+    pub fn asked_head(&self, c: &str) -> Option<Option<(String, String)>> {
+        self.asked_heads.get(c).cloned()
     }
 
-    /// A target's record of content name `c`, read now (one held, `hold_asked`: that).
-    pub fn target_asked(&self, c: &str) -> Result<std::sync::Arc<buildstore::asked::Record>, Unread> {
+    /// A target's record of content name `c`, read now (one held, `hold_asked`: that): Ok(None) for
+    /// one that doesn't parse, an error only while it can't be read.
+    pub fn target_asked(&self, c: &str) -> Result<Option<std::sync::Arc<buildstore::asked::Record>>, Unread> {
         if let Some(Some(r)) = self.asked.get(c) {
-            return Ok(r.clone());
+            return Ok(Some(r.clone()));
         }
         let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
-        root.join(c)
-            .read()
-            .map_err(anyhow::Error::from)
-            .and_then(|b| buildstore::asked::Record::from_bytes(&b))
-            .map(std::sync::Arc::new)
-            .map_err(|e| Unread(format!("{c}: {e:#}")))
+        let b = root.join(c).read().map_err(|e| Unread(format!("{c}: {e:#}")))?;
+        Ok(buildstore::asked::Record::from_bytes(&b).ok().map(std::sync::Arc::new))
     }
 
     /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`
@@ -452,9 +468,11 @@ impl TerrainTiles {
             .map(Some)
     }
 
-    /// Holds record `r` under content name `content` (tests: no file).
+    /// Holds target record `r` under content name `content`, its head as a load reads it (tests:
+    /// no file).
     #[cfg(test)]
     pub fn hold_asked(&mut self, content: &str, r: buildstore::asked::Record) {
+        self.asked_heads.insert(content.to_string(), Some((r.version.clone(), r.line.clone())));
         self.asked.insert(content.to_string(), Some(std::sync::Arc::new(r)));
     }
 
@@ -701,7 +719,7 @@ impl TerrainTiles {
     /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them),
     /// with where they are fine.
     pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
-        let fine = inputs::dem::spacing::Fine::of(&e);
+        let fine = inputs::dem::spacing::Fine::of_accepted(e.iter().map(|(d, _)| d));
         self.elevation = Some((content.to_string(), std::sync::Arc::new(e), std::sync::Arc::new(fine)));
     }
 
@@ -964,6 +982,38 @@ mod tests {
     use super::*;
     use serde_json::json;
     use store::pack::PackWriter;
+
+    /// Task #1473 review: a target's record is read for its head once, then kept here by content
+    /// hash (an agent's start reads none again); one that reads but doesn't parse is held as such
+    /// (re-keyed once, never tried again); one that can't be read now is unread, tried again.
+    #[test]
+    fn target_records_heads_are_kept_here_and_one_unparsed_is_held_as_such() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let r = buildstore::asked::Record { version: "geo".into(), line: "l".into(), ..Default::default() };
+        let (good, bad, gone) = (
+            "work/asked/pois/6-1-2.1111111111111111.json.zst",
+            "work/asked/pois/6-1-3.2222222222222222.json.zst",
+            "work/asked/pois/6-1-4.3333333333333333.json.zst",
+        );
+        std::fs::create_dir_all(d.path().join("nas/work/asked/pois")).unwrap();
+        std::fs::write(d.path().join("nas").join(good), r.to_bytes()).unwrap();
+        std::fs::write(d.path().join("nas").join(bad), b"not a record").unwrap();
+        let m: BTreeMap<String, String> =
+            [good, bad, gone].iter().map(|c| (c.split('.').next().unwrap().to_string(), c.to_string())).collect();
+        let mut t = TerrainTiles::new(Some(d.path().join("kept")));
+        t.load_asked(&root, &m);
+        assert_eq!(t.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        assert_eq!(t.asked_head(bad), Some(None));
+        assert!(t.target_asked(bad).unwrap().is_none());
+        assert_eq!(t.asked_head(gone), None);
+        assert!(t.unread.contains_key(gone) && !t.unread.contains_key(bad));
+        // Another start: the head from here, the NAS's file gone.
+        std::fs::remove_file(d.path().join("nas").join(good)).unwrap();
+        let mut again = TerrainTiles::new(Some(d.path().join("kept")));
+        again.load_asked(&root, &m);
+        assert_eq!(again.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+    }
 
     /// Task #968: what the terrain names of the declared sources (terrain::terrain_resume::inputs, as
     /// the held geoids give it to the terrain-targets memo and the runs read it for their resume

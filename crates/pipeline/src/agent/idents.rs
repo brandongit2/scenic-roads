@@ -5,6 +5,7 @@
 
 use super::build::KeyCtx;
 use codecs::tile::TileId;
+use std::collections::BTreeMap;
 
 /// The spacing the extract reads (inputs::dem::spacing::key_line); None while it isn't known.
 pub fn spacing(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
@@ -221,7 +222,8 @@ pub fn extract(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// it has no record (its line before it asked); its record's line while `geo` reads as its run's
 /// did (the record's head, `TerrainTiles::asked_head`) or the coverage answers what it asked the
 /// same (`reask` its questions asked whole), the record read and asked again once a `geo` and
-/// record (`TerrainTiles::memo`); else a new line. None while the record can't be read now.
+/// record (`TerrainTiles::memo`); else a new line (one that doesn't parse, or asks what can't be
+/// answered now, too: re-run once). None only while the record can't be read now.
 fn target_asked(
     step: &str,
     t: &str,
@@ -229,18 +231,92 @@ fn target_asked(
     x: &KeyCtx,
     reask: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let Some(c) = x.m.get(&buildstore::asked::target_logical(step, t)) else { return Some(geo) };
-    let (version, line) = x.tiles.asked_head(c)?;
+    asked_line(step, t, geo, x.cov, x.m, x.tiles, reask)
+}
+
+/// `target_asked` of the coverage `cov`, the records `m` names and the heads and memo of `tiles`
+/// (`warm_asked`'s, on any thread).
+fn asked_line(
+    step: &str,
+    t: &str,
+    geo: String,
+    cov: &buildstore::coverage::Coverage,
+    m: &BTreeMap<String, String>,
+    tiles: &super::tiles::TerrainTiles,
+    reask: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    use buildstore::asked::{target_line, Prev};
+    let Some(c) = m.get(&buildstore::asked::target_logical(step, t)) else { return Some(geo) };
+    let Some((version, line)) = tiles.asked_head(c)? else {
+        return Some(target_line(cov, &geo, Some((c, Prev::Unparsed)), reask));
+    };
     if version == geo {
         return Some(line);
     }
-    x.tiles
+    tiles
         .memo(&format!("coverage:asked {step} {t}"), &format!("{c} {geo}"), || {
-            let r = x.tiles.target_asked(c)?;
-            buildstore::asked::target_line(x.cov, &geo, Some((c, &r)), reask)
-                .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
+            Ok(match tiles.target_asked(c)? {
+                Some(r) => target_line(cov, &geo, Some((c, Prev::Record(&r))), reask),
+                None => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
+            })
         })
         .ok()
+}
+
+/// Works out, on rayon's threads, the line of every target whose record's geometry moved
+/// (`asked_line`, for the four steps keyed so: steps::ASKED_PER_TARGET), kept in the tiles' memo
+/// for the plan's keys to find: where the coverage's geometry moved under many records (a regions
+/// intake: about 2,364 trees tiles at 30–130 ms each to ask a mask again, 10 ms–0.25 s a unit
+/// tile's ways), the plan's thread asks none of them one by one. Each geometry as the step's key
+/// reads it (`coverage_clip`, `ways`, `coverage_inside`, `coverage_shapes`); a line that can't be
+/// worked out now is left to the key that reads it. Once per coverage, pass, spacing and set of
+/// records (the plan runs it every loop: none of that changed, nothing done).
+pub fn warm_asked(x: &KeyCtx) {
+    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
+    let fine = tiles.spacing(m);
+    let mut each: Vec<(&str, String)> = Vec::new();
+    let mut records = String::new();
+    for step in super::steps::ASKED_PER_TARGET {
+        let p = format!("work/asked/{step}/");
+        for (l, c) in m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)) {
+            each.push((step, l[p.len()..].replace('-', "/")));
+            records.push_str(c);
+        }
+    }
+    let from = format!("{} {} {} {}", cov.version(), x.date, fine.digest(), store::naming::hash16(records.as_bytes()));
+    let _ = tiles.memo("coverage:asked warm", &from, || {
+        warm(x, &fine, &each);
+        Ok(String::new())
+    });
+}
+
+/// `warm_asked`'s work: each of `each` (step, target) asked again where its geometry moved.
+fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) {
+    use rayon::prelude::*;
+    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
+    let bld: BTreeMap<(u32, u32), Option<String>> = if each.iter().any(|(s, _)| *s == "bldtiles") {
+        super::build::bld_tiles(cov).iter().map(|(a, b, g)| ((*a, *b), g.clone())).collect()
+    } else {
+        BTreeMap::new()
+    };
+    let reach = x.reach;
+    each.par_iter().for_each(|(step, t)| {
+        let Some(u) = TileId::parse(t) else { return };
+        let geo = match *step {
+            "pois" => Some(clip_geo(cov, u)),
+            "trees" => Some(inside_geo(cov, u)),
+            "bldtiles" => bld.get(&(u.x, u.y)).cloned().flatten(),
+            _ => reach
+                .and_then(|r| r.get(u))
+                .filter(|r| u.z == 6 && r.builds(cov, fine))
+                .map(|r| r.coverage_key(cov, u, fine)),
+        };
+        let Some(geo) = geo else { return };
+        let mask = |q: &str| trees::treepacks::mask_answer(cov, u, q);
+        let none = |_: &str| None;
+        let reask: &(dyn Fn(&str) -> Option<String> + Sync) = if *step == "trees" { &mask } else { &none };
+        asked_line(step, t, geo, cov, m, tiles, reask);
+    });
 }
 
 /// What a candidates' z6 tile's key reads of the coverage by geometry: its rings over the tile and

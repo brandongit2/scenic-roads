@@ -59,8 +59,8 @@ pub struct Fine {
 }
 
 impl Fine {
-    /// From the declared datasets with their coverages (agent::tiles::Elevation).
-    pub fn of(ds: &[(Accepted, Cover)]) -> Fine {
+    /// From the declared datasets with their coverages (`of_accepted`'s).
+    fn of(ds: &[(Accepted, Cover)]) -> Fine {
         let poleward = |y: i32| (y as f64).abs().max((y as f64 + 1.0).abs());
         let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
         let mut rows: Vec<u8> = vec![0; 180];
@@ -98,10 +98,12 @@ impl Fine {
         Fine { cells: cells.into_iter().filter(|(c, z)| *z > f.row_zoom(c[1])).collect(), rows: f.rows }
     }
 
-    /// From the declared datasets (`declared::accepted`).
-    pub fn of_accepted(ds: &[Accepted]) -> Fine {
+    /// From the declared datasets (`declared::accepted`), each with the coverage it declares: the
+    /// one function the plan's keys (agent::tiles::TerrainTiles::spacing) and the runs that densify
+    /// ways by it (the unit step) both work it out with.
+    pub fn of_accepted<'a>(ds: impl IntoIterator<Item = &'a Accepted>) -> Fine {
         let with: Vec<(Accepted, Cover)> =
-            ds.iter().map(|d| (d.clone(), Cover::of(d.measured.cover.as_deref()))).collect();
+            ds.into_iter().map(|d| (d.clone(), Cover::of(d.measured.cover.as_deref()))).collect();
         Fine::of(&with)
     }
 

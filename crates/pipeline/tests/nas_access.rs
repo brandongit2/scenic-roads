@@ -46,8 +46,6 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/landmarks/src/ovconv.rs", "ferries_job", 1, "osmium's input, read where it lies"),
     ("crates/trees/src/treepacks.rs", "run_args", 2, "the trees program's --chm-store and --leaf folders"),
     ("crates/trees/src/treepacks.rs", "build_lo", 1, "the trees program's mids, as its arguments"),
-    ("crates/pipeline/examples/asked_impact.rs", "trees_live", 3, "the trees program's --chm-store and --leaf folders; a leaf-type square's completeness, read by its GeoTIFF reader by path (trees::trees::squares::complete)"),
-    ("crates/pipeline/examples/asked_impact.rs", "asked", 1, "the extract program's --trailends, read where it lies"),
     ("crates/bld/src/buildtiles.rs", "stage", 1, "a tile linked for the scenic program to read where it lies"),
     ("crates/inputs/src/rail.rs", "cache_index", 1, "a zip's path in the counters' index, opened by the counting program"),
     ("crates/inputs/src/rail.rs", "feeds_for_counting", 1, "a zip's path in the feeds list, opened by the counting program"),
@@ -103,7 +101,6 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/examples/hollow_drops.rs", "main"),
     ("crates/pipeline/examples/hollow_edges.rs", "main"),
     ("crates/pipeline/examples/terrain_impact.rs", "main"),
-    ("crates/pipeline/examples/asked_impact.rs", "main"),
 ];
 
 /// Items naming a NAS location literally (outside store::nas): (file, item, why).

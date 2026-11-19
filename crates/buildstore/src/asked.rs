@@ -108,12 +108,24 @@ fn line_of(
     }
     let also: Vec<(String, String)> =
         r.also.iter().map(|(q, _)| Some((q.clone(), reask(q)?))).collect::<Option<_>>()?;
-    Some(if answers(cov, &r.asked, also.into_iter()) == r.answers {
-        r.line.clone()
-    } else {
-        store::naming::hash16(format!("changed {now} {content}").as_bytes())
-    })
+    Some(if answers(cov, &r.asked, also.into_iter()) == r.answers { r.line.clone() } else { changed(now, content) })
 }
+
+/// The line of a run reading `now` by the cheap test whose record `content` answers differently now.
+fn changed(now: &str, content: &str) -> String {
+    store::naming::hash16(format!("changed {now} {content}").as_bytes())
+}
+
+/// What a target's record holds as the plan reads it: the record, or one that reads but doesn't
+/// parse (a format since changed): taken for answers flipped (`target_line`).
+pub enum Prev<'a> {
+    Record(&'a Record),
+    Unparsed,
+}
+
+/// An answer no run gets: a question a target's record asked that can't be answered now (its form
+/// since changed) answers this, so its answers differ from the record's.
+const UNANSWERED: &str = "\u{0}unanswered";
 
 /// The key line of a world step keyed on what it asked: with no record yet, a new one of the
 /// coverage's version; with record `prev`, `line_of`'s, the coverage's version its cheap test.
@@ -124,14 +136,22 @@ pub fn line(cov: &Coverage, prev: Option<(&str, &Record)>, reask: &dyn Fn(&str) 
 
 /// The key line of a target keyed on what it asked, `geo` what its key reads of the coverage by
 /// geometry (its cheap test): with no record yet, `geo` itself, the line it keyed by before it
-/// asked; with record `prev`, `line_of`'s.
+/// asked; with record `prev`, `line_of`'s, a question `reask` can't answer taken for an answer
+/// flipped; a record that doesn't parse (`Prev::Unparsed`), a new line naming it. Never none: a
+/// record of another form re-runs its target once, never wedges it.
 pub fn target_line(
     cov: &Coverage,
     geo: &str,
-    prev: Option<(&str, &Record)>,
+    prev: Option<(&str, Prev)>,
     reask: &dyn Fn(&str) -> Option<String>,
-) -> Option<String> {
-    line_of(cov, geo, || geo.to_string(), prev, reask)
+) -> String {
+    let r = match prev {
+        None => None,
+        Some((content, Prev::Unparsed)) => return changed(geo, content),
+        Some((content, Prev::Record(r))) => Some((content, r)),
+    };
+    let flips = |q: &str| Some(reask(q).unwrap_or_else(|| UNANSWERED.to_string()));
+    line_of(cov, geo, || geo.to_string(), r, &flips).expect("every question answered")
 }
 
 /// A run of a step keyed on what it asks: the coverage asked through (`asking`), where its record
@@ -170,7 +190,9 @@ impl<'a> Run<'a> {
     }
 
     /// Step `step`'s run of target `target` over `cov`, reading `geo` of it by geometry (its key's
-    /// cheap line, as the plan works it out): its line from the record `out` names (`target_line`).
+    /// cheap line, as the plan works it out): its line from the record `out` names (`target_line`:
+    /// one that doesn't parse, or asks what can't be answered now, as the plan takes it). An error
+    /// only when that record can't be read.
     pub fn start_target(
         out: &crate::out::Out,
         step: &str,
@@ -180,20 +202,22 @@ impl<'a> Run<'a> {
         reask: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Run<'a>> {
         let logical = target_logical(step, target);
-        let prev = record_at(out, &logical)?;
-        let line = target_line(cov, &geo, prev.as_ref().map(|(c, r)| (c.as_str(), r)), reask)
-            .with_context(|| format!("{logical}: the record before this run asks what can't be answered now"))?;
+        let line = match out.get(&logical) {
+            None => target_line(cov, &geo, None, reask),
+            Some(c) => {
+                let b = out.path(c).read().with_context(|| format!("read {c}"))?;
+                match Record::from_bytes(&b) {
+                    Ok(r) => target_line(cov, &geo, Some((c, Prev::Record(&r))), reask),
+                    Err(_) => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
+                }
+            }
+        };
         Ok(Run { logical, cov, version: geo, line, asking: Asking::new(cov) })
     }
 
     /// The coverage, every question kept.
     pub fn asking(&self) -> &Asking<'a> {
         &self.asking
-    }
-
-    /// The line it runs under.
-    pub fn line(&self) -> &str {
-        &self.line
     }
 
     /// Its record: what it asked, and `also`, its questions asked whole with their answers.
@@ -313,7 +337,7 @@ mod tests {
     fn a_targets_line_is_its_geometry_until_it_asked_then_moves_only_with_an_answer() {
         let none = |_: &str| None;
         let lyon = cov(&[(4.85, 45.75, 60.0)]);
-        let l = target_line(&lyon, &geo(&lyon), None, &none).unwrap();
+        let l = target_line(&lyon, &geo(&lyon), None, &none);
         assert_eq!(l, geo(&lyon));
         // Its run asks of a point in Lyon and one 66 km east (out).
         let a = Asking::new(&lyon);
@@ -323,7 +347,7 @@ mod tests {
         // (Both points far from an edge: each asked as its cell.)
         assert_eq!((r.asked.points.len(), r.asked.cells.len()), (0, 2), "{:?}", r.asked);
         let c = store::naming::hash16(&r.to_bytes());
-        let now = |cv: &Coverage| target_line(cv, &geo(cv), Some((&c, &r)), &none).unwrap();
+        let now = |cv: &Coverage| target_line(cv, &geo(cv), Some((&c, Prev::Record(&r))), &none);
         assert_eq!(now(&lyon), l);
         // Lyon's region redrawn a kilometre wider and with a region inside it: its geometry over
         // the box moved, no answer did.
@@ -341,7 +365,7 @@ mod tests {
         let r = Record::read_as(&lyon, geo(&lyon), a.asked(), Vec::new(), l.clone());
         assert_eq!((r.asked.points.len(), r.asked.cells.len()), (1, 0));
         let c = store::naming::hash16(&r.to_bytes());
-        let now = |cv: &Coverage| target_line(cv, &geo(cv), Some((&c, &r)), &none).unwrap();
+        let now = |cv: &Coverage| target_line(cv, &geo(cv), Some((&c, Prev::Record(&r))), &none);
         assert_eq!(now(&cov(&[(4.85, 45.75, 59.0)])), l);
         assert_ne!(now(&cov(&[(4.85, 45.75, 55.0)])), l);
     }
@@ -359,14 +383,56 @@ mod tests {
         for c in [&lyon, &lyon, &near, &near] {
             let run = Run::start_target(&out, "pois", "6/33/22", c, geo(c), &none).unwrap();
             run.asking().contains(e7(5.7, 45.75));
-            let ran = run.line().to_string();
             run.put(&mut out, Vec::new()).unwrap();
             out.save().unwrap();
             let l = target_logical("pois", "6/33/22");
             let content = out.get(&l).unwrap().to_string();
             let r = Record::from_bytes(&out.path(&content).read().unwrap()).unwrap();
-            assert_eq!(target_line(c, &geo(c), Some((&content, &r)), &none).unwrap(), ran);
+            // (The line it ran under, as its record holds it.)
+            assert_eq!(target_line(c, &geo(c), Some((&content, Prev::Record(&r))), &none), r.line);
         }
+    }
+
+    /// Task #1473 review: a target's record that doesn't parse (a format since changed), or asks a
+    /// question that can't be answered now, re-keys its target once (a new line naming the record),
+    /// never leaves it unkeyed; its run goes ahead under the line the plan works out, and the line
+    /// after it is its own record's.
+    #[test]
+    fn a_record_of_another_form_re_runs_its_target_once() {
+        let none = |_: &str| None;
+        let lyon = cov(&[(4.85, 45.75, 60.0)]);
+        let g = geo(&lyon);
+        // A question that can't be answered now: an answer flipped.
+        let r = Record::read_as(
+            &lyon,
+            "before".into(),
+            Asked::default(),
+            vec![("old form".into(), "a".into())],
+            "l".into(),
+        );
+        let flipped = target_line(&lyon, &g, Some(("n", Prev::Record(&r))), &none);
+        assert_ne!(flipped, "l");
+        assert_eq!(flipped, target_line(&lyon, &g, Some(("n", Prev::Record(&r))), &|_| Some("b".into())));
+        assert_eq!(target_line(&lyon, &g, Some(("n", Prev::Record(&r))), &|_| Some("a".into())), "l");
+        // A record that doesn't parse, put where the plan and the run read it.
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
+        let l = target_logical("pois", "6/33/22");
+        out.put_bytes(&l, "json.zst", b"not a record").unwrap();
+        out.save().unwrap();
+        let content = out.get(&l).unwrap().to_string();
+        let plan = target_line(&lyon, &g, Some((&content, Prev::Unparsed)), &none);
+        assert_ne!(plan, g);
+        assert_eq!(plan, target_line(&lyon, &g, Some((&content, Prev::Unparsed)), &none));
+        let run = Run::start_target(&out, "pois", "6/33/22", &lyon, g.clone(), &none).unwrap();
+        run.asking().contains(e7(4.85, 45.75));
+        run.put(&mut out, Vec::new()).unwrap();
+        out.save().unwrap();
+        let content = out.get(&l).unwrap().to_string();
+        let r = Record::from_bytes(&out.path(&content).read().unwrap()).unwrap();
+        assert_eq!(r.line, plan);
+        assert_eq!(target_line(&lyon, &g, Some((&content, Prev::Record(&r))), &none), plan);
     }
 
     /// The 3D buildings' questions (task #1473): a point's country and a cell's whole answer as
@@ -413,6 +479,23 @@ mod tests {
         let mut grown = cov(&[(4.85, 45.75, 260.0), (5.6, 45.75, 30.0)]);
         countries(&mut grown, &["FR", "CH"]);
         assert_ne!(grown.answers(&asked), was);
+    }
+
+    /// Task #1473 review: a record's cells are answered at the zoom it asked them at (`cell_z`), not
+    /// `CELL_Z` now; one put without it is of zoom 14.
+    #[test]
+    fn cells_are_answered_at_the_zoom_they_were_asked_at() {
+        let lyon = cov(&[(4.85, 45.75, 60.0)]);
+        let (x, y) = roadcore::geo::tile_of(roadcore::geo::merc_clamped(4.85, 45.75), 13);
+        let old = Asked { cells: vec![[x, y]], cell_z: 13, ..Default::default() };
+        // Lyon's region shrunk to a kilometre: the z13 cell at its centre is no longer one answer.
+        // Read at z14, the same x and y are a cell over the Atlantic, out either way.
+        let small = cov(&[(4.85, 45.75, 1.0)]);
+        assert_ne!(lyon.answers(&old), small.answers(&old));
+        let misread = Asked { cell_z: 14, ..old.clone() };
+        assert_eq!(lyon.answers(&misread), small.answers(&misread));
+        let r: Asked = serde_json::from_str(r#"{"points": [], "land": [], "all": [], "cells": [[1, 2]]}"#).unwrap();
+        assert_eq!(r.cell_z, 14);
     }
 
     /// A record from before cells and countries were asked (none of them in it) answers with the

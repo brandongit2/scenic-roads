@@ -162,9 +162,10 @@ pub fn coverage_json(cov: &Coverage, t: TileId) -> serde_json::Value {
 }
 
 /// A z6 tile's question of the coverage (buildstore::asked: its record's `also`), from its run's
-/// blocks' live cells (crate::trees::BlockOut::live, `build_piece`'s): `mask` and, per block by
-/// column then row, `<x>,<y>:` and its cells in hex (none where no cell is live), `;` between
-/// them. Answered by `mask_answer`.
+/// blocks' live cells (crate::trees::BlockOut::live, `build_piece`'s): `mask`, the cells' side in
+/// pixels (`LIVE_CELL`: the question says how to read itself whatever `LIVE_CELL` is later) and,
+/// per block by column then row, `<x>,<y>:` and its cells in hex (none where no cell is live), `;`
+/// between them. Answered by `mask_answer`.
 pub fn mask_question(live: &crate::trees::Live) -> String {
     let blocks: Vec<String> = live
         .iter()
@@ -177,17 +178,26 @@ pub fn mask_question(live: &crate::trees::Live) -> String {
             format!("{x},{y}:{hex}")
         })
         .collect();
-    format!("{MASK} {}", blocks.join(";"))
+    format!("{MASK} {} {}", crate::trees::LIVE_CELL, blocks.join(";"))
 }
 
 /// The word that begins a `mask_question`.
 const MASK: &str = "mask";
 
-/// A `mask_question`'s blocks and their live cells; None for another question.
-fn live_asked(q: &str) -> Option<crate::trees::Live> {
+/// A `mask_question`'s cells' side and its blocks' live cells (each `(BS / side)²` bits, as
+/// `live_bytes` writes them); None for another question, or one this build can't read (a side
+/// that isn't a power of two dividing a block, cells of another count).
+fn live_asked(q: &str) -> Option<(usize, crate::trees::Live)> {
     let rest = q.strip_prefix(MASK)?.strip_prefix(' ')?;
-    let words = crate::trees::LIVE_N * crate::trees::LIVE_N / 64;
-    rest.split(';')
+    let (side, rest) = rest.split_once(' ')?;
+    let side: usize = side.parse().ok()?;
+    if !side.is_power_of_two() || side > crate::trees::BS {
+        return None;
+    }
+    let n = crate::trees::BS / side;
+    let words = (n * n).div_ceil(64);
+    let live = rest
+        .split(';')
         .filter(|b| !b.is_empty())
         .map(|b| {
             let (at, hex) = b.split_once(':')?;
@@ -199,29 +209,37 @@ fn live_asked(q: &str) -> Option<crate::trees::Live> {
                     .step_by(2)
                     .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
                     .collect::<Option<Vec<u8>>>()?;
-                crate::trees::live_of(&bytes).ok()?
+                if bytes.len() != words * 8 {
+                    return None;
+                }
+                bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
             };
             Some(((x.parse().ok()?, y.parse().ok()?), l))
         })
-        .collect()
+        .collect::<Option<_>>()?;
+    Some((side, live))
 }
 
-/// The answer to z6 tile `t`'s `mask_question` `q` through `cov` (None for another question): what
-/// its run would read of the coverage that could change what it makes. Its blocks (those its rings'
-/// boxes meet, crate::trees::blocks_of: each a block of its mid), and each one's pixels inside the
-/// coverage (crate::trees::mask::inside) in its live cells: outside them no pixel's values are the
-/// mask's, so a mask that moves only there (over the sea, say) makes the same bytes. A block the
-/// question has no cells of, all its pixels. From the coverage file its run is given
-/// (`coverage_json`), as the trees program reads it; one it can't read: a digest of why.
+/// The answer to z6 tile `t`'s `mask_question` `q` through `cov` (None for another question, or
+/// one it can't read: `live_asked`): what its run would read of the coverage that could change
+/// what it makes. Its blocks (those its rings' boxes meet, crate::trees::blocks_of: each a block
+/// of its mid), and each one's pixels inside the coverage (crate::trees::mask::inside) in its live
+/// cells, of the side the question gives: outside them no pixel's values are the mask's, so a mask
+/// that moves only there (over the sea, say) makes the same bytes. A block the question has no
+/// cells of, all its pixels. From the coverage file its run is given (`coverage_json`), as the
+/// trees program reads it; one it can't read: a digest of why.
 pub fn mask_answer(cov: &Coverage, t: TileId, q: &str) -> Option<String> {
-    use crate::trees::{blocks_of, mask, LIVE_CELL, LIVE_N, ZBLOCK};
+    use crate::trees::{blocks_of, mask, BS, ZBLOCK};
     use rayon::prelude::*;
-    let live = live_asked(q)?;
+    let (side, live) = live_asked(q)?;
     let shapes = match mask::Shapes::parse(&coverage_json(cov, t).to_string()) {
         Ok(s) => s,
         Err(e) => return Some(store::naming::hash16(format!("unread {e:#}").as_bytes())),
     };
     let blocks = blocks_of(&shapes, t.z, t.x, t.y);
+    let (n, row_words) = (BS / side, BS / 64);
+    // (A word is 64 pixels of a row: `per` pixels of each of the cells it spans.)
+    let per = side.min(64);
     let lines: Vec<String> = blocks
         .par_iter()
         .map(|&(bx, by)| {
@@ -230,13 +248,15 @@ pub fn mask_answer(cov: &Coverage, t: TileId, q: &str) -> Option<String> {
             let Some(l) = live.get(&(bx, by)) else {
                 return format!("{bx} {by} all {}\n", store::naming::hash16(bytemuck::cast_slice(&m)));
             };
-            // (A word is 64 pixels of a row: two cells' halves.)
             let cell = |k: usize| l[k / 64] >> (k % 64) & 1 == 1;
-            let row_words = crate::trees::BS / 64;
             for (i, w) in m.iter_mut().enumerate() {
-                let k = (i / row_words) / LIVE_CELL * LIVE_N + (i % row_words) * 64 / LIVE_CELL;
-                let keep =
-                    (if cell(k) { 0xffff_ffffu64 } else { 0 }) | (if cell(k + 1) { 0xffff_ffff << 32 } else { 0 });
+                let (row, col) = (i / row_words, (i % row_words) * 64);
+                let mut keep = 0u64;
+                for j in 0..64 / per {
+                    if cell(row / side * n + (col + j * per) / side) {
+                        keep |= (((1u128 << per) - 1) as u64) << (j * per);
+                    }
+                }
                 *w &= keep;
             }
             format!("{bx} {by} {}\n", store::naming::hash16(bytemuck::cast_slice(&m)))
@@ -353,9 +373,18 @@ pub fn build_with(
 }
 
 /// Uploads z3 tile `q`'s packs from its whole run's archives in `dir`, dropping its packs it no
-/// longer makes.
+/// longer makes, and its z6 tiles' records of what they asked of the coverage (buildstore::asked):
+/// their hi packs are this run's now, which asked nothing, so each keys by geometry again.
 pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
     let _p = jobrt::timings::phase("uploading packs");
+    for x in q.x * 8..(q.x + 1) * 8 {
+        for y in q.y * 8..(q.y + 1) * 8 {
+            let l = buildstore::asked::target_logical("trees", &format!("6/{x}/{y}"));
+            if out.get(&l).is_some() {
+                out.remove(&l);
+            }
+        }
+    }
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
@@ -745,7 +774,39 @@ mod tests {
         let mut centre = of(0);
         centre.get_mut(&at).expect("the centre's block")[k / 64] |= 1 << (k % 64);
         let q = mask_question(&centre);
-        assert_eq!(live_asked(&q).unwrap(), centre);
+        assert_eq!(live_asked(&q).unwrap(), (LIVE_CELL, centre.clone()));
+        // The question says its cells' side: read at another, the same pixels kept (a cell of 64
+        // pixels, the four of 32 it holds live), and one this build can't read is no answer.
+        let doubled: Live = centre
+            .iter()
+            .map(|(&b, l)| {
+                let n = LIVE_N / 2;
+                let mut w = vec![0u64; (n * n).div_ceil(64)];
+                for k in 0..LIVE_N * LIVE_N {
+                    if l[k / 64] >> (k % 64) & 1 == 1 {
+                        let k2 = (k / LIVE_N / 2) * n + (k % LIVE_N) / 2;
+                        w[k2 / 64] |= 1 << (k2 % 64);
+                    }
+                }
+                (b, w)
+            })
+            .collect();
+        let hex: Vec<String> = doubled
+            .iter()
+            .map(|(&(x, y), l)| {
+                let h: String = if l.iter().all(|&w| w == 0) {
+                    String::new()
+                } else {
+                    crate::trees::live_bytes(l).iter().map(|b| format!("{b:02x}")).collect()
+                };
+                format!("{x},{y}:{h}")
+            })
+            .collect();
+        let q64 = format!("mask 64 {}", hex.join(";"));
+        assert_eq!(ans(&smaller, &q64), ans(&was_c, &q64));
+        assert_ne!(ans(&smaller, &q64), ans(&smaller, &dead));
+        assert!(mask_answer(&was_c, t, "mask 33 1,2:").is_none());
+        assert!(mask_answer(&was_c, t, "mask 32 1,2:00").is_none());
         assert_eq!(ans(&smaller, &q), ans(&was_c, &q));
         assert_ne!(ans(&smaller, &q), ans(&smaller, &dead), "the centre's cell is inside");
         // A block it has no cells of: all its pixels.
@@ -812,7 +873,11 @@ mod tests {
         let mut whole = out("whole");
         let q = TileId { z: 3, x: 4, y: 2 };
         run(q, &d.path().join("z3"));
+        // (A z6 tile's record of what it asked, from a run before: gone with its hi packs remade.)
+        let asked = buildstore::asked::target_logical("trees", "6/33/22");
+        whole.put_bytes(&asked, "json.zst", b"a record").unwrap();
         put_z3(&mut whole, q, &d.path().join("z3")).unwrap();
+        assert!(whole.get(&asked).is_none());
         // The z6 tiles, then the assembly from their mids.
         let mut parts = out("parts");
         let tt = listed(&c, &parts.manifest);

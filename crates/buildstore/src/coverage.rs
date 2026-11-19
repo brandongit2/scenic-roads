@@ -1510,8 +1510,10 @@ pub const CELL_Z: u8 = 14;
 /// asked about (`contains_cell` of `cell_box` 1); the boxes it asked of the land (`meets_rect`) and
 /// of every shape (`meets_rect_all`); the points it asked the country of (`country_at`), and the
 /// cells whose neighbourhood's every point's country it asked (`country_cell` of `cell_box` 1).
-/// `Coverage::answers` answers them all again: the same answers, the same run.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `Coverage::answers` answers them all again: the same answers, the same run. Its cells are of
+/// zoom `cell_z` (the `CELL_Z` it was asked at), answered again at that zoom whatever `CELL_Z` is
+/// now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asked {
     pub points: Vec<[i32; 2]>,
     pub land: Vec<[i32; 4]>,
@@ -1522,6 +1524,29 @@ pub struct Asked {
     pub countries: Vec<[i32; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub country_cells: Vec<[u32; 2]>,
+    /// The zoom of `cells` and `country_cells` (a record without it: 14, the zoom they were first
+    /// asked at).
+    #[serde(default = "first_cell_z")]
+    pub cell_z: u8,
+}
+
+/// The cells' zoom of a record put before it held one.
+fn first_cell_z() -> u8 {
+    14
+}
+
+impl Default for Asked {
+    fn default() -> Asked {
+        Asked {
+            points: Vec::new(),
+            land: Vec::new(),
+            all: Vec::new(),
+            cells: Vec::new(),
+            countries: Vec::new(),
+            country_cells: Vec::new(),
+            cell_z: CELL_Z,
+        }
+    }
 }
 
 /// The cell (`CELL_Z`) a point is in.
@@ -1533,7 +1558,12 @@ pub fn cell_of(p: [i32; 2]) -> [u32; 2] {
 /// A cell's box (E7) grown by `k` times its own size on each side (`k` rings of cells around it),
 /// a few units over its rounded edges, so it holds every point `cell_of` puts in those cells.
 pub fn cell_box(c: [u32; 2], k: i32) -> [i32; 4] {
-    let b = codecs::hipack::tile_bounds(CELL_Z, c[0], c[1]);
+    cell_box_at(CELL_Z, c, k)
+}
+
+/// `cell_box` of a cell of zoom `z`.
+fn cell_box_at(z: u8, c: [u32; 2], k: i32) -> [i32; 4] {
+    let b = codecs::hipack::tile_bounds(z, c[0], c[1]);
     let (w, h) = ((b[2] - b[0]) * k, (b[3] - b[1]) * k);
     [b[0] - w - 2, b[1] - h - 2, b[2] + w + 2, b[3] + h + 2]
 }
@@ -1653,6 +1683,7 @@ impl<'a> Asking<'a> {
             cells,
             countries: sorted(self.countries),
             country_cells: sorted(self.country_cells),
+            cell_z: CELL_Z,
         }
     }
 }
@@ -1714,8 +1745,11 @@ impl Coverage {
         }
         // (No cell or country asked, as before there were such questions: the digest as it was.)
         if !(a.cells.is_empty() && a.countries.is_empty() && a.country_cells.is_empty()) {
-            let cells: Vec<u8> =
-                a.cells.par_iter().map(|&c| self.contains_cell(cell_box(c, 1)).map_or(2, u8::from)).collect();
+            let cells: Vec<u8> = a
+                .cells
+                .par_iter()
+                .map(|&c| self.contains_cell(cell_box_at(a.cell_z, c, 1)).map_or(2, u8::from))
+                .collect();
             h.update(&(a.cells.len() as u64).to_le_bytes());
             h.update(&cells);
             let named = |c: Option<Option<&str>>| match c {
@@ -1725,7 +1759,7 @@ impl Coverage {
             };
             let countries: Vec<String> = a.countries.par_iter().map(|&p| named(Some(self.country_at(p)))).collect();
             let country_cells: Vec<String> =
-                a.country_cells.par_iter().map(|&c| named(self.country_cell(cell_box(c, 1)))).collect();
+                a.country_cells.par_iter().map(|&c| named(self.country_cell(cell_box_at(a.cell_z, c, 1)))).collect();
             for v in [countries, country_cells] {
                 h.update(&(v.len() as u64).to_le_bytes());
                 for s in v {

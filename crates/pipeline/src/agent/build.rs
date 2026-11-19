@@ -2278,6 +2278,8 @@ pub fn plan_with(
 /// `plan`'s work, worked out with `x`.
 fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m, x.inputs, x.reach, x.tiles);
+    nasread::PLAN.enter("build::plan: the z6 tiles' records asked again");
+    super::idents::warm_asked(x);
     nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
@@ -4866,7 +4868,7 @@ mod tests {
         let mut lines = BTreeMap::new();
         for (k, (step, geo)) in geos.into_iter().enumerate() {
             let g = geo(&reykjavik, u);
-            let line = target_line(&reykjavik, &g, None, &none).unwrap();
+            let line = target_line(&reykjavik, &g, None, &none);
             let a = Asking::new(&reykjavik);
             let mut also = Vec::new();
             match step {
@@ -4951,7 +4953,7 @@ mod tests {
         let geo = r.coverage_key(&reykjavik, u, &fine);
         assert_eq!(line(&reykjavik, &m, &tiles), format!("coverage {geo}"));
         // Its run: a way from the middle out east (in), one further east (out).
-        let l = target_line(&reykjavik, &geo, None, &|_| None).unwrap();
+        let l = target_line(&reykjavik, &geo, None, &|_| None);
         let a = Asking::new(&reykjavik);
         assert!(a.touches(&[east, middle]) && !a.touches(&[east, further]));
         let content = format!("{}.7777777777777777.json.zst", target_logical("unit", &t));
@@ -8710,7 +8712,7 @@ mod tests {
         assert_eq!(*t.spacing(&m), Fine::default(), "none held");
         for e in [a.clone(), b, a] {
             t.hold_elevation(&index, e.clone());
-            assert_eq!(*t.spacing(&m), Fine::of(&e));
+            assert_eq!(*t.spacing(&m), Fine::of_accepted(e.iter().map(|(d, _)| d)));
             assert_ne!(*t.spacing(&m), Fine::default());
         }
         t.hold_elevation("another", lidar("l1", [-22.0, 64.0, -21.0, 65.0]));
