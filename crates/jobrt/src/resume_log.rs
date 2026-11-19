@@ -237,9 +237,11 @@ pub fn sweep_carried(root: &store::nasfs::NasRoot, keep: &dyn Fn(&str, &str) -> 
                 Some(t) => !keep(&d.name, t),
                 None => {
                     store::whole::left_by_write(&e.name)
-                        && e.path.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|t| {
-                            now.duration_since(t).is_ok_and(|a| a >= store::whole::ASIDE_KEPT)
-                        })
+                        && e.path
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .is_some_and(|t| now.duration_since(t).is_ok_and(|a| a >= store::whole::ASIDE_KEPT))
                 }
             };
             if gone && e.path.remove_file().is_ok() {

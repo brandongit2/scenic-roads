@@ -1222,9 +1222,11 @@ impl Planner {
             return;
         }
         let Some(mut keep) = self.carry_keep.borrow().clone() else { return };
-        keep.extend(jobs.iter().filter_map(|j| j.record.as_ref()).flat_map(|w| {
-            w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone()))
-        }));
+        keep.extend(
+            jobs.iter()
+                .filter_map(|j| j.record.as_ref())
+                .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone()))),
+        );
         self.carry_swept.set(Some(std::time::Instant::now()));
         let leased = std::cell::RefCell::new(std::collections::BTreeMap::<String, Vec<String>>::new());
         let keep = |step: &str, t: &str| {
