@@ -943,7 +943,7 @@ function machineCard(m, x) {
   // (Its speed, the lead's measure from the build's timings (task #1418): the instructions its
   // cores retire a second of CPU, fitted with the other Macs' over the steps they share.)
   const sp = m.a.speeds?.macs?.[x.name], speed = speedWords(sp);
-  if (speed) card.append(h("div", { class: "sub dim", title: `Its speed, measured from its clean runs' instructions over their CPU (its newest at each step), fitted as Mac and step together over every Mac's, at the mean of the steps tied to it; its steps: ${(sp.p || sp.e).steps.join(", ")}` }, `Speed: ${speed}`));
+  if (speed) card.append(h("div", { class: "sub dim", title: `Its speed, measured from its clean runs' instructions over their CPU (its newest at each step), fitted as Mac and step together over its group's (the pool's Macs tied to it by shared steps), read at the steps two or more of them ran; its steps: ${(sp.p || sp.e).steps.join(", ")}` }, `Speed: ${speed}`));
   card.append(...[x.role === "member" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }

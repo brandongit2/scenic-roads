@@ -440,7 +440,7 @@ The Jobs tab's stages are the one exception.
   its memory against its floor; its speed (task #1418: the lead's `speeds`, docs/pool.md §10, Each
   Mac's speed; `words.js` `speedWords`, tested by web/test/words.test.mjs): the instructions a
   second of a performance core's CPU and of an efficiency core's, over how many steps (fitted with
-  the other Macs', or its own where it shares none) and clean runs, the steps on hover; none until the lead has measured it;
+  the Macs of its group, named, or its own where it shares none) and clean runs, the steps on hover; none until the lead has measured it;
   then **Live** (`live.js`): the Mac's own `/api/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs): each core's

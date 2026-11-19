@@ -179,6 +179,17 @@ pub struct FileNote {
     pub slot: usize,
 }
 
+/// A series' samples over a span (`Store::span`): how many, their mean, least and most, and the
+/// times of its first and last buckets (unix s).
+struct Span {
+    n: u64,
+    mean: f64,
+    lo: f64,
+    hi: f64,
+    first: u64,
+    last: u64,
+}
+
 /// A point: the samples in its time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Bucket {
@@ -470,23 +481,27 @@ impl Store {
         (!p.is_empty()).then(|| p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64)
     }
 
-    /// Each series' samples from `from` to `to` (unix s, `to` excluded) at `now`: how many, their
-    /// sum, their least and most, by series name; None where none. Read from the finest ring still
+    /// Each series' samples from `from` to `to` (unix s, `to` excluded) at `now` (`Span`), by
+    /// series name; None where none. Read from the finest ring still
     /// holding `from` at `now` (`tier_for` of `now - from`: a record taken late reads a coarser
     /// ring, not one whose buckets for its time were since used again). A bucket is taken whole
     /// when its own start is within the span: one starting before `from` is left out, one starting
     /// before `to` counted with all its samples, up to a step past `to` (a run timed on the 10 s
     /// ring: its edges within 10 s).
-    fn span(&self, from: u64, to: u64, now: u64) -> Option<impl Fn(&str) -> Option<(u64, f64, f64, f64)> + '_> {
+    fn span(&self, from: u64, to: u64, now: u64) -> Option<impl Fn(&str) -> Option<Span> + '_> {
         let k = tier_for(now.saturating_sub(from));
+        let step = TIERS[k].0;
         let s = self.series.lock().ok()?;
         Some(move |name: &str| {
             let b = s.get(name)?.buckets(k, from, to.max(from + 1));
             let n: u64 = b.iter().map(|x| u64::from(x.n)).sum();
-            (n > 0).then(|| {
-                let lo = b.iter().map(|x| f64::from(x.lo)).fold(f64::INFINITY, f64::min);
-                let hi = b.iter().map(|x| f64::from(x.hi)).fold(f64::NEG_INFINITY, f64::max);
-                (n, b.iter().map(|x| x.sum).sum(), lo, hi)
+            (n > 0).then(|| Span {
+                n,
+                mean: b.iter().map(|x| x.sum).sum::<f64>() / n as f64,
+                lo: b.iter().map(|x| f64::from(x.lo)).fold(f64::INFINITY, f64::min),
+                hi: b.iter().map(|x| f64::from(x.hi)).fold(f64::NEG_INFINITY, f64::max),
+                first: b[0].slot * step,
+                last: b[b.len() - 1].slot * step,
             })
         })
     }
@@ -494,13 +509,17 @@ impl Store {
     /// The NAS as the pool saw it from `from` to `to` (unix s) at `now`, put in `supply` (task
     /// #1418; the lead's, as it keeps a run's record): its pool series' means (`record_pool`: the
     /// members' NAS reads served and writes, MB/s) and its busiest disk's busy share
-    /// (`record_disks`). Each left as it was where none was sampled.
+    /// (`record_disks`), and the seconds between the first and last pool reading in the run
+    /// (`pool_secs`: a lead that took over during it read only its part). Left as they were where
+    /// the pool's reads weren't sampled then.
     pub fn pool_supply(&self, supply: &mut jobrt::timings::Supply, from: u64, to: u64, now: u64) {
         let Some(of) = self.span(from, to, now) else { return };
-        let mean = |name: &str| of(name).map(|(n, sum, ..)| round(sum / n as f64));
-        supply.pool_read_mbs = mean(&format!("{POOL}{}", NAS_TRAFFIC[0])).or(supply.pool_read_mbs);
-        supply.pool_write_mbs = mean(&format!("{POOL}{}", NAS_TRAFFIC[2])).or(supply.pool_write_mbs);
-        supply.nas_busy_pct = mean(NAS_DISK_BUSY).or(supply.nas_busy_pct);
+        let Some(read) = of(&format!("{POOL}{}", NAS_TRAFFIC[0])) else { return };
+        let mean = |name: &str| of(name).map(|x| round(x.mean));
+        supply.pool_secs = Some(read.last - read.first);
+        supply.pool_read_mbs = Some(round(read.mean));
+        supply.pool_write_mbs = mean(&format!("{POOL}{}", NAS_TRAFFIC[2]));
+        supply.nas_busy_pct = mean(NAS_DISK_BUSY);
     }
 
     /// What this Mac supplied from `from` to `to` (unix s, `to` excluded: a run's time; task #1418,
@@ -508,10 +527,10 @@ impl Store {
     /// each series' samples then (`span`). None: no cores sampled then.
     pub fn supply(&self, from: u64, to: u64, now: u64, p: u32, e: u32) -> Option<jobrt::timings::Supply> {
         let of = self.span(from, to, now)?;
-        let mean = |name: &str| of(name).map(|(n, sum, ..)| sum / n as f64);
+        let mean = |name: &str| of(name).map(|x| x.mean);
         let left = |of: u32, busy: Option<f64>| busy.map(|b| round((f64::from(of) - b).max(0.0)));
         Some(jobrt::timings::Supply {
-            secs: of(CORES)?.0,
+            secs: of(CORES)?.n,
             p,
             e,
             free_p: left(p, mean(OTHERS_CORES_P)),
@@ -519,12 +538,13 @@ impl Store {
             kept: left(p + e, mean(BUILD_CORES_MAX)),
             build: mean(BUILD_CORES).map(round),
             mem_gb: mean(MEM_AVAIL).map(round),
-            mem_least_gb: of(MEM_AVAIL).map(|x| round(x.2)),
+            mem_least_gb: of(MEM_AVAIL).map(|x| round(x.lo)),
             floor_gb: mean(MEM_FLOOR).map(round),
             nas_ms: mean(NAS_MS).map(round),
-            nas_ms_most: of(NAS_MS).map(|x| round(x.3)),
+            nas_ms_most: of(NAS_MS).map(|x| round(x.hi)),
             nas_read_mbs: mean(NAS_TRAFFIC[0]).map(round),
             nas_write_mbs: mean(NAS_TRAFFIC[2]).map(round),
+            pool_secs: None,
             pool_read_mbs: None,
             pool_write_mbs: None,
             nas_busy_pct: None,
@@ -1345,6 +1365,7 @@ mod tests {
         s.record_disks(t, &[40.0, 70.0]);
         s.pool_supply(&mut u, t, t + 10, n);
         assert_eq!((u.pool_read_mbs, u.pool_write_mbs, u.nas_busy_pct), (Some(100.0), Some(20.0), Some(70.0)));
+        assert_eq!(u.pool_secs, Some(9), "its first and last pool readings 9 s apart");
         // (Said in the record, and read back.)
         let rec = jobrt::timings::RunRec { supply: Some(u), ..Default::default() };
         let back: jobrt::timings::RunRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();

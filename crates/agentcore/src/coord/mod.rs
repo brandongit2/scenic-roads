@@ -622,6 +622,12 @@ impl Shared {
         self.clock.now()
     }
 
+    /// The workers heard from within `AROUND`, by name.
+    fn workers_around(&self) -> impl Iterator<Item = (&String, &Worker)> {
+        let now = self.now();
+        self.workers.iter().filter(move |(_, w)| now.saturating_duration_since(w.seen) < AROUND)
+    }
+
     /// Its wall clock now (unix s): the real one, or a test's (`clock`).
     pub fn wall_s(&self) -> u64 {
         held::wall(self)
@@ -1977,7 +1983,7 @@ impl Coordinator {
         }
         let phases = (mode == Mode::Lead).then(|| {
             let p = Phases::default();
-            phase_sharer(dir.join("timings.jsonl"), p.clone(), stopped.clone());
+            phase_sharer(dir.join("timings.jsonl"), p.clone(), shared.clone(), me.to_string(), stopped.clone());
             p
         });
         let c = Coordinator {
@@ -3530,12 +3536,7 @@ impl Coordinator {
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
     pub fn workers(&self) -> Vec<(String, Worker)> {
         let s = self.shared.lock().unwrap();
-        let now = s.now();
-        s.workers
-            .iter()
-            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
-            .map(|(n, w)| (n.clone(), w.clone()))
-            .collect()
+        s.workers_around().map(|(n, w)| (n.clone(), w.clone())).collect()
     }
 }
 
@@ -3852,18 +3853,35 @@ const SHARES_EVERY_S: u64 = 60;
 
 /// Keeps `into`'s phase shares to each step's over its last runs in the timings log at `log`, its
 /// times to each step's time by phase over the page's chart ranges, and its speeds to each Mac's
-/// (a worker's by its Mac, crate::paces::mac_of), read on its own thread every `SHARES_EVERY_S`
+/// in the pool now (a worker's by its Mac, crate::paces::mac_of: this lead's, `me`, and those of
+/// the workers heard from within `AROUND`, as `Coordinator::workers`), read on its own thread every
+/// `SHARES_EVERY_S`
 /// as it grows (jobrt::timings::LogTail: its size first, then only what was added; the ranges
 /// summed again each time, as they move on), never under the pool's lock; till the coordinator
 /// stops.
-fn phase_sharer(log: PathBuf, into: Phases, stopped: Arc<std::sync::atomic::AtomicBool>) {
+fn phase_sharer(
+    log: PathBuf,
+    into: Phases,
+    shared: Arc<Mutex<Shared>>,
+    me: String,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+) {
     let run = move || {
         let mut tail = jobrt::timings::LogTail::default();
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             if tail.read(&log) {
                 *into.shares.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
-                *into.speeds.lock().unwrap_or_else(|e| e.into_inner()) = Some(tail.speeds(crate::paces::mac_of));
             }
+            // (Each round, the pool's Macs as they are now: one leaving or joining moves the fit.)
+            let pool: BTreeSet<String> = {
+                let s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                s.workers_around()
+                    .map(|(n, _)| crate::paces::mac_of(n).to_string())
+                    .chain([crate::paces::mac_of(&me).to_string()])
+                    .collect()
+            };
+            let speeds = tail.speeds(crate::paces::mac_of, |m| pool.contains(m));
+            *into.speeds.lock().unwrap_or_else(|e| e.into_inner()) = Some(speeds);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             *into.times.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tail.times(now)));
             for _ in 0..SHARES_EVERY_S {

@@ -11,14 +11,14 @@ export const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : m
 export const pad = (v) => String(v).padStart(2, "0");
 
 /** A Mac's speed (the lead's `speeds.macs[host]`: jobrt::timings::MacSpeed, task #1418) in words:
- * "8.1 G instructions/s a performance core, 2.9 an efficiency core · over 4 steps, fitted with the
- * other Macs' (63 clean runs)", the steps and runs its performance cores' (else its efficiency
- * cores'); a Mac sharing no step with another, "over its own"; null with neither measured. Pure
+ * "8.1 G instructions/s a performance core, 2.9 an efficiency core · over 4 steps, fitted with m1,
+ * m4 (63 clean runs)", the steps, group and runs its performance cores' (else its efficiency
+ * cores'); a Mac sharing no step with another, "of its own"; null with neither measured. Pure
  * (web/test/words.test.mjs). */
 export function speedWords(s) {
   const kinds = [["p", "a performance core"], ["e", "an efficiency core"]].filter(([k]) => s?.[k]);
   if (!kinds.length) return null;
   const rate = kinds.map(([k, core], i) => `${s[k].ginsn_s.toFixed(1)}${i ? "" : " G instructions/s"} ${core}`).join(", ");
   const o = s[kinds[0][0]];
-  return `${rate} · over ${plural(o.steps.length, "step")}${o.linked ? ", fitted with the other Macs'" : " of its own, none shared with another Mac"} (${plural(o.runs, "clean run")})`;
+  return `${rate} · over ${plural(o.steps.length, "step")}${o.with?.length ? `, fitted with ${o.with.join(", ")}` : " of its own, none shared with another Mac"} (${plural(o.runs, "clean run")})`;
 }

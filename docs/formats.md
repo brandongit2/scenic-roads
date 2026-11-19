@@ -933,7 +933,7 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
 done: {end, targets, of, resumed, made}
-supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb, nas_ms, nas_ms_most, nas_read_mbs, nas_write_mbs, pool_read_mbs, pool_write_mbs, nas_busy_pct}
+supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb, nas_ms, nas_ms_most, nas_read_mbs, nas_write_mbs, pool_secs, pool_read_mbs, pool_write_mbs, nas_busy_pct}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
@@ -1091,10 +1091,12 @@ before, and on a Mac keeping no live readings):
   `Store::pool_supply`; absent where the record has no `supply` or the lead's store has no such
   samples): `pool_read_mbs`, `pool_write_mbs`, every member's jobs' NAS reads served and writes
   summed (`pool_nas_read_mbs`, `pool_nas_write_mbs`, every 10 s), and `nas_busy_pct`, the NAS's
-  busiest disk's busy share (`nas_disk_busy_pct`, SNMP, every 10 s), their means over the run.
+  busiest disk's busy share (`nas_disk_busy_pct`, SNMP, every 10 s), their means over the run;
+  `pool_secs`, the seconds between the first and last pool reading in the run (a lead that took
+  over during the run read only its part: under `wall_s` by more than a reading's 10 s).
 
 Each Mac's speed is measured from these records (docs/pool.md §10, Each Mac's speed: `work`'s
-instructions over its CPU on each kind of core, fitted over every Mac's steps).
+instructions over its CPU on each kind of core, fitted over the pool's Macs' steps).
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,
