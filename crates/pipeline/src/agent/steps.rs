@@ -29,7 +29,7 @@
 //! behind it), groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets'
 //! proxy and the answers' lease guard what they share where it's used), and which jobs run beside
 //! which (the coordinator packs a Mac's jobs by their measures; a cold start by its provisional
-//! need, from its step's runs of an earlier way: docs/pool.md §7.7), nor any memory figure (a
+//! need, from what it's offered with: docs/pool.md §7.7), nor any memory figure (a
 //! step's memory is measured, task #979: one never measured runs alone).
 //!
 //! The step sets (`SHARED`, `ANSWERED`) are made from the table at compile time (a set whose size
@@ -1374,7 +1374,11 @@ pub const TABLE: [Step; 65] = [
     Step {
         ..step("tiles", Pack, Z6, "pack", "Draws a tile's road and rail map tiles and its data.", w_pack)
     },
+    // (Cost version: 1, its z3 tile's road and rail tiles drawn a tile at a time, each tile's ways
+    // cut a run at a time (codecs::hipack::tiles_one_by_one, task #1182), where 0 held the z3 tile's
+    // ways cut at once: 17.5 GB for 3/4/2.)
     Step {
+        cost_v: 1,
         ..step(
             "tiles",
             Pack,

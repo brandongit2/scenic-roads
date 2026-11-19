@@ -4,9 +4,11 @@
 //! step's needs learned from its runs (`model`, task #1416), or the caller's first guess (the
 //! steps table's, the size its plan offered, a z6 tile's extract-size guess).
 //!
-//! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run or a
-//! floor of an older way of it (a z6 tile's before its v2, whose measures held malloc's cached freed
-//! blocks) is neither a measure nor one of the model's runs.
+//! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run, a
+//! floor or a disk floor of an older way of it (a z6 tile's before its v2, whose measures held
+//! malloc's cached freed blocks; lo's before its v1, which held a z3 tile's ways at once) is neither
+//! a measure nor one of the model's runs, and sizes no run of the way it runs now. A disk floor
+//! carries no way of its own: it's its target's cost line's (`Book::disk`).
 //!
 //! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
 //!   floor alone counts as its measure. Its time on another Mac at that Mac's speed (crate::paces).
@@ -24,9 +26,9 @@
 //! - **Guess first** (z6 tiles and landmark candidates, `GUESS_FIRST`): while the model has fewer than
 //!   `MIN_RUNS` runs, the caller's guess scaled by the target's extract comes before it, so one dense
 //!   z6 tile doesn't set every other's need.
-//! - **Table**: the caller's guess, when nothing of the step was measured (a cold start: the
-//!   coordinator sizes it from the step's runs of its latest earlier way, `Book::older_mem`, else
-//!   its offered guess; with neither it runs alone, crate::coord::sched).
+//! - **Table**: the caller's guess, when nothing of the step was measured the way it runs now (a
+//!   cold start: the coordinator sizes it by its offered guess; with none it runs alone,
+//!   crate::coord::sched).
 //!
 //! A step offered by an input measure (`OFFERED_BY`: the 3D buildings by their rows) has no memory
 //! guess: what its caller passes as the guess is that measure of the target, a size the model reads
@@ -294,14 +296,12 @@ pub struct Cores {
     pub busy_tenths: Option<u32>,
 }
 
-/// A step's models as made from its runs: its needs (`model::Model`), its memory by place (`Near`,
-/// not a `GUESS_FIRST` step's), and its latest earlier way's (`cost_version`) needs, made of that
-/// way's runs alike (`Book::older_mem`).
+/// A step's models as made from its runs: its needs (`model::Model`) and its memory by place
+/// (`Near`, not a `GUESS_FIRST` step's).
 #[derive(Debug, Default)]
 pub struct Models {
     pub needs: model::Model,
     pub near: Option<Arc<Near>>,
-    older: Option<(u32, model::Model)>,
 }
 
 /// The models made, kept until the measures they're made from change: the change count they were
@@ -678,7 +678,6 @@ impl<'a> Book<'a> {
         let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c);
         let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max();
         let older_obs = way.map(|w| self.obs(step, w)).unwrap_or_default();
-        let older = way.map(|w| (w, model::Model::of(older_obs.clone(), &[], &[], &self.tuning)));
         // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
         // its place against that guess, which the history doesn't keep.)
         let near = (!GUESS_FIRST.contains(&step)).then(|| Arc::new(Near::of_measures(self.places(step))));
@@ -697,7 +696,7 @@ impl<'a> Book<'a> {
             })
             .collect();
         let needs = model::Model::of(self.obs(step, v), &older_obs, &disks, &self.tuning);
-        let m = Arc::new(Models { needs, near, older });
+        let m = Arc::new(Models { needs, near });
         cache.models.lock().unwrap_or_else(|e| e.into_inner()).1.insert(step.to_string(), m.clone());
         m
     }
@@ -725,20 +724,6 @@ impl<'a> Book<'a> {
             }
         }
         at
-    }
-
-    /// What the latest earlier way of `step` (`cost_version`) measured `target` at (MB), for a cold
-    /// start after its way changed (task #979): that way's needs' memory for the target (its runs
-    /// at or above its size, as the way it runs now reads its own: `model::Model::mem`), or the
-    /// target's own run of it, the larger; None when no run of an earlier way measured its memory.
-    /// Floors of an earlier way stay out (one held malloc's cached freed blocks, task #499), and so
-    /// do drops.
-    pub fn older_mem(&self, step: &str, target: &str) -> Option<u64> {
-        let md = self.model(step);
-        let (way, older) = md.older.as_ref()?;
-        let own = self.costs.get(&cost_key(step, target)).filter(|c| c.v == *way && !is_drop(c)).map(|c| c.peak_mb);
-        let by_size = older.mem(&self.sizes(step, target, None), 0);
-        by_size.into_iter().chain(own).max().filter(|&mb| mb > 0)
     }
 
     /// The sizes target `target` of `step` is predicted by: its own earlier run's (of any way),
@@ -846,12 +831,16 @@ impl<'a> Book<'a> {
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
-    /// None when none of its step was measured. A step reading a shared cache (`CACHES`): its own
-    /// output alone, its disk floor at most its step's model's for it (a measure past it a cache's
-    /// fill, reserved once per Mac apart).
+    /// None when none of its step was measured. A disk floor carries no way of its own: one whose
+    /// target's cost line is of an older way (`cost_version`) is that way's and counts for nothing,
+    /// as the model leaves it out. A step reading a shared cache (`CACHES`): its own output alone,
+    /// its disk floor at most its step's model's for it (a measure past it a cache's fill, reserved
+    /// once per Mac apart).
     pub fn disk(&self, step: &str, target: &str) -> Option<u64> {
         let key = cost_key(step, target);
-        let own = self.disks.and_then(|d| d.get(&key)).copied();
+        let v = self.the_plan.cost_version(step);
+        let own =
+            self.disks.and_then(|d| d.get(&key)).copied().filter(|_| self.costs.get(&key).is_none_or(|c| c.v >= v));
         if own.is_some() && cache_of(step).is_none() {
             return own;
         }
@@ -1207,6 +1196,7 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
                 worker: None,
                 v: v["v"].as_u64().unwrap_or(0) as u32,
                 sizes,
+                was_mb: None,
             },
         );
     }
@@ -1226,6 +1216,7 @@ mod tests {
             worker: None,
             v: 0,
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            was_mb: None,
         }
     }
 
@@ -1609,25 +1600,33 @@ mod tests {
         assert_eq!(b.mem("bldtiles", "6/63/63", 0, 30_000_000), (0, From::Table));
     }
 
-    /// Task #979: a cold start after its step's way changed is sized by its runs of the latest
-    /// earlier way (that way's model's memory for it, its runs at or above its size: here all one
-    /// size, so their 98th percentile; or its own run of it, the larger), floors and older ways
-    /// left out; none without such a run.
+    /// Task #1507: a target whose own run, floor and disk floor are of an older way of its step
+    /// (lo 3/4/2's: 17.5 GB and 35.0 GB, before #1182 drew a z3 tile a tile at a time) is sized by
+    /// the runs of the way it runs now, its siblings', by its own earlier sizes (here scaled up from
+    /// the largest: 90 MB and 1 GB of disk a GiB of its base packs); with none of them, by nothing
+    /// of the older way: a cold start, no disk.
     #[test]
-    fn a_new_ways_cold_start_is_sized_by_its_earlier_ways_runs() {
-        let v = cost_version("terrain-hi");
-        let mut costs = BTreeMap::new();
+    fn a_target_whose_history_predates_its_steps_way_is_sized_by_the_new_ways_runs() {
+        let v = cost_version("lo");
+        assert!(v > 0);
+        let gib = 1u64 << 30;
+        let old = Cost { v: v - 1, ..run("lo", "m1", 17_478, 380, &[("bytes", 23 * gib)]) };
+        let mut costs = BTreeMap::from([(cost_key("lo", "3/4/2"), old)]);
+        let mut disks = BTreeMap::from([(cost_key("lo", "3/4/2"), 35_803)]);
+        let floors = BTreeMap::from([(cost_key("lo", "3/4/2"), Floor { mb: 18_000, alone: true, v: v - 1 })]);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), Some(&disks));
+        assert_eq!(b.mem("lo", "3/4/2", 0, 0), (0, From::Table), "nothing of the way it runs now: a cold start");
+        assert_eq!(b.disk("lo", "3/4/2"), None, "its disk floor its old run's");
         for i in 1..=10u64 {
-            costs.insert(cost_key("terrain-hi", &format!("6/{i}/1")), Cost { v: v - 1, ..cost(i * 100, 60, &[]) });
+            let t = format!("3/{i}/5");
+            costs.insert(cost_key("lo", &t), run("lo", "m1", 90 * i, 10 * i, &[("bytes", i * gib)]));
+            disks.insert(cost_key("lo", &t), 1024 * i);
         }
-        costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
-        let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
-        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
-        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(982), "the 98th percentile");
-        assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
-        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(982), "an older way's: nothing");
-        assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
-        assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), Some(&disks));
+        assert_eq!(b.mem("lo", "3/4/2", 0, 0), (90 * 23, From::Model), "its siblings' runs, scaled to its size");
+        assert_eq!(b.disk("lo", "3/4/2"), Some(1024 * 23));
+        assert_eq!(b.own("lo", "3/4/2"), None);
+        assert_eq!(b.disk("lo", "3/1/5"), Some(1024), "a disk floor of the way it runs now is its own");
     }
 
     /// One dense z6 tile measured doesn't set the others': while its model has few runs, a z6

@@ -81,6 +81,16 @@
 //!   A flag per offer: how many, the first with its memory and disk, and the Mac with the most
 //!   memory for jobs at its best among those that run it, with that room. Flagged until a Mac with
 //!   the room asks, or the measure or the plan changes.
+//! - **Cost version** (`cost-version`): a step whose targets' reruns of the way it runs now (its
+//!   cost version, the steps table's `cost_v`) took more than the needs model's `off` (the pool's
+//!   `needs-off`) times less, or more, memory than their runs before on as many threads, for
+//!   `relearn` (`needs-relearn`) targets or more on one side (`Status::not_raised`,
+//!   crate::coord::Coordinator::not_raised, crate::coord::Cost::was_mb): its code moved its memory
+//!   with no cost version raised (task #1507: #1182 drew lo's z3 tiles a tile at a time, 3/4/2's
+//!   17.5 GB measure kept, so it fit no Mac), so its targets not run since are still sized by the
+//!   old code's runs; or their inputs moved as much. A flag per step and side: how many targets,
+//!   the one off the most with both peaks, and the Mac of its run. Flagged until the version is
+//!   raised (its costs then of an older way) or those targets run again alike.
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -93,7 +103,8 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big",
+/// "cost-version"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -201,7 +212,30 @@ pub fn of(
     v.extend(repeat(st, now));
     v.extend(refused(st, now));
     v.extend(too_big(st));
+    v.extend(not_raised(st));
     v
+}
+
+/// The cost-version flags (the module's doc): one per step and side of `Status::not_raised`.
+pub fn not_raised(st: &Status) -> Vec<Flag> {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    st.not_raised
+        .iter()
+        .map(|n| Flag {
+            kind: "cost-version".into(),
+            mac: n.mac.clone(),
+            said: format!(
+                "{}: {} targets' reruns at its cost version {} took {} memory than their runs before ({} {} then, {} now): if its code moved its memory, raise its cost_v, as its targets not run since are sized by their old runs",
+                n.step,
+                n.targets,
+                n.v,
+                if n.lower { "far less" } else { "far more" },
+                n.target,
+                gb(n.was_mb),
+                gb(n.now_mb)
+            ),
+        })
+        .collect()
 }
 
 /// The too-big flags (the module's doc): one per offer of `Status::too_big`.

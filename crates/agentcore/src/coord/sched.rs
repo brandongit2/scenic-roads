@@ -837,9 +837,8 @@ fn disk_with(a: &Ask, less: u64, more: u64) -> std::borrow::Cow<'_, Ask> {
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
 pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
 
-/// A cold start's provisional memory (MB) from `mb`, the most its step's runs of its latest earlier
-/// way measured or it was offered with: times 3/2 (task #499; `Sched::provisional`, the forecast's
-/// packing too).
+/// A cold start's provisional memory (MB) from `mb`, the most it was offered with: times 3/2 (task
+/// #499; `Sched::provisional`, the forecast's packing too).
 pub(super) fn provisional_mb(mb: u64) -> u64 {
     mb.saturating_mul(3) / 2
 }
@@ -1763,11 +1762,11 @@ impl Sched {
     }
 
     /// A cold start's provisional need (task #499): `provisional_mb` of the most, over its targets,
-    /// its step's runs of its latest earlier way measured (crate::needs::Book::older_mem: a cost
-    /// version raised, task #979) or it was offered with (`offered_mb`), the disk its step's
-    /// measures say (none: 0). None when neither says anything: no figure, so it runs alone
-    /// (`no_figure`). It goes beside other jobs when that fits; the memory guard
-    /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
+    /// it was offered with (`offered_mb`), the disk its step's measures say (none: 0). None when
+    /// none was offered with any: no figure, so it runs alone (`no_figure`). Runs of an older way of
+    /// its step (a cost version raised) say nothing of it (task #1507: lo 3/4/2's 17.5 GB, before
+    /// #1182 drew a z3 tile a tile at a time). It goes beside other jobs when that fits; the memory
+    /// guard (crate::agent::memguard) stops one that overruns, and its floor is learned.
     pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let each: Vec<(u64, Option<u64>)> = targets.iter().map(|t| self.provisional_of(step, t)).collect();
         let mem = each.iter().map(|e| e.0).max().filter(|&mb| mb > 0)?;
@@ -1778,10 +1777,9 @@ impl Sched {
         })
     }
 
-    /// `provisional`'s look at `target` of `step`: its runs' memory of their latest earlier way
-    /// or the memory it was offered with, the larger, and its disk by the measures; kept while
-    /// the measures stand and as offered (`provisional_of`: an ask weighs each cold target it may
-    /// grant).
+    /// `provisional`'s look at `target` of `step`: the memory it was offered with, and its disk by
+    /// the measures; kept while the measures stand and as offered (`provisional_of`: an ask weighs
+    /// each cold target it may grant).
     fn provisional_of(&self, step: &str, target: &str) -> (u64, Option<u64>) {
         let rev = self.rev();
         {
@@ -1794,7 +1792,7 @@ impl Sched {
             }
         }
         let b = self.book();
-        let p = (b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)), b.disk(step, target));
+        let p = (self.offered_mb(step, target), b.disk(step, target));
         let mut g = self.provisional_at.lock().unwrap_or_else(|e| e.into_inner());
         g.1.entry(step.to_string()).or_default().insert(target.to_string(), p);
         p

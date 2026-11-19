@@ -1788,8 +1788,13 @@ never correctness, politeness or work.
 alone for the picks; the model itself `needs::model`, task #1416): only what was measured the way
 the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); a run or floor of an
 older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage jobs' before
-their v2) is no target's memory or time measure, nor one of the model's runs (disk floors,
-`disks.json`, carry no version and always count). A target's memory, disk and time are its own
+their v2; lo's before v1, which held a z3 tile's ways at once) is no target's memory or time
+measure, nor one of the model's runs, and sizes no run of the way it runs now. A disk floor carries
+no way of its own: it is its target's cost line's (`needs::Book::disk`: one whose target's cost is
+of an older way counts for nothing, nor in the model), and a job's disks come before its costs, so
+the first run of a newer way puts its target's older disk floor away rather than rising from it
+(`Shared::add_disks`), and the step's jobs' disks of the older way with it (`add_job_disk`, their
+90th percentile a floor of every job of the step). A target's memory, disk and time are its own
 run's (memory never below its floor; a floor alone counts as its measure); else, a tile target's
 memory, **by its place** (task #931, `needs::Near`; not a `GUESS_FIRST` step's, units' and
 candidates', whose piece's guess no backtest has weighed it against): the most its nearest measured
@@ -2130,12 +2135,12 @@ sizing measured what the runs held; their work had moved under them within one v
 none of those runs counts now; the replay above was run on the code before that merge.
 
 **A cold start** (no target of its step measured the way it runs now; task #499) is packed by its
-*provisional need*: the most its step's runs of its latest earlier way measured (`cost_version`
-raised; that way's needs model's memory for the target, its runs at or above its size as above, or
-the target's own run of it, the larger: `needs::Book::older_mem`, task #979; floors of that way
-stay out) or it was offered with (unit's and pois' extract-size guess,
+*provisional need*: the most it was offered with (unit's and pois' extract-size guess,
 terrain-hi's bound), times 3/2 (`coord::sched::provisional_mb`), its disk its step's measures'
-(else none); with neither, it has no figure and runs alone (`Sched::no_figure`); its cores one
+(else none); with none, it has no figure and runs alone (`Sched::no_figure`). Its step's runs of an
+earlier way size nothing (task #1507): a cost version raised says the code's needs moved, and lo's
+3/4/2, measured at 17.5 GB before #1182 drew a z3 tile a tile at a time (2.3 GB on the M4 after),
+would have been held to 26 GB by them; its cores one
 thread (task #896; its agent grows it from there, §7.1, Threads controlled live)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, terrain-deep's
@@ -2160,8 +2165,24 @@ holding the whole Mac included); never measured, its first job waits for the lea
 any step's (`own_cold_waits`). A floor never stalls the build: the first slot starts once
 room-making has done what it can, the disk guard as backstop.
 
-Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather
-than kept by hand; progress of steps other than the OSM pass resumable on its Mac.
+**A version not raised** (task #1507). A cost version is raised by hand with the change that moves
+a step's needs; it can't be derived from the step's key version (`crate::agent::build`'s `*_V`),
+which moves with its outputs: #1182 made lo's z3 tiles the same bytes at a seventh of the memory, so
+its key stayed and its targets weren't run again, and #929 reshaped the terrain with no version
+raised either. Nor from a digest of the step's code (as an inputs unit's checks are, docs/inputs.md):
+the code a step runs reaches most crates, so nearly every release would make every step a cold start. So
+the lead watches for it: a cost taken in place of its target's run before, both of the way the step
+runs now on as many threads, off it by more than the needs model's `off` (`needs-off`, 3) times
+either way, notes that run's peak (`Cost::was_mb`, `coord`'s `moved_from`); a step with
+`needs-relearn` (5) such targets on one side is flagged `cost-version` (§10, Flags;
+`Coordinator::not_raised`) until the version is raised or those targets run again alike. Its
+targets not run since are still sized by the old code's runs, and the flag says so: raise the
+step's `cost_v`. A rerun whose inputs moved its memory that much is flagged alike, so the flag asks
+for a look, not a bump. Measured on the lead's records of 19 Nov, by the release each run's Mac had
+(its history's "agent" events): lo's 14 runs on the releases since #1182 (20261112-2000 on) peaked
+at 24-906 MB, its 37 before at up to 17.5 GB (3/4/2) and 11.9 GB (3/6/3).
+
+Planned: progress of steps other than the OSM pass resumable on its Mac.
 
 ### 7.8 The agent never waits on one NAS call
 
@@ -3052,6 +3073,14 @@ asks passed on are one-shot: the lead's store keeps them (below).
     and disk, and the Mac with the most memory for jobs at its best, with that room. A memory
     scaled up past every run (§7.7, What a step needs) can put a target there. It stands until a
     Mac with the room asks, or the measure or the plan changes.
+  - *cost-version*: a step whose targets' reruns of the way it runs now took more than `needs-off`
+    times less (or more) memory than their runs before on as many threads, for `needs-relearn`
+    targets or more on one side (`Coordinator::not_raised`, the status's `not_raised`; task
+    #1507): its code likely moved its memory with no cost version raised, so its targets not run
+    since are sized by the old code's runs (§7.7, A version not raised). One flag per step and
+    side: how many targets, the one off the most with both peaks, the Mac of its run. It stands
+    until the version is raised (those costs then of an older way) or those targets run again
+    alike.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).

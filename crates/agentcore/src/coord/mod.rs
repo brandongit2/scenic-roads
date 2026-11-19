@@ -214,6 +214,52 @@ pub struct Cost {
     pub v: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
+    /// Its target's run before's peak (MB), where that was of the same way of its step (the way it
+    /// runs now) on as many threads and this one's peak is off it by more than the needs model's
+    /// `off` times either way (`moved_from`): a sign its step's code moved its memory with no cost
+    /// version raised (task #1507: #1182's lo), flagged once `relearn` targets show it on one side
+    /// (`Coordinator::not_raised`). Set by the lead as it takes the cost; None on a worker's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was_mb: Option<u64>,
+}
+
+/// The peak of `kept`, the run before of the target `new` measures (cost key `key`), when it was
+/// of the same way of its step, the way it runs now (`cost_version`), on as many threads (as its
+/// sizes say them; neither a drop), and `new`'s peak is off it by more than `off` times either
+/// way: `Cost::was_mb`.
+fn moved_from(
+    the_plan: &dyn crate::agent::seam::Plan,
+    kept: Option<&Cost>,
+    new: &Cost,
+    key: &str,
+    off: f64,
+) -> Option<u64> {
+    let k = kept?;
+    let v = the_plan.cost_version(CostKey::parse(key).step);
+    let threads = |c: &Cost| c.sizes.get("threads").copied();
+    let same = k.v == v
+        && new.v == v
+        && threads(k) == threads(new)
+        && !crate::needs::is_drop(k)
+        && !crate::needs::is_drop(new);
+    let (a, b) = (k.peak_mb as f64, new.peak_mb as f64);
+    (same && a > 0.0 && b > 0.0 && (a > b * off || b > a * off)).then_some(k.peak_mb)
+}
+
+/// A step whose targets' reruns, of the way it runs now, show its memory moved with no cost version
+/// raised (`Cost::was_mb`; `Coordinator::not_raised`): its way, on which side (`lower`: its runs
+/// took less than their runs before), how many targets, and the one off the most, with its peaks
+/// before and now (MB) and the Mac of its run now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotRaised {
+    pub step: String,
+    pub v: u32,
+    pub lower: bool,
+    pub targets: usize,
+    pub target: String,
+    pub was_mb: u64,
+    pub now_mb: u64,
+    pub mac: String,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -737,14 +783,20 @@ impl Shared {
         self.keep.measures(&self.costs, &self.floors, &self.disks, &self.job_disks, &self.fills);
     }
 
-    /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept. One of the
+    /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept, or where
+    /// that one is of an older way of its step (a disk floor carries no way of its own: its
+    /// target's cost line's, which a job's disks come before, crate::needs::Book::disk). One of the
     /// OSM pass (`osm-pass <date>`) puts the earlier passes' away. True when any changed.
     fn add_disks(&mut self, disks: &[(String, u64)]) -> bool {
         self.needs_rev += 1;
         let mut any = false;
         for (u, mb) in disks {
+            let older = self
+                .costs
+                .get(u)
+                .is_some_and(|c| c.v < self.the_plan.cost_version(crate::agent::memguard::step_of_key(u)));
             // (A target measured at 0 MB keeps its 0: its own measure, not its step's prior.)
-            if self.disks.get(u).is_some_and(|old| old >= mb) {
+            if !older && self.disks.get(u).is_some_and(|old| old >= mb) {
                 continue;
             }
             if u.starts_with("osm-pass ") {
@@ -756,16 +808,36 @@ impl Shared {
         any
     }
 
-    /// The disk a job of `step` took over its run (MB): one of its step's last `JOB_PEAKS`.
+    /// The disk a job of `step` took over its run (MB): one of its step's last `JOB_PEAKS`. The
+    /// first of a newer way (its step's costs all of older ways: a job's disks come before its
+    /// costs) puts the older way's away: they bound none of it.
     fn add_job_disk(&mut self, step: &str, mb: u64) -> bool {
         if step.is_empty() || mb == 0 {
             return false;
+        }
+        if self.step_ran_only_older(step) {
+            self.job_disks.remove(step);
         }
         let v = self.job_disks.entry(step.to_string()).or_default();
         v.push(mb);
         let n = v.len().saturating_sub(JOB_PEAKS);
         v.drain(..n);
         true
+    }
+
+    /// Whether every cost of `step` kept is of an older way than it runs now (`cost_version`), and
+    /// it has one.
+    fn step_ran_only_older(&self, step: &str) -> bool {
+        let v = self.the_plan.cost_version(step);
+        // (A step's costs are under "<step> <target>", a z6 tile's alone: `cost_key`.)
+        let prefix = format!("{step} ");
+        let mut of: Box<dyn Iterator<Item = u32>> = if step == "unit" {
+            Box::new(self.costs.iter().filter(|(k, _)| CostKey::parse(k).step == "unit").map(|(_, c)| c.v))
+        } else {
+            Box::new(self.costs.range(prefix.clone()..).take_while(|(k, _)| k.starts_with(&prefix)).map(|(_, c)| c.v))
+        };
+        let Some(first) = of.next() else { return false };
+        first < v && of.all(|w| w < v)
     }
 
     /// A job of `step` over `targets` took `mb` on the disk over its run: when that's past its
@@ -783,13 +855,51 @@ impl Shared {
         true
     }
 
-    /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor.
+    /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor;
+    /// one off the run before by more than the needs model's `off` times, the same way of its step,
+    /// noting that run's peak (`Cost::was_mb`).
     fn add_costs(&mut self, costs: impl IntoIterator<Item = (String, Cost)>, worker: &str) {
         self.needs_rev += 1;
         for (u, c) in costs {
             self.floors.remove(&u);
-            self.costs.insert(u, Cost { worker: Some(worker.to_string()), ..c });
+            let was_mb = moved_from(self.the_plan, self.costs.get(&u), &c, &u, self.tuning.off);
+            self.costs.insert(u, Cost { worker: Some(worker.to_string()), was_mb, ..c });
         }
+    }
+
+    /// The steps whose memory moved with no cost version raised (`NotRaised`): those with
+    /// `relearn` (the needs model's) targets or more whose costs of the way it runs now note a run
+    /// before off theirs (`Cost::was_mb`) on one side, the side with more first.
+    fn not_raised(&self) -> Vec<NotRaised> {
+        let mut by: BTreeMap<(String, bool), NotRaised> = BTreeMap::new();
+        let mut most: BTreeMap<(String, bool), f64> = BTreeMap::new();
+        for (k, c) in &self.costs {
+            let Some(was) = c.was_mb.filter(|&w| w > 0 && c.peak_mb > 0) else { continue };
+            let step = CostKey::parse(k);
+            let v = self.the_plan.cost_version(step.step);
+            if c.v != v {
+                continue;
+            }
+            let lower = c.peak_mb < was;
+            let key = (step.step.to_string(), lower);
+            let ratio = (was as f64 / c.peak_mb as f64).max(c.peak_mb as f64 / was as f64);
+            let e = by.entry(key.clone()).or_insert_with(|| NotRaised {
+                step: key.0.clone(),
+                v,
+                lower,
+                ..Default::default()
+            });
+            e.targets += 1;
+            if most.get(&key).is_none_or(|&m| ratio > m) {
+                most.insert(key, ratio);
+                (e.target, e.was_mb, e.now_mb) = (step.target.to_string(), was, c.peak_mb);
+                e.mac = c.worker.as_deref().map(|w| crate::paces::mac_of(w).to_string()).unwrap_or_default();
+            }
+        }
+        let relearn = usize::try_from(self.tuning.relearn).unwrap_or(usize::MAX).max(1);
+        let mut out: Vec<NotRaised> = by.into_values().filter(|n| n.targets >= relearn).collect();
+        out.sort_by(|a, b| a.step.cmp(&b.step).then(b.targets.cmp(&a.targets)));
+        out
     }
 
     /// Floors seen (by cost key): each kept where its target has none, one of an older way of its
@@ -2441,6 +2551,12 @@ impl Coordinator {
             .filter_map(|(n, w)| Some((n.as_str(), if *n == self.me { own.as_ref()? } else { w.ask.as_ref()? })))
             .collect();
         s.sched.too_big(&macs, now)
+    }
+
+    /// The steps whose targets' reruns show their memory moved with no cost version raised
+    /// (`NotRaised`, `Shared::not_raised`): flagged (crate::agent::flags::not_raised).
+    pub fn not_raised(&self) -> Vec<NotRaised> {
+        self.shared.lock().unwrap().not_raised()
     }
 
     /// This Mac's own agent asking for work as any member does (docs/pool.md §7.2): granted by the
@@ -5434,6 +5550,19 @@ fn route(
                     }
                     s = shared.lock().unwrap();
                     let by = d.worker.clone();
+                    // (Its disks before its costs, as a lead's own job's: a disk floor its target's
+                    // older way left is put away for this run's, `add_disks`, and its step's jobs'
+                    // disks of an older way, `add_job_disk`.)
+                    let disks: Vec<(String, u64)> = d
+                        .disks
+                        .into_iter()
+                        .filter(|(u, _)| {
+                            lease_targets.iter().any(|t| *u == cost_key(step, &t.0))
+                                || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
+                        })
+                        .collect();
+                    s.add_disks(&disks);
+                    s.add_job_disk(step, d.job_disk_mb);
                     s.add_costs(
                         d.costs
                             .into_iter()
@@ -5448,16 +5577,6 @@ fn route(
                         .filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0)))
                         .collect();
                     s.add_floors(&floors);
-                    let disks: Vec<(String, u64)> = d
-                        .disks
-                        .into_iter()
-                        .filter(|(u, _)| {
-                            lease_targets.iter().any(|t| *u == cost_key(step, &t.0))
-                                || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
-                        })
-                        .collect();
-                    s.add_disks(&disks);
-                    s.add_job_disk(step, d.job_disk_mb);
                     // (A fill only of a job that did all its targets: a paused one's run isn't its fill.)
                     if lease_targets.iter().all(|t| targets.contains(t)) {
                         let ts: Vec<String> = lease_targets.iter().map(|t| t.0.clone()).collect();
@@ -8340,6 +8459,95 @@ mod tests {
         assert_eq!(s.secs_of("terrain-deep", "10/256/352", "m1"), Some(2));
     }
 
+    /// Task #1507: a target whose measures are all of an older way of its step (lo 3/4/2's, before
+    /// #1182: 17.5 GB, a 35.0 GB disk floor, its step's jobs' disks) is a cold start, nothing of
+    /// that way bounding it; its first run of the way it runs now puts the older disk floor and
+    /// jobs' disks away (its disks before its costs, as a job's come), and from then they rise as
+    /// any.
+    #[test]
+    fn an_older_ways_disk_floor_and_jobs_disks_bound_nothing() {
+        let (_d, c, _w) = start();
+        let v = cost_version("lo");
+        let key = cost_key("lo", "3/4/2");
+        c.add_costs(&[(key.clone(), Cost { peak_mb: 17_478, secs: 380, v: v - 1, ..Default::default() })]);
+        c.add_disks(&[(key.clone(), 35_803)]);
+        for _ in 0..3 {
+            c.add_job_disk("lo", 31_000);
+        }
+        assert_eq!(c.measured("lo", "3/4/2"), None, "a cold start");
+        // Its run of the way it runs now: its disks, then its costs.
+        c.add_disks(&[(key.clone(), 20_000)]);
+        c.add_job_disk("lo", 20_000);
+        c.add_costs(&[(key.clone(), Cost { peak_mb: 2300, secs: 300, v, ..Default::default() })]);
+        assert_eq!(c.disks().get(&key), Some(&20_000), "the older way's floor put away");
+        assert_eq!(c.job_disk("lo"), 20_000, "the older way's jobs' disks put away");
+        assert_eq!(c.measured("lo", "3/4/2"), Some(Measured { mem_mb: 2300, disk_mb: 20_000, own: true }));
+        // From then, as any: the floor only rises, the jobs' disks a window.
+        c.add_disks(&[(key.clone(), 15_000)]);
+        c.add_job_disk("lo", 22_000);
+        assert_eq!((c.disks().get(&key), c.job_disk("lo")), (Some(&20_000), 22_000));
+    }
+
+    /// Task #1507: a step whose targets' reruns of the way it runs now (on as many threads) took
+    /// more than `needs-off` times less memory than their runs before, for `needs-relearn`
+    /// targets, is flagged: its code moved with no cost version raised (#1182's lo). A rerun on
+    /// other threads, or within the factor, or of an older way, says nothing; one alike clears its
+    /// target's.
+    #[test]
+    fn memory_moved_with_no_version_raised_is_flagged() {
+        let (_d, c, _w) = start();
+        let v = cost_version("lo");
+        let t = jobrt::needs::Tuning::default();
+        let run = |peak: u64, threads: u64| Cost {
+            peak_mb: peak,
+            secs: 60,
+            v,
+            sizes: [("threads".to_string(), threads)].into(),
+            ..Default::default()
+        };
+        let n = t.relearn as usize;
+        for i in 0..n {
+            let k = cost_key("lo", &format!("3/{i}/1"));
+            c.add_costs(&[(k.clone(), run(12_000, 2))]);
+            assert!(c.not_raised().is_empty(), "{i}: not yet");
+            c.add_costs(&[(k, run(900, 2))]);
+        }
+        let k = cost_key("lo", "3/7/7");
+        c.add_costs(&[(k.clone(), run(12_000, 2))]);
+        c.add_costs(&[(k.clone(), run(5_000, 2))]);
+        c.add_costs(&[(cost_key("lo", "3/7/6"), run(12_000, 1))]);
+        c.add_costs(&[(cost_key("lo", "3/7/6"), run(900, 2))]);
+        c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(12_000, 2) })]);
+        c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(900, 2) })]);
+        assert!(t.off < 12_000.0 / 900.0 && t.off > 12_000.0 / 5_000.0);
+        let nr = c.not_raised();
+        assert_eq!(
+            nr,
+            [NotRaised {
+                step: "lo".into(),
+                v,
+                lower: true,
+                targets: n,
+                target: "3/0/1".into(),
+                was_mb: 12_000,
+                now_mb: 900,
+                mac: "m4".into()
+            }]
+        );
+        let f = crate::agent::flags::not_raised(&crate::agent::Status { not_raised: nr, ..Default::default() });
+        assert_eq!(f.len(), 1);
+        assert!(
+            f[0].line().starts_with(&format!(
+                "cost-version: lo: {n} targets' reruns at its cost version {v} took far less memory than their runs before (3/0/1 11.7 GB then, 0.9 GB now)"
+            )),
+            "{}",
+            f[0].line()
+        );
+        // A rerun alike: its target's sign gone, and the flag with it (one short).
+        c.add_costs(&[(cost_key("lo", "3/0/1"), run(1000, 2))]);
+        assert!(c.not_raised().is_empty());
+    }
+
     #[test]
     fn a_disk_floor_is_learned_rises_and_moves_and_a_step_measured_once_has_a_prior() {
         let (_d, c, w) = start();
@@ -9712,13 +9920,14 @@ mod tests {
     }
 
     /// Task #499: a cold job of the lead's own (bld-fetch, run before but not measured the way it
-    /// runs now) goes beside the lead's jobs when its provisional need (its runs of its earlier way
-    /// times 3/2) fits the room left; one that doesn't, or a step never measured (the catalogue), isn't
-    /// starved: the lead's asks get nothing more until it can go. A member with more room, asking
-    /// for the step it may never be granted, isn't its asker.
+    /// runs now) goes beside the lead's jobs when its provisional need (what it's offered with times
+    /// 3/2; its runs of its earlier way size nothing, task #1507) fits the room left; one that
+    /// doesn't, or a step never measured (the catalogue), isn't starved: the lead's asks get nothing
+    /// more until it can go. A member with more room, asking for the step it may never be granted,
+    /// isn't its asker.
     #[test]
     fn a_cold_job_of_the_leads_own_goes_by_its_provisional_need() {
-        let provisional = OLDER_MB * 3 / 2;
+        let provisional = OFFERED_MB * 3 / 2;
         for (step, room, beside) in
             [("bld-fetch", 64_000, true), ("bld-fetch", 2000 + provisional - 1, false), ("catalog", 64_000, false)]
         {
@@ -9730,7 +9939,7 @@ mod tests {
                 0,
                 Offer {
                     step: step.into(),
-                    targets: vec![(step.into(), "k".into(), 0)],
+                    targets: vec![(step.into(), "k".into(), OFFERED_MB)],
                     job: Some(format!("{step} {step}")),
                 },
             );
@@ -12720,21 +12929,22 @@ mod tests {
         assert_eq!(held, Some(sched::Rule::Waiting));
     }
 
-    /// The memory a step's runs of its earlier way took (`ran_before`).
-    const OLDER_MB: u64 = 1000;
+    /// The memory a cold target is offered with (its plan's guess): its provisional need's.
+    const OFFERED_MB: u64 = 1000;
 
     /// A step that has run before, its memory not measured the way it runs now: a cold start, but
-    /// not one never measured. A run of its earlier way (`OLDER_MB`, a target not offered: task
-    /// #979, its cold starts sized by it) where it has one, and a disk floor.
+    /// not one never measured. A run of its earlier way where it has one (a target not offered, of
+    /// 50 GB: task #1507, it sizes none of the way it runs now), and a disk floor.
     fn ran_before(c: &Coordinator, step: &str) {
         if let Some(v) = cost_version(step).checked_sub(1) {
-            let cost = Cost { peak_mb: OLDER_MB, secs: 600, v, ..Default::default() };
+            let cost = Cost { peak_mb: 50_000, secs: 600, v, ..Default::default() };
             c.add_costs_by(&[(cost_key(step, "6/63/63"), cost)], "m1");
         }
         c.add_disks(&[(cost_key(step, "6/63/63"), 10)]);
     }
 
-    /// A cold `slope` target offered after `step`'s measured ones (2 GB, two threads).
+    /// A cold `slope` target (offered with `OFFERED_MB`) offered after `step`'s measured ones (2 GB,
+    /// two threads).
     fn with_cold_slope(c: &Coordinator, step: &str, n: usize) {
         packable(c, step, n, Some(2));
         ran_before(c, "slope-hi");
@@ -12742,18 +12952,18 @@ mod tests {
         // (Listed first, as the plan lists a region's slope ahead of what it reads: task #909.)
         offers.insert(
             0,
-            Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None },
+            Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), OFFERED_MB)], job: None },
         );
         c.offer("p", offers);
     }
 
-    /// Task #499: a cold start is packed by its provisional need (its step's runs of its earlier way
-    /// times 3/2, task #979): beside measured jobs when that fits the room left, and measured jobs
-    /// beside it; past the room left, not beside (alone once its worker holds nothing, whatever its
-    /// size).
+    /// Task #499: a cold start is packed by its provisional need (what it's offered with times 3/2;
+    /// its step's runs of an earlier way size nothing, task #1507): beside measured jobs when that
+    /// fits the room left, and measured jobs beside it; past the room left, not beside (alone once
+    /// its worker holds nothing, whatever its size).
     #[test]
     fn packing_takes_a_cold_start_by_its_provisional_need() {
-        let provisional = OLDER_MB * 3 / 2;
+        let provisional = OFFERED_MB * 3 / 2;
         let a = |mem: u64| Ask {
             want: 3,
             can: vec!["trees".into(), "slope-hi".into()],
@@ -12773,11 +12983,20 @@ mod tests {
         ran_before(&c, "slope-hi");
         c.offer(
             "p",
-            vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
+            vec![Offer {
+                step: "slope-hi".into(),
+                targets: vec![("6/2/2".into(), "k 6/2/2".into(), OFFERED_MB)],
+                job: None,
+            }],
         );
         assert_eq!(all_granted(&w, &a(provisional / 2)), [["6/2/2"]]);
-        // Measured jobs beside a running cold start, by its provisional need.
+        // Measured jobs beside a running cold start, by its provisional need (as it was offered:
+        // its offer kept).
+        let cold = c.shared.lock().unwrap().offers.clone();
         packable(&c, "trees", 2, Some(2));
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.extend(cold);
+        c.offer("p", offers);
         assert_eq!(all_granted(&w, &a(4000 + provisional)), [["6/1/1"], ["6/1/2"]], "beside a cold start");
     }
 
@@ -12810,7 +13029,11 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         ran_before(&c, "slope-hi");
         ran_before(&c, "terrain-hi");
-        let cold = |step: &str| Offer { step: step.into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
+        let cold = |step: &str| Offer {
+            step: step.into(),
+            targets: vec![("6/2/2".into(), "k".into(), OFFERED_MB)],
+            job: None,
+        };
         c.offer("p", vec![cold("slope-hi"), cold("terrain-hi")]);
         assert_eq!(all_granted(&w, &a).len(), 1, "one cold start a Mac");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
@@ -12828,7 +13051,8 @@ mod tests {
             can: vec!["trees".into(), "terrain-hi".into()],
             ..every_ask("m1", "trees", 64_000, 100_000)
         };
-        let cold = Offer { step: "terrain-hi".into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
+        let cold =
+            Offer { step: "terrain-hi".into(), targets: vec![("6/2/2".into(), "k".into(), OFFERED_MB)], job: None };
         // Beside a measured job: not granted (cores).
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "trees", 1, Some(2));
@@ -12862,7 +13086,7 @@ mod tests {
         packable(&c, "trees", 1, Some(2));
         let mut offers = vec![Offer {
             step: "pyramids-fill".into(),
-            targets: vec![("6/55/23".into(), "k 6/55/23".into(), OLDER_MB)],
+            targets: vec![("6/55/23".into(), "k 6/55/23".into(), OFFERED_MB)],
             job: Some("pyramids-fill 6/55/23".into()),
         }];
         offers.extend(c.shared.lock().unwrap().offers.clone());
@@ -12886,9 +13110,10 @@ mod tests {
     fn a_cold_redo_goes_beside_a_long_lead_job() {
         let (_d, c, _w, _clock) = every((0, 0));
         ran_before(&c, "terrain-hi");
+        // (Terrain-hi offered with the memory its code bounds its jobs at: its cold start's figure.)
         let own = |step: &str, t: &str| Offer {
             step: step.into(),
-            targets: vec![(t.into(), format!("k {t}"), 0)],
+            targets: vec![(t.into(), format!("k {t}"), if step == "terrain-hi" { OFFERED_MB } else { 0 })],
             job: Some(format!("{step} {t}")),
         };
         let a = Ask {
@@ -12900,7 +13125,7 @@ mod tests {
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "terrain-hi"), "{:?}", g.work);
         assert_eq!(g.threads, 8, "a cold terrain job: the whole Mac");
-        c.offer("p", vec![own("redo", "redo 1")]);
+        c.offer("p", vec![own("terrain-hi", "3/1/1"), own("redo", "redo 1")]);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never measured: it waits");
         let cost = Cost { peak_mb: 300, secs: 2, v: cost_version("redo"), ..Default::default() };
         c.add_costs_by(&[(cost_key("redo", "redo"), cost)], "m4");
@@ -15690,15 +15915,12 @@ mod tests {
         }
     }
 
-    /// A cold start of `step` over `ts` as `recorded_cold_starts` prints it: its provisional need,
-    /// or none (it runs alone), and where that came from.
+    /// A cold start of `step` over `ts` as `recorded_cold_starts` prints it: its provisional need
+    /// (as offered), or none (it runs alone).
     fn cold_words(s: &sched::Sched, step: &str, ts: &[String], gb: &dyn Fn(u64) -> String) -> String {
-        let b = s.book();
-        let older = ts.iter().filter_map(|t| b.older_mem(step, t)).max();
-        match (s.provisional(step, ts), older) {
-            (Some(m), Some(o)) => format!("{} (its earlier way's runs: {})", gb(m.mem_mb), gb(o)),
-            (Some(m), None) => format!("{} (as offered)", gb(m.mem_mb)),
-            (None, _) => "none: it runs alone".to_string(),
+        match s.provisional(step, ts) {
+            Some(m) => format!("{} (as offered)", gb(m.mem_mb)),
+            None => "none: it runs alone".to_string(),
         }
     }
 }

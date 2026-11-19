@@ -2194,8 +2194,8 @@ impl Planner {
             // The rest, offered to the workers that mount the NAS: z6 tiles with their extracts' sizes,
             // the 3D buildings by their rows (crate::needs::OFFERED_BY), terrain-hi with the memory
             // its code bounds its jobs at, the others with none (task #979: their measures size
-            // them, a cold start its step's runs of an earlier way, else alone); each worker takes
-            // what fits its memory.
+            // them; a cold start of theirs runs alone, task #1507: no earlier way sizes it); each
+            // worker takes what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
                 "terrain-hi" => {

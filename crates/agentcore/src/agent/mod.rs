@@ -865,6 +865,7 @@ fn read_costs(p: &Path, job: Option<jobrt::jobid::JobId>) -> Vec<(String, crate:
                     job,
                     v: v["v"].as_u64().unwrap_or(0) as u32,
                     sizes,
+                    was_mb: None,
                 },
             ))
         })
@@ -1061,6 +1062,10 @@ pub struct Status {
     /// lead's, each round; flagged (flags::too_big).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub too_big: Vec<crate::coord::TooBig>,
+    /// The steps whose targets' reruns show their memory moved with no cost version raised
+    /// (crate::coord::Coordinator::not_raised): the lead's, each round; flagged (flags::not_raised).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_raised: Vec<crate::coord::NotRaised>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -4979,6 +4984,7 @@ impl Agent {
             let factor = c.overdue().0;
             status.handoffs_refused = c.handoffs_refused();
             status.too_big = c.too_big();
+            status.not_raised = c.not_raised();
             status.flags = flags::of(self.o.the_plan, &status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());
@@ -17792,7 +17798,7 @@ mod tests {
                     secs: if i < 17 { 100 } else { 7200 },
                     worker: None,
                     v: 0,
-                    sizes: Default::default(),
+                    ..Default::default()
                 };
                 (crate::coord::cost_key("elev", &format!("6/1/{i}")), c)
             })
@@ -20283,6 +20289,7 @@ mod membership_tests {
             job: None,
             v,
             sizes: sizes.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
+            was_mb: None,
         };
         let key = |t: &str| crate::coord::cost_key("terrain-deep", t);
         let mut runs: Vec<(String, crate::coord::Cost)> =
