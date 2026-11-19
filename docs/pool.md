@@ -985,8 +985,8 @@ other process).
   capacity (`Agent::need_mb`, `Capacity::mem_reserved_mb`) and its cool-down; no agent has a
   figure of its own (task #970). A grant saying no figure (`peak_mb` 0): its job counts at what it
   holds.
-- **Give-back**: below the floor, at safe points, the work lost least first (§7.2, The memory
-  guard).
+- **Give-back**: below the floor and when that relieves it, at safe points, the work lost least
+  first (§7.2, The memory guard).
 - **Cool-down** (`Reading::cooling`, the agent's `cool_down`): a job the memory guard gives back
   (drained to its safe point, stopped, or yielding) holds new work off its Mac until what's
   available (the swap grown off) is back past the floor and that job's peak (what it held or its
@@ -1389,8 +1389,18 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   The cost is speed: each block over 32 KB is mapped afresh, ~3 µs a block and ~50 ms a GB
   allocated (a C loop of malloc, touch, free on the M4, against ~1 ms a GB with the cache).
 - **Below the floor** (§7.1, The memory floor: the jobs together past their room, what they hold
-  and what's available less the swap grown and the floor): with the largest fitting alone, another
-  job stops at its next safe point (`memguard::decide_by`): one that yields first, else the newest
+  and what's available less the swap grown and the floor), a job is given back only when that
+  relieves the Mac, by the rule a frozen job is stopped by below (`memguard::worth_stopping`, task
+  #1490): the jobs here, sampled, together hold what it's short (a job holding nothing never
+  drains), and the shortfall isn't the other processes' growth. Else no job is: the Mac short by
+  the load beside the pool holds new work off through admission (§7.1, `Reading::held_back`), not
+  the jobs running, and the guard says so once until the Mac is back. Admission and the drain read
+  the same figure (`Reading::room_mb`: at the floor, nothing granted and nothing drained); a job
+  just granted holds next to nothing, so a fall the rest of the Mac makes after its grant (the M1's
+  available swung between 0.05 and 2.5 GB within 10 s on 19 Nov, its jobs holding nothing) doesn't
+  give it back; a job whose own growth takes the Mac below its floor is. Relieving it, with the
+  largest fitting alone, another job stops at its next safe point (`memguard::decide_by`): one that
+  yields first, else the newest
   (by its start's minute), then the least progressed (the work lost least), never the largest; one
   at a time, and none more while the jobs not draining fit the room. Nothing new starts beside the
   largest meanwhile (a member asks for nothing). The largest alone past the room stops at its next
@@ -1418,7 +1428,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   the brake still acting, it's given back as an interrupted job is (not failed, not kept from the
   Mac), so its lease ends and its targets may go to a Mac with room rather than wait on this one;
   past the 15 minutes with the brake no longer acting it goes on, and the floor gives it back at
-  its next safe point if the Mac is still short. The M1's 15 stops of 18 Nov 23:00Z to 19 Nov
+  its next safe point if that relieves the Mac (below). The M1's 15 stops of 18 Nov 23:00Z to 19 Nov
   08:00Z (its 1.0 GB floor held short by the Claude app and agents' builds, jobs of 0.0-0.4 GB),
   each as the M1's live series had the Mac at its stop (150 s buckets, coarser than the guard's
   readings), decided again: one is a stop (a 0.4 GB job, 0.1 GB short), 9 free nothing near what
