@@ -345,8 +345,9 @@ pub struct Store {
     host: String,
     /// The NAS's root while a build runs (`set_nas`): its latency sampled meanwhile alone.
     nas: Mutex<Option<store::nasfs::NasRoot>>,
-    /// The NAS's root whenever the agent reads it (`set_root`): the days archived there.
-    root: Mutex<Option<store::nasfs::NasRoot>>,
+    /// The NAS's root whenever the agent reads it (`set_root`): the days archived there; and the
+    /// link it's reached by (`set_link`).
+    root: Mutex<Reach>,
     /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
     net: Mutex<Option<Arc<jobrt::budget::net::Net>>>,
     /// The file stream (module doc), oldest first.
@@ -354,8 +355,14 @@ pub struct Store {
     sampling: AtomicBool,
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
-    /// The NAS's link and since when (`set_link`; None: not said yet).
-    link: Mutex<Option<Link>>,
+}
+
+/// The NAS as the agent reaches it (`Store::root`): its root (None: away), and the link and since
+/// when (`Store::set_link`; None: not said yet).
+#[derive(Default)]
+struct Reach {
+    root: Option<store::nasfs::NasRoot>,
+    link: Option<Link>,
 }
 
 /// The NAS's link as a Mac reaches it (`Store::set_link`): its key (at home or not, and the
@@ -399,32 +406,32 @@ impl Store {
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
-            root: Mutex::new(None),
+            root: Mutex::new(Reach { root: None, link }),
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
-            link: Mutex::new(link),
         })
     }
 
-    /// The NAS reached at home (`home`) or not, by the share's mount as the store has it (`set_nas`)
+    /// The NAS reached at home (`home`) or not, by the share's mount as the store has it (`set_root`)
     /// at `now`: a change starts this Mac's NAS floor again (`nas_answers`), kept beside the store's
-    /// file. A Mac's first key, with none kept, takes the floor's whole span.
+    /// file. A Mac's first key, with none kept, takes the floor's whole span; the NAS away (no
+    /// mount known), the link stands as it was.
     pub fn set_link(&self, home: bool, now: u64) {
-        let mount = self.nas.lock().ok().and_then(|n| n.as_ref().map(|r| r.unchecked_path().display().to_string()));
-        let key = format!("{} {}", if home { "home" } else { "away" }, mount.unwrap_or_default());
-        let mut g = self.link.lock().unwrap_or_else(|e| e.into_inner());
-        if g.as_ref().is_some_and(|l| l.key == key) {
+        let mut g = self.root.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mount) = g.root.as_ref().map(|r| r.display().to_string()) else { return };
+        let key = format!("{} {mount}", if home { "home" } else { "away" });
+        if g.link.as_ref().is_some_and(|l| l.key == key) {
             return;
         }
-        let l = Link { since: if g.is_some() { now } else { 0 }, key };
+        let l = Link { since: if g.link.is_some() { now } else { 0 }, key };
         if let Some(f) = self.file.as_deref().map(|f| f.with_file_name(LINK_FILE)) {
             if let Err(e) = serde_json::to_vec(&l).map_err(std::io::Error::other).and_then(|b| std::fs::write(&f, b)) {
                 eprintln!("agent: keeping the NAS's link: {e}");
             }
         }
-        *g = Some(l);
+        g.link = Some(l);
     }
 
     /// This Mac's NAS answers for its lead at `now`, by the pacing's bounds `k`
@@ -433,7 +440,7 @@ impl Store {
     /// (`set_link`), never under store::aimd::NAS_LEAST. None: not measured over the span.
     pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64)> {
         let ms = self.mean(NAS_MS, now, k.span_s)?;
-        let since = self.link.lock().ok().and_then(|l| l.as_ref().map(|l| l.since)).unwrap_or(0);
+        let since = self.root.lock().ok().and_then(|g| g.link.as_ref().map(|l| l.since)).unwrap_or(0);
         let (step, _) = TIERS[1];
         let b = self.series.lock().ok()?.get(NAS_MS)?.buckets(1, now.saturating_sub(k.floor_s).max(since), now + 1);
         let m = (k.span_s / step).max(1) as usize;
@@ -653,7 +660,7 @@ impl Store {
     /// The NAS's root, whether or not a build runs: the days archived there (`archive`).
     pub fn set_root(&self, root: Option<&store::nasfs::NasRoot>) {
         if let Ok(mut n) = self.root.lock() {
-            *n = root.cloned();
+            n.root = root.cloned();
         }
     }
 
@@ -942,7 +949,7 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                     store.record(NAS_MS, t, super::nasread::probe(&r.path()).as_secs_f64() * 1000.0);
                 }
                 // (The days archived, an hour apart: tried again an hour on when the NAS failed.)
-                let root = store.root.lock().ok().and_then(|n| n.clone());
+                let root = store.root.lock().ok().and_then(|n| n.root.clone());
                 if let Some(r) = root.filter(|_| looked.is_none_or(|l| l.elapsed() >= ARCHIVE_EVERY)) {
                     looked = Some(std::time::Instant::now());
                     if let Err(e) = store.archive(&r, now_s(), &mut done) {
@@ -1521,6 +1528,10 @@ mod tests {
         let s = Store::new(Some(f.clone()), "m1");
         let t0 = 1_700_000_000;
         s.set_link(true, t0);
+        assert!(s.root.lock().unwrap().link.is_none(), "the NAS away: no link said");
+        let root = store::nasfs::NasRoot::from_arg("/Volumes/p/scenic");
+        s.set_root(Some(&root));
+        s.set_link(true, t0);
         for t in (t0..t0 + 3 * 3600).step_by(5) {
             s.record(NAS_MS, t, if t < t0 + 3600 { 5.0 } else { 10.0 });
         }
@@ -1541,6 +1552,7 @@ mod tests {
         // (Restarted on the same link: its change kept.)
         s.save();
         let back = Store::new(Some(f), "m1");
+        back.set_root(Some(&root));
         back.set_link(false, moved + 200);
         assert_eq!(back.nas_answers(moved + 119, &k), Some((40.0, 40.0)));
         assert_eq!(Store::new(None, "m1").nas_answers(now, &k), None, "nothing measured");
