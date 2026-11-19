@@ -7758,8 +7758,11 @@ impl Agent {
     /// its costs file, jobrt::control::on_grant; a paced one, inputs::inputs::pace, runs on its
     /// file's within the second), watched afresh from when those change, with its CPU time and the
     /// wall time it waited then (store::nasio::waited_in, its counts' folder). A stopped or stopping
-    /// job measures nothing.
+    /// job measures nothing, nor does one a guard holds frozen (memory or disk, SIGSTOPped whole
+    /// without `paused` or `pausing` set): its frozen minutes are wall time with no CPU, not idle
+    /// threads, so its watch is dropped and begins afresh when it thaws.
     fn watch_threads(&mut self, k: usize) {
+        let frozen = self.sampler.frozen(k) || self.sampler.disk_frozen(k);
         let f = self.threads_path(k);
         let costs = self.slot_costs(k);
         let cpu = self.sampler.cpu_ns(k);
@@ -7771,7 +7774,7 @@ impl Agent {
         }
         let on = if is_paced(&r.spec) { file.map(|n| n as u32) } else { memguard::targets(&costs).threads };
         r.watch = match (on, cpu) {
-            (Some(n), Some(ns)) if r.paused.is_none() && r.pausing.is_none() => match r.watch {
+            (Some(n), Some(ns)) if !frozen && r.paused.is_none() && r.pausing.is_none() => match r.watch {
                 Some(w) if w.threads == n && ns >= w.cpu_ns && waited >= w.waited_ns => Some(w),
                 _ => Some(threads::Watch { since: Instant::now(), cpu_ns: ns, waited_ns: waited, threads: n }),
             },
@@ -7807,9 +7810,11 @@ impl Agent {
     fn tend_threads(&mut self, c: &Conditions) {
         let due: Vec<usize> = (0..self.slots.len())
             .filter(|&k| {
-                self.slots[k].running.as_ref().is_some_and(|r| {
-                    r.watch.is_some_and(|w| w.threads as usize == r.threads && self.watched_for(&w) >= threads::EVERY)
-                })
+                !(self.sampler.frozen(k) || self.sampler.disk_frozen(k))
+                    && self.slots[k].running.as_ref().is_some_and(|r| {
+                        r.watch
+                            .is_some_and(|w| w.threads as usize == r.threads && self.watched_for(&w) >= threads::EVERY)
+                    })
             })
             .collect();
         if due.is_empty() {
@@ -12827,6 +12832,20 @@ mod tests {
         a.tend_threads(&cond);
         assert_eq!(file(&a), 2, "waiting and idle: cut");
         a.watch_threads(0);
+        // A minute frozen by a guard, no CPU: not idle time. No cut, its watch dropped, and it is
+        // watched afresh (a window of its own) once thawed.
+        minute(&mut a);
+        assert!(a.sampler.freeze(0));
+        a.watch_threads(0);
+        assert!(a.slots[0].running.as_ref().unwrap().watch.is_none(), "frozen: not watched");
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 2, "a frozen minute cuts nothing");
+        assert!(a.sampler.thaw(0));
+        a.watch_ahead = Duration::ZERO;
+        a.watch_threads(0);
+        assert_eq!(a.slots[0].running.as_ref().unwrap().watch.map(|w| w.threads), Some(2), "watched afresh");
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 2, "under a minute since it thawed: nothing decided");
         // Every thread busy, but each past those its grant covers would take 64 GB: held.
         a.slots[0].thread_mb = (64 << 10, 2);
         minute(&mut a);
