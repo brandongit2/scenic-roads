@@ -1582,6 +1582,30 @@ fn part_reach(
     }
 }
 
+/// What a polygon under this wide on average (twice its area over its perimeter, metres) is: a
+/// hairline the land less the regions' land leaves where the two meet on one line drawn twice (the
+/// whole input's: rings of 0-0.3 m², 300 m long, 158 902 of them in one regional district's water
+/// alone before this, #1448 review), never land a remainder gives.
+pub const HAIRLINE_M: f64 = 1.0;
+
+/// Area `a` without its hairlines (`HAIRLINE_M`).
+fn without_hairlines(a: Area) -> Area {
+    let m = 1e-7 * roadcore::geo::M_PER_DEG;
+    let wide = |p: &Vec<geom::Ring>| {
+        let mut per = 0.0;
+        for ring in p {
+            for (i, a) in ring.iter().enumerate() {
+                let b = ring[(i + 1) % ring.len()];
+                let c = ((a[1] + b[1]) as f64 * 0.5 * 1e-7).to_radians().cos();
+                per += (((b[0] - a[0]) as f64 * m * c).powi(2) + ((b[1] - a[1]) as f64 * m).powi(2)).sqrt();
+            }
+        }
+        let area_m2 = geom::area_km2(&Area { polys: vec![p.clone()] }) * 1e6;
+        per > 0.0 && 2.0 * area_m2 / per >= HAIRLINE_M
+    };
+    Area { polys: a.polys.into_iter().filter(wide).collect() }
+}
+
 /// A remainder's pieces (`remainders`): (the region, the cell, its land, its lakes).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn remainder_pieces(
@@ -1635,7 +1659,7 @@ fn remainder_pieces(
             .chain(others.values().map(|t| t.cells.get(&c)))
             .flatten()
             .collect();
-        let free = of.intersect(&land.union(&lakes)).minus(&geom::union_all_of(&taken));
+        let free = without_hairlines(of.intersect(&land.union(&lakes)).minus(&geom::union_all_of(&taken)));
         if free.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
