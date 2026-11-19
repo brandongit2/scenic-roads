@@ -7541,10 +7541,12 @@ impl Agent {
         // opens: buildstore::out::Out), and its progress noted as this Mac's.
         if self.resume_on() {
             env.push((resume::RESUME_ENV.into(), "1".into()));
-            // (Where its targets' logs given back on another Mac wait for it: its own `--root`,
-            // jobrt::resume_log::take_carried.)
-            if let Some(r) = self.last_root.as_ref() {
+            // (Where a planned step's logs go given back, and where its targets' logs given back on
+            // another Mac wait for it: its own `--root`, under its step, jobrt::resume_log's
+            // carry_out and take_carried.)
+            if let (Some(r), Some(w)) = (self.last_root.as_ref(), spec.record.as_ref()) {
                 env.push((jobrt::resume_log::CARRY_ENV.into(), jobs::root_arg(r)));
+                env.push((jobrt::resume_log::CARRY_STEP_ENV.into(), w.step.clone()));
             }
             if resume::resumable(&spec.id) {
                 if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
@@ -7735,34 +7737,6 @@ impl Agent {
             _ => e,
         };
         self.note(e);
-        if !ok {
-            self.carry_logs(k);
-        }
-    }
-
-    /// Slot `k`'s job ended short of its targets (given back, stopped, failed; a cancel drops its
-    /// work instead): the resume logs it wrote carried to the NAS on a thread of their own
-    /// (jobrt::resume_log::carry_out), so its targets' next run resumes them on whichever Mac it
-    /// goes to (docs/pool.md §7.2, Resuming).
-    fn carry_logs(&self, k: usize) {
-        let (Some(r), Some(root)) = (self.slots[k].running.as_ref(), self.last_root.as_ref()) else { return };
-        let Some(scratch) = scratch_of(&r.spec).filter(|_| self.resume_on()) else { return };
-        // (Its logs are those written since it began: a second's margin for the file times.)
-        let since = std::time::SystemTime::now() - r.elapsed() - Duration::from_secs(2);
-        let (root, id) = (root.long_retry(), r.spec.id.clone());
-        let carry = move || {
-            let v = jobrt::resume_log::carry_out(&root, &scratch, since);
-            if !v.is_empty() {
-                let mb = v.iter().map(|(_, n)| n).sum::<u64>() >> 20;
-                eprintln!(
-                    "agent: {id}: {} resume logs carried to the NAS for its targets' next run ({mb} MB)",
-                    v.len()
-                );
-            }
-        };
-        if let Err(e) = std::thread::Builder::new().name("carry".into()).spawn(carry) {
-            eprintln!("agent: carrying the resume logs: {e}");
-        }
     }
 
     /// Notes the lead's conditions as they change (mains or battery, the NAS, home or away, a
@@ -8352,6 +8326,12 @@ impl Agent {
         if let Some(dir) = scratch {
             for p in clear_target_scratch(&dir, &c.target) {
                 eprintln!("agent: {id}: its work under way dropped ({})", p.display());
+            }
+        }
+        // (And its log carried to the NAS, should a stop have carried one: jobrt::resume_log.)
+        if let (Some(r), Some(t)) = (self.last_root.as_ref(), codecs::tile::TileId::parse(&c.target)) {
+            if !step.is_empty() && jobrt::resume_log::drop_carried(r, &step, (t.z, t.x, t.y)) {
+                eprintln!("agent: {id}: its resume log carried to the NAS dropped");
             }
         }
         self.mem.retry.remove(&id);
@@ -20524,11 +20504,12 @@ mod membership_tests {
         );
     }
 
-    /// Task #1414: a job given back short of its targets has the resume logs it wrote carried to the
-    /// NAS (jobrt::resume_log::carry_out), for its targets' next run on any Mac; one it didn't write
-    /// stays here alone; and its jobs are told where to look (`CARRY_ENV`).
+    /// Task #1414: a planned step's job is told where its resume logs go given back, and where its
+    /// targets' logs given back on another Mac wait for it (jobrt::resume_log's `CARRY_ENV` and
+    /// `CARRY_STEP_ENV`: its own root, its step); cancelled, its target's carried copy is dropped
+    /// with its work.
     #[test]
-    fn a_job_given_back_carries_its_resume_logs_to_the_nas() {
+    fn a_job_is_told_where_logs_are_carried_and_a_cancel_drops_its_copy() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
@@ -20561,18 +20542,13 @@ mod membership_tests {
         a.last_root = Some(nas.clone());
         let scratch = home.join("scratch/bldtiles");
         std::fs::create_dir_all(&scratch).unwrap();
-        // (A log of an earlier job's, older than this one: never this job's to carry.)
-        let older = scratch.join("6_1_1.resume");
-        std::fs::write(&older, b"older").unwrap();
-        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
-        std::fs::File::options().write(true).open(&older).unwrap().set_modified(an_hour_ago).unwrap();
         let spec = JobSpec {
             id: "bldtiles 6/9/9".into(),
             what: "bldtiles".into(),
             cmd: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                "printf %s \"$SCENIC_RESUME_CARRY\" > \"$1/6_9_9.resume\"; sleep 3600".into(),
+                "printf '%s %s' \"$SCENIC_RESUME_CARRY\" \"$SCENIC_RESUME_CARRY_STEP\" > \"$1/env\"; sleep 3600".into(),
                 "--scratch".into(),
                 scratch.to_string_lossy().into_owned(),
             ],
@@ -20582,19 +20558,24 @@ mod membership_tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         a.start(0, spec, &cond, None).unwrap();
-        let log = scratch.join("6_9_9.resume");
-        let root_arg = jobs::root_arg(&nas);
-        store::testkit::eventually("the job's log written", || {
-            std::fs::read_to_string(&log).is_ok_and(|s| s.len() == root_arg.len())
+        let told = format!("{} bldtiles", jobs::root_arg(&nas));
+        let env = scratch.join("env");
+        store::testkit::eventually("the job's environment written", || {
+            std::fs::read_to_string(&env).is_ok_and(|s| s.len() == told.len())
         });
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), jobs::root_arg(&nas), "told where carried logs wait");
-        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
-        a.stopped(0, "stopped: the test's give-back");
-        a.slots[0].running = None;
-        let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles");
-        store::testkit::eventually("the log carried", || copy.join("6_9_9.resume").exists());
-        assert_eq!(std::fs::read(copy.join("6_9_9.resume")).unwrap(), std::fs::read(&log).unwrap());
-        assert!(!copy.join("6_1_1.resume").exists() && older.exists());
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), told);
+        let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles/6_9_9.resume");
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, b"bldtiles-resume 1 x\n").unwrap();
+        let c = jobrt::control::Cancel {
+            target: "6/9/9".into(),
+            step: Some("bldtiles".into()),
+            rerun_after_update: false,
+            by: "a test".into(),
+            at: 0,
+        };
+        a.cancel_slot(0, &c);
+        assert!(a.slots[0].running.is_none() && !copy.exists(), "its copy dropped with its work");
     }
 
     #[test]

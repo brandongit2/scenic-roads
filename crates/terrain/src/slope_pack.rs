@@ -1955,7 +1955,7 @@ mod tests {
     /// never stopped, on its own Mac and on another its log was carried to through the NAS.
     #[test]
     fn a_deep_target_stopped_part_way_resumes_where_it_stopped() {
-        use jobrt::resume_log::{carry_out, CARRY_ROOT, STOP_AFTER};
+        use jobrt::resume_log::{carry_out, forget_opened, CARRY_ROOT, STOP_AFTER};
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("root"));
         let t = (448, 256);
@@ -1997,12 +1997,13 @@ mod tests {
         assert_eq!(got, whole);
         assert!(!log.exists(), "done with once its outputs are put");
         // Stopped again, given back, and taken up on another Mac: the log carried there.
-        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        CARRY_ROOT.set(Some((nas, "slope-deep".into())));
+        forget_opened();
         let (r, _) = run("a/scratch", Some(2));
         assert!(jobrt::control::is_paused(&r.unwrap_err()));
-        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
-        assert_eq!(carry_out(&nas, &d.path().join("a/scratch"), since).len(), 1);
-        CARRY_ROOT.set(Some(nas));
+        assert_eq!(carry_out().len(), 1);
+        forget_opened();
         let (r, got) = run("b/scratch", None);
         CARRY_ROOT.set(None);
         r.unwrap();

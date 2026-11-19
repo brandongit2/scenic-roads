@@ -849,6 +849,16 @@ impl NasPath {
         Ok(n)
     }
 
+    /// `copy_from_local` under a turn of the process's NAS limit (`copying_turn`, as `copy_to_local`
+    /// takes one): an upload no step waits on (a resume log carried for another Mac,
+    /// jobrt::resume_log), paced with the process's other copies.
+    pub fn copy_from_local_paced(&self, src: &Path) -> Result<u64> {
+        copying_turn(
+            || self.copy_from_local(src),
+            |e| e.downcast_ref::<io::Error>().is_some_and(crate::aimd::nas_congested),
+        )
+    }
+
     /// Copies it to `to` on the NAS (crate::sys::copy_data). Its bytes counted as they're read
     /// (`copy_counter`) and written (`nasio::written`), the file counted opened and made once copied.
     /// Moving as it copies.

@@ -727,15 +727,17 @@ mod tests {
         let stops = std::collections::BTreeSet::from([1, empty_end - 1, empty_end, empty_end + 1, kept / 2, kept]);
         for (k, stop) in stops.into_iter().enumerate() {
             let name = format!("stop-{stop}");
-            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+            // (Each run a job's process of its own, the NAS to carry through: jobrt::resume_log.)
+            jobrt::resume_log::forget_opened();
+            jobrt::resume_log::CARRY_ROOT.set(Some((nas.clone(), "terrain-deep".into())));
             assert!(run(&name, Some(stop)).is_none(), "stopped after {stop}");
             let here = if k % 2 == 0 {
-                assert_eq!(jobrt::resume_log::carry_out(&nas, &d.path().join(&name), since).len(), 1);
+                assert_eq!(jobrt::resume_log::carry_out().len(), 1);
                 format!("other/{name}")
             } else {
                 name
             };
-            jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
+            jobrt::resume_log::forget_opened();
             let r = run(&here, None);
             jobrt::resume_log::CARRY_ROOT.set(None);
             assert!(r.unwrap().0 == fresh, "stopped after {stop}, then resumed in {here}");

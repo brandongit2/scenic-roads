@@ -987,9 +987,10 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let macs = [out.scratch.clone(), d.path().join("other").join(out.scratch.file_name().unwrap())];
         std::fs::create_dir_all(&macs[1]).unwrap();
-        jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
+        jobrt::resume_log::CARRY_ROOT.set(Some((nas, "bldtiles".into())));
         loop {
-            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+            // (Each run a job's process of its own: jobrt::resume_log::forget_opened.)
+            jobrt::resume_log::forget_opened();
             STOP_AFTER.set(Some(1));
             let r = build_later_keeping(&mut out, &Asking::new(&c), t, None, true);
             STOP_AFTER.set(None);
@@ -997,7 +998,7 @@ mod tests {
                 Err(e) => {
                     assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
-                    assert_eq!(jobrt::resume_log::carry_out(&nas, &out.scratch, since).len(), 1);
+                    assert_eq!(jobrt::resume_log::carry_out().len(), 1);
                     out.scratch = macs[stops % 2].clone();
                 }
                 Ok(_) => break,

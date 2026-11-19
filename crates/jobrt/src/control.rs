@@ -620,9 +620,12 @@ pub fn stop_if_paused(step: &str, e: anyhow::Error) -> anyhow::Error {
 }
 
 /// Ends the job as paused, at a safe point it stopped at (each target before it saved and noted
-/// done): whether or not the pause has been lifted meanwhile, as it didn't do the rest.
+/// done): whether or not the pause has been lifted meanwhile, as it didn't do the rest. The resume
+/// logs it grew carried to the NAS first (crate::resume_log::carry_out), for its targets' next run
+/// on whichever Mac it goes to: before it exits, so before its agent gives its lease back.
 pub fn stop_paused(step: &str) -> ! {
     eprintln!("{step}: paused at a safe point; the rest goes on when the build does");
+    crate::resume_log::carry_out();
     crate::timings::span_event(crate::spans::event("paused", "stopped at a safe point, the build pausing"));
     // (Its timings kept, as a run that didn't finish.)
     crate::timings::finish(false);

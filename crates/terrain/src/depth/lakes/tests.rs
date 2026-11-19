@@ -403,7 +403,7 @@ fn only_the_small_lakes_hydrolakes_lacks_are_drawn() {
 /// keep: on its own Mac, and on another its log was carried to through the NAS.
 #[test]
 fn the_small_lakes_resume_where_a_stop_left_them() {
-    use jobrt::resume_log::{carry_out, Pieces, CARRY_ROOT, STOP_AFTER};
+    use jobrt::resume_log::{carry_out, forget_opened, Pieces, CARRY_ROOT, STOP_AFTER};
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     /// A pond in every 64th z14 tile each way (16 of the z6 tile's 256 z10 tiles have one), its
     /// reads counted.
@@ -450,12 +450,13 @@ fn the_small_lakes_resume_where_a_stop_left_them() {
     assert!(rest < all * 2 / 3, "{rest} of {all} reads");
     // Stopped again from afresh, given back, and taken up on another Mac: carried there.
     std::fs::remove_dir_all(&a).unwrap();
-    let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+    CARRY_ROOT.set(Some((nas, "lake-depth".into())));
+    forget_opened();
     STOP_AFTER.set(Some(100));
     assert!(jobrt::control::is_paused(&run(&mut open(&a)).unwrap_err()));
-    let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
-    assert_eq!(carry_out(&nas, &a, since).len(), 1);
-    CARRY_ROOT.set(Some(nas));
+    assert_eq!(carry_out().len(), 1);
+    forget_opened();
     water.0.store(0, Relaxed);
     let got = run(&mut open(&b));
     CARRY_ROOT.set(None);

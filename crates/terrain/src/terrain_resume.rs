@@ -12,9 +12,10 @@
 //!   subtrees out to other workers), the accepted elevation datasets and the geoid sources (the
 //!   pool and its geoids: `inputs`), and which of its tiles are at their place's finest zoom.
 //!
-//! The steps not kept, measured from the history (21–25 Oct): slope-hi and slope-deep (the slope's
-//! z6 tiles took 37 s at the median and 2 minutes at the 90th percentile with their deep levels
-//! in them, before #639 split those out a z10 tile a target); a stop costs them little.
+//! slope-hi keeps no blocks, measured from the history (21–25 Oct: the slope's z6 tiles took 37 s
+//! at the median and 2 minutes at the 90th percentile with their deep levels in them, before #639
+//! split those out a z10 tile a target); a stop costs it little. slope-deep keeps its z13 tiles'
+//! subtrees as pieces (task #1414, crate::slope_pack's `deep_part`).
 
 use anyhow::Result;
 use jobrt::resume_log::{Get, Log, Put};

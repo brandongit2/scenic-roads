@@ -453,6 +453,12 @@ pub(super) struct Planner {
     /// The depth's targets as the last plan found them, for GC (`build::depth_kept`; None: not
     /// found then, and no depth pack is dropped).
     pub(super) depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
+    /// The regions' work as the last plan found it, every step's (step, target), before what holds
+    /// it back this round: the resume logs carried for it kept on the NAS (`sweep_carried`; None:
+    /// not found then, and none is dropped).
+    pub(super) carry_keep: std::cell::RefCell<Option<std::collections::BTreeSet<(String, String)>>>,
+    /// When this process last swept the carried logs (`sweep_carried`).
+    pub(super) carry_swept: std::cell::Cell<Option<std::time::Instant>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     pub(super) coverage: std::cell::RefCell<Option<(String, std::sync::Arc<Coverages>)>>,
     /// The coverage being read off the plan (`coverage`), by the accepted version it's of.
@@ -570,6 +576,8 @@ impl Planner {
             slow_plan: None,
             offered: Default::default(),
             depth_keep: Default::default(),
+            carry_keep: Default::default(),
+            carry_swept: Default::default(),
             coverage: Default::default(),
             coverage_making: Default::default(),
             edits: Default::default(),
@@ -1190,6 +1198,7 @@ impl Planner {
             std::thread::sleep(d);
         }
         let jobs = self.plan_unchecked(root, c, waiting);
+        self.sweep_carried(root, &jobs);
         // (In a unit test, `buildstore::out::testing`, every planned command checked against its
         // program's table, crate::cli.)
         if buildstore::out::testing() {
@@ -1200,6 +1209,37 @@ impl Planner {
             }
         }
         jobs
+    }
+
+    /// The resume logs carried to the NAS for targets no run will take (jobrt::resume_log's
+    /// `sweep_carried`): those whose target, in its step, neither the regions' work as this plan
+    /// found it (`carry_keep`), nor a job it plans (`jobs`), nor a lease now names; and copies cut
+    /// short a day on. By the lead's agent that runs the jobs alone, once an hour, on a plan that
+    /// found the regions' work.
+    fn sweep_carried(&self, root: &store::nasfs::NasRoot, jobs: &[JobSpec]) {
+        let Some(c) = self.coord.as_ref().filter(|_| self.locked && !self.o.dry_run) else { return };
+        if self.carry_swept.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) {
+            return;
+        }
+        let Some(mut keep) = self.carry_keep.borrow().clone() else { return };
+        keep.extend(jobs.iter().filter_map(|j| j.record.as_ref()).flat_map(|w| {
+            w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone()))
+        }));
+        self.carry_swept.set(Some(std::time::Instant::now()));
+        let leased = std::cell::RefCell::new(std::collections::BTreeMap::<String, Vec<String>>::new());
+        let keep = |step: &str, t: &str| {
+            keep.contains(&(step.to_string(), t.to_string()))
+                || leased
+                    .borrow_mut()
+                    .entry(step.to_string())
+                    .or_insert_with(|| c.leased_targets(&[step]).into_iter().map(|(_, t)| t).collect())
+                    .iter()
+                    .any(|l| l == t)
+        };
+        let n = jobrt::resume_log::sweep_carried(root, &keep);
+        if n > 0 {
+            eprintln!("agent: {n} resume logs carried to the NAS deleted: no run will take them");
+        }
     }
 
     /// The depth's targets for GC's clean-up (`gc::DEPTH_KEEP_FILE` in the home), from this plan
@@ -1492,6 +1532,7 @@ impl Planner {
     ) -> Vec<JobSpec> {
         // (The depth's targets for GC, and the regions' checklist: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
+        self.carry_keep.borrow_mut().take();
         self.regions_checklist.borrow_mut().take();
         // (A plan's `build::plan` result made again: the last one let go before, not held beside it.
         // Filtered again, taken below.)
@@ -1822,6 +1863,8 @@ impl Planner {
         let building_arg: String =
             planned.building.iter().map(|(id, b, t)| format!("{id}={b}/{t}")).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
+        *self.carry_keep.borrow_mut() =
+            Some(plan.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone()))).collect());
         // (The map tiles as first planned at their keys, for publishing's times:
         // crate::pubtimes::PlannedNotes, since the last catalogue, what was noted known again after a
         // restart or a change of lead.)

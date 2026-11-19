@@ -46,8 +46,8 @@ pub const FRESH_S: u64 = 2 * crate::coord::TTL.as_secs();
 pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// The steps whose jobs resume from their progress on their Mac's disk, offered back to it: the OSM
 /// pass (its stages' markers in its scratch folder, inputs::osmpass). (A long target's run resumes
-/// from its log of blocks or pieces wherever it runs next, carried through the NAS when it was
-/// given back, jobrt::resume_log, not offered back.) (A terrain z3 tile's raw tiles, the buildings scan's parts
+/// from its log of blocks or pieces wherever it runs next, carried through the NAS when its job
+/// stopped at a safe point, jobrt::resume_log, not offered back.) (A terrain z3 tile's raw tiles, the buildings scan's parts
 /// and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by target, and
 /// start their targets afresh.)
 pub const RESUMABLE: [&str; 1] = ["osm-pass"];

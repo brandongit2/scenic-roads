@@ -1120,9 +1120,10 @@ mod tests {
         // through the NAS.)
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let macs = [d.path().join("a/bldprep"), d.path().join("b/bldprep")];
-        jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
+        jobrt::resume_log::CARRY_ROOT.set(Some((nas, "bldprep".into())));
         let resumed = loop {
-            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+            // (Each run a job's process of its own: jobrt::resume_log::forget_opened.)
+            jobrt::resume_log::forget_opened();
             let here = &macs[stops % 2];
             STOP_AFTER.set(Some(1));
             let r = file(&mut Pieces::open(here, (6, t.x, t.y), "bldprep", "a", true), "paused");
@@ -1131,7 +1132,7 @@ mod tests {
                 Err(e) => {
                     assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
-                    assert_eq!(jobrt::resume_log::carry_out(&nas, here, since).len(), 1);
+                    assert_eq!(jobrt::resume_log::carry_out().len(), 1);
                 }
                 Ok(b) => break b,
             }

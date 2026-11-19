@@ -38,7 +38,7 @@ Where state lives:
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`agentcore::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
-| A job's progress (the OSM pass's stages, a target's resume log of blocks or pieces, scratch) | the Mac running it; a given-back target's log also on the NAS (`state/pool/carried/`) | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a target's log wherever its next run goes (unit's on its own Mac alone); the rest redone |
+| A job's progress (the OSM pass's stages, a target's resume log of blocks or pieces, scratch) | the Mac running it; a log its job stopped at a safe point also on the NAS (`state/pool/carried/`) | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a target's log wherever its next run goes (unit's on its own Mac alone); the rest redone |
 | The coordinator's state | the lead's disk: `agent/coord/store/` | | opens it (§6.2, §7.5) |
 | The coordinator's token; its history's archive; its contact | NAS: `state/coord/token`, `state/coord/history-archive/`; each Mac's agent's `lead.json` (coordwire::lead) | | uses them |
 | The lead's own (its map updates' record, daily jobs' last runs; the map and its log, docs/formats.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
@@ -1362,32 +1362,45 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   outputs are the same bytes. Counted in the job's disk as its sampler counts its scratch's top.
   Deleted when its packs are written, on a cancel, with a given-back job's scratch by
   room-making, and, untouched for 24 hours, as the step's next run on that Mac starts.
-  **Carried to the next Mac** (task #1414): a job ending short of its targets (paused at a safe
-  point, stopped by a guard, yielding, the Mac asleep, its lease lapsed, failed; not a cancel) has
-  its agent copy the logs it wrote (those at the top of its step's scratch folder written since it
-  began) to the NAS, `state/pool/carried/<step>/<z>_<x>_<y>.resume`, on a thread off the loop
-  (`Agent::carry_logs`, `resume_log::carry_out`); its jobs are told the NAS's folder
-  (`resume_log::CARRY_ENV`, its `--root`), and a target's log as it opens takes the carried copy
-  when that holds more of the run's identity than the log there (a longer log of the same first
-  line: logs are appended to from where the last run left them), deleting the copy either way, so
-  a target given back on one Mac resumes on whichever Mac takes it next (`take_carried`). A copy
-  no run took within 24 hours is deleted as its step's next copy is carried. What a step keeps
-  beside its log doesn't follow: unit's pieces are its folders' too (`folders_as_kept`), so a unit
-  z6 tile resumes on its own Mac alone and starts afresh elsewhere. The copy is one file a target
-  (the logs on the M1's disk on 19 Nov: 5 MB to 1.3 GB, bldtiles' 5–305 MB), against the minutes
-  of work it saves. **What a give-back costs** (the lead's history of 11–19 Nov, 285 hours: 350
-  give-backs, 148 of them of a target since run again, 133 of those on another Mac; a give-back
-  loses all it ran unless its next run takes up its log, else the mean time between its run's
-  safe points (its own timings record's wall time over its safe points, else that of its step's
-  runs at least half as long): lost before #1414 55,300 s (3.2 minutes an hour), with the logs
-  carried 6,200 s (0.4 minutes an hour). By step, before and after: bldtiles 39 give-backs,
-  26,000 s and 1,200; depth 26, 17,600 and 1; terrain-deep 17, 4,100 and 8; terrain-hi 2, 1,600
-  and 3; bldprep 2, 290 and 2; pois 11, 210 and 11; slope-deep 6, 840 and at most 370 (its
-  safe points then a target apart, now each z13 tile's subtree); unit 11, 2,760 either way; pack
-  21, 1,100 either way (no pieces; median run 45 s); available 1, 680 either way.) Admission
-  doesn't yet take the cheaper give-backs into account: a less cautious memory percentile, a
-  build-page setting with its default measured by replay, comes with the needs model's predicted
-  peak (task #1415; planned).
+  **Carried to the next Mac** (task #1414): a job stopping at a safe point short of its targets
+  (`jobrt::control::stop_paused`: a pause, the memory guard's drain, an update's) copies the logs
+  it opened and grew to the NAS, `state/pool/carried/<step>/<z>_<x>_<y>.resume`, before it exits
+  (`resume_log::carry_out`), so its agent sees its end, and gives its lease back, only once the
+  copies are made, its lease beating meanwhile; the bytes are the job's own, in its record's NAS
+  counts. A job ended any other way carries nothing: a failure, a cancel, and every stop by signal
+  (the memory and disk guards' stops, a yield, a sleep, a lapsed lease, the lead moving). One
+  Mac's carries go one at a time (`<home>/carry.lock`), each a turn of its job's NAS limit
+  (store::nasfs's `copy_from_local_paced`), and a log is skipped when its copy up and the next
+  run's down, at the job's NAS rate (its bytes over the time it waited on the NAS), take longer
+  than the work it holds (this run's time keeping its blocks, scaled to all it holds:
+  `worth_carrying`). A log holding work kept beside it on its Mac's disk (unit's folders,
+  `Pieces::folder_piece`) says so in its first line (`<kind>-resume L <id>`) and is never carried:
+  a unit z6 tile resumes on its own Mac alone and starts afresh elsewhere. A planned step's jobs
+  are told the NAS and their step (`resume_log::CARRY_ENV`, its `--root`, and `CARRY_STEP_ENV`),
+  and a target's log as it opens reads the carried copy's first line on the NAS and takes the copy
+  when it's of the run's identity and holds more than the log there (a longer log of one first
+  line: logs are appended to from where the last run left them), weighed again once it's here,
+  deleting the copy either way (`take_carried`). A cancel deletes its target's copy with its
+  work; the lead's agent, once an hour, deletes the copies whose target its plan neither plans nor
+  leases in that step, and those cut short (a copy's temporary file) a day on
+  (`resume_log::sweep_carried`). The logs on the M1's disk on 19 Nov were 5 MB to 1.3 GB
+  (bldtiles' 5–305 MB); lake-depth's holds its small lakes' grids, at most its pack (the one run
+  whose writes were counted: 775 MB for 496 s of work). **What a give-back costs** (the lead's
+  history of 7–19 Nov, 286 hours: 353 give-backs, 153 of a target since run again, 138 of those
+  on another Mac; a give-back loses all it ran unless its next run takes up its log, else the
+  mean time between its run's safe points, its own timings record's wall time over its safe
+  points, else that of its step's runs at least half as long): lost before #1414 58,900 s
+  (3.4 minutes an hour); with the logs carried at safe points 43,100 s (2.5 minutes an hour). The
+  saving is an upper bound: it counts every safe-point give-back's log as carried and taken, none
+  skipped by its cost. Of what's still lost, by how the job ended: safe points 11,000 s (steps
+  that keep no pieces, pack, available, and unit elsewhere), sleeps 14,800, the memory guard's
+  stops 10,000, the disk guard's 5,200, a lapse 2,000. By step, before and after: bldtiles 44
+  run again, 28,200 s and 22,000; depth 26, 17,600 and 9,900; terrain-deep 17, 4,100 and 2,600;
+  terrain-hi 2, 1,600 either way; peaks 2, 1,400 either way; unit 11, 2,760 either way; pack 21,
+  1,100 either way (no pieces); slope-deep 6, 840 and 730; available 1, 680 either way; bldprep
+  2, 290 and 110; pois 11, 210 either way. Admission doesn't yet take the cheaper give-backs into
+  account: a less cautious memory percentile, a build-page setting with its default measured by
+  replay, comes with the needs model's predicted peak (task #1415; planned).
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
   starting jobs and writing the status never wait on it. Its three runs go side by side (three
@@ -3408,8 +3421,8 @@ grant (the lead's too) and packing, the equal-machines forecast, resuming (§7.2
 pool is always on.
 
 A long target resumes at the block or piece after the last it finished, from a log in its scratch
-folder, carried through the NAS when it was given back and its next run is on another Mac (§7.2,
-Resuming; crate::resume_log).
+folder, carried through the NAS when its job stopped at a safe point and its next run is on
+another Mac (§7.2, Resuming; crate::resume_log).
 
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, the NAS pacing's bounds

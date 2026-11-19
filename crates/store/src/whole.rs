@@ -251,8 +251,10 @@ const PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 /// How many times `retried` tries again on busy, and `read_replaced` on missing with an aside there.
 const BUSY_TRIES: u32 = 20;
 const MISSING_TRIES: u32 = 8;
-/// An aside older than this (since it was put aside) is never read, and is removed by the sweeps.
-const ASIDE_KEPT: std::time::Duration = std::time::Duration::from_secs(86_400);
+/// An aside older than this (since it was put aside) is never read, and is removed by the sweeps,
+/// as is a temporary file a write left (`left_by_write`; a NAS folder's own sweep's too: jobrt's
+/// resume_log, `sweep_carried`).
+pub const ASIDE_KEPT: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 fn retried_with<T>(
     path: &Path,
@@ -394,7 +396,7 @@ pub fn sweep_asides(dir: &Path, prefix: &str, older: std::time::Duration) -> usi
 /// Whether `name` is a temporary file a `write` or `copy` left (`call_tmp_name`'s
 /// `<name>.<host>.<pid>.<n>.tmp`, or `tmp_name`'s `<name>.<host>.<pid>.tmp`: its
 /// process ended, or its call was given up on, before its rename).
-fn left_by_write(name: &str) -> bool {
+pub fn left_by_write(name: &str) -> bool {
     let Some(rest) = name.strip_suffix(".tmp") else { return false };
     let pid = rest.rsplit('.').next().unwrap_or_default();
     !name.ends_with(".aside.tmp") && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
