@@ -13,7 +13,7 @@ fn main() {
     for f in &w.files {
         println!("cargo::rerun-if-changed={}", f.display());
     }
-    for (name, digest) in checks_code::codes(&w) {
+    for (name, digest) in checks_code::codes(&w).unwrap_or_else(|e| panic!("the checks' code: {e}")) {
         out.push_str(&format!("    ({name:?}, {digest:?}),\n"));
     }
     out.push_str("]\n");

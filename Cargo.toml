@@ -26,6 +26,17 @@ lto = "thin"
 codegen-units = 4
 debug = false
 
+# Build scripts and proc macros optimized (task #1467): inputs' build script reads ~120k lines of
+# Rust (build/checks_code.rs) and reruns on any edit to the crates it reads. On the M4 (18 Nov,
+# inputs alone, no sccache): its run 2.65 s unoptimized, 1.37 s with only syn/quote/proc-macro2 at 3,
+# 0.65 s with this; clippy -p inputs after a store edit 3.7 s, 2.5 s, 1.9 s; a clean workspace
+# clippy 41 s, 43 s, 51 s (proc macros compile slower, once). The test profile inherits dev's.
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
+
 # Tests optimized (task #505): the suite's heavy tests (packs built from fixture tiles, the pool's
 # simulations) ran 5-15x slower unoptimized; the slowest, 193 s, takes 28 s at these levels. The
 # workspace's crates at 1 (a rebuild after an edit stays ~15 s), the third-party ones at 3 (built

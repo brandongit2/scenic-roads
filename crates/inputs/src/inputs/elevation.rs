@@ -176,6 +176,77 @@ fn geographic_cell(t: &buildstore::geotiff::Tiff) -> anyhow::Result<(f64, f64, f
     Ok((south, north, (gt[5].abs() * m).max(gt[1].abs() * m * equatorward.to_radians().dcos())))
 }
 
+/// A GeoTIFF dataset's first measure (`Step::Headers`), into `into`: its CRS, resolution and bands,
+/// and its coverage, read from its files' headers (`list`: each file, with its footprint where its
+/// index gives one, in `index_crs`; `open` opens one; `world`: the world's dataset, no coverage).
+fn headers_of(
+    into: &mut Measured,
+    list: &[(String, Option<[f64; 4]>)],
+    index_crs: Option<u16>,
+    world: bool,
+    open: &dyn Fn(&str) -> std::result::Result<buildstore::geotiff::Tiff, String>,
+) -> std::result::Result<(), String> {
+    let mut crs = None;
+    let mut resolution: f64 = 0.0;
+    // (The index's files sampled; every other file read, its coverage its own.)
+    let mut picks: BTreeSet<usize> = sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
+    picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
+    let mut masks: Vec<Mask> = Vec::new();
+    // (Each geographic file's latitudes and cell: the dataset's bands.)
+    let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
+    for k in picks {
+        let (w, footprint) = &list[k];
+        let t = open(w)?;
+        let keys = t.geo_keys();
+        let c = keys
+            .short(buildstore::geotiff::key::PROJECTED_CS_TYPE)
+            .or_else(|| keys.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE))
+            .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
+        if !declared::known_crs(c) {
+            return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
+        }
+        if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
+            return Err(format!("{w} is in EPSG:{c}, its index's footprints in EPSG:{}", index_crs.unwrap()));
+        }
+        if crs.is_some_and(|x| x != c) {
+            return Err(format!("{w} is in EPSG:{c}, the dataset's other files in EPSG:{}", crs.unwrap()));
+        }
+        crs = Some(c);
+        resolution = resolution.max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
+        if !crate::dem::proj::projected(c) {
+            files_cells.push(geographic_cell(&t).map_err(|e| format!("{w}: {e:#}"))?);
+        }
+        if footprint.is_none() {
+            masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
+        }
+    }
+    let crs = crs.unwrap();
+    // (Its footprints: the index's, and where the other files have valid data.)
+    let boxes: Vec<[f64; 4]> = list.iter().filter_map(|(_, b)| *b).collect();
+    let cover = if world {
+        None
+    } else {
+        let cells = if crate::dem::proj::projected(crs) {
+            let held = declared::in_boxes(&boxes);
+            declared::projected_cells_where(crs, &|x, y| held(x, y) || masks.iter().any(|m| m.holds(x, y)))
+                .map_err(|e| format!("{e:#}"))?
+        } else {
+            let mut c = declared::geographic_cells(&boxes);
+            for m in &masks {
+                c.extend(declared::geographic_cells(&m.boxes()));
+            }
+            c
+        };
+        if cells.is_empty() {
+            return Err("has no valid data anywhere".into());
+        }
+        Some(declared::cells_to_boxes(&cells))
+    };
+    let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
+    (into.crs, into.resolution, into.cover, into.bands) = (Some(crs), resolution, cover, bands);
+    Ok(())
+}
+
 /// The tiles of the deep packs' zoom (crate::terrain_deep::PACK_Z) where a dataset's files really
 /// have data (`Measured::presence`), sorted: of its coverage's cells (`cover`), each tile one of whose
 /// points (no further apart than half the finest of its files' features: a footprint, or a pixel of
@@ -579,14 +650,15 @@ enum Step {
     Hollow,
 }
 
-/// The digest of each step's measuring code (build/checks_code_tests.rs `rule_codes`), by its name, as it
-/// was when its rule (`Step::rule`) was last set. A test (`checks_code_tests`) fails when that code
-/// changes and this doesn't: raise the step's rule when the change moves what it measures, and set its
+/// The digest of each step's measuring code, by its name, as it was when its rule (`Step::rule`)
+/// was last set (build/checks_code_tests.rs `rule_codes`: `headers_of`, `presence_of`, `hollow_of`
+/// and all they name, `Step::rule` aside). A test (`checks_code_tests`) fails when that code changes
+/// and this doesn't: raise the step's rule when the change moves what it measures, and set its
 /// digest here to the one the test names either way.
 pub const RULE_CODES: [(&str, &str); 3] = [
-    ("headers", "532f0aed18ba264ec5f249a67f91913f"),
-    ("presence", "7a86a388e97172b1d34b711b36309a79"),
-    ("hollow", "11037d76616ea223d236a33e0d338620"),
+    ("headers", "121f297fef5f839b364b411900c5d881"),
+    ("presence", "3fea82da88f3c36808deac9e40aa49ee"),
+    ("hollow", "d47a369465fad2d492e1d66497540a3b"),
 ];
 
 impl Step {
@@ -855,74 +927,7 @@ impl Elevation {
                 let Some(from) = Step::first_lacking(&m) else { return Ok(m) };
                 // (Its files' headers: its CRS, resolution and bands, and its coverage.)
                 if from <= Step::Headers {
-                    let mut crs = None;
-                    let mut resolution: f64 = 0.0;
-                    // (The index's files sampled; every other file read, its coverage its own.)
-                    let mut picks: BTreeSet<usize> =
-                        sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
-                    picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
-                    let mut masks: Vec<Mask> = Vec::new();
-                    // (Each geographic file's latitudes and cell: the dataset's bands.)
-                    let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
-                    for k in picks {
-                        let (w, footprint) = &list[k];
-                        let t = open(w)?;
-                        let keys = t.geo_keys();
-                        let c = keys
-                            .short(buildstore::geotiff::key::PROJECTED_CS_TYPE)
-                            .or_else(|| keys.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE))
-                            .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
-                        if !declared::known_crs(c) {
-                            return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
-                        }
-                        if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
-                            return Err(format!(
-                                "{w} is in EPSG:{c}, its index's footprints in EPSG:{}",
-                                index_crs.unwrap()
-                            ));
-                        }
-                        if crs.is_some_and(|x| x != c) {
-                            return Err(format!(
-                                "{w} is in EPSG:{c}, the dataset's other files in EPSG:{}",
-                                crs.unwrap()
-                            ));
-                        }
-                        crs = Some(c);
-                        resolution = resolution
-                            .max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
-                        if !crate::dem::proj::projected(c) {
-                            files_cells.push(geographic_cell(&t).map_err(|e| format!("{w}: {e:#}"))?);
-                        }
-                        if footprint.is_none() {
-                            masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
-                        }
-                    }
-                    let crs = crs.unwrap();
-                    // (Its footprints: the index's, and where the other files have valid data.)
-                    let boxes: Vec<[f64; 4]> = list.iter().filter_map(|(_, b)| *b).collect();
-                    let cover = if world {
-                        None
-                    } else {
-                        let cells = if crate::dem::proj::projected(crs) {
-                            let held = declared::in_boxes(&boxes);
-                            declared::projected_cells_where(crs, &|x, y| {
-                                held(x, y) || masks.iter().any(|m| m.holds(x, y))
-                            })
-                            .map_err(|e| format!("{e:#}"))?
-                        } else {
-                            let mut c = declared::geographic_cells(&boxes);
-                            for m in &masks {
-                                c.extend(declared::geographic_cells(&m.boxes()));
-                            }
-                            c
-                        };
-                        if cells.is_empty() {
-                            return Err("has no valid data anywhere".into());
-                        }
-                        Some(declared::cells_to_boxes(&cells))
-                    };
-                    let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
-                    (m.crs, m.resolution, m.cover, m.bands) = (Some(crs), resolution, cover, bands);
+                    headers_of(&mut m, &list, index_crs, world, &open)?;
                 }
                 let crs = m.crs.expect("measured with its headers");
                 // (Where it really has data, by deep-pack tile: crate::terrain_zoom's places.)

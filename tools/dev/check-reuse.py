@@ -46,10 +46,10 @@ Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the
 (whose own modules aren't followed), a path a manifest or .cargo names outside them, a source
 reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_*; and
 OUT_DIR, `include!(concat!(env!("OUT_DIR"), …))`, a build script's output, only in a package whose
-build script reads nothing outside the package's folder as `reads` sees it: then what it writes is
-made from the build's inputs. crates/inputs' build script reads its path dependencies' sources too,
-by its manifest, which `reads` doesn't see: they are inputs of the build that link into it, so a
-change there runs its tests as any other).
+build script, with the files its #[path] modules are, reads nothing outside the package's folder as
+`reads` sees it: then what it writes is made from the build's inputs. crates/inputs' build script
+reads its path dependencies' sources too, by its manifest, which `reads` doesn't see: they are
+inputs of the build that link into it, so a change there runs its tests as any other).
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -185,6 +185,7 @@ def build_inputs(files, pkgs):
         scripts.add(norm(d, b.group(1)) if b else d + "/build.rs")
         if re.search(r"^proc-macro\s*=\s*true", toml, re.M):
             macros.append(d)
+    runs = {g for s in scripts for g in script_files(s)}
     for f in files:
         if not f.endswith(".rs") or not any(under(f, p) for p in pkgs):
             continue
@@ -222,18 +223,32 @@ def build_inputs(files, pkgs):
                 if p is None:
                     raise Doubt("%s names a path outside the repo in a macro: %s" % (f, rel))
                 ins.append((p, "%s names it in a macro" % f))
-        if f in scripts or any(under(f, k) for k in macros):
+        if f in runs or any(under(f, k) for k in macros):
             for p, _ in reads(f, src):
                 ins.append((p, "%s (a build script or proc macro) reads it" % f))
     return ins, scripts, macros, data
 
 
+def script_files(s):
+    """Build script s and the files its #[path] modules are, and theirs: the code that runs as it
+    (none if it isn't there)."""
+    out, todo = [], [s]
+    while todo:
+        f = todo.pop()
+        if f in out or not os.path.exists(f):
+            continue
+        out.append(f)
+        todo += [p for p in (norm(posixpath.dirname(f), rel) for rel in PATHATTR.findall(read(f))) if p]
+    return out
+
+
 def own_build(f, pkgs, scripts):
     """Whether f's package has a build script reading nothing outside the package's folder (as
-    `reads` sees it), so what it writes to OUT_DIR is made from the build's inputs."""
+    `reads` sees it, in the script and its #[path] modules), so what it writes to OUT_DIR is made
+    from the build's inputs."""
     pkg = max((p for p in pkgs if under(f, p)), key=len)
-    script = [s for s in scripts if under(s, pkg) and os.path.exists(s)]
-    return bool(script) and all(p and under(p, pkg) for p, _ in reads(script[0], read(script[0])))
+    runs = [g for s in scripts if under(s, pkg) for g in script_files(s)]
+    return bool(runs) and all(p and under(p, pkg) for g in runs for p, _ in reads(g, read(g)))
 
 
 PLAIN = "the Rust build"   # (the reason a file inside a package folder, and nothing more, gives)

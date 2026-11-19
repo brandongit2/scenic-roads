@@ -127,31 +127,38 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   back on the gate is checked; a forget by hand (`scenic-build inputs <unit> --forget`) records no
   key, so a unit put back with its folder as it was waits for a change or its daily full check.
 - **The checks' code** (`inputs::code_of`, task #1467): no version is typed. build.rs reads the
-  inputs crate and every crate its path dependencies reach (roadcore, store, buildstore, jobrt,
-  names, codecs, det, webpenc) as the app compiles them (`crates/inputs/build/checks_code.rs`):
-  tokens, with each child module's file and each file compiled in (`include_str!` and the like);
-  comments, doc comments, layout and rustfmt's choices (a trailing comma where it means nothing, a
-  match arm in braces), `#[cfg(test)]` and `testkit` code and `#[test]` functions left out; a file
-  that doesn't parse fails the build at its line and column, never a digest. Each item (a
-  function, a type with its impls in its module, a method, a constant) has a digest, and a unit's
-  code is that of its module's items and every item they name, transitively: by path
-  (`super::credits::parse_description`, `crate::dem::declared::…`, `roadcore::geo::…`, through `use`
-  names and re-exports) and by the name of another item of the same module; a path naming a module,
-  or a glob `use`, takes the module whole. The gate's code (`gate`) is `gate.rs`'s and every item of
-  `mod.rs` (`Finding::holds`, the `Checks` defaults, `ignored`), with all they name; `mod.rs`'s
-  items naming its own child modules (the registry: `UNITS`, `checks`, the units' statics) reach no
-  unit's code. The key names the gate's code and the unit's (`Checks::code`). A release changing
-  any code a unit's checks reach checks that unit again, once; one changing the gate's checks every
-  unit; any other checks none. Across the 49 releases of 12–17 Nov this would have checked the
-  regions again 10 times, extents 17, the other units 6 to 10, every unit 6 of those times by the
-  gate's code.
-  What it doesn't see: a method called on a value whose type's impl is in another module than the
-  type (and named nowhere else); crates from crates.io (their code and versions) and what macros
-  expand to (serde's derives); a newer syn, quote or proc-macro2 may digest every item anew, which
-  checks every unit once; files read at run time (those a check reads are in its key by
-  `Checks::context`). A name it can't place names nothing; one it can place by name alone (a
-  local variable named as an item of its module) takes that item too, which can only check a unit
-  again. A change it misses that changes a verdict is seen by the unit's next check: its next
+  inputs crate and every crate its manifest's dependencies reach by path (`[dependencies]` and
+  `[target.….dependencies]`, in each form Cargo takes: `x = { path = … }`, `x.workspace = true` by
+  the workspace's `[workspace.dependencies]`, a `[dependencies.x]` table, a `package =` rename; a
+  form it can't read fails the build) as the app compiles them
+  (`crates/inputs/build/checks_code.rs`): tokens, with each child module's file and each file
+  compiled in (`include_str!` and the like); comments, doc comments, layout and rustfmt's choices
+  (a trailing comma where it means nothing, a match arm in braces), `#[cfg(test)]` and `testkit`
+  code and `#[test]` functions left out; a file that doesn't parse fails the build at its line and
+  column, never a digest. Each item (a function, a type, a trait, a constant, a `macro_rules!`, an
+  item macro such as `det!(f64, …)`, an impl's header, each of its methods) has a digest, and a
+  unit's code is that of its module's items and every item they name, transitively: a name as its
+  module places it (its items, its `use`s, a function's own `use`s and globs, an enum's variants
+  by a glob, a `{name}` in a format string), a path to the item it names
+  (`super::credits::parse_description`, `::store::whole::write`, through re-exports), a macro to
+  each `macro_rules!` of its name; a type's impls wherever they are, a method once its type is
+  reached and its name is called (`.m(…)`, `Type::m`, `Self::m`), and every method of an impl of a
+  crates.io trait (`Display`, `Drop`: called by code not seen); with any item of a module, its item
+  macros and the traits in scope there (`use det::Det` for `x.dcos()`). A `use` names nothing
+  itself. The gate's code (`gate`) is `gate.rs`'s and every item of `mod.rs` (`Finding::holds`,
+  the `Checks` defaults, `ignored`), with all they name; the registry's items (`UNITS`, `checks`,
+  the units' statics) reach no unit's code, and any other item of `mod.rs` naming one of its child
+  modules fails the build. The key names the gate's code and the unit's (`Checks::code`). A release
+  changing any code a unit's checks reach checks that unit again, once; one changing the gate's
+  checks every unit; any other checks none.
+  What it doesn't see: crates from crates.io (their code and versions) and what their macros and
+  derives expand to (serde's); the names in a file `include!`d (its bytes count); a method of a
+  value whose type no code it reaches names (inferred through code not seen); a newer syn, quote
+  or proc-macro2 may digest every item anew, which checks every unit once; files read at run time
+  (those a check reads are in its key by `Checks::context`). A name it can't place names nothing;
+  one it places by name alone (a local named as an item of its module, a method of another type
+  of the same name) takes that item too, which can only check a unit again.
+  A change it misses that changes a verdict is seen by the unit's next check: its next
   change of files, or its next full check (daily, or `scenic inputs check --full <unit>`), which
   checks every held and new file again. A file taken in is never checked again while its bytes are
   as accepted, whatever the code.
@@ -160,9 +167,11 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   folder's recorded outcome, its problems' words with it, are taken as they were while it holds)
   and the elevation datasets' measures (`Step::rule`, §6.8). Each is held to the code it covers:
   beside it the digest of that code as it was when the number was set (`RESOLUTION_CODE`: the items
-  of `resolve`, `tiles`, `geom`, `land`, `stored`, `shapes` and `data` and all they name;
-  `RULE_CODES`: each step's measuring code, `measure_now` for the headers, `presence_of`,
-  `hollow_of`), and a test fails when the code moves and the digest doesn't, naming the new digest:
+  of `resolve`, `tiles`, `geom`, `land`, `stored`, `shapes` and `data`, what of `regions/mod.rs`
+  shapes a resolution (`Regions::made`, `outcome_key`, the budgets `max_mb` and `op_budget_s`,
+  `data_from`, `land_open`, `accepted_resolution`, `Recorded`), and all they name; `RULE_CODES`:
+  each step's measuring code, `headers_of`, `presence_of`, `hollow_of`, `Step::rule` itself left
+  out), and a test fails when the code moves and the digest doesn't, naming the new digest:
   the developer bumps the number if the change moves what it covers, and sets the digest either way.
   A regions check under new code otherwise takes the outcome recorded for the same inputs.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader

@@ -316,6 +316,12 @@ fresh "a build script's output compiled in, made from its package" s docs 'cargo
 s() { w crates/a/src/lib.rs 'pub const V: &[&str] = include!(concat!(env!("OUT_DIR"), "/v.rs"));'
   w crates/a/build.rs 'fn main() { let _ = std::fs::read("../../docs/a.md"); }' }
 fresh "a build script's output made from a file outside its package" s docs 'cargo test -p a --lib' run run
+s() { w crates/a/src/lib.rs 'pub const V: &[&str] = include!(concat!(env!("OUT_DIR"), "/v.rs"));'
+  w crates/a/build.rs '#[path = "build/x.rs"]
+mod x;
+fn main() { x::go() }'
+  w crates/a/build/x.rs 'pub fn go() { let _ = std::fs::read("../../docs/a.md"); }' }
+fresh "a build script's output made from a file outside its package, by its #[path] module" s docs 'cargo test -p a --lib' run run
 s() { w crates/a/src/lib.rs 'pub const V: &[&str] = include!(concat!(env!("OUT_DIR"), "/v.rs"));' }
 fresh "OUT_DIR in a package without a build script" s docs 'cargo test -p a --lib' run run
 
