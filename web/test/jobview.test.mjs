@@ -1,7 +1,7 @@
 // A job's page's sums (web/buildpage/jobview.js) and a run's lanes (runlanes.js), task #1105.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clockText, crossesMidnight, markers, median, outcome, recordFigures, spanLook, stepMedians, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
+import { clockText, crossesMidnight, markers, median, outcome, recordFigures, spanLook, stepMedians, supplyText, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
 import { lineage, pack, spanLanes, spanTree } from "../buildpage/runlanes.js";
 import { jobHref, pastRuns, packRuns, segHref } from "../buildpage/sums.js";
 
@@ -62,6 +62,15 @@ test("a record's figures, and its step's medians without it", () => {
   const m = stepMedians([rec("me", 1000, 10, 9000), rec("a", 100, 200, 400), rec("b", 300, 300, 600), { ...rec("c", 9, 9, 9), implausible: ["x"] }], "me");
   assert.equal(m.n, 2, "its own and one failing the checks left out");
   assert.deepEqual([m.wall, m.cpu, m.peak], [200, 250, 500]);
+});
+
+test("what its Mac supplied: each part it says, none without", () => {
+  const s = { secs: 600, p: 8, e: 2, free_p: 6.25, free_e: 1.5, kept: 2, build: 4, mem_gb: 15.5, mem_least_gb: 11, floor_gb: 6, nas_ms: 8, nas_ms_most: 31, nas_read_mbs: 52.5 };
+  assert.equal(supplyText(s), "6.3 of 8 performance and 1.5 of 2 efficiency cores free, 2.0 kept for the owner, the build on 4.0; 15.5 GB available (11.0 least) over a 6.0 GB floor; the NAS answering in 8.0 ms (31.0 most); the jobs' NAS 52.5 MB/s read (over 600 s)");
+  // (No efficiency cores, nothing kept, no NAS sampled.)
+  assert.equal(supplyText({ secs: 5, p: 10, e: 0, free_p: 9, free_e: 0, build: 1 }), "9.0 of 10 performance cores free, the build on 1.0 (over 5 s)");
+  assert.equal(supplyText({ secs: 5, p: 8, e: 2 }), null);
+  assert.equal(supplyText(undefined), null);
 });
 
 test("how it ended: running, its run's word, else the history's; why from its error, exit and notes", () => {

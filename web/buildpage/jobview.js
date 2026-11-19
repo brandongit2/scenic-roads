@@ -92,6 +92,23 @@ export function recordFigures(rec) {
   };
 }
 
+/** What a run's Mac supplied over it (its record's `supply`: jobrt::timings::Supply, task #1418) in
+ * words, each part it says: the cores of each kind free of load outside the build, those kept for
+ * the owner and the build's own, the memory available (its least) against the floor, the NAS's
+ * answer time (its most) and the jobs' NAS throughput; null with none. */
+export function supplyText(s) {
+  if (!s) return null;
+  const f = (x, d = 1) => x.toFixed(d);
+  const cores = [s.free_p != null ? `${f(s.free_p)} of ${s.p} performance` : null, s.free_e != null && s.e ? `${f(s.free_e)} of ${s.e} efficiency` : null].filter(Boolean);
+  const parts = [
+    cores.length ? `${cores.join(" and ")} cores free${s.kept ? `, ${f(s.kept)} kept for the owner` : ""}${s.build != null ? `, the build on ${f(s.build)}` : ""}` : null,
+    s.mem_gb != null ? `${f(s.mem_gb)} GB available${s.mem_least_gb != null ? ` (${f(s.mem_least_gb)} least)` : ""}${s.floor_gb != null ? ` over a ${f(s.floor_gb)} GB floor` : ""}` : null,
+    s.nas_ms != null ? `the NAS answering in ${f(s.nas_ms)} ms${s.nas_ms_most != null ? ` (${f(s.nas_ms_most)} most)` : ""}` : null,
+    s.nas_read_mbs != null || s.nas_write_mbs != null ? `the jobs' NAS ${[s.nas_read_mbs != null ? `${f(s.nas_read_mbs)} MB/s read` : null, s.nas_write_mbs != null ? `${f(s.nas_write_mbs)} MB/s written` : null].filter(Boolean).join(", ")}` : null,
+  ].filter(Boolean);
+  return parts.length ? `${parts.join("; ")} (over ${s.secs} s)` : null;
+}
+
 /** The median of the numbers among `xs` (null: none). */
 export function median(xs) {
   const v = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b);

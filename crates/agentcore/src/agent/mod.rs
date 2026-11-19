@@ -952,6 +952,11 @@ pub struct Status {
     /// rows' time breakdown. None on a member, and until the lead has read them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_times: Option<jobrt::timings::PhaseTimes>,
+    /// Each Mac's speed, measured from the build's timings by the lead's coordinator
+    /// (crate::coord::Coordinator::speeds): the build page's Machines tab's. None on a member, and
+    /// until the lead has read them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speeds: Option<jobrt::timings::Speeds>,
     /// The NAS as the lead sees it: its probes, limits, disk load and the pool's traffic
     /// (crate::coord::Coordinator::nas_view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3516,7 +3521,9 @@ impl Agent {
     /// the targets it finished of the `of` it was given, its processes' NAS traffic (its counts
     /// folder), and the plausibility checks it fails at this Mac's top clock
     /// (jobrt::timings::implausible: the clock's only at one from its power manager's table, not
-    /// while it's still being read, `top_clock_soon`, nor at a measured one; the record says so).
+    /// while it's still being read, `top_clock_soon`, nor at a measured one; the record says so),
+    /// and what this Mac supplied over its run (task #1418: the live store's readings,
+    /// live::Store::supply; none where it keeps none).
     fn take_timings(&mut self, k: usize, end: &str, finished: usize, of: usize) {
         // (By where the job writes them, whoever leads now: a member's leased job in its folder,
         // this Mac's own in the agent's.)
@@ -3538,6 +3545,9 @@ impl Agent {
             return;
         };
         rec.stamp(end, finished, of, &self.nas_counts_path(k), jobrt::sys::top_clock_now());
+        let (cores, e) = (mac_cores(), jobrt::sys::efficiency_cores());
+        let end_at = rec.start + rec.wall_s.ceil() as u64;
+        rec.supply = self.live.as_ref().and_then(|l| l.supply(rec.start, end_at, cores.saturating_sub(e), e));
         if let Some(p) = &handed {
             // (Its hand-off reads it from the folder: this Mac's disk, one write.)
             if let Err(e) = serde_json::to_vec(&rec).map_err(std::io::Error::other).and_then(|b| std::fs::write(p, b)) {
@@ -4888,6 +4898,7 @@ impl Agent {
             nas_step: self.coord.as_ref().map(|c| c.nas_step_weights()).unwrap_or_default(),
             phase_shares: self.coord.as_ref().map(|c| c.phase_shares()).unwrap_or_default(),
             phase_times: self.coord.as_ref().and_then(|c| c.phase_times()).map(|t| (*t).clone()),
+            speeds: self.coord.as_ref().and_then(|c| c.speeds()),
             nas: self.coord.as_ref().and_then(|c| c.nas_view()),
             workers: self
                 .coord

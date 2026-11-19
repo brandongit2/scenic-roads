@@ -23,7 +23,7 @@ import { poolSection, termText } from "./pool.js";
 import { LEVELS, HIDDEN_STATES, savedView, PHASE_ABOUT, TILE_STATES, levelOf, mapTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, segHref, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { h } from "./dom.js";
-import { n, pad, plural } from "./words.js";
+import { n, pad, plural, speedWords } from "./words.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
 import { SPAN0, createTimeline } from "./timeline.js";
@@ -940,6 +940,10 @@ function machineCard(m, x) {
   // the floor, what's reserved for its jobs' growth, why no job starts; what the guard last did is
   // said on the live block's pressure row.)
   if (st.memory?.said) card.append(h("div", { class: `sub ${st.memory.brake ? "bad" : st.memory.held_back ? "warn" : ""}`, title: "The memory floor: the memory this Mac keeps available (scenic memory, the Settings tab)" }, st.memory.said));
+  // (Its speed, the lead's measure from the build's timings (task #1418): the instructions its
+  // cores retire a second of CPU, on its clean runs of the steps every Mac ran.)
+  const sp = m.a.speeds?.macs?.[x.name], speed = speedWords(sp);
+  if (speed) card.append(h("div", { class: "sub dim", title: `Its speed, measured from its clean runs' instructions over their CPU (its newest at each step), the geometric mean over its steps: ${(sp.p || sp.e).steps.join(", ")}` }, `Speed: ${speed}`));
   card.append(...[x.role === "member" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }

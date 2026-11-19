@@ -20,7 +20,8 @@
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
 //!   and the rest of the Mac's (the cores busy, and the memory in use (the Mac's less what's
-//!   available), less the build's); the bytes
+//!   available), less the build's; the cores busy of each kind less the build's CPU there, its
+//!   processes' performance cores' CPU, task #1418); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
 //!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
@@ -48,6 +49,9 @@
 //!   copy's ms) taken into one ring of the newest `FILES` (`Store::files`), each with its job's
 //!   slot; memory alone, never saved. A process's notes overwritten before the second's look are
 //!   missed (its ring keeps the last store::nasio::RING).
+//! - **A run's supply** (task #1418, `Store::supply`): what the Mac supplied over a job's run, its
+//!   series' samples over the run's time (jobrt::timings::Supply), stamped in the job's timings'
+//!   record as its agent takes it.
 //! - **A series missing** from an answer has no measure yet (or none in the window): readers say
 //!   so, never zero.
 
@@ -107,6 +111,11 @@ pub const CORES_P: &str = "cores_busy_p";
 /// The build's (its jobs') CPU and the rest of the Mac's (cores' worth), and their memory (GB).
 pub const BUILD_CORES: &str = "build_cores";
 pub const OTHERS_CORES: &str = "others_cores";
+/// The rest of the Mac's CPU on each kind of core (cores' worth: `CORES_P` and `CORES_E` less the
+/// build's there, by its processes' performance cores' CPU; where macOS splits it,
+/// jobrt::sys::p_split, or the Mac has no efficiency cores).
+pub const OTHERS_CORES_P: &str = "others_cores_p";
+pub const OTHERS_CORES_E: &str = "others_cores_e";
 pub const BUILD_MEM: &str = "build_mem_gb";
 pub const OTHERS_MEM: &str = "others_mem_gb";
 /// The bytes written to the Mac's disks, and each job's (MB/s; `JOB_WRITE` and its slot).
@@ -459,6 +468,43 @@ impl Store {
     pub fn mean(&self, name: &str, now: u64, span_s: u64) -> Option<f64> {
         let p = self.series.lock().ok()?.get(name)?.points(0, 1, now.saturating_sub(span_s), now);
         (!p.is_empty()).then(|| p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64)
+    }
+
+    /// What this Mac supplied from `from` to `to` (unix s, `to` excluded: a run's time; task #1418,
+    /// jobrt::timings::Supply), of its `p` performance and `e` efficiency cores: each series'
+    /// samples then, from the finest ring holding that span (`tier_for`: a run's record is
+    /// stamped as it ends, so its span ends about now). None: no cores sampled then.
+    pub fn supply(&self, from: u64, to: u64, p: u32, e: u32) -> Option<jobrt::timings::Supply> {
+        let k = tier_for(to.saturating_sub(from));
+        let s = self.series.lock().ok()?;
+        // (A series' samples then: how many, their sum, their least and most.)
+        let of = |name: &str| -> Option<(u64, f64, f64, f64)> {
+            let b = s.get(name)?.buckets(k, from, to.max(from + 1));
+            let n: u64 = b.iter().map(|x| u64::from(x.n)).sum();
+            (n > 0).then(|| {
+                let lo = b.iter().map(|x| f64::from(x.lo)).fold(f64::INFINITY, f64::min);
+                let hi = b.iter().map(|x| f64::from(x.hi)).fold(f64::NEG_INFINITY, f64::max);
+                (n, b.iter().map(|x| x.sum).sum(), lo, hi)
+            })
+        };
+        let mean = |name: &str| of(name).map(|(n, sum, ..)| sum / n as f64);
+        let left = |of: u32, busy: Option<f64>| busy.map(|b| round((f64::from(of) - b).max(0.0)));
+        Some(jobrt::timings::Supply {
+            secs: of(CORES)?.0,
+            p,
+            e,
+            free_p: left(p, mean(OTHERS_CORES_P)),
+            free_e: left(e, mean(OTHERS_CORES_E)),
+            kept: left(p + e, mean(BUILD_CORES_MAX)),
+            build: mean(BUILD_CORES).map(round),
+            mem_gb: mean(MEM_AVAIL).map(round),
+            mem_least_gb: of(MEM_AVAIL).map(|x| round(x.2)),
+            floor_gb: mean(MEM_FLOOR).map(round),
+            nas_ms: mean(NAS_MS).map(round),
+            nas_ms_most: of(NAS_MS).map(|x| round(x.3)),
+            nas_read_mbs: mean(NAS_TRAFFIC[0]).map(round),
+            nas_write_mbs: mean(NAS_TRAFFIC[2]).map(round),
+        })
     }
 
     /// The build's limits at `t`, as the agent's loop read them: the cores it may use, the Mac's
@@ -840,8 +886,15 @@ impl Rates {
             put(CORES_P, Some(p));
         }
         put(BUILD_CORES, b.cores);
-        if let (Some(all), Some(c)) = (busy, b.cores) {
-            put(OTHERS_CORES, Some((all[0] - c).max(0.0)));
+        if let (Some([all, e, p]), Some(c)) = (busy, b.cores) {
+            put(OTHERS_CORES, Some((all - c).max(0.0)));
+            // (By kind: the build's on the performance cores, all of it on a Mac of no others.)
+            let on_p =
+                if jobrt::sys::efficiency_cores() == 0 { Some(c) } else { b.cores_p.filter(|_| jobrt::sys::p_split()) };
+            if let Some(cp) = on_p {
+                put(OTHERS_CORES_P, Some((p - cp).max(0.0)));
+                put(OTHERS_CORES_E, Some((e - (c - cp)).max(0.0)));
+            }
         }
         put(BUILD_MEM, b.mem.map(|m| m as f64 / GB));
         if let (Some(m), Some(total), Some(avail)) = (b.mem, jobrt::sys::memsize(), avail) {
@@ -908,12 +961,14 @@ impl Rates {
 
     /// The jobs' use at `t`, from each one's (slot, process group, usage now): what they hold
     /// (bytes; None with jobs running and none read, zero with none), their CPU (cores' worth over
-    /// the second, of the jobs read a second time; None with none such) and each one's disk writes
+    /// the second, of the jobs read a second time; None with none such), of it on the performance
+    /// cores, and each one's disk writes
     /// (MB/s). A job first seen sets its baseline; each count kept at the most seen (a process that
     /// ended takes its counts with it: its last moment isn't counted).
     fn jobs(&mut self, jobs: &[(usize, i32, Option<jobrt::sys::Usage>)], t: u64) -> JobUse {
         let none = jobs.is_empty();
-        let mut out = JobUse { mem: none.then_some(0), cores: none.then_some(0.0), writes: vec![] };
+        let mut out =
+            JobUse { mem: none.then_some(0), cores: none.then_some(0.0), cores_p: none.then_some(0.0), writes: vec![] };
         let mut seen = BTreeMap::new();
         for (k, pgid, u) in jobs {
             let Some(u) = u else { continue };
@@ -922,8 +977,10 @@ impl Rates {
             if let Some((was, at)) = self.jobs.get(pgid) {
                 let dt = t.saturating_sub(*at).max(1) as f64;
                 *out.cores.get_or_insert(0.0) += u.cpu_ns.saturating_sub(was.cpu_ns) as f64 / 1e9 / dt;
+                *out.cores_p.get_or_insert(0.0) += u.p_cpu_ns.saturating_sub(was.p_cpu_ns) as f64 / 1e9 / dt;
                 out.writes.push((*k, u.written.saturating_sub(was.written) as f64 / MB / dt));
                 high.cpu_ns = high.cpu_ns.max(was.cpu_ns);
+                high.p_cpu_ns = high.p_cpu_ns.max(was.p_cpu_ns);
                 high.written = high.written.max(was.written);
             }
             seen.insert(*pgid, (high, t));
@@ -938,6 +995,8 @@ impl Rates {
 struct JobUse {
     mem: Option<u64>,
     cores: Option<f64>,
+    /// Of `cores`, on the performance cores.
+    cores_p: Option<f64>,
     writes: Vec<(usize, f64)>,
 }
 
@@ -1159,20 +1218,22 @@ mod tests {
     #[test]
     fn the_jobs_cpu_memory_and_writes() {
         use jobrt::sys::Usage;
+        // (A quarter of its CPU on the performance cores.)
         let u = |cpu_s: u64, gb: u64, mb: u64| Usage {
             cpu_ns: cpu_s * 1_000_000_000,
+            p_cpu_ns: cpu_s * 250_000_000,
             footprint: gb << 30,
             written: mb << 20,
         };
         let mut r = Rates::default();
-        assert_eq!(r.jobs(&[], 10), JobUse { mem: Some(0), cores: Some(0.0), writes: vec![] });
+        assert_eq!(r.jobs(&[], 10), JobUse { mem: Some(0), cores: Some(0.0), cores_p: Some(0.0), writes: vec![] });
         // (First seen: held now, the rates its baseline.)
         assert_eq!(
             r.jobs(&[(0, 7, Some(u(10, 2, 100)))], 10),
-            JobUse { mem: Some(2 << 30), cores: None, writes: vec![] }
+            JobUse { mem: Some(2 << 30), cores: None, cores_p: None, writes: vec![] }
         );
         let j = r.jobs(&[(0, 7, Some(u(16, 3, 110))), (1, 8, Some(u(1, 1, 0)))], 12);
-        assert_eq!(j, JobUse { mem: Some(4 << 30), cores: Some(3.0), writes: vec![(0, 5.0)] });
+        assert_eq!(j, JobUse { mem: Some(4 << 30), cores: Some(3.0), cores_p: Some(0.75), writes: vec![(0, 5.0)] });
         // (A process ended, its counts gone: nothing negative, nothing counted twice.)
         let j = r.jobs(&[(0, 7, Some(u(12, 3, 105)))], 13);
         assert_eq!((j.cores, j.writes), (Some(0.0), vec![(0, 0.0)]));
@@ -1205,6 +1266,8 @@ mod tests {
             CORES_P,
             BUILD_CORES,
             OTHERS_CORES,
+            OTHERS_CORES_P,
+            OTHERS_CORES_E,
             BUILD_MEM,
             OTHERS_MEM,
             MEM_AVAIL,
@@ -1215,6 +1278,52 @@ mod tests {
         }
         let cores = jobrt::sys::core_ticks().unwrap().len() as f64;
         assert!(s.latest(CORES, t0 + 19, 5).unwrap() <= cores);
+    }
+
+    /// Task #1418: what the Mac supplied over a run, from its samples then: the cores of each kind
+    /// not busy outside the build, those kept for the owner, the build's, the memory available
+    /// (mean and least) and the floor, the NAS's answer time (mean and most) and the jobs' NAS
+    /// throughput; a series not sampled then is said as none, a run with no cores sampled has none.
+    /// A run longer than the finest ring's hour reads the next ring's.
+    #[test]
+    fn a_runs_supply_is_its_samples_over_its_time() {
+        let s = Store::new(None, "m4");
+        let t = now_s() - 100;
+        for i in 0..10 {
+            s.record(CORES, t + i, 6.0);
+            s.record(OTHERS_CORES_P, t + i, if i < 5 { 1.0 } else { 3.0 });
+            s.record(OTHERS_CORES_E, t + i, 0.5);
+            s.record(BUILD_CORES, t + i, 4.0);
+            s.record(MEM_AVAIL, t + i, 20.0 - i as f64);
+            s.record(NAS_TRAFFIC[0], t + i, 50.0);
+        }
+        s.record_limits(t, 8, 6 << 10, 0, 0);
+        s.record_limits(t + 5, 10, 6 << 10, 0, 0);
+        s.record(NAS_MS, t, 4.0);
+        s.record(NAS_MS, t + 5, 12.0);
+        // (Outside the run: not counted.)
+        s.record(OTHERS_CORES_P, t + 10, 8.0);
+        s.record(NAS_MS, t + 20, 900.0);
+        let u = s.supply(t, t + 10, 8, 4).unwrap();
+        assert_eq!((u.secs, u.p, u.e), (10, 8, 4));
+        assert_eq!((u.free_p, u.free_e, u.kept, u.build), (Some(6.0), Some(3.5), Some(3.0), Some(4.0)));
+        assert_eq!((u.mem_gb, u.mem_least_gb, u.floor_gb), (Some(15.5), Some(11.0), Some(6.0)));
+        assert_eq!((u.nas_ms, u.nas_ms_most), (Some(8.0), Some(12.0)));
+        assert_eq!((u.nas_read_mbs, u.nas_write_mbs), (Some(50.0), None), "no writes sampled: none said");
+        // (Said in the record, and read back.)
+        let rec = jobrt::timings::RunRec { supply: Some(u), ..Default::default() };
+        let back: jobrt::timings::RunRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        assert_eq!(back.supply, Some(u));
+        assert_eq!(s.supply(t + 30, t + 40, 8, 4), None, "no cores sampled then");
+        // (Two hours: the 10 s ring's.)
+        let (l, long) = (Store::new(None, "m4"), now_s() - 7200);
+        for i in (0..7200).step_by(60) {
+            l.record(CORES, long + i, 1.0);
+            l.record(OTHERS_CORES_P, long + i, 2.0);
+        }
+        let u = l.supply(long, long + 7200, 8, 4).unwrap();
+        assert_eq!((tier_for(7200), u.free_p, u.free_e), (1, Some(6.0), None));
+        assert!((119..=120).contains(&u.secs), "{}", u.secs);
     }
 
     /// Task #517: the NAS's disks (the busiest and each) and the pool's traffic as series; the

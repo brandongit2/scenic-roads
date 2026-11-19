@@ -928,11 +928,12 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 3, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …]}
+{v: 3, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …], supply}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
 done: {end, targets, of, resumed, made}
+supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb, nas_ms, nas_ms_most, nas_read_mbs, nas_write_mbs}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
@@ -1060,6 +1061,30 @@ read as absent):
   over their time while a thread spins at the user-interactive QoS till 0.2 s of their CPU, 2 s
   by the clock at most: the clock as it was, not its top, so nothing to hold cycles to) or its
   top clock wasn't read yet.
+
+What its Mac supplied, apart from what the job needed (task #1418; absent in a record from
+before, and on a Mac keeping no live readings):
+
+- `supply` (jobrt::timings::Supply; its agent's as it takes the record, agentcore's
+  agent::live::Store::supply): its Mac's live readings (docs/pool.md §10, Live: sampled every
+  second whatever runs) over the run's time, from the finest of their rings that holds it (a run
+  over an hour: a point every 10 s, the samples within), each the mean of its samples there unless
+  said; a figure not sampled then is left out. `secs`: the seconds the cores' samples cover. `p`,
+  `e`: the Mac's performance and efficiency cores (logical; "P" every level but the slowest, as
+  jobrt::sys::efficiency_cores counts them). `free_p`, `free_e`: the cores of each kind not busy
+  outside the build (`others_cores_p`, `others_cores_e`: each kind's busy less the build's jobs'
+  CPU there), the owner's load and every other program's taken out. `kept`: the cores kept for
+  the owner while they use the Mac (the Mac's less `build_cores_max`). `build`: the cores the
+  build's jobs on the Mac kept busy, this one's among them. `mem_gb`, `mem_least_gb`: the memory
+  available (`mem_avail_gb`, the memory guard's reading: jobrt::sys::memory_available, the jobs'
+  own memory not counted as compressible), its mean and least; `floor_gb`: the memory floor.
+  `nas_ms`, `nas_ms_most`: the NAS's answer time as this Mac measured it (a listing of the
+  project's folder every 5 s while a build runs), its mean and most. `nas_read_mbs`,
+  `nas_write_mbs`: the bytes the NAS served the Mac's jobs and those they wrote there, together
+  (MB/s, store::nasio's counts): the throughput they had of it.
+
+Each Mac's speed is measured from these records (docs/pool.md §10, Each Mac's speed: `work`'s
+instructions over its CPU on each kind of core, the clean runs of the steps every Mac ran).
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,

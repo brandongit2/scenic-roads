@@ -2,8 +2,8 @@
 // job run as the lead keeps it (`GET /api/job/<id>`, docs/formats.md, Job spans).
 //   Left, fixed: what it is (step, targets, Mac, job id and lease, app), what it held and used
 //   (threads granted, cores busy, peak memory, what it retired, its NAS bytes asked and served, the
-//   work it did, the plausibility checks its record failed, its NAS weight), when and how it ended
-//   and why, its
+//   work it did, the plausibility checks its record failed, what its Mac supplied, its NAS weight),
+//   when and how it ended and why, its
 //   figures beside its step's medians (`/api/timings`), the other runs of its targets and the jobs
 //   beside it on its Mac (the history's: `runs`, `beside`).
 //   Main: its spans on a timeline (timeline.js, the schedule's; laid out by runlanes.js, the dev
@@ -20,7 +20,7 @@ import { n, plural } from "./words.js";
 import { lineage, pack, spanLanes, spanTree } from "./runlanes.js";
 import { versionWatch } from "./version.js";
 import { remote } from "./live.js";
-import { MARK_LANES, dur, linesIn, markers, outcome, recordFigures, spanLook, stepMedians, timeWords, clockText } from "./jobview.js";
+import { MARK_LANES, dur, linesIn, markers, outcome, recordFigures, spanLook, stepMedians, supplyText, timeWords, clockText } from "./jobview.js";
 
 const $ = (id) => document.getElementById(id);
 // (The build page's folder: "" at the coordinator's root, "/build" through tools/caddy.)
@@ -129,6 +129,7 @@ function side(f, out) {
       ["retired", fig?.insn != null ? `${fig.insn >= 1e12 ? `${fx(fig.insn / 1e12, 2)} T` : `${fx(fig.insn / 1e9)} G`} instructions, ${fx(fig.ipc, 2)} a cycle at ${fx(fig.ghz, 2)} GHz; ${Math.round(fig.pShare * 100)}% of its CPU on performance cores` : null, `What its processes retired over ${fig?.counted != null ? dur(fig.counted) : "–"} of CPU: its own exactly, its programs as sampled four times a second (task #1419)`],
       ["NAS asked", fig?.asked != null ? `${bytes(fig.asked)} read, ${bytes(fig.served)} of it served by the NAS${v.record.nas.wrote_b ? `; ${bytes(v.record.nas.wrote_b)} written` : ""}` : null, "The NAS files' bytes it read, whichever answered, and those read through the share (the rest this Mac's page cache held)"],
       ["work done", fig?.done ? `${fig.done.of ? `${n(fig.done.targets)} of ${n(fig.done.of)} targets` : "no targets"}${fig.done.end && fig.done.end !== "done" ? `, ${fig.done.end}: a part's figures` : ""}${fig.done.resumed ? `; ${n(fig.done.resumed)} blocks resumed, ${n(fig.done.made || 0)} made` : ""}` : null, "The targets it finished, how it ended, and the blocks a resumed run took from an earlier one"],
+      ["its Mac gave", supplyText(v.record?.supply), "What its Mac supplied over the run, the means of its agent's live readings then (task #1418): the cores free of load outside the build, those kept for the owner while they used the Mac, the memory available, the NAS's answer time and the jobs' NAS throughput"],
       ["NAS weight", "not recorded", "The lead weighs a running job's NAS share from its beats (coord::sched job_weight); nothing keeps the weight it was granted under"],
     ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null, fig?.unchecked.length ? h("div", "small dim", `Not checked: ${fig.unchecked.join("; ")}`) : null),
     sec("When and how", kv([

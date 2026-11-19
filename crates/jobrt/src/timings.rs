@@ -377,6 +377,54 @@ pub struct RunRec {
     /// Mac's top clock was measured, not read from its table, or not yet known.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unchecked: Vec<String>,
+    /// What its Mac supplied over the run (task #1418; its agent's live readings, stamped as it
+    /// took the record): None in a record from before, or where the Mac keeps no live readings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supply: Option<Supply>,
+}
+
+/// What a Mac supplied over a run (task #1418), apart from what the job needed (`work`, `peak_mb`,
+/// `nas`): its agent's live readings (agentcore's agent::live, sampled every second whatever ran)
+/// over the run's time, each the mean of its samples there unless said. Each `None`: not sampled
+/// over the run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Supply {
+    /// The seconds of the run the readings cover (the cores' samples).
+    pub secs: u64,
+    /// The Mac's performance and efficiency cores (logical: every level but the slowest, and it).
+    pub p: u32,
+    pub e: u32,
+    /// The cores of each kind not busy outside the build (the Mac's busy less the build's jobs'
+    /// own CPU there): what the pool had, the owner's and every other program's load taken out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_e: Option<f64>,
+    /// The cores kept for the owner while they use the Mac (the Mac's less those the build may use).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<f64>,
+    /// The cores the build's jobs on the Mac kept busy (this one's among them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<f64>,
+    /// The memory available (GB: the memory guard's reading, jobrt::sys::memory_available), its
+    /// least, and the Mac's memory floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_least_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor_gb: Option<f64>,
+    /// The NAS's answer time as the Mac measured it (ms, a listing every 5 s), and its most.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_ms_most: Option<f64>,
+    /// The bytes the NAS served the Mac's jobs, and those they wrote there, together (MB/s,
+    /// store::nasio's counts): the throughput they had of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_read_mbs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_write_mbs: Option<f64>,
 }
 
 /// What a job's processes retired (macOS's counts, crate::sys::Rusage): its own process's exactly,
@@ -1681,6 +1729,7 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         },
         implausible: Vec::new(),
         unchecked: Vec::new(),
+        supply: None,
     };
     let sg = crate::control::safe_gaps();
     rec.safe_points = sg.points;
@@ -2291,6 +2340,9 @@ pub struct LogTail {
     /// Every run that ended within `TIMES_EDGES`' last edge of the newest one read, oldest first:
     /// failed runs too (`PhaseTimes`).
     recent: std::collections::VecDeque<RunSum>,
+    /// Each worker's (its record's `host`) clean runs' work at each step, its newest `SPEED_RUNS`
+    /// (`Speeds`).
+    work: std::collections::BTreeMap<(String, String), std::collections::VecDeque<(u64, Work)>>,
 }
 
 #[cfg(unix)]
@@ -2330,6 +2382,13 @@ impl LogTail {
             if !learnable(&r) {
                 continue;
             }
+            if let Some(w) = r.work.filter(|w| w.cpu_s >= CHECK_S) {
+                let q = self.work.entry((r.host.clone(), step_of(&r.kind).to_string())).or_default();
+                q.push_back((r.start, w));
+                if q.len() > SPEED_RUNS {
+                    q.pop_front();
+                }
+            }
             let q = self.runs.entry(step_of(&r.kind).to_string()).or_default();
             q.push_back(r);
             if q.len() > SHARES_RUNS {
@@ -2344,6 +2403,17 @@ impl LogTail {
         phase_shares(self.runs.values().flatten())
     }
 
+    /// Each Mac's speed over the runs kept (`speeds`), a worker's Mac by `mac` (its slot's name
+    /// taken off: agentcore's paces::mac_of).
+    pub fn speeds(&self, mac: impl Fn(&str) -> &str) -> Speeds {
+        let mac = &mac;
+        speeds(
+            self.work
+                .iter()
+                .flat_map(|((host, step), q)| q.iter().map(move |(t, w)| (mac(host), step.as_str(), *t, w))),
+        )
+    }
+
     /// Each step's time by phase over the runs that ended within each of `TIMES_EDGES` of `now`
     /// (runs older than the last edge let go).
     pub fn times(&mut self, now: u64) -> PhaseTimes {
@@ -2353,6 +2423,96 @@ impl LogTail {
         }
         phase_times(self.recent.iter(), now)
     }
+}
+
+/// The runs of a Mac at a step its speed there is measured over (`Speeds`): its newest.
+pub const SPEED_RUNS: usize = 20;
+
+/// Each Mac's speed (task #1418): the instructions its cores retire a second of their CPU, the
+/// performance cores' and the efficiency cores' apart, so a job's need (its `work`) converts to
+/// time on any Mac. Measured from the records alone: each Mac's clean runs (`learnable`, their
+/// `work` counted over `CHECK_S` of CPU or more), the newest `SPEED_RUNS` at each step; a step's
+/// speed on a Mac its runs' instructions over their CPU of that kind (`CHECK_S` of it at least),
+/// and a Mac's the geometric mean over the steps every Mac measured at that kind ran (`shared`:
+/// the same steps' work on each, so a Mac running the heavier code isn't the slower for it); with
+/// no step that every Mac ran, or one Mac alone, each Mac's over its own steps (`shared` false).
+/// The lead's, in its status as `speeds`, shown on the build page's Machines tab.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Speeds {
+    /// By Mac.
+    pub macs: std::collections::BTreeMap<String, MacSpeed>,
+}
+
+/// A Mac's speed on each kind of core (`Speeds`); None: none measured.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MacSpeed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p: Option<KindSpeed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e: Option<KindSpeed>,
+}
+
+/// A Mac's speed on a kind of core (`Speeds`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KindSpeed {
+    /// Billions of instructions a second of a core's CPU.
+    pub ginsn_s: f64,
+    /// The steps it's over, and their runs.
+    pub steps: Vec<String>,
+    pub runs: usize,
+    /// Over the steps every Mac measured ran (`Speeds`).
+    pub shared: bool,
+}
+
+/// `Speeds` of the clean runs `runs`: each its Mac, step, start (unix s) and work.
+pub fn speeds<'a>(runs: impl IntoIterator<Item = (&'a str, &'a str, u64, &'a Work)>) -> Speeds {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut by: BTreeMap<(&str, &str), Vec<(u64, &Work)>> = BTreeMap::new();
+    for (mac, step, t, w) in runs {
+        by.entry((mac, step)).or_default().push((t, w));
+    }
+    // (Each kind's speed by Mac and step: its instructions over its CPU, and the runs.)
+    let mut rates: [BTreeMap<&str, BTreeMap<&str, (f64, usize)>>; 2] = Default::default();
+    for ((mac, step), mut rs) in by {
+        rs.sort_by_key(|r| r.0);
+        rs.drain(..rs.len().saturating_sub(SPEED_RUNS));
+        let sum = |f: &dyn Fn(&Work) -> (f64, f64)| {
+            rs.iter().map(|(_, w)| f(w)).fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
+        };
+        let p = sum(&|w| (w.p_insn as f64, w.p_cpu_s));
+        let e = sum(&|w| (w.insn.saturating_sub(w.p_insn) as f64, (w.cpu_s - w.p_cpu_s).max(0.0)));
+        for (k, (insn, cpu)) in [p, e].into_iter().enumerate() {
+            if cpu >= CHECK_S && insn > 0.0 {
+                rates[k].entry(mac).or_default().insert(step, (insn / cpu, rs.len()));
+            }
+        }
+    }
+    let mut out = Speeds::default();
+    for (k, of) in rates.iter().enumerate() {
+        let mut every: Option<BTreeSet<&str>> = None;
+        for steps in of.values() {
+            let s: BTreeSet<&str> = steps.keys().copied().collect();
+            every = Some(every.map_or(s.clone(), |e| e.intersection(&s).copied().collect()));
+        }
+        let shared = every.filter(|e| of.len() > 1 && !e.is_empty());
+        for (mac, steps) in of {
+            let on: Vec<(&str, (f64, usize))> = steps
+                .iter()
+                .filter(|(s, _)| shared.as_ref().is_none_or(|e| e.contains(*s)))
+                .map(|(s, r)| (*s, *r))
+                .collect();
+            let ln = on.iter().map(|(_, (r, _))| r.ln()).sum::<f64>() / on.len() as f64;
+            let speed = KindSpeed {
+                ginsn_s: (ln.exp() / 1e9 * 1000.0).round() / 1000.0,
+                steps: on.iter().map(|(s, _)| s.to_string()).collect(),
+                runs: on.iter().map(|(_, (_, n))| n).sum(),
+                shared: shared.is_some(),
+            };
+            let m = out.macs.entry(mac.to_string()).or_default();
+            *(if k == 0 { &mut m.p } else { &mut m.e }) = Some(speed);
+        }
+    }
+    out
 }
 
 /// The page's chart ranges (the build page's footer, "Charts show the last": web/buildpage/index.html's
@@ -2970,6 +3130,72 @@ mod tests {
         assert!(t.read(&log));
         assert!(!t.shares().contains_key("b"));
         assert_eq!(t.shares()["c"].runs, 3);
+    }
+
+    /// Task #1418: each Mac's speed, measured from its clean runs' work alone: a step's
+    /// instructions over its CPU on each kind of core (its newest `SPEED_RUNS`), a Mac's the
+    /// geometric mean over the steps every Mac ran, so a Mac running only the heavier step isn't
+    /// counted the slower; with none every Mac ran, each over its own steps, said so.
+    #[test]
+    fn each_macs_speed_is_its_instructions_over_its_cpu_on_the_same_steps() {
+        // (A run's work: G instructions on each kind of core over its seconds there.)
+        let w = |p_g: f64, p_s: f64, e_g: f64, e_s: f64| Work {
+            insn: ((p_g + e_g) * 1e9) as u64,
+            p_insn: (p_g * 1e9) as u64,
+            p_cpu_s: p_s,
+            cpu_s: p_s + e_s,
+            ..Default::default()
+        };
+        let (a1, a2, b1) = (w(80.0, 10.0, 6.0, 2.0), w(160.0, 20.0, 0.0, 0.0), w(40.0, 10.0, 0.0, 0.0));
+        let (c1, tiny) = (w(90.0, 10.0, 0.0, 0.0), w(5.0, 0.5, 0.0, 0.0));
+        let s = speeds([
+            ("m1", "a", 1, &a1),
+            ("m1", "a", 2, &a2),
+            ("m1", "b", 3, &b1),
+            ("m4", "a", 4, &c1),
+            ("m4", "c", 5, &a1),
+            ("m4", "b", 6, &tiny),
+        ]);
+        // (m1 at a: 240 G over 30 s; m4 at a: 9 a second; b measured on m1 alone, m4's run there
+        // under a second of CPU: a alone is every Mac's.)
+        let (m1, m4) = (s.macs["m1"].p.clone().unwrap(), s.macs["m4"].p.clone().unwrap());
+        assert_eq!((m1.ginsn_s, m1.runs, m1.steps.clone(), m1.shared), (8.0, 2, vec!["a".to_string()], true));
+        assert_eq!((m4.ginsn_s, m4.runs, m4.steps.clone()), (9.0, 1, vec!["a".to_string()]));
+        // (The efficiency cores: m1's at a, m4's at c; no step both ran: each over its own.)
+        let e = s.macs["m1"].e.clone().unwrap();
+        assert_eq!((e.ginsn_s, e.steps, e.shared), (3.0, vec!["a".to_string()], false));
+        assert_eq!(s.macs["m4"].e.as_ref().map(|e| (e.steps.clone(), e.shared)), Some((vec!["c".to_string()], false)));
+        // (One Mac: its own steps, the geometric mean of theirs: 8 and 4.)
+        let one = speeds([("m1", "a", 1, &a1), ("m1", "b", 2, &b1)]).macs["m1"].p.clone().unwrap();
+        assert_eq!((one.ginsn_s, one.steps.len(), one.shared), (5.657, 2, false));
+        // (Its newest runs alone.)
+        let old = w(10.0, 10.0, 0.0, 0.0);
+        let mut runs = vec![("m1", "a", 0, &old)];
+        runs.extend((1..=SPEED_RUNS as u64).map(|t| ("m1", "a", t, &a1)));
+        assert_eq!(speeds(runs).macs["m1"].p.as_ref().unwrap().ginsn_s, 8.0);
+        assert!(speeds(std::iter::empty()).macs.is_empty());
+    }
+
+    /// Task #1418: the lead's log tail keeps each worker's clean runs' work, and their Mac's speed
+    /// from them: a failed run, one failing the checks, and one of too little CPU left out.
+    #[test]
+    fn the_log_tail_measures_each_macs_speed() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("timings.jsonl");
+        let run = |host: &str, ok: bool| RunRec { host: host.into(), ok, ..clean() };
+        append(&log, &run("m1 #2", true)).unwrap();
+        append(&log, &run("m1", true)).unwrap();
+        append(&log, &run("m1", false)).unwrap();
+        append(&log, &RunRec { implausible: vec!["x".into()], ..run("m1", true) }).unwrap();
+        let idle = RunRec { work: clean().work.map(|w| Work { cpu_s: 0.5, p_cpu_s: 0.5, ..w }), ..run("m1", true) };
+        append(&log, &idle).unwrap();
+        let mut t = LogTail::default();
+        assert!(t.read(&log));
+        let s = t.speeds(|w| w.split(" #").next().unwrap_or(w));
+        let p = s.macs["m1"].p.clone().unwrap();
+        // (clean()'s: 800 G instructions over 200 s of the performance cores.)
+        assert_eq!((p.ginsn_s, p.runs, p.steps), (4.0, 2, vec!["unit".to_string()]));
+        assert_eq!(s.macs.len(), 1);
     }
 
     #[test]

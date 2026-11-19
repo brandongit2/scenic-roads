@@ -455,6 +455,22 @@ pub fn rusage(pid: i32) -> Option<Rusage> {
     }
 }
 
+/// Whether this macOS counts a process's use by kind of core (`RUSAGE_INFO_V6`: `Rusage`'s
+/// performance cores' figures; a V4 says none, and they read 0). Asked once, of this process.
+pub fn p_split() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        static V6: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V6.get_or_init(|| {
+            let mut w = [0u64; 96];
+            // SAFETY: as `rusage`'s: the buffer holds V6's struct, plain words.
+            unsafe { libc::proc_pid_rusage(std::process::id() as i32, 6, w.as_mut_ptr().cast()) == 0 }
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Mach absolute time units to ns (rusage_info's times: 1 ns on Intel, 125/3 ns on Apple silicon).
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
@@ -1034,8 +1050,9 @@ pub fn cpu_of_group(pgid: i32) -> Option<u64> {
 /// What a process group's live processes have used, summed (`usage_of_group`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Usage {
-    /// CPU time, user and system (ns).
+    /// CPU time, user and system (ns), and of it on the performance cores (`p_split`).
     pub cpu_ns: u64,
+    pub p_cpu_ns: u64,
     /// Physical footprints now (bytes).
     pub footprint: u64,
     /// Bytes written to disks (`ri_diskio_byteswritten`).
@@ -1048,6 +1065,7 @@ pub fn usage_of_group(pgid: i32) -> Option<Usage> {
     let all = group_rusage(pgid);
     (!all.is_empty()).then(|| Usage {
         cpu_ns: all.iter().map(|(_, r)| r.cpu_ns).sum(),
+        p_cpu_ns: all.iter().map(|(_, r)| r.p_cpu_ns).sum(),
         footprint: all.iter().map(|(_, r)| r.footprint).sum(),
         written: all.iter().map(|(_, r)| r.written).sum(),
     })

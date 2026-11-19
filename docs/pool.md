@@ -2783,6 +2783,18 @@ asks passed on are one-shot: the lead's store keeps them (below).
   partly written last line waits for the next read; a log cut to its newer half, or replaced, i.e.
   another file at the path or a shorter one, is read whole again, at most 16 MB). A member's status
   carries none.
+- **Each Mac's speed** (task #1418): the instructions its cores retire a second of their CPU, the
+  performance cores' and the efficiency cores' apart, so a job's need (its record's `work`)
+  converts to time on any Mac. Measured from the build's records alone, never set by hand: the
+  same thread keeps each worker's clean runs' work (`timings::learnable`, their `work` counted over
+  a second of CPU or more), the newest 20 at each step (`timings::SPEED_RUNS`); a step's speed on a
+  Mac is its runs' instructions on a kind of core over their CPU there (a second of it at least),
+  and a Mac's the geometric mean of its steps' over the steps every Mac measured at that kind ran,
+  so each Mac's figure is of the same work (with none such, or one Mac alone, each over its own
+  steps, said so). The lead's status carries them as `speeds` (`timings::Speeds`): `{"macs":
+  {"<Mac>": {"p": {"ginsn_s", "steps": [step, …], "runs", "shared"}, "e": {…}}}}`, a worker's runs
+  its Mac's (`paces::mac_of`); the Machines tab says each Mac's on its card. A member's status
+  carries none.
 - **Time by phase** (task #844): each step's runs summed by when they ended, so the build page's
   step rows break a step's time down over the range its footer picks ("Charts show the last": 1 min
   to 7 days). The same thread reads every run of the log (failed ones too) and, every minute, sums
@@ -3026,7 +3038,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   first, task #609); the build against
   the rest of the Mac (task #515): its jobs' CPU in cores' worth (`build_cores`, their processes'
   `proc_pid_rusage` over the second) and the rest's (`others_cores`: the cores busy less the
-  build's), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
+  build's; `others_cores_p`, `others_cores_e`: each kind's busy less the build's CPU there, its
+  processes' performance cores' CPU, `ri_user_ptime` and `ri_system_ptime`, where macOS splits it
+  or the Mac has no efficiency cores; task #1418), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
   memory in use, the Mac's less what's available, less the build's); the bytes written to the Mac's
   disks (`disk_write_mbs`, MB/s, its block storage drivers' statistics through IOKit, as `iostat`
   reads them) and by each job (`job_write_mbs.<slot>`, its processes' `ri_diskio_byteswritten`);

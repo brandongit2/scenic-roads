@@ -1048,13 +1048,14 @@ pub struct Coordinator {
     taken: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Each step's phase shares over its last runs (jobrt::timings::PhaseShares) and its time by phase
-/// over the page's chart ranges (jobrt::timings::PhaseTimes), kept by `phase_sharer`, apart from
-/// the pool's lock.
-#[derive(Default)]
+/// Each step's phase shares over its last runs (jobrt::timings::PhaseShares), its time by phase
+/// over the page's chart ranges (jobrt::timings::PhaseTimes) and each Mac's speed
+/// (jobrt::timings::Speeds), kept by `phase_sharer`, apart from the pool's lock.
+#[derive(Clone, Default)]
 struct Phases {
     shares: Arc<Mutex<BTreeMap<String, jobrt::timings::PhaseShares>>>,
     times: Arc<Mutex<Option<Arc<jobrt::timings::PhaseTimes>>>>,
+    speeds: Arc<Mutex<Option<jobrt::timings::Speeds>>>,
 }
 
 /// What a coordinator started as (`Coordinator::start_with`).
@@ -1976,7 +1977,7 @@ impl Coordinator {
         }
         let phases = (mode == Mode::Lead).then(|| {
             let p = Phases::default();
-            phase_sharer(dir.join("timings.jsonl"), p.shares.clone(), p.times.clone(), stopped.clone());
+            phase_sharer(dir.join("timings.jsonl"), p.clone(), stopped.clone());
             p
         });
         let c = Coordinator {
@@ -2523,6 +2524,12 @@ impl Coordinator {
     /// (`phase_sharer`, every minute; None till then).
     pub fn phase_times(&self) -> Option<Arc<jobrt::timings::PhaseTimes>> {
         self.phases.as_ref().and_then(|p| p.times.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    /// Each Mac's speed from the build's timings (jobrt::timings::Speeds), as its thread last read
+    /// them (`phase_sharer`; None till then, and on a member's broker).
+    pub fn speeds(&self) -> Option<jobrt::timings::Speeds> {
+        self.phases.as_ref().and_then(|p| p.speeds.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
@@ -3843,25 +3850,22 @@ fn nas_prober(
 /// How often the lead reads what its timings log gained (`phase_sharer`).
 const SHARES_EVERY_S: u64 = 60;
 
-/// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, and
-/// `times` to each step's time by phase over the page's chart ranges, read on its own thread every
-/// `SHARES_EVERY_S` as it grows (jobrt::timings::LogTail: its size first, then only what was
-/// added; the ranges summed again each time, as they move on), never under the pool's lock; till
-/// the coordinator stops.
-fn phase_sharer(
-    log: PathBuf,
-    into: Arc<Mutex<BTreeMap<String, jobrt::timings::PhaseShares>>>,
-    times: Arc<Mutex<Option<Arc<jobrt::timings::PhaseTimes>>>>,
-    stopped: Arc<std::sync::atomic::AtomicBool>,
-) {
+/// Keeps `into`'s phase shares to each step's over its last runs in the timings log at `log`, its
+/// times to each step's time by phase over the page's chart ranges, and its speeds to each Mac's
+/// (a worker's by its Mac, crate::paces::mac_of), read on its own thread every `SHARES_EVERY_S`
+/// as it grows (jobrt::timings::LogTail: its size first, then only what was added; the ranges
+/// summed again each time, as they move on), never under the pool's lock; till the coordinator
+/// stops.
+fn phase_sharer(log: PathBuf, into: Phases, stopped: Arc<std::sync::atomic::AtomicBool>) {
     let run = move || {
         let mut tail = jobrt::timings::LogTail::default();
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             if tail.read(&log) {
-                *into.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
+                *into.shares.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
+                *into.speeds.lock().unwrap_or_else(|e| e.into_inner()) = Some(tail.speeds(crate::paces::mac_of));
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            *times.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tail.times(now)));
+            *into.times.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tail.times(now)));
             for _ in 0..SHARES_EVERY_S {
                 if stopped.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
