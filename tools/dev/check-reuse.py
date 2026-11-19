@@ -44,9 +44,12 @@ in X) is weighed. It holds for a part here only when
         is the whole repo.
 Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the package folders
 (whose own modules aren't followed), a path a manifest or .cargo names outside them, a source
-reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_* and
-OUT_DIR: a build script's output, `include!(concat!(env!("OUT_DIR"), …))`, is made from the
-package's files, inputs of the build already).
+reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_*; and
+OUT_DIR, `include!(concat!(env!("OUT_DIR"), …))`, a build script's output, only in a package whose
+build script reads nothing outside the package's folder as `reads` sees it: then what it writes is
+made from the build's inputs. crates/inputs' build script reads its path dependencies' sources too,
+by its manifest, which `reads` doesn't see: they are inputs of the build that link into it, so a
+change there runs its tests as any other).
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -186,13 +189,15 @@ def build_inputs(files, pkgs):
         if not f.endswith(".rs") or not any(under(f, p) for p in pkgs):
             continue
         src, d = read(f), posixpath.dirname(f)
+        out_dir = own_build(f, pkgs, scripts)
         for m in ENVMACRO.finditer(src):
-            if not (m.group(1) or "").startswith(('"CARGO_', '"OUT_DIR"')) and blank(src)[m.start()] != " ":
+            ok = (m.group(1) or "").startswith('"CARGO_') or out_dir and m.group(1) == '"OUT_DIR"'
+            if not ok and blank(src)[m.start()] != " ":
                 raise Doubt("%s reads the environment as it compiles: %s" % (f, m.group(0)))
         # (include! and #[path] name Rust sources, whose own modules and includes are followed only
         # inside the package folders.)
         for m in INCLUDE.finditer(src):
-            if not m.group(2) and OUT_DIR.match(src, m.end()):
+            if not m.group(2) and out_dir and OUT_DIR.match(src, m.end()):
                 continue
             if not m.group(2):
                 raise Doubt("%s includes a path that isn't a literal" % f)
@@ -221,6 +226,14 @@ def build_inputs(files, pkgs):
             for p, _ in reads(f, src):
                 ins.append((p, "%s (a build script or proc macro) reads it" % f))
     return ins, scripts, macros, data
+
+
+def own_build(f, pkgs, scripts):
+    """Whether f's package has a build script reading nothing outside the package's folder (as
+    `reads` sees it), so what it writes to OUT_DIR is made from the build's inputs."""
+    pkg = max((p for p in pkgs if under(f, p)), key=len)
+    script = [s for s in scripts if under(s, pkg) and os.path.exists(s)]
+    return bool(script) and all(p and under(p, pkg) for p, _ in reads(script[0], read(script[0])))
 
 
 PLAIN = "the Rust build"   # (the reason a file inside a package folder, and nothing more, gives)

@@ -126,23 +126,45 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   The lead's forget job (`inputs <unit> forget`, §4.10) records the key `forget`, so a unit put
   back on the gate is checked; a forget by hand (`scenic-build inputs <unit> --forget`) records no
   key, so a unit put back with its folder as it was waits for a change or its daily full check.
-- **The checks' code** (`inputs::code_of`, task #1467): no version is typed. build.rs digests each
-  module of `crates/inputs/src/inputs/` as the app compiles it (`crates/inputs/build/checks_code.rs`:
-  its tokens, its child modules' and the files it compiles in with it; comments, doc comments,
-  layout, `#[cfg(test)]` and `testkit` code and `#[test]` functions left out), and the key names the
-  gate's (`gate`) and the unit's own (`Checks::code`, its module's). A release that changes what a
-  unit's module compiles to checks that unit again, once; one that changes the gate's checks every
-  unit; any other checks none. What the digest doesn't see: code outside the unit's module that its
-  checks call (`mod.rs`, `credits`, another unit's module, other crates), and files read at run time
-  (those a check reads are in its key by `Checks::context`). A change there that changes a verdict
-  is seen by the unit's next check: its next change of files, or its next full check (daily, or
-  `scenic inputs check --full <unit>`), which checks every held and new file again. A file taken in
-  is never checked again while its bytes are as accepted, whatever the code. Two things a check
-  makes keep a typed version of their own, as each made again costs hours: the regions' resolution
-  (`inputs::regions::RESOLUTION`, step 5 below: a region's geometry and the folder's recorded
-  outcome, its problems' words with it, are taken as they were while it holds) and the elevation
-  datasets' measures (`Step::rule`, §6.8). A regions check under new code otherwise takes the
-  outcome recorded for the same inputs.
+- **The checks' code** (`inputs::code_of`, task #1467): no version is typed. build.rs reads the
+  inputs crate and every crate its path dependencies reach (roadcore, store, buildstore, jobrt,
+  names, codecs, det, webpenc) as the app compiles them (`crates/inputs/build/checks_code.rs`):
+  tokens, with each child module's file and each file compiled in (`include_str!` and the like);
+  comments, doc comments, layout and rustfmt's choices (a trailing comma where it means nothing, a
+  match arm in braces), `#[cfg(test)]` and `testkit` code and `#[test]` functions left out; a file
+  that doesn't parse fails the build at its line and column, never a digest. Each item (a
+  function, a type with its impls in its module, a method, a constant) has a digest, and a unit's
+  code is that of its module's items and every item they name, transitively: by path
+  (`super::credits::parse_description`, `crate::dem::declared::…`, `roadcore::geo::…`, through `use`
+  names and re-exports) and by the name of another item of the same module; a path naming a module,
+  or a glob `use`, takes the module whole. The gate's code (`gate`) is `gate.rs`'s and every item of
+  `mod.rs` (`Finding::holds`, the `Checks` defaults, `ignored`), with all they name; `mod.rs`'s
+  items naming its own child modules (the registry: `UNITS`, `checks`, the units' statics) reach no
+  unit's code. The key names the gate's code and the unit's (`Checks::code`). A release changing
+  any code a unit's checks reach checks that unit again, once; one changing the gate's checks every
+  unit; any other checks none. Across the 49 releases of 12–17 Nov this would have checked the
+  regions again 10 times, extents 17, the other units 6 to 10, every unit 6 of those times by the
+  gate's code.
+  What it doesn't see: a method called on a value whose type's impl is in another module than the
+  type (and named nowhere else); crates from crates.io (their code and versions) and what macros
+  expand to (serde's derives); a newer syn, quote or proc-macro2 may digest every item anew, which
+  checks every unit once; files read at run time (those a check reads are in its key by
+  `Checks::context`). A name it can't place names nothing; one it can place by name alone (a
+  local variable named as an item of its module) takes that item too, which can only check a unit
+  again. A change it misses that changes a verdict is seen by the unit's next check: its next
+  change of files, or its next full check (daily, or `scenic inputs check --full <unit>`), which
+  checks every held and new file again. A file taken in is never checked again while its bytes are
+  as accepted, whatever the code.
+  Two things a check makes keep a typed version of their own, as each made again costs hours: the
+  regions' resolution (`inputs::regions::RESOLUTION`, step 5 below: a region's geometry and the
+  folder's recorded outcome, its problems' words with it, are taken as they were while it holds)
+  and the elevation datasets' measures (`Step::rule`, §6.8). Each is held to the code it covers:
+  beside it the digest of that code as it was when the number was set (`RESOLUTION_CODE`: the items
+  of `resolve`, `tiles`, `geom`, `land`, `stored`, `shapes` and `data` and all they name;
+  `RULE_CODES`: each step's measuring code, `measure_now` for the headers, `presence_of`,
+  `hollow_of`), and a test fails when the code moves and the digest doesn't, naming the new digest:
+  the developer bumps the number if the change moves what it covers, and sets the digest either way.
+  A regions check under new code otherwise takes the outcome recorded for the same inputs.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
   (`bldprep`) or another check. It holds no region and no map.
 - **What it does:**
@@ -167,7 +189,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      so does a change of what they're derived from. The index changes only where what's derived
      does, so build keys naming an index whole (the languages', the sources') move only then. While
      a file is kept as accepted (held), the index keeps the `derived_from` it had and the state the
-     `derived_by`, so the check that lets the file go derives it again too.
+     `derived_by`, so the check that lets the file go derives it again too; meanwhile every check of
+     the unit derives again (what's derived for the other files is made anew, and the index changes
+     only if it differs).
      The regions keep a region's stored geometry while what it's resolved from is as it was
      (task #832): each region's `facts.resolved_from` is `inputs::regions::RESOLUTION` (the
      resolution's version) and the digest of everything its resolution reads (its file, the pins, the

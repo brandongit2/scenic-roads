@@ -579,6 +579,16 @@ enum Step {
     Hollow,
 }
 
+/// The digest of each step's measuring code (build/checks_code_tests.rs `rule_codes`), by its name, as it
+/// was when its rule (`Step::rule`) was last set. A test (`checks_code_tests`) fails when that code
+/// changes and this doesn't: raise the step's rule when the change moves what it measures, and set its
+/// digest here to the one the test names either way.
+pub const RULE_CODES: [(&str, &str); 3] = [
+    ("headers", "532f0aed18ba264ec5f249a67f91913f"),
+    ("presence", "7a86a388e97172b1d34b711b36309a79"),
+    ("hollow", "11037d76616ea223d236a33e0d338620"),
+];
+
 impl Step {
     const ALL: [Step; 3] = [Step::Headers, Step::Presence, Step::Hollow];
 

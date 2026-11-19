@@ -42,13 +42,13 @@ testkit = ["dep:tempfile", "store/testkit"]
 [build-dependencies]
 syn = { version = "2", default-features = false, features = ["clone-impls", "full", "parsing", "printing", "visit-mut"] }
 quote = { version = "1", default-features = false }
-proc-macro2 = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 syn = { version = "2", default-features = false, features = ["clone-impls", "full", "parsing", "printing", "visit-mut"] }
 quote = { version = "1", default-features = false }
-proc-macro2 = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 buildstore = { path = "../buildstore", features = ["testkit"] }
 codecs = { path = "../codecs", features = ["testkit"] }
 jobrt = { path = "../jobrt", features = ["testkit"] }
