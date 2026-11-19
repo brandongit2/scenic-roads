@@ -1302,8 +1302,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   each of its three scans (`extract::RANGE_BYTES`: the blobs whose headers start there, their
   finds; a resumed run passes a kept range by its blobs' headers alone), names-todo each 16
   hidata files' roads placed (`namestodo::roads_in`, replayed in order on resume; a unit's ways
-  read once a record names it), and the regions' input check each region without water resolved
-  and each region with water's land and water (`inputs::regions::kept`, by the resolution's keys:
+  read once a record names it), and the regions' input check each region without water resolved,
+  each region with water's land, each folder's remainder and each region with water's water
+  (`inputs::regions::kept`, by the resolution's keys:
   a digest of everything it reads; a pause met while regions resolve side by side gives the rest
   up, `Kept::stopped`). trees-lo keeps none: one assembly of its z6 tiles' mids. A paused target
   is not put, nor noted done.

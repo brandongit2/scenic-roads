@@ -800,7 +800,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     }
     trace("remainders");
     // 1b. Remainders: what of a folder's `of` no outline takes, to its regions.
-    remainders(folder, ctx, data, &mut made, &others, out, &mut held, &mut needs);
+    remainders(folder, ctx, data, &whole, &mut made, &others, out, &mut held, &mut needs);
     trace("water");
     // 2. Water, in waves by what waters name whole.
     let wdeps = |id: &str| -> Vec<String> {
@@ -1396,15 +1396,18 @@ fn make_land(
 /// the deepest folder first (an outer one's `of` then holds nothing an inner one gave): in each cell
 /// of its `of`, the land and big lakes no region takes (every region's land and lakes as made, every
 /// region without water as stored) go to the folder's regions with land: to each the pieces inside
-/// its part in `by` (in its id's order, a piece only once), the rest to the nearest of them (their
-/// land and lakes) split at the median line on a grid of `step_m`; each piece the region's land or
-/// lake as the coastline's land has it. A folder whose regions can't all take it (one without
-/// water, one held, a `by` naming none of them) holds its regions, saying why.
+/// its part in `by`, the rest to the nearest of them (their land and lakes) split at the median line
+/// on a grid of `step_m`; each piece the region's land or lake as the coastline's land has it. A
+/// folder whose regions can't all take it (one without water, one held, a `by` naming none of them),
+/// two of whose `by` parts overlap there past `HAIR_KM2`, or whose `of` a held region's outline may
+/// reach (what that region would take can't be told) holds its regions, saying why. Each remainder
+/// is kept as a piece (task #897), by the folder's whole key.
 #[allow(clippy::too_many_arguments)]
 fn remainders(
     folder: &Folder,
     ctx: &super::resolve::Context,
     data: &super::data::Datasets,
+    whole: &str,
     made: &mut BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
     out: &mut Outcome,
@@ -1417,7 +1420,6 @@ fn remainders(
     progress.begin(Step::Remainders, order.len());
     for (dir, (path, rem)) in order {
         let _one = progress.one_on_drop();
-        let r = rem.as_region();
         let members: Vec<String> =
             folder.members(dir, "").into_iter().filter(|m| !folder.regions[m].1.is_waters()).collect();
         let why = if members.is_empty() {
@@ -1433,15 +1435,32 @@ fn remainders(
                 .map(|k| format!("by.{k} names no region of the folder with land"))
         };
         let pieces = match why {
-            Some(w) => Err(vec![Problem {
-                warning: false,
-                check: "rg-ref",
-                about: vec![dir.clone()],
-                found: Vec::new(),
-                files: vec![path.clone()],
-                message: format!("{path}: {w}"),
-            }]),
-            None => remainder_pieces(path, rem, &r, &members, folder, ctx, data, made, others, out, needs),
+            Some(w) => Err(vec![remainder_problem(dir, path, Vec::new(), format!("{path}: {w}"))]),
+            None => {
+                let make = || {
+                    let mut more = BTreeSet::new();
+                    let v = remainder_pieces(dir, path, rem, &members, folder, ctx, data, made, others, out, held, &mut more);
+                    (v, more.into_iter().collect::<Vec<Id>>())
+                };
+                let (v, more) = match ctx.kept {
+                    None => make(),
+                    Some(k) => k
+                        .get_or_make(
+                            super::kept::REMAINDER,
+                            &format!("{whole} {path}"),
+                            make,
+                            |(v, more), p| {
+                                super::kept::result(p, v, put_pieces);
+                                super::kept::ids(p, more);
+                            },
+                            |g| Ok((super::kept::get_result(g, get_pieces)?, super::kept::get_ids(g)?)),
+                        )
+                        // (Given up once a pause came: its regions held, nothing said.)
+                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+                };
+                needs.extend(more);
+                v
+            }
         };
         match pieces {
             Ok(v) => {
@@ -1470,12 +1489,105 @@ fn remainders(
     }
 }
 
+/// A remainder's problem (`rg-ref`), about its folder.
+fn remainder_problem(dir: &str, path: &str, found: Vec<String>, message: String) -> Problem {
+    Problem {
+        warning: false,
+        check: "rg-ref",
+        about: vec![dir.to_string()],
+        found,
+        files: vec![path.to_string()],
+        message,
+    }
+}
+
+/// A remainder's pieces as kept (`remainders`).
+fn put_pieces(p: &mut jobrt::resume_log::Put, v: &Vec<(String, Cell, Area, Area)>) {
+    p.u64(v.len() as u64);
+    for (m, c, land, lakes) in v {
+        p.bytes(m.as_bytes());
+        p.u64(c.0 as u64);
+        p.u64(c.1 as u64);
+        super::kept::area(p, land);
+        super::kept::area(p, lakes);
+    }
+}
+
+fn get_pieces(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Vec<(String, Cell, Area, Area)>> {
+    (0..g.count(40)?)
+        .map(|_| {
+            let m = String::from_utf8(g.bytes()?)?;
+            let c = (g.u64()? as i64, g.u64()? as i64);
+            Ok((m, c, super::kept::get_area(g)?, super::kept::get_area(g)?))
+        })
+        .collect()
+}
+
+/// The cells region `r`'s outline may reach, told without resolving it: its relations' boxes (the
+/// pass's outlines), its boxes, the regions and groups it names; None where it names anything else
+/// (a shape, a zone, the Earth: it may reach anywhere).
+fn outline_reach(
+    r: &Region,
+    folder: &Folder,
+    ctx: &super::resolve::Context,
+    seen: &mut BTreeSet<String>,
+) -> Option<BTreeSet<Cell>> {
+    if !seen.insert(r.id.clone()) {
+        return Some(BTreeSet::new());
+    }
+    let mut out = BTreeSet::new();
+    for p in &r.outline {
+        out.extend(part_reach(p, folder, ctx, seen)?);
+    }
+    Some(out)
+}
+
+fn part_reach(
+    p: &Part,
+    folder: &Folder,
+    ctx: &super::resolve::Context,
+    seen: &mut BTreeSet<String>,
+) -> Option<BTreeSet<Cell>> {
+    let region = |d: &str, seen: &mut BTreeSet<String>| {
+        folder.regions.get(d).and_then(|(_, x)| outline_reach(x, folder, ctx, seen))
+    };
+    match p {
+        Part::Osm(id) => {
+            let b = ctx.outlines?.by_id(*id)?.bbox;
+            Some(cells_of([b[0] as i64, b[1] as i64, b[2] as i64 + 1, b[3] as i64 + 1]).collect())
+        }
+        Part::Box(b, _) => Some(cells_of(*b).collect()),
+        Part::Union(ps) => {
+            let mut out = BTreeSet::new();
+            for q in ps {
+                out.extend(part_reach(q, folder, ctx, seen)?);
+            }
+            Some(out)
+        }
+        Part::Intersect(ps) => {
+            let known: Vec<BTreeSet<Cell>> = ps.iter().filter_map(|q| part_reach(q, folder, ctx, seen)).collect();
+            known.into_iter().reduce(|a, b| a.intersection(&b).copied().collect())
+        }
+        Part::Minus(ps) => part_reach(&ps[0], folder, ctx, seen),
+        Part::Nearest { of, .. } | Part::Cut { of, .. } => part_reach(of, folder, ctx, seen),
+        Part::Land(d) | Part::Region(d) => region(d, seen),
+        Part::Group(g) => {
+            let mut out = BTreeSet::new();
+            for m in folder.members(g, "") {
+                out.extend(region(&m, seen)?);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// A remainder's pieces (`remainders`): (the region, the cell, its land, its lakes).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn remainder_pieces(
+    dir: &str,
     path: &str,
     rem: &super::file::Remainder,
-    r: &Region,
     members: &[String],
     folder: &Folder,
     ctx: &super::resolve::Context,
@@ -1483,50 +1595,109 @@ fn remainder_pieces(
     made: &BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
+    held: &BTreeSet<String>,
     needs: &mut BTreeSet<Id>,
 ) -> Result<Vec<(String, Cell, Area, Area)>, Vec<Problem>> {
-    let mut env = env_of(path, r, false, folder, ctx, made, others, out, needs)?;
+    let r = rem.as_region();
+    let mut env = env_of(path, &r, false, folder, ctx, made, others, out, needs)?;
     for m in members {
         env.leaves.insert(format!("region:{m}"), Src::Refs(vec![m.clone()], true));
     }
-    let cells: Vec<Cell> = support(&rem.of, &env).into_iter().collect();
+    let cells: BTreeSet<Cell> = support(&rem.of, &env);
+    // (A held region whose outline may reach the remainder's cells: what it would have taken is
+    // free here, and would go to the folder's regions.)
+    for h in held.iter().filter(|h| !members.contains(h)) {
+        let Some((_, hr)) = folder.regions.get(h) else { continue };
+        let meets = outline_reach(hr, folder, ctx, &mut BTreeSet::new()).is_none_or(|c| !c.is_disjoint(&cells));
+        if meets {
+            return Err(vec![remainder_problem(
+                dir,
+                path,
+                vec![h.clone()],
+                format!("{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"),
+            )]);
+        }
+    }
+    let cells: Vec<Cell> = cells.into_iter().collect();
     ctx.progress.item(cells.len());
-    let got: Vec<Result<Vec<(String, Cell, Area, Area)>, Problem>> = pace::par_map(cells, |c| {
+    type Got = (Vec<(String, Cell, Area, Area)>, Vec<((String, String), f64)>);
+    let got: Vec<Result<Got, Problem>> = pace::par_map(cells, |c| {
         let _part = ctx.progress.part_on_drop();
         geom::set_label(format!("the remainder of {path}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
-        let of = eval(&rem.of, c, &env, r, path)?;
+        let of = eval(&rem.of, c, &env, &r, path)?;
         if of.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let (land, lakes) = land_and_lakes(data, c);
-        let taken: Vec<Area> = made
+        let taken: Vec<&Area> = made
             .values()
             .flat_map(|m| [m.land.cells.get(&c), m.lakes.cells.get(&c)])
             .chain(others.values().map(|t| t.cells.get(&c)))
             .flatten()
-            .cloned()
             .collect();
-        let free = of.intersect(&land.union(&lakes)).minus(&geom::union_all(&taken));
+        let free = of.intersect(&land.union(&lakes)).minus(&geom::union_all_of(&taken));
         if free.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
-        let mut given: Vec<(String, Area)> = Vec::new();
+        // Each region's part in `by`, inside what's free; two overlapping there are said.
+        let mut parts: Vec<(String, Area)> = Vec::new();
         for (m, p) in &rem.by {
-            let left = free.minus(&geom::union_all(&given.iter().map(|g| g.1.clone()).collect::<Vec<_>>()));
-            let a = eval(p, c, &env, r, path)?.intersect(&left);
+            let a = eval(p, c, &env, &r, path)?.intersect(&free);
             if !a.is_empty() {
-                given.push((m.clone(), a));
+                parts.push((m.clone(), a));
             }
         }
-        let left = free.minus(&geom::union_all(&given.iter().map(|g| g.1.clone()).collect::<Vec<_>>()));
-        if !left.is_empty() {
-            given.extend(median(&left, c, members, &env, r, path, rem.step_m)?);
+        let mut over = Vec::new();
+        for i in 0..parts.len() {
+            for j in i + 1..parts.len() {
+                let x = geom::area_km2(&parts[i].1.intersect(&parts[j].1));
+                if x > 0.0 {
+                    over.push(((parts[i].0.clone(), parts[j].0.clone()), x));
+                }
+            }
         }
-        Ok(given.into_iter().map(|(m, a)| (m, c, a.intersect(&land), a.intersect(&lakes))).collect())
+        // (A piece once: what an earlier part, in id order, holds isn't the next's; an overlap past
+        // HAIR_KM2 is said below, one under it the first's.)
+        let mut given: Vec<(String, Area)> = Vec::new();
+        let mut so_far = Area::default();
+        for (m, a) in parts {
+            let a = a.minus(&so_far);
+            if !a.is_empty() {
+                so_far = so_far.union(&a);
+                given.push((m, a));
+            }
+        }
+        let left = free.minus(&so_far);
+        if !left.is_empty() {
+            given.extend(median(&left, c, members, &env, &r, path, rem.step_m)?);
+        }
+        Ok((given.into_iter().map(|(m, a)| (m, c, a.intersect(&land), a.intersect(&lakes))).collect(), over))
     });
     let mut v = Vec::new();
+    let mut over: BTreeMap<(String, String), f64> = BTreeMap::new();
     for g in got {
-        v.extend(g.map_err(|p| vec![p])?);
+        let (p, o) = g.map_err(|p| vec![p])?;
+        v.extend(p);
+        for (k, x) in o {
+            *over.entry(k).or_default() += x;
+        }
+    }
+    let ps: Vec<Problem> = over
+        .into_iter()
+        .filter(|(_, x)| *x > HAIR_KM2)
+        .map(|((a, b), x)| {
+            remainder_problem(
+                dir,
+                path,
+                vec![a.clone(), b.clone()],
+                format!(
+                    "{path}: by.{a} and by.{b} overlap by {x:.2} km² of the remainder (past {HAIR_KM2} km²): a piece is one region's"
+                ),
+            )
+        })
+        .collect();
+    if !ps.is_empty() {
+        return Err(ps);
     }
     Ok(v)
 }

@@ -627,23 +627,28 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 
 | Field | Type | |
 |---|---|---|
-| `of` | a part: the place (`osm:<relation>`), naming no region, group or line | required |
+| `of` | a part: the place (`osm:<relation>`), naming no region, land, group, line or `rest` | required |
 | `[by]` | region id = a part: the official division's piece of each region of the folder that has one (a national boundary file's polygon, its lines run into the lake) | optional |
 | `step` | the median line's grid, as a `nearest`'s (100 m to 20 km) | optional, default `1 km` |
 
-Unknown fields are an error (`rg-part`, `rg-toml`). After every region's land is made and before any
-water, the folders' remainders are taken in turn, the deepest folder first (an outer place's then
-holds nothing an inner one gave), cell by cell: the land and big lakes of `of` that no region takes
-(every region's land and lakes as made, every region without water as stored) go to the folder's
-regions with land (every region under the folder but its waters regions): to each region in `by`
-the pieces inside its part (in their ids' order, a piece only once); the rest to the nearest region
-(its land and lakes), split at the median line as a `nearest` is on a grid of `step`. Each piece is
-its region's land or lake as the coastline's land has it. So the declaration names no member and no
-neighbour: one region's outline changing moves the remainder's lines with it, and a new region of the
-folder takes its share. A `land:` or `region:` in an outline reads a region's land before the
-remainders. Every region of the folder must have a `water` key, none be held and every `by` name one
-of them; else each is held, the file named (`rg-ref`). Without `by` the whole remainder is split at
-the median line: the file's comment says why (no official source draws the lines there).
+An unknown field is `rg-toml`; a bad part, `by` id or step `rg-part`. After every region's land is made
+and before any water, the folders' remainders are taken in turn, the deepest folder first (an outer
+place's then holds nothing an inner one gave), cell by cell: the land and big lakes of `of` that no
+region takes (every region's land and lakes as made, every region without water as stored) go to the
+folder's regions with land (every region under the folder but its waters regions): to each region in
+`by` the pieces inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over
+the remainder, hold the folder naming both, `rg-ref`; under it the piece is the first's in id order);
+the rest to the nearest region (its land and lakes), split at the median line as a `nearest` is on a
+grid of `step`. Each piece is its region's land or lake as the coastline's land has it. So the
+declaration names no member and no neighbour: one region's outline changing moves the remainder's lines
+with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline reads a
+region's land before the remainders. The folder must have a region with land, every region of it a
+`water` key, none be held and every `by` name one of them; and no held region elsewhere may reach the
+remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
+naming anything else may reach anywhere: what it would take is free and can't be told). Else each is
+held, the file named (`rg-ref`). A paused check keeps each remainder as a piece (task #897,
+docs/pool.md), by the folder's whole key. Without `by` the whole remainder is split at the median line:
+the file's comment says why (no official source draws the lines there).
 
 ```toml
 # canada/provinces/ontario/_remainder.toml: the Great Lakes' Canadian water, by the province's own lines
@@ -1028,7 +1033,7 @@ All errors; ids `rg-<check>.<hash16>`. `rg-cover`'s ids are its regions' and its
 | `rg-shape` | a GeoJSON missing, not a (Multi)Polygon, or invalid |
 | `rg-line` | a line under two points, ways that don't join, a cut line crossing itself |
 | `rg-cut` | a cut line ending inside a piece |
-| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too); two waters regions in a folder a hand-out gives to as one member; a remainder whose folder's regions can't all take it (one without water or held, a `by` naming none of them) |
+| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too); two waters regions in a folder a hand-out gives to as one member; a remainder whose folder's regions can't all take it (no region of the folder has land, one without water or held, a `by` naming none of them, two `by` parts overlapping in it past `HAIR_KM2`, a held region whose outline may reach it) |
 | `rg-loop` | a loop of `region:` references |
 | `rg-empty` | a result with no area (but a waters region in a folder another region hands out to) |
 | `rg-pin` | no OSM pin, or one that isn't a date |

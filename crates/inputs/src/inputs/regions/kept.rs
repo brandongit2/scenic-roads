@@ -1,7 +1,7 @@
 //! The regions' check's resolutions kept as pieces (task #897; docs/pool.md §7.2): each region
 //! without water resolved (`resolve::resolve_one`, by its memo key), and each region with water's
-//! land and water (`tiles`, by the folder's whole key), kept as it's made in the job's scratch
-//! (jobrt::resume_log::Pieces), each a safe point. A check resumed after a pause takes what its
+//! land, the folders' remainders and its water (`tiles`, by the folder's whole key), kept as it's
+//! made in the job's scratch (jobrt::resume_log::Pieces), each a safe point. A check resumed after a pause takes what its
 //! last kept, by the same keys (a digest of everything a resolution reads), so it resolves to the
 //! same geometry and holds the same files.
 //!
@@ -24,6 +24,8 @@ pub const FORMAT: u32 = 2;
 pub const RESOLVED: u8 = 1;
 pub const LAND: u8 = 2;
 pub const WATER: u8 = 3;
+/// A folder's remainder (`tiles::remainders`), by the folder's whole key and its file.
+pub const REMAINDER: u8 = 4;
 
 /// The pieces, and what this run made of them (a check resolves several versions, each region's
 /// key the same where it reads the same).
