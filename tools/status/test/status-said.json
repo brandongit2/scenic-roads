@@ -112,6 +112,7 @@
         "compress_mb": 1024,
         "cool_mb": 0,
         "cool_until": 0,
+        "dip_mb": 0,
         "floor_mb": 6144,
         "held_mb": 9216,
         "others_grown_mb": 0,

@@ -14509,10 +14509,14 @@ mod tests {
                 record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
             }
         };
-        // (A sample of the Mac as set, then the agent's loop.)
+        // (A sample of the Mac as set, each a minute and a second after the last (its own mean
+        // over memguard::MEAN_OVER), then the agent's loop.)
+        let (t0, n) = (Instant::now(), std::cell::Cell::new(0u32));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>, trouble: bool| {
             a.sampler.set_test(Some(held), Some(trouble));
             a.sampler.set_test_idle(a.test_idle_mb());
+            n.set(n.get() + 1);
+            a.sampler.set_test_at(Some(t0 + (memguard::MEAN_OVER + Duration::from_secs(1)) * n.get()));
             a.sampler.tick();
             for k in 0..SLOTS {
                 a.tend(k, &cond, Some(&nas), 0).unwrap();
@@ -14635,9 +14639,13 @@ mod tests {
                 record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
             }
         };
+        // (Each sample a minute and a second after the last: its own mean over memguard::MEAN_OVER.)
+        let (t0, n) = (Instant::now(), std::cell::Cell::new(0u32));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>| {
             a.sampler.set_test(Some(held), Some(false));
             a.sampler.set_test_idle(a.test_idle_mb());
+            n.set(n.get() + 1);
+            a.sampler.set_test_at(Some(t0 + (memguard::MEAN_OVER + Duration::from_secs(1)) * n.get()));
             a.sampler.tick();
             for k in 0..SLOTS {
                 a.tend(k, &cond, Some(&nas), 0).unwrap();
