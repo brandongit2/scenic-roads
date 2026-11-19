@@ -699,6 +699,42 @@ pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![terrain::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
 }
 
+/// What a lake-depth z6 tile's key reads of the terrain by its packs, its cheap test
+/// (buildstore::asked's `geo`): the hi packs of it and its ring (terrain::depth::lakes::ring), by
+/// content, hashed. The same packs, the same answers to what its run asked of them.
+pub fn lake_ring_geo(m: &BTreeMap<String, String>, t: (u32, u32)) -> String {
+    let lines: Vec<String> = terrain::depth::lakes::ring(t)
+        .into_iter()
+        .map(|(a, b)| {
+            let l = format!("layers/terrain/hi/6-{a}-{b}");
+            format!("{l}={}", m.get(&l).map_or("-", String::as_str))
+        })
+        .collect();
+    store::naming::hash16(lines.join("\n").as_bytes())
+}
+
+/// The terrain a lake-depth z6 tile reads: the z12 tiles its small lakes' slope read, as its run
+/// recorded them (terrain::depth::lakes::tile_question, buildstore::asked), by their XXH3 in the hi
+/// packs' indexes now: its record's line while those answer the same, so a change elsewhere in
+/// its tile's and its ring's hi packs moves no key; its packs' `lake_ring_geo` while it has no
+/// record. None while one of those packs' indexes can't be read.
+pub fn lake_tiles(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    use terrain::depth::lakes::{question_tile, ring, tile_answer, TERRAIN_Z};
+    let u = TileId::parse(t).filter(|u| u.z == 6)?;
+    // (Every pack its record's tiles can be in read, so each is answered: none taken for flipped
+    // while its index is only not read yet.)
+    for (a, b) in ring((u.x, u.y)) {
+        if x.m.contains_key(&format!("layers/terrain/hi/6-{a}-{b}")) {
+            x.tiles.hash(x.m, TERRAIN_Z, a << (TERRAIN_Z - 6), b << (TERRAIN_Z - 6)).ok()?;
+        }
+    }
+    let reask = |q: &str| {
+        let (a, b) = question_tile(q)?;
+        x.tiles.hash(x.m, TERRAIN_Z, a, b).ok().map(tile_answer)
+    };
+    Some(vec![target_asked("lake-depth", t, lake_ring_geo(x.m, (u.x, u.y)), x, &reask)?])
+}
+
 /// The mids of a z3 tile's z6 tiles near the coverage (`buildstore::coverage::coverage_tiles`) of the terrain or
 /// slope (`mid`: its mid's logical name), "6/x/y=<content>" ("-" for one not made).
 fn near_mids(t: &str, x: &KeyCtx, mid: fn(u32, u32) -> String) -> Option<Vec<String>> {

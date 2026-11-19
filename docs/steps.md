@@ -371,8 +371,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
     where the land is flat or missing; the same bowl at z14, a grid a z10 tile.
   - Its key: the declarations it makes (their versions pin the zips), the basemap whole (a lake
     goes on past the tile; a new basemap makes them all again, and a depth target only where a
-    pack's bytes changed) and the terrain hi packs of the tile and the 8 around it, which it waits
-    for. A depth target waits for the packs it reads (its tile and ring; an assembly's z6 tiles and
+    pack's bytes changed) and the z12 tiles of the terrain its small lakes read (§12), in the hi
+    packs of the tile and the 8 around it, which it waits for. A depth target waits for the packs it reads (its tile and ring; an assembly's z6 tiles and
     the ring its blocks' margin reaches), its key naming them by content. Until a tile's
     lake-depth target is first made, GC keeps the depth hi packs of it and its ring
     (`build::depth_kept`): its packs may yet give them depth targets, as the indexes of the
@@ -1009,8 +1009,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   remakes the z6 tiles whose grids of that zoom reach it, and one at a zoom no grid there is none;
   and the lake-depth packs of its tile and the 8 around it by content.
 - **lake-depth (a z6 tile):** `depth::lakes::V`, the pins of the declarations it makes, the water
-  source's pin (the latest basemap and the lake fill, whole) and the terrain hi packs of the tile
-  and the 8 around it by content.
+  source's pin (the latest basemap and the lake fill, whole) and the terrain's z12 tiles its small
+  lakes' slope read, as its run asked them (task #1474: `work/asked/lake-depth/6-x-y`, each tile's
+  question answered by its XXH3 in its hi pack's index, buildstore::asked; `idents::lake_tiles`):
+  the line it ran under while those answer the same, so a change elsewhere in the hi packs of the
+  tile and the 8 around it moves no key; those packs by content while it has no record.
 - **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it with its
   blocks' 32-px margin at z3, the widest (id and digest of declaration and index), the digest of
   its z3–8 water as the depth reads it, rivers included ("depth 3/x/y", worked out by the

@@ -743,8 +743,9 @@ fn sh_deep(t: &str) -> Vec<String> {
     named(pz, at(t, 6).into_iter().flat_map(|(x, y)| (0..s * s).map(move |i| (x * s + i % s, y * s + i / s))))
 }
 
-/// lake-depth 6/x/y: the terrain hi packs of it and the ring of 8 around it (its small lakes'
-/// slope, read up to 160 m past a lake reaching its edge).
+/// lake-depth 6/x/y: the terrain hi packs of it and the ring of 8 around it, which its small lakes'
+/// slope can read (up to 160 m past a lake reaching its edge); keyed on the tiles it read in them
+/// (idents::lake_tiles).
 fn ld_hi(t: &str) -> Vec<String> {
     named(6, at(t, 6).into_iter().flat_map(|(x, y)| terrain::depth::lakes::ring((x, y))))
 }
@@ -1286,7 +1287,7 @@ pub const TABLE: [Step; 65] = [
         reads: &[
             In { name: "lake-sources", of: idents::lake_sources },
             In { name: "water-source", of: idents::water_source },
-            Of { step: "terrain-hi", of: ld_hi, grain: Outputs },
+            Of { step: "terrain-hi", of: ld_hi, grain: Grain::Tiles(idents::lake_tiles) },
         ],
         ..step(
             "depth",
@@ -2041,10 +2042,12 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         }),
         "slope-hi" if tile.is_some_and(|u| u.z == 6) => tile
             .is_some_and(|t| l == terrain::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
-        // (Its sources' packs.)
-        "lake-depth" => {
-            tile.is_some_and(|t| t.z == 6 && terrain::depth::lakes::tile_of(l).is_some_and(|f| f.1 == (t.x, t.y)))
-        }
+        // (Its sources' packs and what it asked of the terrain.)
+        "lake-depth" => tile.is_some_and(|t| {
+            t.z == 6
+                && (terrain::depth::lakes::tile_of(l).is_some_and(|f| f.1 == (t.x, t.y))
+                    || l == buildstore::asked::target_logical(step, target))
+        }),
         // (A z10 tile's deep pack, a retired one too; slope's and its deep mid.)
         "terrain-deep" => tile.is_some_and(|t| {
             t.z == terrain::terrain_deep::PACK_Z
@@ -2307,8 +2310,9 @@ fn w_depth(l: &str, _: bool) -> bool {
 }
 
 /// A z6 tile's lake-depth packs (terrain::depth::lakes), a source's each.
+/// A z6 tile's lake-depth packs and what it asked of the terrain.
 fn w_lake_depth(l: &str, _: bool) -> bool {
-    terrain::depth::lakes::tile_of(l).is_some()
+    terrain::depth::lakes::tile_of(l).is_some() || asked_of(l, "lake-depth")
 }
 
 /// A z3 tile's depth, class and shading lo packs.

@@ -424,18 +424,24 @@ fn the_small_lakes_resume_where_a_stop_left_them() {
     }
     let t = (19, 22);
     let water = Ponds(AtomicUsize::new(0));
-    let run = |pieces: &mut Pieces| -> Result<Vec<(String, Vec<u8>)>> {
+    // (Its grids and the terrain tiles it read: task #1474, those kept with each piece.)
+    type Ran = (Vec<(String, Vec<u8>)>, std::collections::BTreeSet<(u32, u32)>);
+    let run = |pieces: &mut Pieces| -> Result<Ran> {
         let mut v = Vec::new();
-        let mut counts = Counts::new();
+        let (mut counts, mut reads) = (Counts::new(), Default::default());
         let mut sink = |g: Tif| {
             v.push((g.file, g.bytes));
             Ok(())
         };
-        small_grids(&water, &[], &Plane { flat: true }, t, "small", pieces, &mut counts, &mut sink, &|_, _| {})?;
-        Ok(v)
+        let plane = Plane { flat: true };
+        small_grids(&water, &[], &plane, t, "small", pieces, &mut counts, &mut reads, &mut sink, &|_, _| {})?;
+        Ok((v, reads))
     };
     let whole = run(&mut Pieces::none()).unwrap();
-    assert_eq!(whole.len(), 16);
+    assert_eq!(whole.0.len(), 16);
+    // (Each pond's slope read from the z12 tile under it: 16 tiles, none of the rest.)
+    assert_eq!(whole.1.len(), 16, "{:?}", whole.1);
+    assert!(whole.1.iter().all(|&(x, y)| x % 16 == 1 && y % 16 == 1), "{:?}", whole.1);
     let all = water.0.swap(0, Relaxed);
     let d = tempfile::tempdir().unwrap();
     let [a, b] = ["a/scratch/lake-depth", "b/scratch-3/lake-depth"].map(|s| d.path().join(s));

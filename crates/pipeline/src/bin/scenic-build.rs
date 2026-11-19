@@ -5224,8 +5224,10 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
             .map(|(id, u, _)| lk::logical(id, u))
             .collect();
         if !targets.contains(&(t.x, t.y)) {
+            let asked = [buildstore::asked::target_logical(STEP, &t.slash())];
             let n = run_drop(STEP, &t.slash(), || {
                 let n = terrain::layers::drop(out, &had);
+                terrain::layers::drop(out, &asked);
                 out.save()?;
                 Ok(n)
             })?;
@@ -5234,6 +5236,22 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
         }
         jobrt::control::on_grant(|| -> Result<()> {
             let c = cost_start(STEP, &t.slash());
+            // (What it asks of the terrain, the z12 tiles its small lakes' slope reads by their
+            // XXH3, recorded with its packs: its key moves only once one of those does,
+            // pipeline::agent::idents::lake_tiles. Its line worked out as the plan did, from the
+            // record before it; an index that can't be read fails the run, not taken for a change.)
+            let hi = lk::HiPacks::new(out.root(), &out.manifest);
+            let unread = std::cell::RefCell::new(None);
+            let reask = |q: &str| {
+                let (x, y) = lk::question_tile(q)?;
+                hi.hash(x, y).map_err(|e| *unread.borrow_mut() = Some(e)).ok().map(lk::tile_answer)
+            };
+            let geo = pipeline::agent::idents::lake_ring_geo(&out.manifest, (t.x, t.y));
+            let asked = buildstore::asked::Run::start_target(out, STEP, &t.slash(), &cov, geo, &reask)?;
+            if let Some(e) = unread.take() {
+                return Err(e.context("the terrain its last run read"));
+            }
+            let mut reads = std::collections::BTreeSet::new();
             let b = roadcore::geo::tile_box(6, t.x, t.y);
             // (HydroLAKES of the tile and a small margin, by the folder it's read from, once.)
             let mut lakes: std::collections::BTreeMap<String, Vec<(u64, lk::Rings)>> = Default::default();
@@ -5300,7 +5318,6 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                     Method::LandSlope { .. } => {
                         let _p = phase("estimating the small lakes");
                         let water = water.as_ref().context("no basemap water")?;
-                        let terrain = lk::HiPacks::new(out.root(), &out.manifest);
                         let mut keeps = std::mem::replace(&mut pieces, jobrt::resume_log::Pieces::none());
                         let mut sink = |g: lk::Tif| -> Result<()> {
                             grids.push(g);
@@ -5309,11 +5326,12 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                         lk::small_grids(
                             water,
                             hl,
-                            &terrain,
+                            &hi,
                             (t.x, t.y),
                             id,
                             &mut keeps,
                             &mut counts,
+                            &mut reads,
                             &mut sink,
                             &|d, n| jobrt::jobs::report(d, n, "z10 tiles"),
                         )
@@ -5332,6 +5350,8 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                 eprintln!("{STEP} {} {id}: {n} grids; {counts:?}", t.slash());
             }
             let dropped = terrain::layers::drop(out, &gone);
+            let answers = hi.answers(&reads)?;
+            asked.put(out, answers)?;
             out.save()?;
             kept.into_iter().for_each(jobrt::resume_log::Pieces::finish);
             eprintln!("{STEP} {}: {dropped} packs dropped", t.slash());

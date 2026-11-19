@@ -16,7 +16,8 @@
 //!
 //! Each source's grids of a z6 tile are one pack (`pack`: a tar of their GeoTIFFs, its index the
 //! first member), `logical(id, tile)` in the manifest, none where it has no lake. The depth reads
-//! them as that source's grids (crate::depth::grids::DepthSource::estimated).
+//! them as that source's grids (crate::depth::grids::DepthSource::estimated). With them a run puts
+//! its record of the terrain's z12 tiles it read (`tile_question`), its key's terrain line.
 
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
@@ -26,8 +27,10 @@ use std::collections::{BTreeMap, HashMap};
 // (task #916 step 6d: the input check reads them), kept at these paths.
 pub use inputs::inputs::estimate::{Method, FORMAT, GLOBATHY_Z, SMALL_Z};
 
-/// Bumped with any change to the grids made from the same inputs.
-pub const V: u32 = 1;
+/// Bumped with any change to the grids made from the same inputs, or to what a run keeps of a
+/// piece (`small_grids`: the resume log's identity names it). (2: a piece keeps the terrain tiles
+/// it read, task #1474.)
+pub const V: u32 = 2;
 /// The packs' logical names' prefix: `work/lake-depth/<source id>/6-x-y`.
 pub const PREFIX: &str = "work/lake-depth/";
 
@@ -560,6 +563,39 @@ pub trait Terrain {
     fn tile(&self, x: u32, y: u32) -> Result<Option<std::sync::Arc<Vec<f32>>>>;
 }
 
+/// What a lake-depth run asks of the terrain, recorded with its packs (buildstore::asked's
+/// `Record::also`): each z12 tile its small lakes' slope read (`small_grids`' `reads`), answered by
+/// its XXH3 in its hi pack's index (`tile_answer`). Its key's terrain line is that record's line
+/// while those answers stay (pipeline's agent::idents::lake_tiles): a change elsewhere in its
+/// tile's and its ring's hi packs moves no key.
+pub fn tile_question(t: (u32, u32)) -> String {
+    format!("terrain {TERRAIN_Z}/{}/{}", t.0, t.1)
+}
+
+/// The z12 tile `tile_question` asks of; None for a question of another form.
+pub fn question_tile(q: &str) -> Option<(u32, u32)> {
+    let u = codecs::tile::TileId::parse(q.strip_prefix("terrain ")?).filter(|u| u.z == TERRAIN_Z)?;
+    (q == tile_question((u.x, u.y))).then_some((u.x, u.y))
+}
+
+/// A tile's answer: its XXH3 in its pack's index, "-" for one no pack holds.
+pub fn tile_answer(h: Option<u64>) -> String {
+    h.map_or_else(|| "-".to_string(), |h| format!("{h:016x}"))
+}
+
+/// A `Terrain` keeping which tiles were asked of it.
+struct Reading<'a> {
+    terrain: &'a dyn Terrain,
+    read: std::sync::Mutex<std::collections::BTreeSet<(u32, u32)>>,
+}
+
+impl Terrain for Reading<'_> {
+    fn tile(&self, x: u32, y: u32) -> Result<Option<std::sync::Arc<Vec<f32>>>> {
+        self.read.lock().unwrap().insert((x, y));
+        self.terrain.tile(x, y)
+    }
+}
+
 /// The terrain z12 tiles of the hi packs (`layers/terrain/hi/6-x-y`, z9–12) under the project root.
 pub struct HiPacks {
     root: store::nasfs::NasRoot,
@@ -603,6 +639,17 @@ impl HiPacks {
         };
         self.open.lock().unwrap().insert(t, p.clone());
         Ok(p)
+    }
+
+    /// Z12 tile (x, y)'s XXH3 in its pack's index (None: no pack holds it).
+    pub fn hash(&self, x: u32, y: u32) -> Result<Option<u64>> {
+        let k = TERRAIN_Z - 6;
+        Ok(self.pack((x >> k, y >> k))?.and_then(|p| p.1.find(TERRAIN_Z, x, y)).map(|e| e.hash))
+    }
+
+    /// The answers to `tile_question`s of `tiles` (`tile_answer`), as a run records them.
+    pub fn answers(&self, tiles: &std::collections::BTreeSet<(u32, u32)>) -> Result<Vec<(String, String)>> {
+        tiles.iter().map(|&(x, y)| Ok((tile_question((x, y)), tile_answer(self.hash(x, y)?)))).collect()
     }
 }
 
@@ -952,9 +999,10 @@ pub fn small_lakes(
 /// The small lakes' grids of z6 tile `t`, a z10 tile at a time (`small_lakes`, `small_grid`): its
 /// z14 tiles and a ring of one read from `water`, HydroLAKES' lakes `hl` (lon/lat) left out; each
 /// grid encoded as depth source `id`'s (`Tif::of`: 64 MB of floats each, a z6 tile has 256) and
-/// given to `sink` as it's made, `progress` told each z10 tile done. Each z10 tile is a piece kept
-/// in `pieces` (task #1414: jobrt::resume_log, `(10, x, y)`, its grid or none; a safe point once
-/// kept): a resumed run takes those its last kept, counting in `counts` only those it makes.
+/// given to `sink` as it's made, `progress` told each z10 tile done, every z12 tile asked of
+/// `terrain` put in `reads`. Each z10 tile is a piece kept in `pieces` (task #1414:
+/// jobrt::resume_log, `(10, x, y)`: the terrain tiles it read, then its grid or none; a safe point
+/// once kept): a resumed run takes those its last kept, counting in `counts` only those it makes.
 #[allow(clippy::too_many_arguments)]
 pub fn small_grids(
     water: &dyn codecs::terrain_water::WaterSource,
@@ -964,6 +1012,7 @@ pub fn small_grids(
     id: &str,
     pieces: &mut jobrt::resume_log::Pieces,
     counts: &mut Counts,
+    reads: &mut std::collections::BTreeSet<(u32, u32)>,
     sink: &mut dyn FnMut(Tif) -> Result<()>,
     progress: &dyn Fn(u64, u64),
 ) -> Result<()> {
@@ -985,11 +1034,24 @@ pub fn small_grids(
             let polys = water.depth_polys_many(&tiles)?;
             let read: Vec<((u32, u32), Vec<codecs::terrain_water::Poly>)> =
                 tiles.iter().zip(polys).map(|(&(_, x, y), p)| ((x, y), p)).collect();
-            let lakes = small_lakes(&read, &hl, terrain, (px, py), counts)?;
+            let reading = Reading { terrain, read: Default::default() };
+            let lakes = small_lakes(&read, &hl, &reading, (px, py), counts)?;
             let tif = small_grid(&lakes, (px, py)).map(|c| Tif::of(id, &c)).transpose()?;
-            Ok(Tif::put(tif.as_ref()))
+            let tiles = reading.read.into_inner().unwrap();
+            let mut p = jobrt::resume_log::Put::default();
+            p.u64(tiles.len() as u64);
+            for (x, y) in tiles {
+                p.u32(x);
+                p.u32(y);
+            }
+            p.0.extend(Tif::put(tif.as_ref()));
+            Ok(p.0)
         })?;
-        if let Some(g) = Tif::get(&kept)? {
+        let mut g = jobrt::resume_log::Get(&kept);
+        for _ in 0..g.count(8)? {
+            reads.insert((g.u32()?, g.u32()?));
+        }
+        if let Some(g) = Tif::get(g.0)? {
             sink(g)?;
         }
         progress(i as u64 + 1, tens.len() as u64);

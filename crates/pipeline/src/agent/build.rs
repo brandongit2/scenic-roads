@@ -4107,10 +4107,18 @@ pub fn depth_targets(x: &KeyCtx) -> Option<DepthTargets> {
             None => out.unknown.push((step, t)),
         }
     }
-    // (A z6 tile with packs and no target now: its run drops them.)
+    // (A z6 tile with packs or its record of what it asked of the terrain, and no target now: its
+    // run drops them.)
     let at: BTreeSet<&String> = lakes.iter().collect();
-    let had: BTreeSet<String> =
-        terrain::depth::lakes::named(x.m).map(|(_, t, _)| format!("6/{}/{}", t.0, t.1)).collect();
+    let asked = "work/asked/lake-depth/";
+    let had: BTreeSet<String> = terrain::depth::lakes::named(x.m)
+        .map(|(_, t, _)| format!("6/{}/{}", t.0, t.1))
+        .chain(
+            x.m.range(asked.to_string()..)
+                .take_while(|(l, _)| l.starts_with(asked))
+                .filter_map(|(l, _)| TileId::parse(&l[asked.len()..]).filter(|u| u.z == 6).map(|u| u.slash())),
+        )
+        .collect();
     for t in had.into_iter().filter(|t| !at.contains(t)) {
         if let Some(k) = super::steps::none_key("lake-depth", &t) {
             out.lakes.push((t, k));
@@ -4964,6 +4972,73 @@ mod tests {
         assert_ne!(r.coverage_key(&redrawn, u, &fine), r.coverage_key(&reykjavik, u, &fine));
         assert_eq!(line(&redrawn, &m, &tiles), ran);
         assert_ne!(line(&grown, &m, &tiles), ran);
+    }
+
+    /// Task #1474: a lake-depth z6 tile keys on the terrain's z12 tiles its small lakes' slope read,
+    /// as its run recorded them, by their XXH3; not on its tile's and its ring's hi packs whole.
+    /// Dispatched with no record, it keys by those packs (the line it ran under, its key after the
+    /// run: one run); then a tile changed outside what it read, in its own pack and in a
+    /// neighbour's, keeps its key, and one it read changes it.
+    #[test]
+    fn lake_depth_keys_on_the_hi_tiles_its_lakes_read() {
+        use buildstore::asked::{target_line, target_logical, Record};
+        use terrain::depth::lakes::{ring, tile_answer, tile_question};
+        let c = Coverage::default();
+        let (u, t) = ((33u32, 22u32), "6/33/22");
+        let inputs = BTreeMap::new();
+        // Its ring's hi packs, each holding its 4096 z12 tiles, their XXH3 `h`'s; named by them.
+        let hold = |m: &mut BTreeMap<String, String>, tiles: &mut TerrainTiles, h: &dyn Fn(u32, u32) -> u64| {
+            for (a, b) in ring(u) {
+                let all: Vec<Tile> = (0..64 * 64)
+                    .map(|i| (a * 64 + i % 64, b * 64 + i / 64))
+                    .map(|(x, y)| (12, x, y, h(x, y)))
+                    .collect();
+                let l = format!("layers/terrain/hi/6-{a}-{b}");
+                let named = store::naming::hash16(format!("{all:?}").as_bytes());
+                let content = format!("{l}.{named}.pack");
+                tiles.hold(&content, all);
+                m.insert(l, content);
+            }
+        };
+        let key = |m: &BTreeMap<String, String>, tiles: &TerrainTiles| {
+            crate::agent::steps::key("lake-depth", t, &KeyCtx::new(&c, "d", m, &inputs, None, tiles)).unwrap()
+        };
+        let base = |x: u32, y: u32| u64::from(x) * 10_000 + u64::from(y);
+        let (mut m, mut tiles) = (BTreeMap::new(), TerrainTiles::default());
+        hold(&mut m, &mut tiles, &base);
+        let dispatched = key(&m, &tiles);
+        // Its run read a tile of its own and one of its western neighbour's.
+        let read = [(33 * 64 + 5, 22 * 64 + 5), (33 * 64 - 1, 22 * 64 + 3)];
+        let geo = crate::agent::idents::lake_ring_geo(&m, u);
+        let line = target_line(&c, &geo, None, &|_| None);
+        let answers = read.iter().map(|&(x, y)| (tile_question((x, y)), tile_answer(Some(base(x, y))))).collect();
+        let rec = Record::read_as(&c, geo, Default::default(), answers, line);
+        let content = format!("{}.5555555555555555.json.zst", target_logical("lake-depth", t));
+        m.insert(target_logical("lake-depth", t), content.clone());
+        tiles.hold_asked(&content, rec);
+        assert_eq!(key(&m, &tiles), dispatched, "the key it ran under is the plan's after it");
+        // A tile it didn't read changed in its own pack and in that neighbour's: both packs made
+        // again, the key kept.
+        let outside = |x: u32, y: u32| {
+            if [(33 * 64 + 6, 22 * 64 + 5), (33 * 64 - 2, 22 * 64 + 3)].contains(&(x, y)) {
+                7
+            } else {
+                base(x, y)
+            }
+        };
+        let (mut m2, mut tiles2) = (m.clone(), tiles.clone());
+        hold(&mut m2, &mut tiles2, &outside);
+        assert_ne!(m2.get("layers/terrain/hi/6-32-22"), m.get("layers/terrain/hi/6-32-22"));
+        assert_ne!(m2.get("layers/terrain/hi/6-33-22"), m.get("layers/terrain/hi/6-33-22"));
+        assert_eq!(key(&m2, &tiles2), dispatched, "a change outside the tiles it read keeps its key");
+        // One it read (the neighbour's) changed: the key moves.
+        let inside = |x: u32, y: u32| if (x, y) == read[1] { 7 } else { base(x, y) };
+        let (mut m3, mut tiles3) = (m.clone(), tiles.clone());
+        hold(&mut m3, &mut tiles3, &inside);
+        assert_ne!(key(&m3, &tiles3), dispatched, "a change in a tile it read changes its key");
+        // (Its record gone, as before its first run: its packs' line, so the change outside moves it.)
+        m2.remove(&target_logical("lake-depth", t));
+        assert_ne!(key(&m2, &tiles2), dispatched);
     }
 
     /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:
