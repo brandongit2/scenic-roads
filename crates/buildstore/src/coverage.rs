@@ -2450,6 +2450,26 @@ mod tests {
     }
 
     #[test]
+    fn a_threads_edge_list_is_given_empty_and_kept_and_a_call_inside_one_has_its_own() {
+        let outer = with_edges(|e| {
+            assert!(e.is_empty());
+            e.extend([[1, 2, 3, 4]; 1000]);
+            // (A fingerprint asked while one is worked out: a list of its own, the outer one whole.)
+            let inner = with_edges(|i| {
+                assert!(i.is_empty());
+                i.push([5, 6, 7, 8]);
+                i.len()
+            });
+            (inner, e.len())
+        });
+        assert_eq!(outer, (1, 1000));
+        with_edges(|e| assert!(e.is_empty() && e.capacity() >= 1000, "given again empty, its room kept"));
+        // (A list past `EDGES_KEPT` is let go of down to it.)
+        with_edges(|e| e.extend(std::iter::repeat_n([0; 4], EDGES_KEPT + 1)));
+        with_edges(|e| assert!(e.capacity() <= EDGES_KEPT.next_power_of_two(), "{}", e.capacity()));
+    }
+
+    #[test]
     fn fingerprints_see_only_their_box() {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let quad = |south: f64, north: f64| vec![vec![e7(0.0, south), e7(1.0, south), e7(1.0, north), e7(0.0, north)]];

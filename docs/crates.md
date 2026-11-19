@@ -988,8 +988,15 @@ commit; re-exports at the old paths as before.
         (`agent::allocs`: the unit tests' allocator, the system's with counts; `Memory::now`).
         `SCENIC_FROZEN_SIZES` adds each plan's blocks by size (asked for, the most live at once,
         live now); `SCENIC_FROZEN_SITES=<n>` the `n` functions and sites allocating the most
-        bytes in the plans after the first, from one stack sampled per 4 MB asked for
-        (`SCENIC_FROZEN_SITES_LEAST=<bytes>`: of blocks that large alone). With
+        bytes, in the first plan and in the plans after it, from one stack sampled per 4 MB asked
+        for (`SCENIC_FROZEN_SITES_LEAST=<bytes>`: of blocks that large alone);
+        `SCENIC_FROZEN_PEAKS=<n>`, by block size, the `n` sites whose blocks took that size's live
+        bytes to their most in each plan (a stack per 4 MB of the climb: who holds what the
+        allocator keeps for that size). `SCENIC_FROZEN_THREADS` gives the planner a coordinator of
+        its own and measures after each plan, alone, what the agent's other threads do with its
+        results (`apart`: the forecast's input archived, the coordinator taking it in, the page's
+        own forecast, `/api/regions`' and `/pool/view`'s answers, the status written, the offers
+        given again), with `SCENIC_FROZEN_STATUS` a copy of the lead's status.json beside it. With
         `SCENIC_FROZEN_APP` the lead's app, as the check.
       - **Check of the merge** (7 Nov, the lead's term 771 seq 67 on the M4, test profile; the check's
         commit with these knobs against the merge, each pair side by side, a run's own
