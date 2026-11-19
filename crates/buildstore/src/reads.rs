@@ -123,13 +123,8 @@ impl<'a> Reads<'a> {
         Reads { rec: Some(rec), ..self }
     }
 
-    /// This view recording nowhere: for work that isn't a key's (a cache filled on other threads,
-    /// whose answers a key finds by what it reads itself).
-    pub fn unrecorded(self) -> Reads<'a> {
-        Reads { rec: None, ..self }
-    }
-
-    /// The map, for what is never a key's read (the context's stamp, a copy kept): recording nothing.
+    /// The map, recording nothing: for what is never a key's read (the context's stamp; a cache
+    /// filled on other threads, whose answers each key finds by what it reads itself).
     pub fn unrecorded_map(self) -> &'a Map {
         self.map
     }
@@ -306,11 +301,9 @@ pub struct Graph {
     names: Vec<Box<str>>,
     ids: HashMap<Box<str>, u32>,
     preds: Vec<fn(&str, bool) -> bool>,
-    /// Node `i`'s reads: `reads[at[i]..at[i + 1]]`; its kids likewise.
+    /// Node `i`'s reads: `reads[at[i]..at[i + 1]]`.
     at: Vec<u32>,
     reads: Vec<u32>,
-    kid_at: Vec<u32>,
-    kids: Vec<u32>,
     /// The reverse index: (read, node) by read; (kid, parent) by kid.
     by_read: Vec<(u32, u32)>,
     parents: Vec<(u32, u32)>,
@@ -330,38 +323,33 @@ pub struct Size {
 impl Graph {
     fn of(r: Rec) -> Graph {
         assert!(r.stack.is_empty(), "a derivation left unended");
-        let (mut at, mut reads, mut kid_at, mut kids) = (vec![0u32], Vec::new(), vec![0u32], Vec::new());
-        for n in &r.nodes {
+        let n: usize = r.nodes.iter().map(|n| n.reads.len()).sum();
+        let (mut at, mut reads, mut by_read) = (vec![0u32], Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut parents: Vec<(u32, u32)> = Vec::new();
+        for (i, n) in r.nodes.into_iter().enumerate() {
+            by_read.extend(n.reads.iter().map(|&x| (x, i as u32)));
             reads.extend_from_slice(&n.reads);
             at.push(reads.len() as u32);
-            kids.extend_from_slice(&n.kids);
-            kid_at.push(kids.len() as u32);
-        }
-        let mut by_read: Vec<(u32, u32)> = Vec::with_capacity(reads.len());
-        let mut parents: Vec<(u32, u32)> = Vec::with_capacity(kids.len());
-        for i in 0..r.nodes.len() {
-            let (a, b) = (at[i] as usize, at[i + 1] as usize);
-            by_read.extend(reads[a..b].iter().map(|&x| (x, i as u32)));
-            let (a, b) = (kid_at[i] as usize, kid_at[i + 1] as usize);
-            parents.extend(kids[a..b].iter().map(|&k| (k, i as u32)));
+            parents.extend(n.kids.iter().map(|&k| (k, i as u32)));
         }
         by_read.sort_unstable();
         parents.sort_unstable();
+        parents.shrink_to_fit();
         let mut names = r.names;
         names.shrink_to_fit();
-        Graph { names, ids: r.ids, preds: r.preds, at, reads, kid_at, kids, by_read, parents }
+        Graph { names, ids: r.ids, preds: r.preds, at, reads, by_read, parents }
     }
 
     /// Its size and the bytes it holds.
     pub fn size(&self) -> Size {
         let names: usize = self.names.iter().map(|n| n.len()).sum();
-        let u32s = self.at.capacity() + self.reads.capacity() + self.kid_at.capacity() + self.kids.capacity();
+        let u32s = self.at.capacity() + self.reads.capacity();
         let pairs = self.by_read.capacity() + self.parents.capacity();
         Size {
             nodes: self.at.len() - 1,
             names: self.names.len(),
             reads: self.reads.len(),
-            edges: self.kids.len(),
+            edges: self.parents.len(),
             // (A name twice, in `names` and as `ids`' key, each with its box; `ids`' slot.)
             bytes: 2 * (names + 16 * self.names.len()) + self.ids.capacity() * 24 + 4 * u32s + 8 * pairs,
         }
@@ -377,12 +365,6 @@ impl Graph {
     pub fn reads_of(&self, n: u32) -> Vec<String> {
         let (a, b) = (self.at[n as usize] as usize, self.at[n as usize + 1] as usize);
         self.reads[a..b].iter().map(|&r| self.said(r)).collect()
-    }
-
-    /// Node `n`'s kids.
-    pub fn kids_of(&self, n: u32) -> &[u32] {
-        let (a, b) = (self.kid_at[n as usize] as usize, self.kid_at[n as usize + 1] as usize);
-        &self.kids[a..b]
     }
 
     fn said(&self, r: u32) -> String {

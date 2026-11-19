@@ -998,6 +998,12 @@ commit; re-exports at the old paths as before.
         own forecast, `/api/regions`' and `/pool/view`'s answers, the status written, the offers
         given again), with `SCENIC_FROZEN_STATUS` a copy of the lead's status.json beside it. With
         `SCENIC_FROZEN_APP` the lead's app, as the check.
+      - **The keys' read sets on two states** (built, task #1076):
+        `plan::tests::frozen_read_sets_keep_the_unchanged_keys`, ignored, sandboxed alike, plans a
+        frozen state (`SCENIC_FROZEN_ROOT`) then a later one (`SCENIC_FROZEN_ROOT_B`, checked and
+        linked as the first, `frozen_root`): of the first plan's keys derived again, those its diff
+        would keep are those that came out unchanged (docs/incremental-planning.md step 3); then the
+        second again with the recording off and on, what it costs, to `SCENIC_FROZEN_OUT`.
       - **Check of the merge** (7 Nov, the lead's term 771 seq 67 on the M4, test profile; the check's
         commit with these knobs against the merge, each pair side by side, a run's own
         folder named alike before comparing): the same bytes on all nine states, 1.7 KB to 1.0 MB,

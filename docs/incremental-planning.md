@@ -190,25 +190,36 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
 1. **The key memo**, across plans: `(step, target) → (key, reads)`. Today's `KeyMemo` holds keys
    for one plan (#924); this one outlives it. `reads` is what deriving the key looked at: manifest
    entries by name, manifest prefix ranges, input names, whether it read the coverage or the
-   reaches, and what of `TerrainTiles`' load state it met (below). It is recorded by construction: `KeyCtx`'s manifest becomes a view
-   (`Reads`) whose `get`, `contains_key` and `range` record into the key being derived (into every
-   key on the derivation stack: a key derived inside another's adds its reads to its reader's), with
-   no `Deref` to the map, so code that derives a key can't read the manifest past it; the compiler
-   finds every function that took `x.m` as a map. `TerrainTiles`' readers (`hash`, `resolve`,
-   `elevation`, `zoom_sets`, `keyed`, …) take the manifest too, so they take the view and record the
-   pack and index entries they look up, not a flag "read a terrain index" (which every z6 tile's key
-   sets: any pack's change would derive them all again, today's all-or-nothing). What construction
-   alone misses, and the design closes explicitly:
-   - **A cache hit inside a derivation.** A key read from `KeyMemo`, a `TerrainTiles::memo` answer
-     (a z6 tile's terrain digest, the terrain targets), a deep answer or `KeyMemo`'s terrain-targets
-     cell runs no code, so records nothing. A hit adds the cached value's read set (or an edge to
-     it, invalidated transitively) to every key on the stack; each such cache keeps the read set of
-     what it holds.
-   - **A miss.** `get` of an absent entry and an empty `range` are reads: an entry added later
+   reaches, and what of `TerrainTiles`' load state it met (below). It is recorded by construction
+   (built in step 3): `KeyCtx`'s manifest and inputs are views (`buildstore::reads::Reads`) with no
+   way to the map but their reads. Code reading the manifest for a key takes a `Manifest` (the map
+   itself, as a job or a target list has it, or the view), and the view records each read into the
+   key being derived while its memo records (`KeyMemo::recording`, the plan's): an entry's content
+   (`get`, an absent one too), its presence (`contains_key`), the entries under a prefix (`under`,
+   in place of `range`), a content some entry holds (`holds`), a step's outputs read whole by its
+   write set (`matching`), the map whole (`whole`, the one way to the map: what the plan reads
+   outside a key, recording nothing there) and state the entries don't show (`met_load`). A
+   function that took `x.m` as a map no longer compiles with it. `TerrainTiles`' readers (`hash`,
+   `resolve`, `elevation`, `zoom_sets`, `keyed`, …) take a `Manifest` and record the pack and index
+   entries they look up, not a flag "read a terrain index" (which every z6 tile's key sets: any
+   pack's change would derive them all again, today's all-or-nothing). What construction alone
+   misses, and how it is closed:
+   - **A cache hit inside a derivation.** A key found in `KeyMemo` while another is derived is a
+     kid of it (`Recorder::found`): moving the kid moves its reader. A `TerrainTiles::memo` answer
+     (a z6 tile's terrain digest, a target's asked line, the slope's tiles) is kept with what it
+     was made from (`from`), which the key works out by reading the manifest itself before asking:
+     a hit's reads are those. The deep answers are kept by the coverage and the declared sets the
+     key reads likewise. The caches warmed on rayon's threads (`warm_asked`, `warm_lakes`) read the
+     map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the compiler refuses one
+     captured there): each key reads again what finds its line (lake-depth's: its record and its
+     ring's hi packs, `asked_line`, `lake_ring_geo`). The terrain-targets cell is the plan's, read
+     by no key.
+   - **A miss.** `get` of an absent entry and an empty `under` are reads: an entry added later
      must find the key.
-   - **State the manifest doesn't show.** A key that came out unknown (`None`) or read an index
-     `TerrainTiles` couldn't read depends on the load, not the entries: such keys are never kept,
-     and a change of `unread` or of what `TerrainTiles` holds invalidates the keys that read it.
+   - **State the manifest doesn't show.** A key that came out unknown (`None`) is never kept. A
+     reader of `TerrainTiles` meeting what it can't read now records `met_load`, and such keys move
+     when what it can't read changes (`TerrainTiles::load_state`: the packs and declarations
+     unread). What it holds is by content name, which the keys read in the manifest.
    - **Reads beside the arguments.** `steps.rs`, `idents.rs` and `TerrainTiles`' readers read no
      environment, clock or NAS folder today (no `env::var`, `now_s`, `read_dir`; the modules they
      call, such as terrain_pack's `water_source_pin` or heritage's `latest_date`, unchecked); the NAS
@@ -216,10 +227,13 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      or tracked above. The app's version is the process's: the state starts empty after an update.
      The manifest is a `BTreeMap`, so neither the brief's order nor a NAS listing's reaches a key
      through it. A guard test keeping it so (no `env::var`, clock or `nasfs` call
-     reachable from `key_lines` but through `KeyCtx`) belongs with step 3.
+     reachable from `key_lines` but through `KeyCtx`) is planned, not built.
 2. **The reverse index**: entry name → keys, prefix → keys, input name → keys, and the keys that
-   read the coverage, the reaches or `TerrainTiles`' load state. A changed name finds its keys by exact
-   lookup and by each of its own prefixes (a name is ~60 bytes: ~60 lookups).
+   read `TerrainTiles`' load state. A changed name finds its keys by exact lookup and by each of its
+   own prefixes (a name is ~60 bytes: ~60 lookups), and the write sets read whole are asked of it.
+   Built in step 3 (`buildstore::reads::Graph`: (read, key) and (kid, reader) pairs, sorted). The
+   coverage, the pass and the reaches aren't recorded per key: a change of any of them moves every
+   key (theplan's `Context::rest`), a full plan as §5 has it.
 3. **Target lists, as memo entries of their own** (`enum <list>`, read the same way): which z6
    tiles the coverage builds, the terrain and slope targets with their "none" ones, the deep
    targets, `coverage_tiles`, each region's targets. They replace the terrain-targets digest
@@ -360,13 +374,13 @@ reference.
 - **#916 (the crate split).** 6d (built) moved inputs, dem, osmpass and the other input modules
   into crates/inputs; 6e (the terrain family, then trees, roads, names, bld, offload) is under way;
   6f moves agentcore and `Plan` (build.rs, steps.rs, plan.rs) after #882's later steps. Step 3 here
-  (the recording view) changes the signature of every function reachable from `key_lines` that
-  takes the manifest: in idents.rs, build.rs and tiles.rs, and those they call in other modules,
-  among them terrain_pack's `water_source_pin`, terrain_deep's `mids_under` and slope_pack's
-  `deep_mids_under` (6e's family), treepacks' `mid_logical` and heritage's `latest_date` (the
-  families after it), and `inputs::logical` and osmpass (crates/inputs). The view's type belongs in
-  a crate under all of them (buildstore, beside `read_manifest`), and step 3 lands after 6e's moves
-  (it then edits the new crates), not while one is in flight. Steps 1-2 touch agent/plan.rs and
+  (the recording view, built) changed the signature of every function reachable from `key_lines`
+  that takes the manifest to a `Manifest`: in idents.rs, build.rs and tiles.rs, and those they call
+  in the crates as they are now: terrain's `water_source_pin`, `mids_under`, `named_z10_under`,
+  `named_under`, `deep_mids_under`, `depth::lakes::named`, `depth::surface::reads` and
+  `depth::grids::estimates_key`, landmarks' `heritage::latest_date`, inputs' `lakefill::water_pin`
+  and `current`, `elevation::switched`, `dem::spacing::key_line` and `osmpass::previous_outlines`.
+  The view's type is in buildstore (`reads`), under all of them. Steps 1-2 touch agent/plan.rs and
   agent/build.rs only: 6e moves none of the agent, so they can land now (at most an import line
   in build.rs to merge), and collide with 6f alone. Steps 4-6 should land before 6f, or 6f moves
   the incremental state with `Plan`.
