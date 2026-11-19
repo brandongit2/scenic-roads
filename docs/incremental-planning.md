@@ -213,8 +213,11 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      key reads likewise. The caches warmed on rayon's threads (`warm_asked`, `warm_lakes`) read the
      map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the compiler refuses one
      captured there): each key reads again what finds its line (lake-depth's: its record and its
-     ring's hi packs, `asked_line`, `lake_ring_geo`). The terrain-targets cell is the plan's, read
-     by no key.
+     ring's hi packs, `asked_line`, `lake_ring_geo`). The terrain-targets cell
+     (`TerrainTiles::memo("terrain-targets")`) is read by no key, and the terrain and slope keys
+     it serves aren't derived in a plan that finds it, so they get no read set there: the first
+     plan after a start records all its keys (30 079 on the lead's state, §8 step 3), a plan after
+     it only those derived again (16 606), the terrain's and slope's kept by that cell's digest.
    - **A miss.** `get` of an absent entry and an empty `under` are reads: an entry added later
      must find the key.
    - **State the manifest doesn't show.** A key that came out unknown (`None`) is never kept. A
@@ -222,10 +225,14 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      when what it can't read changes (`TerrainTiles::load_state`: the packs and declarations
      unread). What it holds is by content name, which the keys read in the manifest.
    - **Reads beside the arguments.** `steps.rs`, `idents.rs` and `TerrainTiles`' readers read no
-     environment, clock or NAS folder today (no `env::var`, `now_s`, `read_dir`; the modules they
-     call, such as terrain_pack's `water_source_pin` or heritage's `latest_date`, unchecked); the NAS
-     is read for keys by `TerrainTiles::load` and `key_inputs`, whose results are diffed (the inputs)
-     or tracked above. The app's version is the process's: the state starts empty after an update.
+     environment, clock or NAS folder listing today (no `env::var`, `now_s`, `read_dir`; the modules
+     they call, such as terrain_pack's `water_source_pin` or heritage's `latest_date`, unchecked).
+     Two `TerrainTiles` readers read NAS files while a key is derived, each by a content name the
+     key read in the manifest first: `target_asked` (a target's coverage record, read again once
+     its geometry moved) and `outlines` (the outlines a record's question names). Content-named
+     files don't change under their name, and one that can't be read leaves the key unknown, never
+     kept. The NAS is read for keys otherwise by `TerrainTiles::load` and `key_inputs`, whose
+     results are diffed (the inputs) or tracked above. The app's version is the process's: the state starts empty after an update.
      The manifest is a `BTreeMap`, so neither the brief's order nor a NAS listing's reaches a key
      through it. A guard test keeping it so (no `env::var`, clock or `nasfs` call
      reachable from `key_lines` but through `KeyCtx`) is planned, not built.
@@ -234,7 +241,8 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
    own prefixes (a name is ~60 bytes: ~60 lookups), and the write sets read whole are asked of it.
    Built in step 3 (`buildstore::reads::Graph`: (read, key) and (kid, reader) pairs, sorted). The
    coverage, the pass and the reaches aren't recorded per key: a change of any of them moves every
-   key (theplan's `Context::rest`), a full plan as §5 has it.
+   key (`build::context_rest`, of the reaches the plan's keys read: none while the reach job is
+   due, the last ones read still cached), a full plan as §5 has it.
 3. **Target lists, as memo entries of their own** (`enum <list>`, read the same way): which z6
    tiles the coverage builds, the terrain and slope targets with their "none" ones, the deep
    targets, `coverage_tiles`, each region's targets. They replace the terrain-targets digest
@@ -303,17 +311,19 @@ each, lake-depth 2 431, bldprep 1 752, unit 1 238, depth 690, …), ~1.2 MB of s
 lines are 14.5 M lines, 703 MB (1 295 a key on average, one key 1.5 M: a step reading another
 whole), naming 13 590 distinct manifest entries. So:
 
-- **Read sets are kept as interned ids, never as lines**: an entry's name once (13.6 k names, a
-  few MB with the manifest the plan holds anyway), a key's reads as `u32` ids and prefix ids; a
-  read of a step whole (`Read::Whole`) and a `Grain::Tiles` read as one prefix each, not one id per
-  entry or tile. The ids are bounded by the lines: at most 14.5 M × 4 B = 58 MB, the reverse index
-  as much again; the whole reads, which make most of the lines, collapse to a prefix each, so the
-  real figure is far below. Step 3 measures it on the lead and logs it with the plan's phase line.
+- **Read sets are kept as hashes, never as lines or names** (step 3, `buildstore::reads`): each
+  read a 64-bit id (its kind, a 60-bit hash of the name), kept only as the reverse index's
+  (read, key) pairs; a write set read whole as one id. Measured on the lead's state (§8 step 3):
+  49 MB after the first plan after a start (2.0 M reads), 17.5 MB after a later one; the recorder's
+  nodes and the index beside them while it's built are logged as the index's "at most".
 - **The target lists** (§4.3) are what each plan already holds while it runs (7 147 work
   targets, 33 279 done keys, the terrain and slope targets), now kept between plans instead of
   dropped.
-- **No second copy of the records**: the last brief's manifest and keys are kept for the diff
-  (52 k entries, 33 k keys: the brief is 5.3 MB as JSON) in place of the one each plan reads now.
+- **A second copy of the records' manifest, for now**: the round before's manifest and inputs are
+  kept for the diff (theplan's `Context`, cloned from the round's: about 10 MB on the lead), and
+  for a moment two of them, the round before's and this one's, with the keys (`ReadSets::bytes`);
+  the read-sets line logs all three. It's a copy because the Planner builds its manifest each
+  plan and hands it on by reference (`seam::Round`); shared instead, it would cost nothing.
 - **The shadow full plan** (§6) runs with its own memo, as a plan does today: no more than today's
   peak while it runs.
 
@@ -356,7 +366,7 @@ its own before and after, on the lead and on frozen states (§1.2's way).
 | 2 (built) | **Granting's inputs out of the plan's trigger**: the leases' generation, the pause, the placement switch and the pool's gates (`plan::Granting`) leave `plan_seen`; their change filters the last `Plan` again ("its jobs") and offers it | fewer plans: some of the "what it depends on changed" (each plan's line names the parts of `plan_seen` that changed, `plan::Seen`; each filtering's what granting read changed, to count them) | the same offers as a full plan on a recorded state |
 | | *Built:* `plan::refilter_due` runs "its jobs" over the kept `build::plan` result and its keys (`seam::PlanHeld`; `build::plan` made again when the keys' context no longer reads the same) when what granting reads changed alone, under a plan number of its own (a job's grant by its id must find the spec of the offers it was granted from, task #923), logged as "plan N: the last plan's work filtered again (<what> changed) in X ms"; every plan is logged, "plan N (<why>) took X.X s", a change naming its parts ("what it depends on changed: the records"). Publishing's switches stay in `plan_seen`: `build::plan` reads them (`seam::Publish`). Tests: `a_lease_change_filters_the_last_plans_work_again`, `what_granting_reads_offers_the_last_plans_work_under_a_new_number`, `the_plans_digest_follows_what_it_depends_on`; on a recorded state, `frozen_refilter_offers_a_full_plans` (ignored, `SCENIC_FROZEN_ROOT`): 19 Nov, the lead's `state/` copied at 17:01Z, on the M4, its work filtered again after the pause, placement and the gates changed in 1.0 s, its jobs, waits and offers the same 33 lines as a full plan's (19.9 s, the first 509 s cold). *Measured on the lead* (the Mac mini's agent.log, 6-19 Nov, plans of 10 s or more, the only ones logged then): 6 023 plans in 309 h, median 40 s, 30 % of a core; "what it depends on changed" 1 600 (median 22 s, sum 61 774 s), "a job ended" 3 425 (median 72 s); the leases' 204 filterings again, median 2.7 s, p90 15 s. The last 48 h: 1 547 plans, median 32 s, 41 % of a core; 225 "what it depends on changed" (median 32 s), 88 filterings (median 2.4 s). How many of those plans the pause, placement and the gates brought is not known from those logs: the per-part line counts them from this step on | | |
 | 3 (built) | **Read sets, recorded (shadow)**: `KeyCtx`'s manifest becomes the recording view (§4.1), the Planner keeps the last brief and diffs the next; each plan builds the read sets and reverse index and logs their size and the keys the diff would have kept; the plan itself unchanged | latency as now (the recording's cost measured); memory measured (§7) | the logged "would keep" equals, on recorded states, the keys that came out unchanged |
-| | *Built:* `buildstore::reads` (the view, `Manifest`, `Recorder`, `Graph`, `Diff`; §4.1-4.2); `KeyMemo::recording`, the plan's (theplan's `Held`, every plan made whole as before). As a plan starts, the round before's keys and what each read become its `Graph` (reads kept as 60-bit hashes of the names, a kind on top); after `build::plan`, the diff of that round's manifest and inputs to this one's (both kept as the round read them) moves the keys it reaches, and the plan's phase "the read sets" logs "read sets (shadow): …": the keys, reads and bytes, the diff, how many it would keep, and against the keys derived again how many came out unchanged, kept but changed, moved but unchanged, and moved by their own coverage record put (a target's first run records what it asked, buildstore::asked, which its key reads: moved, the same key; incremental planning derives it again). `PlanHeld::shadow` gives it. Tests: buildstore's `each_read_is_moved_by_what_it_sees` and its kin; `the_recorded_reads_see_every_change_that_moves_a_key` (every fixture, each entry changed, removed and added alone, each input changed: 42 504 keys, none changed unseen, 403 moved the same); on recorded states, `frozen_read_sets_keep_the_unchanged_keys` (ignored, `SCENIC_FROZEN_ROOT`, `SCENIC_FROZEN_ROOT_B`). *Measured* (19 Nov, the lead's `state/` copied at 18:46Z and 19:07Z, the M4, test profile, loaded): 3 entries apart (three bldtiles records put); of the first plan's 30 079 keys the diff would keep 30 076; of the 16 606 derived again all came out unchanged; kept but changed 0, moved but unchanged 0, moved by their own record 3 (those three bldtiles targets). The same state again: all 16 607 kept, all unchanged. Cost: the plan with its keys recording 20.9 s and 19.9 s against 38.6 s and 18.6 s not (two runs; the M4's load apart, within its noise), asked for 2-52 MB more of 10.2 GB, the most live the same (202-237 MB against 222-228); the read sets held 49.0 MB after the first plan after a start (30 079 keys, 2.0 M reads), 17.5 MB after a plan after it (16 607 keys, 0.72 M reads), made in 114 and 19 ms, the diff in 1 ms; besides them, the round's manifest and inputs kept for the diff. On the lead: once published | | |
+| | *Built:* `buildstore::reads` (the view, `Manifest`, `Recorder`, `Graph`, `Diff`; §4.1-4.2); `KeyMemo::recording`, the plan's (theplan's `Held`, every plan made whole as before). As a plan starts, the round before's keys and what each read become its `Graph` (reads kept as 60-bit hashes of the names, a kind on top); after `build::plan`, the diff of that round's manifest and inputs to this one's (both kept as the round read them) moves the keys it reaches, and the plan's phase "the read sets" logs "read sets (shadow): …": the keys, reads and bytes (the reverse index, at most while it was built, the keys, the two contexts kept for the diff), the diff, how many it would keep, and against the keys derived again how many came out unchanged, kept but changed, moved but unchanged, and moved by their own coverage record put (a target's first run records what it asked, buildstore::asked, which its key reads: moved, the same key; incremental planning derives it again). For the tests, `PlanHeld::shadow` gives it with those keys listed; after a filtering again (no keys derived) it is the plan before's. Tests: buildstore's `each_read_is_moved_by_what_it_sees` and its kin; `the_recorded_reads_see_every_change_that_moves_a_key` (every fixture and one holding its declarations and coverage records as a load does, `held_fixture`; each entry changed, removed and added alone, each input changed, the reaches gone with their entry the same; the held build's changes again with the keys recorded on terrain whose memos a plan before filled: 62 968 keys, none changed unseen, 930 moved the same); `the_elevation_datasets_are_read_with_their_geoid_sources`; on recorded states, `frozen_read_sets_keep_the_unchanged_keys` (ignored, `SCENIC_FROZEN_ROOT`, `SCENIC_FROZEN_ROOT_B`). *Measured* (19 Nov, the lead's `state/` copied at 18:46Z and 19:07Z, the M4, test profile, loaded): 3 entries apart (three bldtiles records put); of the first plan's 30 079 keys the diff would keep 30 076; of the 16 606 derived again all came out unchanged; kept but changed 0, moved but unchanged 0, moved by their own record 3 (those three bldtiles targets). The same state again: all 16 607 kept, all unchanged. Cost: the plan with its keys recording 20.9 s and 19.9 s against 38.6 s and 18.6 s not (two runs; the M4's load apart, within its noise), asked for 2-52 MB more of 10.2 GB, the most live the same (202-237 MB against 222-228); the read sets held 49.0 MB after the first plan after a start (30 079 keys, 2.0 M reads), 17.5 MB after a plan after it (16 607 keys, 0.72 M reads), made in 114 and 19 ms, the diff in 1 ms; besides them, the round's manifest and inputs kept for the diff. On the lead: once published | | |
 | 4 | **Keys kept across plans (shadow)**: the memo outlives the plan, invalidated by the diff; the full plan still runs and is used, and every plan compares the two (§6) | latency as now: the full plan used, the incremental one on a worker of the plan part beside it (its CPU on top: the plan thread is busy 48 % of the time already) | the shadow clean on the lead for a week; the tests of §6 |
 | 5 | **The kept keys used**: the plan derives only invalidated keys; the full plan only in shadow every Nth plan | a plan after a job that touches no terrain: ~75 → ~35 s bench, ~66 → ~30 s live; after a terrain or slope job (two plans of three) the terrain's ~50 s live stays on top until 6a | `build::plan`'s phases on the lead; shadow clean |
 | 6a | **The terrain and slope targets kept per target** (§4.3) instead of under one digest, with read sets: the largest phase live (29 % of plan time, 50 s in two plans of three), first of step 6 | a plan after a terrain or slope job as after any other (~30 s live) | the same; shadow clean |
