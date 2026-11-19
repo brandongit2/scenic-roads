@@ -909,7 +909,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **polar-points (a pole):** `landmarks::polar::POINTS_V`, the labels', candidates' and z6 tiles'
   versions (`LABELS_V`, `POIS_V`, `UNIT_V`: the rules it draws by), the pole, and the pass's filtered
   planet by content.
-- **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
+- **trees (a z6 tile):** the coverage inside the tile as its run reads it, its mask (`in
+  coverage:inside`: the z6 tiles' coverage as their runs asked it, below); `TREES_V` changes with any change to the bytes
   a z6 tile writes. A z6 tile the coverage has left, with tree hi packs or a mid still named, is
   keyed on the version and the tile (`steps::none_key`): a drop.
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`. A z3 tile with no z6 tile the coverage meets, and
@@ -921,7 +922,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   leaves the cover as it was (water given from one region to another, land moved between
   neighbours) keeps its key. **heritage** likewise: heritage-sites' outputs, the pass's sets, the
   cover.
-- **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways meet it, the versions of the
+- **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways asked it (`in coverage:ways`, below), the versions of the
   location rules where its ways go, its heritage slices, the roadside buildings' index, the elevation
   datasets' plan, and the terrain tiles it reads by content (`agent::build::unit_terrain`: each
   tile's XXH3 from its pack's index): what it stages, every z11 tile, and at its ways' points the
@@ -956,6 +957,25 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   rail-feeds' countries 49 s, measured by task #1130 on the mini), opening the outlines a question
   names only then; outlines no longer named (a pass gone) answer `GONE`. A record that can't be
   read leaves its step waiting, its run failing.
+- **The z6 tiles' coverage as their runs asked it** (task #1473; pois, unit, trees, bldtiles): each
+  z6 tile's run asks through `coverage::Asking` and puts what it asked with its files, as
+  `work/asked/<step>/<z-x-y>` (`asked::Run::start_target`): pois its candidates' points and ways'
+  nodes (`contains`), unit its ways' points (`touches`), bldtiles its buildings' countries as the
+  fill reads them (`shape_at`'s: `bld::job::ask`, each block's z14 tile asked whole where it's one
+  answer, else its centroids and vertices), trees its mask, asked whole (`treepacks::mask_digest`:
+  the blocks its rings' boxes meet and their pixels inside). A point is kept by its z14 cell: a
+  cell whose neighbourhood and the ring of cells around it answer every point alike is kept as
+  that one answer (`coverage::cell_box`), so a record holds points only near an edge; a cell no
+  longer one answer counts as an answer flipped. The record's cheap test is the line the key had
+  before it asked, the coverage's geometry there (`in coverage:clip`: the tile and 10 km around;
+  `coverage:ways`: `Reach::coverage_key`; `coverage:inside`: the tile; `coverage:shapes`:
+  `Coverage::shapes_key` of the tile and 1 km around): with no record the key's line is that, so
+  the keying itself moved no key; with one, the record's line while that geometry reads as its run
+  read it (the record's head, read once per record as the plan loads) or the coverage answers what
+  it asked the same (the record read and asked again once per geometry and record); else a new
+  line naming the record. A z6 tile's roads keep the record in their folder from preparing to
+  their commit (resumed with it); with none there, the record from before goes. A prune and a
+  "none" tile's drop remove it with the tile's files.
 - **water:** its version and the pass's basemap.
 - **bld-fetch** (network): its version, the release and the coverage as its run asked it (each row
   group's and GHSL tile's box grown by 20 km, `bld::fetch::Near`).
@@ -982,7 +1002,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **depth-root:** `DEPTH_ROOT_V`, the depth's versions and the content names of every `depth`,
   `depth-class` and `depth-shade` lo pack (recorded with the other roots, by its name).
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,
-  and the coverage's shapes over it with their countries (`Coverage::shapes_key`).
+  and the coverage as its buildings asked it, their countries (`in coverage:shapes`, above).
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`. An output identical to before
 keeps its content name, so jobs keyed on it stop there.

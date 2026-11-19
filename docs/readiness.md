@@ -138,8 +138,9 @@ store's read log, #866's `outside` machinery, must be a subset of the declared r
 
 `Input` identities are named by what the run cuts, never by a broader proxy. The coverage is
 `in coverage:<cut> <digest>`, where `<cut>` is how the step reads it: `piece` (#832's
-`terrain_deep::Deep::piece`: the z9–12 tiles near the coverage), `inside` (trees: the coverage in the tile),
-`ways` (unit: as its ways meet it), `shapes` (bldtiles: `Coverage::shapes_key`), `cover` (the
+`terrain_deep::Deep::piece`: the z9–12 tiles near the coverage), `clip` (pois), `ways` (unit),
+`inside` (trees) and `shapes` (bldtiles: the coverage as each z6 tile's run asked it, its
+geometry there the line while it has no record, task #1473, docs/steps.md §12), `cover` (the
 heritage jobs and rail: `landmarks::heritage::cover_key`), `asked` (rail-feeds, rail,
 timetables-todo, bld-fetch: the coverage's answers where the run asked, `buildstore::asked`,
 docs/steps.md §12). The same cut is one function shared by key and run, so the two can't differ;

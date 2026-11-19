@@ -157,9 +157,11 @@ No `unit` (roads) key reads any of them.
   index changes; "bld-release" is the release, "" before any download, "?" when unreadable (the
   chain then waits).
 - **`bldtiles T`:** `BUILDINGS_V`, the content names of `work/bld/` for T and its 8 neighbours ("-"
-  for none), `Coverage::shapes_key` of T's box grown by 1 km (the shapes meeting it, in the recipes'
-  order, each with its country: a building's country is its first containing shape's, and the
-  fill's fits go by it), and the content names of the newest pass's heritage slices of T.
+  for none), the coverage as its buildings asked it (each one's country: its first containing
+  shape's, which the fill's fits go by; `bld::bld::job::ask`, `work/asked/bldtiles/6-x-y`, docs/steps.md
+  §12), whose cheap test, and line while T has no record, is `Coverage::shapes_key` of T's box
+  grown by 1 km (the shapes meeting it, in the recipes' order, each with its country), and the
+  content names of the newest pass's heritage slices of T.
   `Outlines::country_code` gives an `osm:` region's ISO 3166-1 code (its own, or from a subdivision
   code ISO lists as a country: US-PR, CN-HK, FR-GF, FR-PM; else the smallest country it lies in).
 - **`bldfield-lo`:** its mids' content names.

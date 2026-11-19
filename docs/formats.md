@@ -1475,8 +1475,11 @@ the id with the clicked point. A reader takes version 8 only.
   parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: World Heritage components among `pos`;
   `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/asked/<step>.json.zst` (what a run of rail-feeds,
   rail, timetables-todo or bld-fetch asked of the coverage, `buildstore::asked::Record`, zstd'd JSON:
-  `{"asked": {"points": [[x, y]…], "land": [[w, s, e, n]…], "all": […]}, "also": [[question,
-  answer]…], "answers", "version", "line"}`, E7; docs/steps.md §12); `work/rail/used.json`
+  `{"asked": {"points": [[x, y]…], "land": [[w, s, e, n]…], "all": […], "cells": [[x, y]…],
+  "countries": [[x, y]…], "country_cells": [[x, y]…]}, "also": [[question, answer]…], "answers",
+  "version", "line"}`, E7, cells z14 tiles, the last three only when asked; docs/steps.md §12) and
+  `work/asked/<step>/<z-x-y>.json.zst` (the same, of a z6 tile of pois, unit, trees or bldtiles,
+  `version` its key's geometric line); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,
