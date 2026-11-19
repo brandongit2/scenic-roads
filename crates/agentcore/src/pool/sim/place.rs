@@ -519,16 +519,14 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             // (The NAS budget on, a member's job only within what the pool's jobs leave by their
             // true weights (jobrt::budget::nas::Limits::fits_job, an aged whole one let past them):
             // the budget's rules checked by outcome, not by a copy of them.)
-            if k > 0 && cfg.nas.is_some() {
+            if let Some(win) = cfg.nas.filter(|_| k > 0).map(|l| l.window) {
                 let members: u32 = running[1..].iter().flatten().map(|j| j.nas).sum();
                 let all: u32 = running.iter().flatten().map(|j| j.nas).sum();
                 let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
-                if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {
+                if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true, win) {
                     return Err(format!(
-                        "{} placed {step} {targets:?} past the NAS budget: {all} + {} > {} (members' {members})",
-                        cfg.macs[k].name,
-                        job.nas,
-                        jobrt::budget::nas::WHOLE
+                        "{} placed {step} {targets:?} past the NAS budget: {all} + {} > {win} (members' {members})",
+                        cfg.macs[k].name, job.nas,
                     ));
                 }
             }

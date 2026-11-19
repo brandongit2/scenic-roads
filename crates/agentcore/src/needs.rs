@@ -673,8 +673,10 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` less what of them it read from this Mac's own disk or its page cache,
-/// `local` (its whole local copies', task #551, and any NAS read the cache answered, task #1450), plus `wrote` and `read_back`, and `creates`, over its time; its metadata work,
+/// A run's NAS rate (what it asked of the NAS: `bytes` less what of them it read from this Mac's
+/// own disk, `local` but its `held` (its whole local copies' reads, task #551, are no NAS reads; a
+/// NAS read the page cache answered, task #1450, is asked of the NAS all the same: a warm cache
+/// isn't a small need, task #1417), plus `wrote` and `read_back`, and `creates`, over its time; its metadata work,
 /// `listed`, `stats` and `deletes`, likewise), when it was measured the
 /// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
@@ -691,7 +693,7 @@ fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget:
     let read_s = if halo {
         c.sizes.get("nas_secs").filter(|&&s| s > 0).map_or(0.0, |&s| g("nas_read") / s as f64)
     } else {
-        (g("bytes") - g("local")).max(0.0) / secs
+        (g("bytes") - g("local") + g("held")).max(0.0) / secs
     };
     // (What its uploads read back to check them: as measured, else, on a line from before it was
     // (task #1142), its `wrote`: each file costin counts made is a store::naming upload, read
@@ -1960,6 +1962,14 @@ mod tests {
         assert_eq!(
             Book::new(crate::agent::seam::for_tests(), &costs).nas("depth", "6/1/1").map(|r| r.bytes_s),
             Some(20.0)
+        );
+        // (Task #1417: of them, the NAS reads its page cache held, `held`, are asked of the NAS
+        // all the same.)
+        let held = cost(100, 10, &[("bytes", 1000), ("local", 800), ("held", 500)]);
+        costs.insert(cost_key("depth", "6/1/1"), Cost { v, ..held });
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).nas("depth", "6/1/1").map(|r| r.bytes_s),
+            Some(70.0)
         );
     }
 

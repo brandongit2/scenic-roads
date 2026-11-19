@@ -1,5 +1,5 @@
 //! The Synology's own figures over SNMPv3 (docs/pool.md §7.7, task #534): the one reader of them,
-//! for the NAS budget's closed loop (crate::budget::nas::Loop) and the build page's NAS figures
+//! for the NAS budget's pacing (crate::budget::nas::Pace) and the build page's NAS figures
 //! (task #517). Polled by the lead alone. The keys (`NAS_SNMP_USER`, `NAS_SNMP_AUTH`) are read
 //! from the project's `inputs/keys.env` (crate::keys), handed
 //! to `/usr/bin/snmpget` in a private config file (`Session`), never on its command line, and

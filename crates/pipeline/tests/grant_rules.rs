@@ -48,7 +48,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ),
     (
         "agentcore/src/pool/sim/place.rs",
-        "if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {",
+        "if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true, win) {",
         "the simulator's outcome check of a start the scheduler made (task #539), not a grant",
     ),
     (

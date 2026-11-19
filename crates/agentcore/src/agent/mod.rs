@@ -1331,7 +1331,7 @@ fn old_app_notices(capacity: &[(String, crate::coord::Capacity)]) -> Vec<Notice>
 /// The waiting lines for targets the lead's NAS budget has held back (`waits`: step, target,
 /// minutes; coord::Coordinator::nas_waits), once each: those already in `waiting` (a plan's lines,
 /// kept and said again between plans) replaced (task #444: each was listed twice). While the
-/// budget is held by the NAS's own load (`held`, coord::Coordinator::nas_held), a line says so,
+/// pacing holds new NAS work back (`held`, coord::Coordinator::nas_paced), a line says so,
 /// and each target's says it too.
 fn nas_wait_lines(waiting: &mut Vec<Waiting>, waits: Vec<(String, String, u64)>, held: Option<String>) {
     const WHY: &str = "for room in the pool's NAS budget (docs/pool.md §7.7)";
@@ -3668,8 +3668,8 @@ impl Agent {
     /// a day, began the hold a moment before the probe landed and started the six hours again, so
     /// the lead never grew past two slots). The probes failing (`Coordinator::nas_failing`: two or
     /// more in a row; one alone, a hiccup every few hours, is neither a hold nor trouble) holds
-    /// them too and is trouble. Not the pool's leased jobs' NAS weight past the whole
-    /// (`Coordinator::nas_over`): the budget grants that by its own rules (the lead's own jobs alone,
+    /// them too and is trouble. Not the pool's leased jobs' NAS weight past the window
+    /// (§7.7): the budget grants that by its own rules (the lead's own jobs alone,
     /// an aged job weighing the whole, §7.7) and holds the lead's own jobs at grant whatever the
     /// slots, so it says nothing about them.
     fn tend_ramp(&mut self) {
@@ -4813,7 +4813,7 @@ impl Agent {
         nas_wait_lines(
             &mut waiting,
             self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default(),
-            self.coord.as_ref().and_then(|c| c.nas_held()),
+            self.coord.as_ref().and_then(|c| c.nas_paced()),
         );
         // Leading: this Mac's own agent asks its coordinator for work as a member asks the lead's
         // (`lead_grants`), from the last plan, each round a slot is free. (A clear or a freeing
@@ -5992,6 +5992,7 @@ impl Agent {
                 v?.try_into().ok()
             }),
             nas_calls: self.live.as_ref().and_then(|l| l.calls_now(now_s())),
+            nas_ms: self.live.as_ref().and_then(|l| l.mean(live::NAS_MS, now_s(), crate::coord::NAS_MS_SPAN)),
             best: self.live.as_ref().and_then(|l| l.best(now_s(), self.mem_total(), cores)),
         }
     }
@@ -10300,12 +10301,12 @@ mod tests {
         nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 48)], None);
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w[1].why.starts_with("waiting 48 min") && w[1].what == "depth-lo 3/1/3", "{w:?}");
-        // (Held by the NAS's own load: a line for the NAS, and each target's says why.)
-        let held = Some("held by NAS load (91 % > target 85 %)".to_string());
+        // (Held by the pacing: a line for the NAS, and each target's says why.)
+        let held = Some("NAS work paced to 35 % of the NAS, 70 % in use (the NAS slowed lately)".to_string());
         nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 50)], held.clone());
         assert_eq!(w.len(), 3, "{w:?}");
-        assert!(w[1].what == "the NAS" && w[1].why.starts_with("held by NAS load (91 %"), "{w:?}");
-        assert!(w[2].why.starts_with("waiting 50 min, held by NAS load"), "{w:?}");
+        assert!(w[1].what == "the NAS" && w[1].why.starts_with("NAS work paced to 35 %"), "{w:?}");
+        assert!(w[2].why.starts_with("waiting 50 min, NAS work paced"), "{w:?}");
         nas_wait_lines(&mut w, Vec::new(), None);
         assert_eq!(w.len(), 1, "granted: gone");
     }

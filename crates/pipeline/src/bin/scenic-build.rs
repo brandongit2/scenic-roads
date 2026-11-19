@@ -4662,21 +4662,7 @@ fn settle_tails(
         let mut read = buildstore::costin::Taken::default();
         let mut here = || {
             let (r, t) = buildstore::costin::measured(|| roads::unit::run_tail(&anywhere, &dir, &tools));
-            read = buildstore::costin::Taken {
-                bytes: read.bytes + t.bytes,
-                local: read.local + t.local,
-                tiffs: read.tiffs + t.tiffs,
-                read_back: read.read_back + t.read_back,
-                cpu_ms: match (read.cpu_ms, t.cpu_ms) {
-                    (Some(a), Some(b)) => Some(a + b),
-                    (a, b) => a.or(b),
-                },
-                paused_ms: read.paused_ms + t.paused_ms,
-                nas_net_ms: match (read.nas_net_ms, t.nas_net_ms) {
-                    (Some(a), Some(b)) => Some(a + b),
-                    (a, b) => a.or(b),
-                },
-            };
+            read = read.plus(t);
             r
         };
         // (This Mac's own run of its steps, as its stages have taken here: a worker is waited on

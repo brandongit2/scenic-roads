@@ -7,7 +7,9 @@
 //! ends, plus the inputs a step opens itself and notes with `add`),
 //! `local` (of `bytes`, those read from this Mac's own disk, store::nasio's `Local`: a whole
 //! local copy's reads, task #551, and any NAS read this Mac's page cache answered, each told by
-//! its time, store::nasio::Reads, task #1450; not the NAS's, so not in its NAS weight),
+//! its time, store::nasio::Reads, task #1450), `held` (of `local`, those NAS reads the page cache
+//! answered, store::nasio::own_held: asked of the NAS all the same, so in its NAS weight, task
+//! #1417, where a whole local copy's reads aren't),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `nas_net_ms`
 //! (the wall time over it in which the process waited on the NAS or the network, store::waits by
@@ -32,8 +34,10 @@ use std::sync::Mutex;
 use store::nasio::Count;
 
 struct State {
-    /// This process's counts (store::nasio) as the target began.
+    /// This process's counts (store::nasio) as the target began, and the NAS bytes its page cache
+    /// held (store::nasio::own_held).
     at: store::nasio::Counts,
+    held_at: u64,
     /// The process's CPU time as the target began (µs: jobrt::timings::cpu_us), and the time it had
     /// been stopped (ms: `stopped_ms`).
     cpu_at: Option<u64>,
@@ -47,6 +51,7 @@ struct State {
 
 static STATE: Mutex<State> = Mutex::new(State {
     at: [0; store::nasio::SLOTS],
+    held_at: 0,
     cpu_at: None,
     stopped_at: 0,
     waited_at: None,
@@ -84,6 +89,7 @@ fn grew(at: &store::nasio::Counts, now: &store::nasio::Counts) -> (u64, u64, u64
 pub fn begin() {
     let mut s = state();
     s.at = store::nasio::own();
+    s.held_at = store::nasio::own_held();
     s.cpu_at = jobrt::timings::cpu_us();
     s.stopped_at = stopped_ms();
     s.waited_at = waited();
@@ -186,11 +192,12 @@ pub fn set(key: &str, n: u64) {
 }
 
 /// The target's measures (since `begin`), with `bytes` (the store's reads added), `local` where any
-/// of them were the local disk's, `threads`, and `tiffs` where any were opened or the step noted an
-/// area.
+/// of them were the local disk's, `held` where any of those were NAS reads its page cache held,
+/// `threads`, and `tiffs` where any were opened or the step noted an area.
 pub fn take() -> BTreeMap<String, u64> {
     let mut s = state();
     let (read, local, tiffs, back) = grew(&s.at, &store::nasio::own());
+    let held = store::nasio::own_held().saturating_sub(s.held_at);
     let mut m = std::mem::take(&mut s.m);
     *m.entry("bytes".into()).or_default() += read;
     // (Said with `bytes` always, 0 too: a line without it is from before it was measured, whose
@@ -199,6 +206,9 @@ pub fn take() -> BTreeMap<String, u64> {
     *m.entry("read_back".into()).or_default() += back;
     if local > 0 {
         *m.entry("local".into()).or_default() += local;
+    }
+    if held > 0 {
+        *m.entry("held".into()).or_default() += held;
     }
     if tiffs > 0 || m.contains_key("km2") {
         m.insert("tiffs".into(), tiffs);
@@ -223,13 +233,14 @@ pub fn take() -> BTreeMap<String, u64> {
     m
 }
 
-/// What `measured` took: the bytes read (and of them, the local disk's), the GeoTIFFs opened, the
-/// bytes its uploads read back, the CPU time (ms; None where it can't be read), and the time it was
-/// stopped (ms, `stopped_ms`).
+/// What `measured` took: the bytes read (and of them, the local disk's, and of those the NAS reads
+/// its page cache held), the GeoTIFFs opened, the bytes its uploads read back, the CPU time (ms;
+/// None where it can't be read), and the time it was stopped (ms, `stopped_ms`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Taken {
     pub bytes: u64,
     pub local: u64,
+    pub held: u64,
     pub tiffs: u64,
     pub read_back: u64,
     pub cpu_ms: Option<u64>,
@@ -238,20 +249,43 @@ pub struct Taken {
     pub nas_net_ms: Option<u64>,
 }
 
+impl Taken {
+    /// These and `t` together (two runs of `measured`).
+    pub fn plus(self, t: Taken) -> Taken {
+        let opt = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        Taken {
+            bytes: self.bytes + t.bytes,
+            local: self.local + t.local,
+            held: self.held + t.held,
+            tiffs: self.tiffs + t.tiffs,
+            read_back: self.read_back + t.read_back,
+            cpu_ms: opt(self.cpu_ms, t.cpu_ms),
+            paused_ms: self.paused_ms + t.paused_ms,
+            nas_net_ms: opt(self.nas_net_ms, t.nas_net_ms),
+        }
+    }
+}
+
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
 /// begins) and gives back what it read, the GeoTIFFs it opened and the CPU it took: its programs'
 /// own (their counts added to this process's as each ends: roads::unit's `run`; their CPU as each
 /// is waited for) among them. (Reads and CPU on other threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
-    let (at, c0, p0, w0) = (store::nasio::own(), jobrt::timings::cpu_us(), stopped_ms(), waited());
+    let (at, h0, c0, p0, w0) =
+        (store::nasio::own(), store::nasio::own_held(), jobrt::timings::cpu_us(), stopped_ms(), waited());
     let v = f();
     let cpu_ms = match (c0, jobrt::timings::cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
         _ => None,
     };
     let (bytes, local, tiffs, read_back) = grew(&at, &store::nasio::own());
+    let held = store::nasio::own_held().saturating_sub(h0);
     let nas_net_ms = w0.zip(waited()).map(|(a, b)| b.saturating_sub(a) / 1_000_000);
-    (v, Taken { bytes, local, tiffs, read_back, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0), nas_net_ms })
+    let paused_ms = stopped_ms().saturating_sub(p0);
+    (v, Taken { bytes, local, held, tiffs, read_back, cpu_ms, paused_ms, nas_net_ms })
 }
 
 /// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
@@ -262,6 +296,9 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     *m.entry("read_back".into()).or_default() += t.read_back;
     if t.local > 0 {
         *m.entry("local".into()).or_default() += t.local;
+    }
+    if t.held > 0 {
+        *m.entry("held".into()).or_default() += t.held;
     }
     if t.tiffs > 0 || m.contains_key("km2") {
         *m.entry("tiffs".into()).or_default() += t.tiffs;
@@ -353,12 +390,29 @@ mod tests {
         let ((), t) = measured(|| store::nasio::add_counts(&c));
         assert!(t.bytes >= 1024 && t.local >= 24 && t.tiffs >= 4);
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
-        add_to(
-            &mut m,
-            Taken { bytes: 7, local: 0, tiffs: 2, read_back: 3, cpu_ms: None, paused_ms: 0, nas_net_ms: None },
-        );
+        add_to(&mut m, Taken { bytes: 7, tiffs: 2, read_back: 3, ..Default::default() });
         assert_eq!((m["bytes"], m["tiffs"], m["read_back"]), (7, 2, 3));
-        assert!(!m.contains_key("cpu_ms"));
+        assert!(!m.contains_key("cpu_ms") && !m.contains_key("held"));
+        let two = Taken { bytes: 7, held: 4, cpu_ms: Some(2), ..Default::default() }.plus(Taken {
+            bytes: 1,
+            held: 1,
+            ..Default::default()
+        });
+        assert_eq!((two.bytes, two.held, two.cpu_ms), (8, 5, Some(2)));
+        add_to(&mut m, two);
+        assert_eq!((m["bytes"], m["held"]), (15, 5));
+    }
+
+    /// Task #1417: of the NAS reads, those this Mac's page cache held are said apart (`held`):
+    /// asked of the NAS all the same (a warm cache isn't a small need).
+    #[test]
+    fn the_nas_reads_the_cache_held_are_said_apart() {
+        let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        begin();
+        store::nasio::held(300);
+        assert!(take()["held"] >= 300);
+        let ((), t) = measured(|| store::nasio::held(40));
+        assert!(t.held >= 40);
     }
 
     /// Task #1142: what the uploads read back is the NAS's reads (store::nasio's `ReadBytes`), kept

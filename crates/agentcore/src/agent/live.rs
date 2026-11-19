@@ -41,7 +41,7 @@
 //!   gave it no folder (from an older app) leaves the second unmeasured.
 //! - **The NAS as a whole** (task #517): every second this process's NAS calls in flight and
 //!   missed (crate::agent::nasread::calls); on the lead, every 10 s from its coordinator's NAS
-//!   prober, the disks' busy shares (`record_disks`, the load gate's own reading) and the pool's NAS
+//!   prober, the disks' busy shares (`record_disks`, the pacing's own reading) and the pool's NAS
 //!   traffic and calls (in flight, missed a second, their threads), the members' summed
 //!   (`record_pool`, `record_pool_calls`; task #634).
 //! - **The file stream** (task #522): every second the NAS files each job's running processes
@@ -158,9 +158,14 @@ pub const POOL_CALLS: [&str; 3] = ["pool_nas_calls", "pool_nas_missed", "pool_na
 /// The span a member's missed calls are averaged over for its lead (s): longer than the asks
 /// between its capacities, so no second's misses fall between two.
 pub const CALLS_SPAN: u64 = 30;
-/// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (jobrt::budget::snmp):
+/// The NAS's disks' busy share (%), as the lead's pacing reads them every 10 s (jobrt::budget::snmp):
 /// the busiest, and each disk's (`NAS_DISK_BUSY`, a dot, its number from 1).
 pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
+
+/// The pacing of the pool's NAS work on the lead, every 10 s (`record_pace`; task #1417,
+/// jobrt::budget::nas::Pace): its window and the weight the pool's leased jobs hold (% of the NAS
+/// as probed), and the worst Mac's NAS answer time over its floor.
+pub const POOL_PACE: [&str; 3] = ["pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x"];
 
 /// The NAS files kept for the file stream (the newest).
 pub const FILES: usize = 200;
@@ -448,6 +453,19 @@ impl Store {
     pub fn record_pool(&self, t: u64, traffic: &[f64; 7]) {
         for (n, v) in NAS_TRAFFIC.iter().zip(traffic) {
             self.record(&format!("{POOL}{n}"), t, *v);
+        }
+    }
+
+    /// The pacing's reading at `t` (`POOL_PACE`): its window, the weight in use, and the worst
+    /// Mac's NAS answer time over its floor where one was read.
+    pub fn record_pace(&self, t: u64, p: &jobrt::budget::nas::Pace) {
+        let pct = |w: u32| f64::from(w) / 10.0;
+        self.record(POOL_PACE[0], t, pct(p.window()));
+        if let Some(r) = &p.last {
+            self.record(POOL_PACE[1], t, pct(r.in_use));
+            if let Some(a) = &r.worst {
+                self.record(POOL_PACE[2], t, a.ratio());
+            }
         }
     }
 

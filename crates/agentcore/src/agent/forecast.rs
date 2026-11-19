@@ -1848,9 +1848,9 @@ fn run_on(
             _ => None,
         })
         .collect();
-    // (The NAS's own load over the owner's target as recorded (`Limits::held`) is a reading of now:
-    // held while the jobs out now run, nothing foreseen after them, as no passing load is. Code 7:
-    // before it, shut for the whole run.)
+    // (The pacing's window as recorded (`Limits::window`) is a reading of now: a window cut under
+    // the whole holds while the jobs out now run, the whole after them, as no passing load is
+    // foreseen. Code 7: before it, a held gate shut for the whole run.)
     let mut gate_on: Vec<u64> = if inp.code >= 7 { out.iter().map(|o| o.1).collect() } else { Vec::new() };
     let mut inflight: Vec<usize> = running.iter().map(|r| r.0).collect();
     let mut unassigned = items.iter().filter(|i| i.by.is_none()).count();
@@ -2006,7 +2006,7 @@ fn run_on(
             gate_on.retain(|id| out.iter().any(|o| o.1 == *id));
             if gate_on.is_empty() {
                 for l in [&mut pool.sched.nas, &mut pool.sched.nas_own].into_iter().flatten() {
-                    l.held = false;
+                    l.window = l.window.max(jobrt::budget::nas::WHOLE);
                 }
             }
         }
@@ -3531,19 +3531,20 @@ mod tests {
         assert!(sim.items.iter().all(|i| i.by.is_some()));
     }
 
-    /// Task #993: the NAS's own load over its target (`Limits::held`) is a reading of now: the run
-    /// holds it while the jobs out now run, not for its whole length (code 6 did: two records of
-    /// 5 Nov so shut ran every job that weighs anything one at a time, their depth a day late).
+    /// Task #993: a pacing window cut under the whole (`Limits::window`) is a reading of now: the
+    /// run holds it while the jobs out now run, not for its whole length (code 6 held the gate
+    /// before it so: two records of 5 Nov so shut ran every job that weighs anything one at a time,
+    /// their depth a day late).
     #[test]
-    fn the_nas_gate_opens_once_the_jobs_out_end() {
+    fn a_cut_nas_window_opens_once_the_jobs_out_end() {
         use crate::coord::sched::{Asked, Leased, State};
         use crate::coord::{Ask, Capacity};
         let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
         let regions = [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }];
         let c = |_: &str, _: &str| Cost { secs: 600.0, basis: Basis::Own, peak_mb: 1000 };
         // (Targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's lane
-        // busy, a member's job out for 900 s: held, one at a time while it runs.)
-        let limits = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
+        // busy, a member's job out for 900 s, the window cut to 150: one at a time while it runs.)
+        let limits = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, window: 150, ..Default::default() };
         let v = crate::coord::cost_version("slope-deep");
         let mut st = State { nas: Some(limits), nas_own: Some(limits), lead_name: "m4".into(), ..Default::default() };
         for t in &regions[0].slope_deep {

@@ -5,7 +5,7 @@
 //! (`pick_own`), the packing by measured memory, disk and cores (crate::needs), cold starts by their
 //! provisional need, one at a time on a Mac and never-measured steps alone, the NAS budget
 //! (jobrt::budget::nas: its weights and limits, the aged reservations, quiet steps, the downloads'
-//! cap, the gate on the NAS's own load) and placement (crate::agent::placement).
+//! cap, the pacing of the NAS by its latency) and placement (crate::agent::placement).
 //!
 //! It's pure: `Sched::pack` decides from its state (`Sched`), the ask and a clock it's handed
 //! (`Clock`), and changes nothing but its state (the leases it grants, the targets' waits on the
@@ -141,7 +141,7 @@ impl Rule {
             Rule::Memory => Some("macOS's memory now; the forecast takes each Mac at its sustained best"),
             Rule::Outside => Some("load outside the pool now; the forecast takes each Mac at its sustained best"),
             Rule::Nas => Some(
-                "its gate on the NAS's own load is a reading of now; the forecast holds it only while the jobs out run",
+                "its pacing window, cut by the NAS's latency or load, is a reading of now; the forecast holds it only while the jobs out run",
             ),
             _ => None,
         }
@@ -296,7 +296,7 @@ pub type Measures = FxMap<String, FxMap<String, (u64, Option<Measured>)>>;
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
 /// steps' 90th percentiles kept with its models: crate::needs::Book::nas_prior).
 pub(crate) struct NasWeigher<'a> {
-    limits: jobrt::budget::nas::Limits,
+    pub(super) limits: jobrt::budget::nas::Limits,
     book: crate::needs::Book<'a>,
 }
 
@@ -1181,7 +1181,7 @@ impl Sched {
     /// the NAS budget weighs every job leased for each offer an ask weighs, a job of 30 targets each
     /// time.
     fn lease_nas(&self, nw: &NasWeigher, l: &Lease, step: &str, targets: &[(String, String)]) -> (u32, bool) {
-        if let Some(w) = self.kept_lease(l, |k| k.nas.iter().find(|n| n.0 == nw.limits).map(|n| n.1)) {
+        if let Some(w) = self.kept_lease(l, |k| k.nas.iter().find(|n| n.0.weighs_as(&nw.limits)).map(|n| n.1)) {
             return w;
         }
         let got = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
@@ -1350,20 +1350,37 @@ impl Sched {
     }
 
     /// Whether a job of `step` over `targets` of weight `w`, beside leased jobs weighing `running`,
-    /// leaves the room held for an aged target (`reserved`, `nas_reserved`'s): it weighs nothing,
-    /// nothing's held, it's the one held for, or both fit within the whole.
+    /// leaves the room held for an aged target (`reserved`, `nas_reserved`'s): it weighs less than
+    /// a step (not paced), nothing's held, it's the one held for, or both fit within the window
+    /// `win`.
     pub(super) fn nas_reserve_ok(
         reserved: Option<&(String, String, u32)>,
         step: &str,
         targets: &[String],
         running: u32,
         w: u32,
+        win: u32,
     ) -> bool {
-        w == 0
+        w < jobrt::budget::nas::STEP
             || reserved.is_none_or(|(st, t, rw)| {
-                (st == step && targets.contains(t))
-                    || running.saturating_add(w).saturating_add(*rw) <= jobrt::budget::nas::WHOLE
+                (st == step && targets.contains(t)) || running.saturating_add(w).saturating_add(*rw) <= win
             })
+    }
+
+    /// The least a target passed over for the NAS budget alone in the last two minutes weighs, a
+    /// step or more (at the lead's pace, `nw`'s weights): what the pacing's window must leave room
+    /// for beside what's in use to be what limits (jobrt::budget::nas::Pace::read). None: none waits.
+    pub(super) fn nas_wants(&self, nw: &NasWeigher, now: Instant) -> Option<u32> {
+        let fresh_from = now.checked_sub(Duration::from_secs(120));
+        let waits: Vec<(String, String)> = self
+            .nas_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, (_, last))| fresh_from.is_none_or(|f| *last > f))
+            .map(|(k, _)| k.clone())
+            .collect();
+        waits.iter().map(|(st, t)| nw.weight(st, t, None)).filter(|&w| w >= jobrt::budget::nas::STEP).min()
     }
 
     /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).
@@ -2314,7 +2331,7 @@ impl Sched {
     }
 
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
-    /// within the whole or beside nothing weighing anything, a download under the cap (the lead's
+    /// within the window or beside nothing weighing anything, a download under the cap (the lead's
     /// own always held to it, `nas_room`); `alone`: as if the lead held nothing (the members' jobs
     /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`), a test
     /// that changes nothing (no wait noted, no quiet clock started). Not `alone`, held back for the budget alone, it's noted waiting (`nas_wait`), and goes beside leased jobs
@@ -2334,7 +2351,7 @@ impl Sched {
                 return false;
             }
             let own = running.saturating_sub(members);
-            // (A quiet step, the clean-up, measured the way it runs now: alone or within the whole
+            // (A quiet step, the clean-up, measured the way it runs now: alone or within the window
             // by its measured weight, never aged past it, its wait not noted: it never holds room,
             // jobrt::budget::nas::QUIET_STEPS.) Held back `QUIET_AGE` (a pool that stays busy), it
             // goes as an aged job of the lead's own, its wait noted so its room is held. Unmeasured,
@@ -2359,11 +2376,19 @@ impl Sched {
             };
             let waited = waited || (quiet_step && measured && !quiet);
             let fits = if quiet {
-                jobrt::budget::nas::Limits::fits_quiet(running, w)
+                jobrt::budget::nas::Limits::fits_quiet(running, w, nw.limits.window)
             } else {
-                jobrt::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
-            } && nw.limits.open(running, w)
-                && (alone || Self::nas_reserve_ok(self.nas_reserved(&nw, now).as_ref(), &o.step, &ts, running, w));
+                jobrt::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited, nw.limits.window)
+            } && nw.limits.paced(running, w)
+                && (alone
+                    || Self::nas_reserve_ok(
+                        self.nas_reserved(&nw, now).as_ref(),
+                        &o.step,
+                        &ts,
+                        running,
+                        w,
+                        nw.limits.window,
+                    ));
             if !fits && !alone && !quiet {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
@@ -2428,7 +2453,7 @@ impl Sched {
         if downloads_full {
             return Vec::new();
         }
-        // (The lead's own asks held within the whole, or alone; a member's past it beside the
+        // (The lead's own asks held within the window, or alone; a member's past it beside the
         // lead's own alone: jobrt::budget::nas::Limits. Weighed as the job it would make: `t` added
         // to the targets picked before it, `with`, task #939.)
         let nas_fits = |t: &str, with: &JobLoad| {
@@ -2436,13 +2461,20 @@ impl Sched {
                 let mut j = *with;
                 nw.add(&mut j, &o.step, t, Some(&a.worker));
                 let w = nw.job(&j);
-                // (The NAS's own load over the owner's target: nothing new that weighs anything
-                // but beside nothing, jobrt::budget::nas::Loop.)
-                if !nw.limits.open(*running, w) {
+                // (The window cut under the whole by the NAS's latency or load: what fits it alone,
+                // jobrt::budget::nas::Pace.)
+                if !nw.limits.paced(*running, w) {
                     return false;
                 }
                 // (Room held for a target aged in the budget left to it: `nas_reserved`.)
-                if !Self::nas_reserve_ok(self.nas_reserved(nw, now).as_ref(), &o.step, &[t.to_string()], *running, w) {
+                if !Self::nas_reserve_ok(
+                    self.nas_reserved(nw, now).as_ref(),
+                    &o.step,
+                    &[t.to_string()],
+                    *running,
+                    w,
+                    nw.limits.window,
+                ) {
                     return false;
                 }
                 // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's
@@ -2454,9 +2486,9 @@ impl Sched {
                 };
                 if lead {
                     let own = running.saturating_sub(*members);
-                    jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited)
+                    jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited, nw.limits.window)
                 } else {
-                    jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited)
+                    jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited, nw.limits.window)
                 }
             })
         };

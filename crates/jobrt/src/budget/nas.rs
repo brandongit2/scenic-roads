@@ -24,11 +24,12 @@
 //!   the lead's store (agentcore::coord::kept's `PROBES`, so in its backup too) and read once it's
 //!   open: a restart, or a new lead on another Mac taking the backup up, keeps the day's best
 //!   (task #603: a restart under load had cut the limits from 86 MB/s to 66.5).
-//! - **The gate on the NAS's own load** (`Loop`, task #534): every 10 s the coordinator reads the
-//!   NAS's own disks' busy shares (crate::budget::snmp); while the busiest, smoothed, is over the
-//!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
-//!   loads the NAS, the build or not, no new job that weighs anything goes but beside nothing that
-//!   weighs anything (`Limits::open`).
+//! - **The pacing** (`Pace`, task #1417): the jobs' weights together are held within a window, not
+//!   the whole: every 10 s the coordinator reads every Mac's NAS answer time against its best and
+//!   the NAS's own disks' busy shares (crate::budget::snmp) against the owner's target (`Target`),
+//!   whatever loads the NAS, the build or not, and grows the window slowly while the NAS answers
+//!   near its best, or cuts it to half what's in use once it slows past the knee. A job weighing
+//!   less than a `STEP` isn't paced.
 //! - **Downloads**: a job of a fetching step (pipeline::agent::steps::Kind::Fetch) counts one; the
 //!   switch's `downloads <n>` caps them pool-wide (no cap without it).
 
@@ -71,72 +72,222 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
     t.map_or(DEFAULT_TARGET_PCT, |t| t.pct)
 }
 
-/// The gate on the NAS's own disk load (task #534): the busiest disk's busy share, smoothed,
-/// against the owner's target. Over it, the budget is held (`Limits::held`): no new job that
-/// weighs anything is granted but beside nothing that weighs anything (`Limits::open`); the
-/// weights and the room are as the probes' limits give them, so a held NAS never admits what an
-/// unheld one refuses. It holds once the load is over the target and opens again only below
-/// `target - BAND`, so a load hovering at the target doesn't open and shut every reading.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Loop {
-    /// The busiest disk's busy share, smoothed (%; None: not read, the gate open).
+/// The pacing (task #1417): the weight the pool's jobs may hold together, `Limits::window`, found
+/// as TCP finds its window, from the NAS's live latency as every Mac reads it and its disks' busy
+/// share against the owner's target. The NAS is soft with a cliff (on 4 Oct its saturation left
+/// processes on two Macs in uninterruptible waits): work is added slowly while it answers near its
+/// best, and cut quickly once its answers slow, before the cliff. Every `READ_EVERY_S` the lead
+/// reads:
+///
+/// - each Mac's NAS answer time (its agent's listing of the project's folder every 5 s while a
+///   build runs, its mean over the last half minute, carried by its capacity) over that Mac's
+///   **floor**, the least of its minutes' least answers over the last `FLOOR_S` (never under
+///   store::aimd::NAS_LEAST); the worst Mac's ratio counts (a Mac away on a slow link has a slow
+///   floor of its own, not a congested NAS);
+/// - the NAS's busiest disk's busy share (SNMP, smoothed by `SMOOTH`) against the owner's target
+///   (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`).
+///
+/// Then, as the NAS's own readers decide their reads in flight (store::aimd, whose `NEAR` and
+/// `SLOW` it shares):
+///
+/// - **past the knee** (the worst ratio past `SLOW`, or the disks over the target): the window
+///   drops to half the weight in use (`DECREASE`) at once, never under `STEP`: the jobs running go
+///   on, and nothing more that's paced starts until enough of them end;
+/// - **near the best** (the worst ratio within `NEAR`, the disks within the target): it grows,
+///   only while it's what limits the pool (the weight in use and the least a target waiting for
+///   the budget weighs past it; none waiting, the weight in use within `STEP` of it: a window no
+///   job asks for isn't credit for a later burst, nor is room left by a job just ended): doubling a
+///   minute until its first cut (TCP's slow start, as store::aimd's), then by `STEP` a minute;
+/// - **between**, or nothing read: it holds.
+///
+/// It starts at `STEP`, or at what the jobs already leased weigh where that's more (a lead's
+/// coordinator starting knows nothing of the NAS's load but what runs on it; a job beside nothing
+/// always goes), and has no ceiling: the weights are estimates, and the latency, not they, says
+/// when the NAS is full.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pace {
+    window: f64,
+    /// Whether it has been cut yet: till then it doubles.
+    cut: bool,
+    /// Each Mac's floor: its minutes' least answer times (ms), the last `FLOOR_S`'s, oldest first.
+    floors: std::collections::BTreeMap<String, std::collections::VecDeque<(u64, f64)>>,
+    /// The busiest disk's busy share, smoothed (%; None: not read).
     pub load: Option<f64>,
     /// The target it was last read against (%).
     pub target: u32,
-    /// Whether the gate is shut (set over the target, cleared under `target - BAND`).
-    shut: bool,
+    /// The last reading (None: none yet).
+    pub last: Option<Reading>,
 }
 
-/// How far under the target (%) the load must fall for a held gate to reopen.
-pub const BAND: f64 = 3.0;
+/// One reading of the pacing (`Pace::read`): when (unix s), the worst Mac's answer time against its
+/// floor, the disks' smoothed load, the weight in use, and what it did.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Reading {
+    pub at: u64,
+    /// The Mac whose NAS answers were slowest against its floor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worst: Option<Answers>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_pct: Option<f64>,
+    pub in_use: u32,
+    pub verdict: Verdict,
+}
 
-/// The smoothing's weight of a new reading (one each 10 s: about half a minute's memory, so one
-/// busy second doesn't hold the pool, nor one quiet one open it).
+/// A Mac's NAS answer time and its floor (ms).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Answers {
+    pub mac: String,
+    pub ms: f64,
+    pub floor_ms: f64,
+}
+
+impl Answers {
+    /// Its answer time over its floor.
+    pub fn ratio(&self) -> f64 {
+        self.ms / self.floor_ms.max(f64::MIN_POSITIVE)
+    }
+}
+
+/// What a reading did to the window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    /// Near the best, and the window what limits: grown.
+    Grew,
+    /// Past the knee: cut.
+    Cut,
+    /// Between, or the window not what limits.
+    #[default]
+    Held,
+    /// Nothing read (no Mac's answer time, no disk reading): held.
+    Unread,
+}
+
+/// How often the lead reads the pacing (s).
+pub const READ_EVERY_S: u64 = 10;
+/// The span a Mac's floor is its least minute over (s): long enough that a burst's slow minutes
+/// don't become the floor, short enough to follow a Mac whose link has changed.
+pub const FLOOR_S: u64 = 30 * 60;
+/// The window's additive step, a minute, and its least (thousandths of the NAS). A job weighing
+/// less isn't paced (`Limits::paced`): it's within what the pacing adds anyway.
+pub const STEP: u32 = 50;
+/// The window past the knee: this share of the weight in use.
+pub const DECREASE: f64 = 0.5;
+
+/// The smoothing's weight of a new disk reading (one each 10 s: about half a minute's memory, so
+/// one busy second doesn't cut the window, nor one quiet one grow it).
 pub const SMOOTH: f64 = 0.3;
 
-impl Loop {
-    /// One reading of the disks' busy shares (%) against the target `pct`.
-    pub fn read(&mut self, busy: &[f64], pct: u32) {
-        let Some(now) = busy.iter().copied().filter(|b| b.is_finite()).reduce(f64::max) else { return };
-        self.load = Some(self.load.map_or(now, |l| l + SMOOTH * (now - l)));
-        self.target = pct;
-        let l = self.load.unwrap_or_default();
-        if l > pct as f64 {
-            self.shut = true;
-        } else if l < pct as f64 - BAND {
-            self.shut = false;
+impl Default for Pace {
+    fn default() -> Self {
+        Pace { window: STEP as f64, cut: false, floors: Default::default(), load: None, target: 0, last: None }
+    }
+}
+
+impl Pace {
+    /// The window now (thousandths of the NAS).
+    pub fn window(&self) -> u32 {
+        self.window.round() as u32
+    }
+
+    /// A reading at `t` (unix s): each Mac's NAS answer time now (ms), the disks' busy shares (%;
+    /// None: not read) against the target `pct`, the weight the pool's leased jobs hold now, and
+    /// the least a target waiting for the budget weighs (None: none waits; the window is what
+    /// limits once it refuses that beside what's in use, or, none waiting, a `STEP`).
+    pub fn read(
+        &mut self,
+        t: u64,
+        answers: &[(String, f64)],
+        busy: Option<&[f64]>,
+        pct: u32,
+        in_use: u32,
+        wants: Option<u32>,
+    ) -> Verdict {
+        match busy.and_then(|b| b.iter().copied().filter(|b| b.is_finite()).reduce(f64::max)) {
+            Some(now) => self.load = Some(self.load.map_or(now, |l| l + SMOOTH * (now - l))),
+            None => self.load = None,
         }
-    }
-
-    /// No reading to be had (no keys, the NAS not answering): the gate open, the probes' limits
-    /// alone.
-    pub fn lost(&mut self) {
-        *self = Loop::default();
-    }
-
-    /// Whether the gate is shut: the load went over the target and hasn't fallen below the band.
-    pub fn held(&self) -> bool {
-        self.load.is_some() && self.shut
-    }
-
-    /// Why the budget is held, for the lead's waiting lines (None: not held).
-    pub fn why(&self) -> Option<String> {
-        let l = self.load.filter(|_| self.held())?;
-        let (t, under) = (self.target, self.target as f64 - BAND);
-        Some(if l > t as f64 {
-            format!("held by NAS load ({l:.0} % > target {t} %)")
+        self.target = pct;
+        let least = store::aimd::NAS_LEAST.as_secs_f64() * 1000.0;
+        let mut worst: Option<Answers> = None;
+        for (mac, ms) in answers.iter().filter(|(_, ms)| ms.is_finite() && *ms > 0.0) {
+            let f = self.floors.entry(mac.clone()).or_default();
+            let minute = t / 60;
+            match f.back_mut() {
+                Some((m, v)) if *m == minute => *v = v.min(*ms),
+                _ => f.push_back((minute, *ms)),
+            }
+            let floor = f.iter().map(|x| x.1).fold(f64::INFINITY, f64::min).max(least);
+            let a = Answers { mac: mac.clone(), ms: *ms, floor_ms: floor };
+            if worst.as_ref().is_none_or(|w| a.ratio() > w.ratio()) {
+                worst = Some(a);
+            }
+        }
+        // (Minutes past `FLOOR_S` let go, and with them the Macs no longer heard from.)
+        for f in self.floors.values_mut() {
+            while f.front().is_some_and(|(m, _)| (m + 1) * 60 + FLOOR_S <= t) {
+                f.pop_front();
+            }
+        }
+        self.floors.retain(|_, f| !f.is_empty());
+        let ratio = worst.as_ref().map(Answers::ratio);
+        let over = self.load.is_some_and(|l| l > pct as f64);
+        if self.last.is_none() {
+            self.window = self.window.max(in_use as f64);
+        }
+        let dt = self.last.as_ref().map_or(READ_EVERY_S, |r| t.saturating_sub(r.at)).min(60) as f64;
+        let verdict = if ratio.is_none() && self.load.is_none() {
+            Verdict::Unread
+        } else if over || ratio.is_some_and(|r| r > store::aimd::SLOW) {
+            self.window = self.window.min(in_use as f64 * DECREASE).max(STEP as f64);
+            self.cut = true;
+            Verdict::Cut
+        } else if ratio.is_none_or(|r| r <= store::aimd::NEAR)
+            && in_use.saturating_add(wants.unwrap_or(STEP)) as f64 > self.window
+        {
+            if self.cut {
+                self.window += STEP as f64 * dt / 60.0;
+            } else {
+                self.window *= (dt / 60.0).exp2();
+            }
+            Verdict::Grew
         } else {
-            format!("held by NAS load ({l:.0} %, target {t} %, reopens under {under:.0} %)")
+            Verdict::Held
+        };
+        self.last =
+            Some(Reading { at: t, worst, load_pct: self.load.map(|l| (l * 10.0).round() / 10.0), in_use, verdict });
+        verdict
+    }
+
+    /// Why the pacing holds new NAS work back, for the lead's waiting lines: the window under the
+    /// weight in use (None: it isn't).
+    pub fn why(&self) -> Option<String> {
+        let r = self.last.as_ref()?;
+        let w = self.window();
+        (w < r.in_use).then(|| {
+            let cause = match (&r.worst, r.load_pct) {
+                (_, Some(l)) if l > self.target as f64 => {
+                    format!("its disks {l:.0} % busy, over the target {} %", self.target)
+                }
+                (Some(a), _) if a.ratio() > store::aimd::SLOW => {
+                    format!("answering {} in {:.0} ms, {:.1}× its best", a.mac, a.ms, a.ratio())
+                }
+                _ => "slowed lately".to_string(),
+            };
+            format!("NAS work paced to {} % of the NAS, {} % in use (the NAS {cause})", w / 10, r.in_use / 10)
         })
     }
 }
 
 impl Limits {
-    /// The gate (`Loop`) for a job of weight `w` beside leased jobs weighing `running`: open
-    /// unless held, and a held one still lets through what weighs nothing or goes beside nothing
-    /// that weighs anything. Only ever narrows the `fits*` rules.
-    pub fn open(&self, running: u32, w: u32) -> bool {
-        !self.held || w == 0 || running == 0
+    /// The pacing (`Pace`) for a job of weight `w` beside leased jobs weighing `running`: a job
+    /// weighing less than a `STEP`, one going beside nothing, or one within the window go; and
+    /// while the window is the whole or more (not cut), whatever the `fits*` rules let through
+    /// (their ways past the sum: the lead's own alone, an aged job). Only ever narrows them.
+    pub fn paced(&self, running: u32, w: u32) -> bool {
+        w < STEP || running == 0 || self.window >= WHOLE || running.saturating_add(w) <= self.window
     }
 }
 
@@ -178,8 +329,8 @@ pub struct Probe {
     pub deletes_s: f64,
 }
 
-/// The pool's limits now: the NAS's (a probe's), and the downloads' cap.
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+/// The pool's limits now: the NAS's (a probe's), the pacing's window, and the downloads' cap.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Limits {
     pub bytes_s: f64,
@@ -189,8 +340,23 @@ pub struct Limits {
     pub stats_s: f64,
     pub deletes_s: f64,
     pub downloads: Option<usize>,
-    /// The NAS's own load over the owner's target (`Loop::held`): the gate shut (`open`).
-    pub held: bool,
+    /// The weight the pool's leased jobs may hold together (thousandths of the NAS: `Pace`'s
+    /// window; `WHOLE` till it's read).
+    pub window: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            bytes_s: 0.0,
+            creates_s: 0.0,
+            listed_s: 0.0,
+            stats_s: 0.0,
+            deletes_s: 0.0,
+            downloads: None,
+            window: WHOLE,
+        }
+    }
 }
 
 /// A target's or job's measured NAS rate (agentcore::needs::Book::nas): bytes and files made, and its
@@ -205,6 +371,13 @@ pub struct Rate {
 }
 
 impl Limits {
+    /// Whether `other` weighs every job as these do (the same NAS; the window and the downloads'
+    /// cap aside): a weight kept for these stands for `other`.
+    pub fn weighs_as(&self, other: &Limits) -> bool {
+        let rates = |l: &Limits| [l.bytes_s, l.creates_s, l.listed_s, l.stats_s, l.deletes_s];
+        rates(self) == rates(other)
+    }
+
     /// The weight of a job at `r` (thousandths of the NAS; rounded up, so a measured job never
     /// weighs nothing; at most the whole, `WHOLE`). 0 while no probe measured the NAS.
     pub fn weight(&self, r: Rate) -> u32 {
@@ -223,11 +396,12 @@ impl Limits {
     }
 
     /// Whether a job of weight `w` may start beside leased jobs weighing `running` together, of
-    /// which the members' (all but the lead's own) weigh `members`: within the whole, or, when no
-    /// member's job weighs anything, whatever the lead's own weigh (they're always about: a job
-    /// that fits only beside nothing would never go).
-    pub fn fits(members: u32, running: u32, w: u32) -> bool {
-        w == 0 || members == 0 || running.saturating_add(w) <= WHOLE
+    /// which the members' (all but the lead's own) weigh `members`, in the window `win`: within
+    /// it, weighing less than a `STEP` (not paced), or, when no member's job weighs anything,
+    /// whatever the lead's own weigh (they're always about: a job that fits only beside nothing
+    /// would never go).
+    pub fn fits(members: u32, running: u32, w: u32, win: u32) -> bool {
+        w < STEP || members == 0 || running.saturating_add(w) <= win
     }
 
     /// `fits` for a member's job, which would starve beside the members' other jobs: once it has
@@ -236,37 +410,37 @@ impl Limits {
     /// jobs together: it waits for heavier work to end, never for a stream of lighter (task #603: a
     /// 946 one aged beside a 103 one could never go, and the room held for it stopped the pool);
     /// once it's in, the leased jobs outweigh any other, so aged ones never pile up.
-    pub fn fits_job(members: u32, running: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits(members, running, w) || (waited && heaviest < WHOLE && (w >= WHOLE || running < w))
+    pub fn fits_job(members: u32, running: u32, heaviest: u32, w: u32, waited: bool, win: u32) -> bool {
+        Self::fits(members, running, w, win) || (waited && heaviest < WHOLE && (w >= WHOLE || running < w))
     }
 
     /// Whether a job of the lead's own of weight `w` may start beside leased jobs weighing
-    /// `running` together: within the whole, or beside nothing that weighs anything (a job past
-    /// the whole alone).
-    fn fits_own(running: u32, w: u32) -> bool {
-        w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
+    /// `running` together, in the window `win`: within it, weighing less than a `STEP`, or beside
+    /// nothing that weighs anything (a job past the window alone).
+    fn fits_own(running: u32, w: u32, win: u32) -> bool {
+        w < STEP || running == 0 || running.saturating_add(w) <= win
     }
 
     /// `fits_own` for a target of the lead's own every-step asks (agentcore::coord's `pick_every`),
     /// which members' small jobs would otherwise hold back for good (each lease's weight keeps
     /// `running` above zero): it goes too once it has waited `OWN_AGE` for the budget alone
     /// (`waited`), no leased job weighs the whole (`heaviest`, the most one weighs) and the lead's
-    /// own leased jobs (`own`, their weight together) leave it room within the whole: aged ones go
-    /// past the members' jobs alone, one at a time, never piling up (task #603).
-    pub fn fits_own_target(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits_own(running, w) || (waited && heaviest < WHOLE && own.saturating_add(w) <= WHOLE)
+    /// own leased jobs (`own`, their weight together) leave it room within the window: aged ones
+    /// go past the members' jobs alone, one at a time, never piling up (task #603).
+    pub fn fits_own_target(running: u32, own: u32, heaviest: u32, w: u32, waited: bool, win: u32) -> bool {
+        Self::fits_own(running, w, win) || (waited && heaviest < WHOLE && own.saturating_add(w) <= win)
     }
 
     /// `fits_own_target` for the lead's own planned job (agentcore::coord's `own_nas_fits`): also, not
     /// waiting, once it weighs the whole itself while no leased job weighs the whole, so a whole
     /// one isn't held back by the lead's own stream of smaller jobs.
-    pub fn fits_own_job(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits_own_target(running, own, heaviest, w, waited) || (heaviest < WHOLE && w >= WHOLE)
+    pub fn fits_own_job(running: u32, own: u32, heaviest: u32, w: u32, waited: bool, win: u32) -> bool {
+        Self::fits_own_target(running, own, heaviest, w, waited, win) || (heaviest < WHOLE && w >= WHOLE)
     }
 }
 
 /// The steps that wait for a quiet NAS (task #451): never urgent, they start only beside nothing
-/// that weighs anything, or within the whole by their own measured weight, never by an aged wait
+/// that weighs anything, or within the window by their own measured weight, never by an aged wait
 /// (`fits_quiet`), never hold room for themselves, and yield at a safe point to a job held back
 /// for the budget `OWN_AGE` that their going would let start (agentcore::coord's `nas_yield`).
 /// Unmeasured the way they run now, they weigh the whole and go as the lead's own unmeasured NAS
@@ -280,10 +454,11 @@ pub const QUIET_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3
 
 impl Limits {
     /// Whether a job of a quiet step (`QUIET_STEPS`) of measured weight `w` may start beside leased
-    /// jobs weighing `running` together: beside nothing that weighs anything, or, its weight more
-    /// than nothing, within the whole with them (a 0, the NAS's metadata rates not probed, alone).
-    pub fn fits_quiet(running: u32, w: u32) -> bool {
-        running == 0 || (w > 0 && running.saturating_add(w) <= WHOLE)
+    /// jobs weighing `running` together, in the window `win`: beside nothing that weighs anything,
+    /// or, its weight more than nothing, within the window with them (a 0, the NAS's metadata
+    /// rates not probed, alone).
+    pub fn fits_quiet(running: u32, w: u32, win: u32) -> bool {
+        running == 0 || (w > 0 && running.saturating_add(w) <= win)
     }
 }
 
@@ -323,7 +498,7 @@ impl Probes {
             stats_s: best(|p| p.stats_s),
             deletes_s: best(|p| p.deletes_s),
             downloads,
-            held: false,
+            window: WHOLE,
         })
     }
 }
@@ -503,7 +678,8 @@ mod tests {
         assert_eq!(parse("on\ndownloads 2\n"), Some(Switch { downloads: Some(2) }));
     }
 
-    /// A weight is the job's share of the NAS's bytes and creates, added, in thousandths.
+    /// A weight is the job's share of the NAS's bytes and creates, added, in thousandths; the
+    /// rules hold the jobs' weights together within the window.
     #[test]
     fn a_weight_is_a_share_of_the_nas() {
         let l = Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
@@ -512,103 +688,296 @@ mod tests {
         assert_eq!(l.weight(Rate::default()), 0);
         assert_eq!(l.weight(Rate { bytes_s: 1.0, creates_s: 0.0, ..Default::default() }), 1, "measured: never nothing");
         assert_eq!(l.weight(Rate { bytes_s: 900e6, creates_s: 0.0, ..Default::default() }), WHOLE, "at most the whole");
-        assert!(Limits::fits(600, 600, 400) && !Limits::fits(601, 601, 400));
-        assert!(Limits::fits(0, 900, 1000), "the lead's own alone: a member's job goes");
-        assert!(!Limits::fits(1, 900, 1000));
+        let w = WHOLE;
+        assert!(Limits::fits(600, 600, 400, w) && !Limits::fits(601, 601, 400, w));
+        assert!(Limits::fits(0, 900, 1000, w), "the lead's own alone: a member's job goes");
+        assert!(!Limits::fits(1, 900, 1000, w));
         // The lead's own planned job beside members' small jobs (task #396 follow-up): a whole one
         // goes while none leased weighs the whole; a lesser one once it has waited; none beside a
         // whole one.
-        assert!(!Limits::fits_own(30, 1000) && Limits::fits_own_job(30, 0, 20, 1000, false));
-        assert!(!Limits::fits_own_job(30, 0, 1000, 1000, true), "beside a whole one: never");
+        assert!(!Limits::fits_own(30, 1000, w) && Limits::fits_own_job(30, 0, 20, 1000, false, w));
+        assert!(!Limits::fits_own_job(30, 0, 1000, 1000, true, w), "beside a whole one: never");
         // (Task #603: an every-step target of the lead's goes past the members' jobs only once aged.)
-        assert!(!Limits::fits_own_target(30, 0, 20, 1000, false) && Limits::fits_own_target(103, 0, 103, 946, true));
-        assert!(!Limits::fits_own_target(103, 0, 1000, 946, true), "beside a whole one: never");
-        assert!(!Limits::fits_own_job(300, 0, 200, 800, false) && Limits::fits_own_job(300, 0, 200, 800, true));
-        // (Beside an aged one of the lead's own already past the budget: within the whole with it.)
-        assert!(!Limits::fits_own_job(1100, 800, 800, 800, true), "aged ones don't pile up");
-        assert!(Limits::fits_own_job(1100, 800, 800, 200, true));
-        assert!(Limits::fits_own_job(1100, 300, 300, 1000, false), "a whole one beside the lead's own smaller ones");
-        assert!(Limits::fits(999, 999, 0));
-        // A quiet step (the clean-up): alone, or measured and within the whole; never aged past it.
-        assert!(Limits::fits_quiet(0, 0) && Limits::fits_quiet(0, 1000));
-        assert!(!Limits::fits_quiet(1, 0), "weighing nothing (no metadata rates probed): alone only");
-        assert!(Limits::fits_quiet(700, 300) && !Limits::fits_quiet(701, 300));
-        assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
-        assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
+        assert!(
+            !Limits::fits_own_target(30, 0, 20, 1000, false, w) && Limits::fits_own_target(103, 0, 103, 946, true, w)
+        );
+        assert!(!Limits::fits_own_target(103, 0, 1000, 946, true, w), "beside a whole one: never");
+        assert!(!Limits::fits_own_job(300, 0, 200, 800, false, w) && Limits::fits_own_job(300, 0, 200, 800, true, w));
+        // (Beside an aged one of the lead's own already past the budget: within the window with it.)
+        assert!(!Limits::fits_own_job(1100, 800, 800, 800, true, w), "aged ones don't pile up");
+        assert!(Limits::fits_own_job(1100, 800, 800, 200, true, w));
+        assert!(Limits::fits_own_job(1100, 300, 300, 1000, false, w), "a whole one beside the lead's own smaller ones");
+        assert!(Limits::fits(999, 999, 0, w));
+        // A quiet step (the clean-up): alone, or measured and within the window; never aged past it.
+        assert!(Limits::fits_quiet(0, 0, w) && Limits::fits_quiet(0, 1000, w));
+        assert!(!Limits::fits_quiet(1, 0, w), "weighing nothing (no metadata rates probed): alone only");
+        assert!(Limits::fits_quiet(700, 300, w) && !Limits::fits_quiet(701, 300, w));
+        assert!(Limits::fits_own(600, 400, w) && !Limits::fits_own(601, 400, w));
+        assert!(
+            Limits::fits_own(0, 1000, w) && !Limits::fits_own(1, 1000, w),
+            "the lead's own: within the window, or alone"
+        );
+        // Within a window of 500: the sums held to it; a job under a step isn't paced.
+        assert!(Limits::fits(300, 300, 200, 500) && !Limits::fits(301, 301, 200, 500));
+        assert!(Limits::fits_quiet(300, 200, 500) && !Limits::fits_quiet(301, 200, 500));
+        assert!(Limits::fits(950, 950, STEP - 1, 500) && !Limits::fits(950, 950, STEP, 500));
+        // (Grown past the whole: more goes.)
+        assert!(Limits::fits(900, 900, 300, 1200) && Limits::fits_own(900, 300, 1200));
     }
 
-    /// The gate holds while the busiest disk, smoothed, is over the target; lost, it's open.
+    /// Cut under the whole, the pacing lets through only what fits the window, a job weighing
+    /// under a step, or one beside nothing: never what the whole window refuses, and none of the
+    /// rules' ways past the sum (the lead's own alone, an aged job).
     #[test]
-    fn the_gate_holds_while_the_nas_is_over_its_target() {
-        let mut l = Loop::default();
-        assert!(!l.held() && l.why().is_none(), "not read: open");
-        l.read(&[60.0, 95.0, 70.0], 85);
-        assert_eq!(l.load, Some(95.0), "the busiest disk counts");
-        assert!(l.held());
-        assert_eq!(l.why().unwrap(), "held by NAS load (95 % > target 85 %)");
-        l.read(&[70.0], 85);
-        assert!(l.held(), "one quieter reading doesn't open it: {:?}", l.load);
-        for _ in 0..10 {
-            l.read(&[70.0], 85);
-        }
-        assert!(!l.held());
-        l.read(&[99.0], 85);
-        l.lost();
-        assert_eq!(l, Loop::default());
-    }
-
-    /// Held, the gate reopens only below the target less the band; open, it shuts above the target.
-    #[test]
-    fn the_gate_has_a_band() {
-        let mut l = Loop::default();
-        l.read(&[86.0], 85);
-        assert!(l.held());
-        for _ in 0..30 {
-            l.read(&[84.0], 85);
-        }
-        assert!(l.held(), "just under the target: held in the band");
-        assert_eq!(l.why().unwrap(), "held by NAS load (84 %, target 85 %, reopens under 82 %)");
-        for _ in 0..30 {
-            l.read(&[81.0], 85);
-        }
-        assert!(!l.held(), "below target - band: open");
-        for _ in 0..30 {
-            l.read(&[84.0], 85);
-        }
-        assert!(!l.held(), "in the band, open stays open");
-        for _ in 0..30 {
-            l.read(&[86.0], 85);
-        }
-        assert!(l.held());
-    }
-
-    /// Admission is monotonic in the load: held, the gate never admits what open refuses (the
-    /// weights and room untouched, so none of the `fits*` rules' "weighs the whole" ways opens).
-    #[test]
-    fn a_held_nas_never_admits_what_an_open_one_refuses() {
-        let open = Limits::default();
-        let held = Limits { held: true, ..Default::default() };
-        let ws = [0, 1, 150, 450, 700, 999, 1000];
+    fn a_cut_window_never_admits_what_the_whole_refuses() {
+        let whole = Limits::default();
+        let cut = Limits { window: 450, ..Default::default() };
+        let ws = [0, 1, 49, 150, 450, 700, 999, 1000];
         for &running in &ws {
             for &members in &ws {
                 for &w in &ws {
                     for &heaviest in &ws {
                         for waited in [false, true] {
                             let job = |l: &Limits| {
-                                Limits::fits_job(members, running, heaviest, w, waited) && l.open(running, w)
+                                Limits::fits_job(members, running, heaviest, w, waited, l.window) && l.paced(running, w)
                             };
                             let own = |l: &Limits| {
-                                Limits::fits_own_job(running, members, heaviest, w, waited) && l.open(running, w)
+                                Limits::fits_own_job(running, members, heaviest, w, waited, l.window)
+                                    && l.paced(running, w)
                             };
-                            assert!(!job(&held) || job(&open));
-                            assert!(!own(&held) || own(&open));
+                            assert!(!job(&cut) || job(&whole));
+                            assert!(!own(&cut) || own(&whole));
+                            if job(&cut) || own(&cut) {
+                                assert!(w < STEP || running == 0 || running + w <= 450, "{running} {w}");
+                            }
                         }
                     }
                 }
             }
         }
-        assert!(!held.open(450, 150) && held.open(0, 1000) && held.open(450, 0));
-        assert!(open.open(450, 150));
+        assert!(!cut.paced(450, 150) && cut.paced(300, 150) && cut.paced(0, 1000) && cut.paced(450, STEP - 1));
+        assert!(whole.paced(950, 150), "not cut: the rules decide");
+    }
+
+    /// A reading of one Mac answering in `ms`, the disks unread.
+    fn at(p: &mut Pace, t: u64, ms: f64, in_use: u32, wants: Option<u32>) -> Verdict {
+        p.read(t, &[("m1".to_string(), ms)], None, DEFAULT_TARGET_PCT, in_use, wants)
+    }
+
+    /// Near the NAS's best the window doubles a minute while it's what limits, until its first
+    /// cut; past the knee it drops to half the weight in use at once, and once more only as that
+    /// falls; between, it holds; then it grows a step a minute.
+    #[test]
+    fn the_window_grows_slowly_and_is_cut_quickly() {
+        let mut p = Pace::default();
+        assert_eq!(p.window(), STEP);
+        // (Not what limits: nothing waits, and the weight in use is far under it.)
+        assert_eq!(at(&mut p, 0, 5.0, 0, None), Verdict::Held);
+        let mut t = 0;
+        for _ in 0..6 {
+            t += 10;
+            assert_eq!(at(&mut p, t, 5.0, 0, Some(150)), Verdict::Grew);
+        }
+        assert_eq!(p.window(), 2 * STEP, "doubled in a minute");
+        for _ in 0..18 {
+            t += 10;
+            at(&mut p, t, 5.0, 700, Some(150));
+        }
+        assert_eq!(p.window(), 16 * STEP, "slow start: doubling");
+        // (Between `NEAR` and `SLOW` of its floor: held.)
+        t += 10;
+        assert_eq!(at(&mut p, t, 10.0, 700, Some(150)), Verdict::Held);
+        assert_eq!(p.window(), 800);
+        // (Past the knee: half what's in use, at once, not again while that stands.)
+        t += 10;
+        assert_eq!(at(&mut p, t, 16.0, 700, Some(150)), Verdict::Cut);
+        assert_eq!(p.window(), 350);
+        let why = p.why().unwrap();
+        assert_eq!(
+            why,
+            "NAS work paced to 35 % of the NAS, 70 % in use (the NAS answering m1 in 16 ms, 3.2× its best)"
+        );
+        t += 10;
+        at(&mut p, t, 16.0, 700, Some(150));
+        assert_eq!(p.window(), 350, "the same use: not cut again");
+        t += 10;
+        at(&mut p, t, 16.0, 300, Some(150));
+        assert_eq!(p.window(), 150, "its jobs ending, the NAS still slow: half what's left");
+        assert!(p.why().is_some());
+        // (Calm again: a step a minute now, no more doubling.)
+        for _ in 0..6 {
+            t += 10;
+            assert_eq!(at(&mut p, t, 5.0, 150, Some(150)), Verdict::Grew);
+        }
+        assert_eq!(p.window(), 150 + STEP);
+        assert!(p.why().is_none(), "the window over what's in use");
+        // (Cut never under a step: an outside load with nothing of the pool's running.)
+        t += 10;
+        at(&mut p, t, 40.0, 0, Some(150));
+        assert_eq!(p.window(), STEP);
+        // (A lead starting beside jobs already leased: from what they weigh, then doubling.)
+        let mut q = Pace::default();
+        assert_eq!(at(&mut q, 0, 5.0, 700, None), Verdict::Grew);
+        assert_eq!(q.window(), 786, "700, then a sixth of a minute's doubling");
+    }
+
+    /// The disks over the owner's target cut the window as a slow answer does; nothing read holds
+    /// it.
+    #[test]
+    fn the_disks_over_the_target_cut_it_and_nothing_read_holds_it() {
+        let mut p = Pace::default();
+        assert_eq!(p.read(0, &[], None, 85, 100, Some(150)), Verdict::Unread);
+        assert_eq!(
+            p.read(10, &[], Some(&[40.0, 60.0]), 85, 100, Some(150)),
+            Verdict::Grew,
+            "the busiest within the target"
+        );
+        assert_eq!(p.load, Some(60.0));
+        assert_eq!(
+            p.read(20, &[], Some(&[95.0]), 85, 100, Some(150)),
+            Verdict::Grew,
+            "smoothed: one busy reading isn't over"
+        );
+        for k in 3..8 {
+            p.read(k * 10, &[], Some(&[95.0]), 85, 100, Some(150));
+        }
+        assert_eq!(p.last.as_ref().unwrap().verdict, Verdict::Cut);
+        assert_eq!(p.window(), 50, "half the 100 in use");
+        assert!(p.why().unwrap().contains("its disks 91 % busy, over the target 85 %"), "{:?}", p.why());
+        let w = p.window();
+        assert_eq!(p.read(100, &[], None, 85, 100, Some(150)), Verdict::Unread);
+        assert_eq!(p.window(), w);
+    }
+
+    /// Each Mac is read against its own floor: one away on a slow link answering at its usual
+    /// time isn't a loaded NAS; its floor follows it over `FLOOR_S`, and a Mac no longer heard
+    /// from is let go.
+    #[test]
+    fn each_mac_is_read_against_its_own_floor() {
+        let mut p = Pace::default();
+        let read = |p: &mut Pace, t: u64, near: f64, away: f64| {
+            p.read(t, &[("m1".into(), near), ("m6".into(), away)], None, 85, 0, None)
+        };
+        read(&mut p, 0, 5.0, 40.0);
+        read(&mut p, 10, 5.5, 44.0);
+        let r = p.last.clone().unwrap();
+        assert_eq!(r.verdict, Verdict::Held);
+        assert_eq!(r.worst.as_ref().map(|a| (a.mac.as_str(), a.ms, a.floor_ms)), Some(("m1", 5.5, 5.0)));
+        read(&mut p, 20, 5.0, 160.0);
+        assert_eq!(p.last.as_ref().unwrap().verdict, Verdict::Cut, "m6's answers four times its best");
+        // (Its floor, a slower link for good: followed once its old minutes pass `FLOOR_S`.)
+        let mut t = 30;
+        while t < FLOOR_S + 120 {
+            read(&mut p, t, 5.0, 160.0);
+            t += 10;
+        }
+        let a = p.last.as_ref().unwrap().worst.clone().unwrap();
+        assert!(a.ratio() < store::aimd::NEAR, "{a:?}");
+        // (A floor never under the least a NAS answers in.)
+        p.read(t, &[("m1".into(), 0.1)], None, 85, 0, None);
+        assert_eq!(p.last.as_ref().unwrap().worst.as_ref().unwrap().floor_ms, 2.0);
+        p.read(t + FLOOR_S + 60, &[("m1".into(), 5.0)], None, 85, 0, None);
+        assert_eq!(p.floors.keys().collect::<Vec<_>>(), ["m1"], "m6 let go");
+    }
+
+    /// The simulated NAS: its answer time over its best as its true load grows (`rho`, a share of
+    /// what it can take): flat at first, steep near the whole, and past it the cliff (on 4 Oct,
+    /// processes on two Macs in uninterruptible waits): a hundred times.
+    fn simulated(rho: f64) -> f64 {
+        if rho >= 1.0 {
+            100.0
+        } else {
+            1.0 / (1.0 - rho.powi(3))
+        }
+    }
+
+    /// A burst of `n` NAS-heavy jobs asked at once, each weighed `w` but loading the NAS `real`
+    /// (thousandths of what it can take: its weight a measure of other runs, a warm cache's or a
+    /// quicker Mac's), each running `secs`, beside an outside load `outside(t)` (thousandths), on
+    /// two Macs (one near the NAS, 5 ms its best; one away, 40 ms). Asked again every reading as
+    /// the scheduler asks the rules (`fits_job`, `paced`), within the pacing's window (`pace`) or
+    /// the whole (not paced). The answer times over the NAS's best each reading (t, ratio), and
+    /// when the last job ended.
+    fn burst(
+        pace: bool,
+        n: usize,
+        w: u32,
+        real: u32,
+        secs: u64,
+        outside: impl Fn(u64) -> u32,
+    ) -> (Vec<(u64, f64)>, u64) {
+        let mut p = Pace::default();
+        let (mut queue, mut running, mut ratios) = (n, Vec::<u64>::new(), Vec::new());
+        let mut t = 0;
+        loop {
+            running.retain(|&end| end > t);
+            if queue == 0 && running.is_empty() {
+                return (ratios, t);
+            }
+            assert!(t < 24 * 3600, "the burst never ended: {queue} left");
+            let rho = (running.len() as u32 * real + outside(t)) as f64 / WHOLE as f64;
+            let r = simulated(rho);
+            ratios.push((t, r));
+            let in_use = running.len() as u32 * w;
+            let win = if pace {
+                p.read(
+                    t,
+                    &[("m1".into(), 5.0 * r), ("m6".into(), 40.0 * r)],
+                    None,
+                    85,
+                    in_use,
+                    (queue > 0).then_some(w),
+                );
+                p.window()
+            } else {
+                WHOLE
+            };
+            let l = Limits { window: win, ..Default::default() };
+            while queue > 0 {
+                let in_use = running.len() as u32 * w;
+                let heaviest = if running.is_empty() { 0 } else { w };
+                if !(Limits::fits_job(in_use, in_use, heaviest, w, false, win) && l.paced(in_use, w)) {
+                    break;
+                }
+                running.push(t + secs);
+                queue -= 1;
+            }
+            t += READ_EVERY_S;
+        }
+    }
+
+    /// Done when (task #1417): a burst of NAS-heavy jobs settles below the latency knee on a
+    /// simulated NAS. Held to the whole by weights that read the NAS light, the same burst drives
+    /// it over the cliff and keeps it there; paced, it climbs to the knee and stays under it, every
+    /// job done; an outside load arriving mid-burst is met by cuts, and it settles under the knee
+    /// again once the jobs that were out end.
+    #[test]
+    fn a_burst_of_nas_heavy_jobs_settles_below_the_knee() {
+        let knee = store::aimd::SLOW;
+        // (Weighed 150, loading the NAS 250: the whole lets six in, 1.5 times what it can take.)
+        let (unpaced, _) = burst(false, 30, 150, 250, 300, |_| 0);
+        assert!(unpaced.iter().filter(|x| x.1 >= 100.0).count() * 2 > unpaced.len(), "unpaced: at the cliff");
+        let (paced, end) = burst(true, 30, 150, 250, 300, |_| 0);
+        assert!(
+            paced.iter().all(|x| x.1 <= knee),
+            "paced: never past the knee: {:?}",
+            paced.iter().find(|x| x.1 > knee)
+        );
+        let busy = paced.iter().filter(|x| x.1 > store::aimd::NEAR).count();
+        assert!(busy * 2 > paced.len(), "not starved: the NAS used past near its best most of the burst");
+        assert!(end <= 30 * 300 / 2 + 600, "the burst done at two or three at once: {end} s");
+        // (Weighed 150, loading 400: two at once at most.)
+        let (paced, _) = burst(true, 20, 150, 400, 300, |_| 0);
+        assert!(paced.iter().all(|x| x.1 <= knee), "{:?}", paced.iter().find(|x| x.1 > knee));
+        // (An outside load of half the NAS from 30 to 60 minutes in: past the knee until the jobs
+        // out then end (two of their runs at most), under it after.)
+        let outside = |t: u64| if (1800..3600).contains(&t) { 500 } else { 0 };
+        let (paced, end) = burst(true, 40, 150, 250, 300, outside);
+        let after = |from: u64, to: u64| paced.iter().filter(move |x| x.0 >= from && x.0 < to);
+        assert!(after(0, 1800).all(|x| x.1 <= knee));
+        assert!(after(1800 + 2 * 300 + 30, 3600).all(|x| x.1 <= knee), "settled under the outside load");
+        assert!(after(3600, end).all(|x| x.1 <= knee));
+        assert!(after(1800, 3600).any(|x| x.1 > knee), "the outside load seen past the knee");
     }
 
     /// The limits are the best of the last day's probes.
