@@ -959,16 +959,18 @@ other process).
   grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), how
   much less was available at the window's least (`dip_mb`), what the Mac's other processes took
   more over the same window (`others_grown_mb`: the memory in use and the swap, less what the jobs
-  hold, the latest less the least), the kernel's pressure level, and a give-back's cool-down. The
-  jobs' own memory is read as each sample has it, the rest of the Mac by its mean over the last
+  hold, as the reading has it less the least of its minute means), the kernel's pressure level,
+  and a give-back's cool-down. The jobs' own memory is read as each sample has it; a fall the rest
+  of the Mac makes shows in every reading at once, and only its peaks are smoothed, over the last
   minute (`MEAN_OVER`, twelve readings: the time a frozen job is held before it's decided on,
-  `PRESSURE_HOLD`): what's available and what the jobs hold, together, averaged, less what the jobs
-  hold now, so a job's growth (taking from the one what it adds to the other) shows at once while
-  the others' swings are averaged; the dip and the others' growth are read from those means (task
-  #1492: the M1's available swung between 0.05 and 2.5 GB within 10 s on 19 Nov, so one sample
-  granted a job at a peak and the next trough had it below the floor, and the least and most of
-  the samples read as the others' growth). On a steady Mac the means are the samples and the dip
-  is none. The others' growth is a difference, not a measure of whose memory it is:
+  `PRESSURE_HOLD`): what's available is the less of the sample's and the minute's mean of what's
+  available and what the jobs hold, together, less what the jobs hold now (a job's growth takes
+  from the one what it adds to the other, so it shows at once; a footprint unread or a job's memory
+  not yet back after its end adds nothing). The dip is the window's least of those means, the
+  sample among them, and the others' growth is over the least of their means, so a trough they make
+  is theirs (task #1492: the M1's available swung between 0.05 and 2.5 GB within 10 s on 19 Nov, so
+  one sample granted a job at a peak and the next trough had it below the floor). On a steady Mac
+  the means are the samples and the dip is none. The others' growth is a difference, not a measure of whose memory it is:
   it takes in what the pool causes outside its jobs' process groups (the kernel's and the SMB
   client's buffers for their NAS reads, the services they call over XPC) and the swing of
   `compressible` as the compressor's ratio moves under the jobs' own pages, so some of the pool's
@@ -1412,10 +1414,11 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   it back; a job whose own growth takes the Mac below its floor is. Granted by the window's least
   (task #1492), a job isn't granted at a peak of the rest of the Mac's swing: replayed over the
   rings' day of 18-19 Nov and the lead's history (`memguard`'s `the_grants_of_19_november_replayed`),
-  95 of the M1's 787 grants were held back, among them 17 of the 63 it gave back and 460 of the
-  2,390 s its jobs ran below the floor, and the four drains the smoothed reading would still have
-  given back were all such grants; the Mac mini's 2,379, 4 (terrain-deep, at the margin); the M4's
-  9, none. Relieving it, with the
+  100 of the M1's 794 grants (18 Nov 11:29Z to 19 Nov 11:29Z) were held back, among them 17 of the
+  64 it gave back and 470 of the 2,420 s its jobs ran below the floor, and the three drains the
+  reading would still have given back (of 49, none on one sample's) were all such grants; the Mac
+  mini's 2,385, 7 (terrain-deep, at the margin: each waited 20-470 s, a median 190 s, on its ring
+  for the low to cover its 4.3 GB); the M4's 9, none. Relieving it, with the
   largest fitting alone, another job stops at its next safe point (`memguard::decide_by`): one that
   yields first, else the newest
   (by its start's minute), then the least progressed (the work lost least), never the largest; one
