@@ -760,7 +760,8 @@ impl Shared {
         // `sched::Rule::decides_disk`): the job its last answer held back for its disk is held for
         // still, its caches freed toward it through the wait (task #1477 review: the mini under
         // memory pressure ended its hold each answer, and the freeing for it midway).)
-        // (Only while that job waits: its target offered still, not done nor leased.)
+        // (Only while that job waits: its target offered still, not done nor leased, nor in backoff
+        // against this worker, which nothing grants it meanwhile.)
         if let Some(w) = why.as_mut().filter(|w| picks.is_empty() && !w.rule.decides_disk() && w.disk_mb.is_none()) {
             let last = self.refused.get(&a.worker).map(|(_, h)| h).filter(|h| {
                 h.held_for.as_ref().is_some_and(|(step, t)| {
@@ -771,7 +772,7 @@ impl Shared {
                     let leased = self.sched.leases.live(now).any(|l| {
                         matches!(&l.work, lease::Work::Job { step: s, targets } if s == step && targets.iter().any(|x| x.0 == *t))
                     });
-                    offered && !leased
+                    offered && !leased && !self.sched.backoff(&a.worker, step, t, now)
                 })
             });
             (w.disk_mb, w.held_for) = (last.and_then(|h| h.disk_mb), last.and_then(|h| h.held_for.clone()));
@@ -9819,6 +9820,37 @@ mod tests {
         measured_offer(&c, "slope-hi", &[("6/2/1", Some((2000, 1_000, 60))), ("6/2/2", Some((2000, 30_000, 60)))]);
         let (g, held) = w.ask_held(&Ask { want: 2, ..every_ask("m1", "slope-hi", 64_000, 20_000) }).unwrap();
         assert!(g.is_some() && held.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
+    }
+
+    /// Task #1478: the hold a member's last answer named for its disk stands through an answer held
+    /// back before the disk is weighed (its Mac below its memory floor: `Rule::decides_disk`), but
+    /// not once its target is in backoff against that member, which nothing grants it meanwhile.
+    #[test]
+    fn a_kept_hold_ends_once_its_target_is_in_backoff_for_the_member() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((2000, 30_000, 60)))]);
+        let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
+        assert!(g.is_none() && held.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
+        let pressed = Ask {
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 8,
+                cores_free: 8,
+                mem_held_back: Some("below its floor".into()),
+                ..Default::default()
+            }),
+            ..every_ask("m1", "slope-hi", 64_000, 20_000)
+        };
+        let why = || c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert_eq!(w.ask_held(&pressed).unwrap().1, held, "kept through the memory's hold-back: {}", why());
+        {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.failed.insert(("m1".into(), cost_key("slope-hi", "6/1/1")), (now, 1));
+        }
+        let (g, kept) = w.ask_held(&pressed).unwrap();
+        assert!(g.is_none() && kept.is_none(), "in backoff here: {kept:?}");
+        assert!(why().contains("memory"), "the memory's hold-back still: {}", why());
     }
 
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,

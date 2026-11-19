@@ -138,8 +138,32 @@ mod test_disk {
 
     /// A test's disk that follows its files, for every thread of its process (a freeing's on a
     /// thread of its own): a folder and the disk's size, its free space that less what the
-    /// folder's files hold (their lengths). Before `TEST_FREE`.
-    pub static TEST_DISK: std::sync::Mutex<Option<(std::path::PathBuf, u64)>> = std::sync::Mutex::new(None);
+    /// folder's files hold (their lengths). Before `TEST_FREE`. Set only through `TestDisk`.
+    pub(super) static TEST_DISK: std::sync::Mutex<Option<(std::path::PathBuf, u64)>> = std::sync::Mutex::new(None);
+
+    /// One test's turn with `TEST_DISK`, the tests of a process taking theirs one at a time.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `TEST_DISK` set for a test while this lives, cleared as it drops (a failed test's too), and
+    /// no other test of its process (threads, as `cargo test` runs them) setting it meanwhile.
+    pub struct TestDisk {
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestDisk {
+        /// The disk at `dir` of `size` bytes (`TEST_DISK`), waiting for another test's to drop.
+        pub fn set(dir: std::path::PathBuf, size: u64) -> TestDisk {
+            let turn = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *TEST_DISK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((dir, size));
+            TestDisk { _turn: turn }
+        }
+    }
+
+    impl Drop for TestDisk {
+        fn drop(&mut self) {
+            *TEST_DISK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
 
     pub(super) fn bytes_under(dir: &std::path::Path) -> u64 {
         std::fs::read_dir(dir)
@@ -158,7 +182,7 @@ mod test_disk {
 /// A test's disk (`TEST_FREE`), for other crates' unit tests (pipeline's agent).
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
-    pub use super::test_disk::{TEST_DISK, TEST_FREE};
+    pub use super::test_disk::{TestDisk, TEST_FREE};
 }
 
 #[cfg(test)]

@@ -519,7 +519,7 @@ capacity say (`disk_mb`; the lead's own asks' likewise) is the free space, on a 
 target with what its caches can free (`agent`'s `freeable`: `room::member_cheap_bytes`, the canopy
 squares, the copies of the records' files and the raw terrain's archives, but the whole copies above
 and the files a job holds now, which room-making leaves; not the caches only a freeing empties,
-the base packs, the copies of the NAS's files, the heritage clip; counted at most every ten
+the retired caches, the copies of the NAS's files, the base packs, the heritage clip; counted at most every ten
 minutes, and again after a job that ran, or room-making or a freeing that freed some), less the
 owner's room target and
 every live reservation (`reserved_mb`), so a job not yet written isn't counted free twice. A
@@ -539,7 +539,14 @@ left out (the most its jobs could hold, `limit_mb`, and its cores for jobs: shor
 left beside running jobs too, as on the mini), and whose disk its caches can give (the capacity's
 `freeable_mb`: what a freeing toward it deletes now and what running jobs hold, which goes as they
 end, as last counted, `room::Freeable`; not what no freeing deletes, a pageview index the NAS
-lacks or a heritage clip that can't be made again; past that, none is freed for it and the
+lacks, a heritage clip that can't be made again, a file not to be opened; the loose raw tiles and
+canopy squares go only once the freeing packs or copies them onto the NAS, so after a freeing that
+fell short of its goal what its own count of the caches still showed it could delete is left out
+(`Agent::toward_left`: packing failing on a stale SMB handle, say) until a count shows less of it
+there (some went: the next freeing says again), what the caches gain since counted; a member with
+a room target says only what its ask's disk doesn't count already, the caches only a freeing
+empties (the retired caches, the copies of the NAS's files, the base packs, the heritage clip and
+the pageview months) and what its running jobs hold; past that, none is freed for it and the
 refusal says so), has the caches freed toward its room, the target and
 reservations among it (`Agent::held_room`, task #1477), and room is held for its memory and cores
 meanwhile (the room held for a waiting job counts that disk as the job's), so a job beside it
@@ -561,9 +568,12 @@ thread, and what a freeing could do more is known no sooner: room-making
 that fell short holds the jobs after it that long (`FLOOR_SHORT_HOLD`) unless a job ends or the
 target changes first. A freeing is tried again toward a goal raised past the one the last freeing
 ended at (one cut short by a lowered goal records the lower) at once; toward as much, once a job has
-ended, unless that freeing freed nothing, no running job held any of the caches (a job's end lets
-those go) and they can free no more as last counted; else once they're counted
-again (`TOWARD_RETRY`). There is no
+ended, unless that freeing fell short and the caches, counted again on their thread after the job's
+end, hold no less for running jobs and have no more to delete than it left; else once they're
+counted again (`TOWARD_RETRY`). Every count runs on a thread of its own with the NAS (a walk of the
+caches' files with a lock test of each, seconds on a Mac with a few hundred thousand, most of them
+the lock test's), never on the agent's loop; one asked for after a clear, room-making or a job's end is
+started by the loop's status, one at a time. There is no
 fixed reserve: the room target is the only floor (a Mac with 49 GB free, a 20 GB target and no
 caches offers 29 GB, less its reservations). An older agent's `reserve_mb`
 (a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,

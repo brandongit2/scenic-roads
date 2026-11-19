@@ -644,22 +644,30 @@ pub fn try_remove(path: &Path) -> Removed {
 }
 
 /// Whether a job holds the cache file at `path` now, so `try_remove` would leave it: its exclusive
-/// lock not to be had without waiting (taken and let go at once; a link, or a file not to be opened,
-/// counts as held, as `try_remove` leaves it). Not there: not held.
-pub fn in_use(path: &Path) -> bool {
+/// lock not to be had without waiting (taken and let go at once). Some(false): no job holds it (not
+/// there either). None: a link, or a file not to be opened, which `try_remove` leaves too though no
+/// job holds it, and no job's end lets go (`in_use` counts it in use).
+pub fn held_by_job(path: &Path) -> Option<bool> {
     #[cfg(unix)]
     return crate::spawn::no_child_starting(|| {
         use std::os::unix::fs::OpenOptionsExt;
         match File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
-            Ok(f) => lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err(),
-            Err(e) => e.kind() != io::ErrorKind::NotFound,
+            Ok(f) => Some(lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Some(false),
+            Err(_) => None,
         }
     });
     #[cfg(not(unix))]
     {
         let _ = path;
-        false
+        Some(false)
     }
+}
+
+/// Whether `try_remove` would leave the cache file at `path` now: a job holds it, or it's a link
+/// or a file not to be opened (`held_by_job`). Not there: not in use.
+pub fn in_use(path: &Path) -> bool {
+    held_by_job(path) != Some(false)
 }
 
 /// Deletes the cache files at `paths` together, or none: each locked exclusively first (not
@@ -802,6 +810,27 @@ mod tests {
         release(&p);
         // (No temporary files left.)
         assert_eq!(std::fs::read_dir(d.path().join("a")).unwrap().count(), 1);
+    }
+
+    /// A job's hold is told from a file no job holds that can't be opened (a link, unreadable):
+    /// both are in use, as `try_remove` leaves them, but only the first is held by a job.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_not_to_be_opened_is_in_use_but_held_by_no_job() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (p, q, l) = (d.path().join("p.bin"), d.path().join("q.bin"), d.path().join("l.bin"));
+        hold(&p, &mut |t: &Path| std::fs::write(t, b"bytes")).unwrap();
+        std::fs::write(&q, b"bytes").unwrap();
+        std::os::unix::fs::symlink(&q, &l).unwrap();
+        assert_eq!((held_by_job(&p), held_by_job(&q), held_by_job(&l)), (Some(true), Some(false), None));
+        assert_eq!(held_by_job(&d.path().join("gone")), Some(false));
+        std::fs::set_permissions(&q, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(held_by_job(&q), None);
+        assert!(in_use(&p) && in_use(&q) && in_use(&l));
+        assert_eq!(try_remove(&q), Removed::InUse);
+        release(&p);
+        std::fs::set_permissions(&q, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     /// A mapped cache file (`map`, task #1109) is held while mapped, so a sweep leaves it; its

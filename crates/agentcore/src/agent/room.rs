@@ -861,7 +861,7 @@ fn write_target(p: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>
 // reserve) and the file a target is kept in: buildstore's (task #916 step 6e, docs/crates.md), as
 // is reading this Mac's target (step 7a: the map server reads it), kept at these paths.
 #[cfg(test)]
-pub use buildstore::room::testkit::{TEST_DISK, TEST_FREE};
+pub use buildstore::room::testkit::{TestDisk, TEST_FREE};
 pub use buildstore::room::{disk_free, nas_free, nas_reserve, nas_room, set_nas_reserve, target, Target, TARGET};
 
 // A job's room target and the free space past it: the runtime crate's (task #916 step 3,
@@ -1207,29 +1207,38 @@ impl Sizes {
     }
 }
 
-/// What a freeing (`toward`) does with the files of the caches it empties (the cheap ones and
+/// What a freeing (`toward`) may do with the files of the caches it empties (the cheap ones and
 /// `TOWARD_ORDER`'s), as `sizes` counted them (bytes), by what store::cachefile and the NAS say of
-/// each: the one measure of what the caches can free (crate::coord::Capacity::freeable_mb, the
-/// freeing's retries). Not the whole copies of the shared cache (buildstore::localread::is_shared):
-/// the lead counts those for a job itself (crate::coord::sched's `Copies`).
+/// each: what the caches can free (crate::coord::Capacity::freeable_mb, the freeing's retries),
+/// less what the last freeing that fell short left (crate::agent's `toward_left`: a loose raw tile
+/// or a canopy square goes only once packed or copied onto the NAS, which can fail). Not what no
+/// freeing deletes as things are: a pageview index the NAS lacks, a heritage clip that can't be
+/// made again (or the NAS not asked, either), a link or a file not to be opened
+/// (store::cachefile::held_by_job). Nor the whole copies of the shared cache
+/// (buildstore::localread::is_shared): the lead counts those for a job itself
+/// (crate::coord::sched's `Copies`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Freeable {
-    /// Deleted by a freeing now.
+    /// Deleted by a freeing now (the loose raw tiles and the canopy squares once on the NAS).
     pub now: u64,
+    /// Of `now`, the cheap caches' (room-making's, not the pageview months): on a member, what its
+    /// ask's disk counts when it has a room target (crate::agent's `disk_room`).
+    pub cheap: u64,
     /// Held by a running job (store::cachefile): deleted once that job ends.
     pub held: u64,
-    /// Never deleted as things are: a pageview index the NAS lacks, a heritage clip that can't be
-    /// made again (or the NAS not asked, either).
-    pub kept: u64,
 }
 
 impl Freeable {
-    /// File `p` of `len` bytes, which a freeing deletes unless a job holds it.
-    fn add(&mut self, p: &Path, len: u64) {
-        if store::cachefile::in_use(p) {
-            self.held += len;
-        } else {
-            self.now += len;
+    /// File `p` of `len` bytes, of the cheap caches or not, which a freeing deletes unless a job
+    /// holds it (or it can't be opened: kept).
+    fn add(&mut self, p: &Path, len: u64, cheap: bool) {
+        match store::cachefile::held_by_job(p) {
+            Some(false) => {
+                self.now += len;
+                self.cheap += if cheap { len } else { 0 };
+            }
+            Some(true) => self.held += len,
+            None => {}
         }
     }
 }
@@ -1251,7 +1260,7 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
         // (The canopy squares the NAS lacks are copied there and go; the lead's loose raw tiles are
         // packed onto it and go: free_cheap.)
         for f in files.iter().filter(|f| f.1 > 0 && !buildstore::localread::is_shared(cache, &f.2)) {
-            free.add(&f.2, f.1);
+            free.add(&f.2, f.1, true);
         }
     }
     // (The pageview months the NAS has at their size, when the NAS can be asked: the others stay.)
@@ -1259,11 +1268,8 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
         let sources = r.join("sources");
         let n = months_bytes(cache, &sources);
         clear.insert("months".to_string(), n);
-        let mut files = Vec::new();
-        walk_cheap(cache, MONTHS, Some(r), &mut files);
-        let all: u64 = files.iter().map(|f| f.1).sum();
         // (An index the NAS lacks stays, for landmarks::pageviews to put there.)
-        (free.now, free.kept) = (free.now + n, free.kept + all.saturating_sub(n));
+        free.now += n;
     }
     let cheap_now = clear.values().sum();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
@@ -1272,7 +1278,6 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
         {
             let remade = root.is_some() && heritage_remade(root, &e.path());
             if k == "heritage" && root.is_some() && !remade {
-                free.kept += bytes_under(&e.path());
                 continue;
             }
             let mut files = Vec::new();
@@ -1287,11 +1292,10 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
             }
             // (A heritage clip the NAS wasn't asked about: kept, as no freeing is sure to take it.)
             if k == "heritage" && !remade {
-                free.kept += files.iter().map(|f| f.1).sum::<u64>();
                 continue;
             }
             for f in &files {
-                free.add(&f.2, f.1);
+                free.add(&f.2, f.1, false);
             }
         }
     }

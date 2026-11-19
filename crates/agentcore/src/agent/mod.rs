@@ -522,8 +522,8 @@ const CACHE_COUNT: Duration = Duration::from_secs(600);
 
 /// How long a freeing that fell short of its goal waits before it's tried toward as much again
 /// when nothing says it could do more sooner (`toward_due`: a raised goal is tried at once, a job's
-/// end when the last freeing freed something, a job held some of the caches, or they can free more
-/// since): until the caches are counted again (`CACHE_COUNT`; docs/pool.md §7.1).
+/// end once the caches, counted again, hold less for jobs or have more to delete than the last
+/// freeing left): until the caches are counted again (`CACHE_COUNT`; docs/pool.md §7.1).
 const TOWARD_RETRY: Duration = CACHE_COUNT;
 
 /// How long room-making that fell short of the room target holds the jobs after it without making
@@ -1562,11 +1562,11 @@ pub struct Agent {
     /// (unix s): not tried toward as much again within `TOWARD_RETRY` but for a job's end
     /// (`toward_due`).
     toward_tried: Option<(u64, u64)>,
-    /// The last freeing when it freed nothing: the goal it ended at, and of the caches as its thread
-    /// counted them after it (room::Freeable), what running jobs held and what it could free: a
-    /// job's end tries it again only when jobs held some, or the caches can free more since
-    /// (`toward_due`).
-    toward_nothing: Option<(u64, u64, u64)>,
+    /// What the last freeing left when it fell short of its goal (`TowardLeft`): what the caches
+    /// can free is reported less what it couldn't (`towardable`), and a job's end tries it again
+    /// only once a count shows the caches can do more (`toward_due`). A Cell: the counts taken in
+    /// end it (`counts_in`).
+    toward_left: std::cell::Cell<Option<TowardLeft>>,
     /// The last time a job's room-making fell short of the target (the target and the room it was
     /// after, and when): the jobs after it wait without making room again until a job ends, the
     /// target changes or `FLOOR_SHORT_HOLD` passes.
@@ -1748,7 +1748,9 @@ pub struct Agent {
     /// A count's result from its thread, by when it began: taken in only if no count began since
     /// (a clear's or a freeing's).
     cache_sized: (std::sync::mpsc::Sender<(Instant, room::Sizes)>, std::sync::mpsc::Receiver<(Instant, room::Sizes)>),
-    /// A clear, a freeing toward the room target or room-making under way.
+    /// The count under way on its thread (`count_start`): one at a time.
+    count_thread: std::cell::RefCell<Option<std::thread::JoinHandle<()>>>,
+    /// A clear,a freeing toward the room target or room-making under way.
     caches_task: Option<CachesTask>,
     /// The lead's: the pass's answers this Mac has sent to the NAS as the agent starts
     /// (crate::answers::seed), on a thread of its own; and whether it was started (once an agent).
@@ -1856,6 +1858,19 @@ struct Gate {
 /// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
 /// and when that count began.
 type CacheCount = (Option<Instant>, Option<room::Sizes>);
+
+/// What a freeing that fell short of its goal left (`Agent::toward_left`), of the caches as its
+/// thread counted them after it (room::Freeable, bytes): the goal it ended at, what running jobs
+/// held, and what it could have deleted now but didn't (`unfreed`, of what an ask counts past its
+/// disk, `Agent::toward_now`: a loose raw tile it couldn't pack, a canopy square it couldn't copy,
+/// the NAS's handle stale, say). The freeing's own result is what the caches can do: it stands
+/// until a count shows less of that `now` than it left (some went: the next freeing says again).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TowardLeft {
+    goal: u64,
+    held: u64,
+    unfreed: u64,
+}
 /// What the build page's regions were made of: the regions' accepted version and the catalogue.
 type RegionsKey = (String, Option<u64>);
 
@@ -2088,7 +2103,7 @@ impl Agent {
             in_use_share: None,
             mem_floor: None,
             toward_tried: None,
-            toward_nothing: None,
+            toward_left: Default::default(),
             floor_short: None,
             held_room: None,
             toward_goal: Default::default(),
@@ -2155,6 +2170,7 @@ impl Agent {
             hold_told: None,
             cache_size: Default::default(),
             cache_sized: std::sync::mpsc::channel(),
+            count_thread: Default::default(),
             caches_task: None,
             answers_seed: None,
             answers_seeded: false,
@@ -4527,6 +4543,7 @@ impl Agent {
         let set = self.control.settings.get();
         if set.room.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
             (self.toward_tried, self.floor_short, self.held_room) = (None, None, None);
+            self.toward_left.set(None);
         }
         self.room_target = set.room.clone();
         self.in_use_share = set.share.clone();
@@ -6527,15 +6544,25 @@ impl Agent {
     }
 
     /// What a freeing toward a held room can free of this Mac's caches past what its ask's disk
-    /// counts (bytes, crate::coord::Capacity::freeable_mb): what it deletes now and what running
-    /// jobs hold, which goes as they end (room::Freeable: not what it never deletes), as last
-    /// counted on a thread of their own (`resources`, or the freeing's); none for a member with a
-    /// room target, whose ask's disk counts its cheap caches (`disk_room`). None: not counted yet.
+    /// counts (bytes, crate::coord::Capacity::freeable_mb): what running jobs hold, which goes as
+    /// they end, and what it deletes now (`toward_now`) less what the last freeing that fell short
+    /// couldn't (`toward_left`), as last counted on a thread of their own (`count_start`, or the
+    /// freeing's; room::Freeable: not what no freeing deletes). None: not counted yet.
     fn towardable(&self) -> Option<u64> {
+        let unfreed = self.toward_left.get().map_or(0, |l| l.unfreed);
+        self.cache_size.borrow().1.as_ref().map(|s| s.free.held + self.toward_now(&s.free).saturating_sub(unfreed))
+    }
+
+    /// What a freeing deletes now of what `free` counts, past what this Mac's ask's disk counts
+    /// already (bytes): on a member with a room target, all but its cheap caches (`disk_room`:
+    /// room-making's, which a job granted for them frees as it starts), so the retired caches, the
+    /// copies, the base packs, the heritage clip and the pageview months; else all of it.
+    fn toward_now(&self, free: &room::Freeable) -> u64 {
         if self.is_member() && self.floor() > 0 {
-            return Some(0);
+            free.now.saturating_sub(free.cheap)
+        } else {
+            free.now
         }
-        self.cache_size.borrow().1.as_ref().map(|s| s.free.now + s.free.held)
     }
 
     /// What slot `k`'s job has still to take on the disk, by measure (bytes): its targets not noted
@@ -6709,31 +6736,32 @@ impl Agent {
     }
 
     /// The caches' counts done on threads of their own taken in (`cache_size`); not over a count
-    /// begun since, a clear's or another's.
+    /// begun since, or asked for (`count_caches`). One showing less to delete now than the last
+    /// freeing that fell short left ends what it left (`TowardLeft`: some of it went).
     fn counts_in(&self) {
         while let Ok((at, n)) = self.cache_sized.1.try_recv() {
             let mut c = self.cache_size.borrow_mut();
             if c.0 == Some(at) {
+                if self.toward_left.get().is_some_and(|l| self.toward_now(&n.free) < l.unfreed) {
+                    self.toward_left.set(None);
+                }
                 c.1 = Some(n);
             }
         }
     }
 
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
-    /// of their own when `CACHE_COUNT` old.
+    /// of their own (`count_start`) when `CACHE_COUNT` old or asked for (`count_caches`), but while
+    /// a freeing toward the room target runs (its thread counts them as it ends).
     fn resources(&self, root: Option<&store::nasfs::NasRoot>) -> cond::Resources {
         self.counts_in();
-        let (counted, bytes) = self.cache_size.borrow().clone();
-        if counted.is_none_or(|t| t.elapsed() >= CACHE_COUNT) {
-            // (Marked counted now: one walk at a time.)
-            let now = Instant::now();
-            self.cache_size.borrow_mut().0 = Some(now);
-            let (cache, member, sized, nas) =
-                (self.o.home.join("cache"), self.is_member(), self.cache_sized.0.clone(), root.cloned());
-            std::thread::spawn(move || {
-                sized.send((now, room::sizes(&cache, member, nas.as_ref()))).ok();
-            });
+        let counted = self.cache_size.borrow().0;
+        if counted.is_none_or(|t| t.elapsed() >= CACHE_COUNT)
+            && !self.caches_task.as_ref().is_some_and(|t| t.toward.is_some())
+        {
+            self.count_start(root);
         }
+        let bytes = self.cache_size.borrow().1.clone();
         // (The NAS's latency as the live store last measured it, within half a minute: none
         // while no build runs.)
         let ms = self.live.as_ref().and_then(|l| l.latest(live::NAS_MS, now_s(), 30));
@@ -6779,22 +6807,23 @@ impl Agent {
             // The owner's disk room target and the jobs' reservations: the caches freed toward them
             // (or the room a job held for it needs: `held_room`), as far as needed, whether or not
             // the build has work left, jobs running or not.
-            self.toward_tried = Some((goal, now_s()));
             self.toward_goal.store(goal, std::sync::atomic::Ordering::Relaxed);
             let at = self.toward_goal.clone();
             // (A held room the goal past the target: said as the held job's.)
             let toward = (self.floor(), goal, self.held().is_some_and(|h| h >= goal && h > self.floor()));
             let hints = self.hints();
             // (The caches counted again on its thread once it's done, not on the loop's: what it
-            // left, `toward_record`.)
+            // left, `toward_record`. Marked begun once its thread starts.)
             let counted = Instant::now();
-            self.cache_size.borrow_mut().0 = Some(counted);
             let (member, sized, nas) = (self.is_member(), self.cache_sized.0.clone(), root.cloned());
-            self.caches_start_toward(toward, move || {
+            if self.caches_start_toward(toward, move || {
                 let f = room::toward(&cache, &s, at, &hints);
                 sized.send((counted, room::sizes(&cache, member, nas.as_ref()))).ok();
                 f
-            });
+            }) {
+                self.toward_tried = Some((goal, now_s()));
+                self.cache_size.borrow_mut().0 = Some(counted);
+            }
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
         if self.o.once {
@@ -6893,17 +6922,22 @@ impl Agent {
 
     /// Starts a freeing toward the owner's disk room target (`toward`, `CachesTask::toward`) on a
     /// thread of its own; one that can't start is tried again with the next (`toward_due`).
+    /// Whether it started.
     fn caches_start_toward(
         &mut self,
         toward: (u64, u64, bool),
         work: impl FnOnce() -> Result<room::Freed> + Send + 'static,
-    ) {
+    ) -> bool {
         match std::thread::Builder::new().name("caches".into()).spawn(work) {
             Ok(thread) => {
                 self.caches_task =
-                    Some(CachesTask { ask: None, toward: Some(toward), disk: false, began: Instant::now(), thread })
+                    Some(CachesTask { ask: None, toward: Some(toward), disk: false, began: Instant::now(), thread });
+                true
             }
-            Err(e) => eprintln!("agent: freeing the caches toward the disk room target: its thread didn't start: {e}"),
+            Err(e) => {
+                eprintln!("agent: freeing the caches toward the disk room target: its thread didn't start: {e}");
+                false
+            }
         }
     }
 
@@ -6911,10 +6945,10 @@ impl Agent {
     /// the jobs' reservations, or the room a job held for it needs): the disk is short of it, no
     /// job an earlier agent left runs here, and it wasn't tried toward as much (`toward_tried`, the
     /// goal a freeing ended at: one cut short by a goal lowered midway records the lower, so a
-    /// raised goal is tried at once) within `TOWARD_RETRY`, a job ending since excepted, unless
-    /// that freeing freed nothing, no job held any of the caches, and they can free no more as last
-    /// counted (`toward_nothing`): it would walk them for nothing again. (The agent's
-    /// own: not a dry run's.)
+    /// raised goal is tried at once) within `TOWARD_RETRY`, a job ending since excepted; after one
+    /// that fell short, only once a count since shows running jobs holding less of the caches, or
+    /// more to delete now, than it left (`toward_left`, counted again at a job's end, `worked`): it
+    /// would walk them for nothing again. (The agent's own: not a dry run's.)
     fn toward_due(&mut self) -> Option<u64> {
         let target = self.goal();
         if target == 0 || self.disk_free() >= target || !self.locks_kept() {
@@ -6928,14 +6962,17 @@ impl Agent {
         if self.mem.worked_at <= at {
             return None;
         }
-        // (A job ended since: tried again, but not while the last freeing toward as much freed
-        // nothing, no job held any of the caches (a job's end lets those go), and they can free no
-        // more as last counted (on a thread of their own: no walk here).)
-        let now = self.cache_size.borrow().1.as_ref().map_or(0, |s| s.free.now);
-        if self.toward_nothing.is_some_and(|(g, held, n)| g >= target && held == 0 && now <= n) {
-            return None;
-        }
-        Some(target)
+        // (A job ended since: tried again, but after a freeing toward as much that fell short only
+        // once the caches, as counted since on a thread of their own (no walk here), can do more
+        // than it left.)
+        let Some(l) = self.toward_left.get().filter(|l| l.goal >= target) else { return Some(target) };
+        let more = self
+            .cache_size
+            .borrow()
+            .1
+            .as_ref()
+            .is_some_and(|s| s.free.held < l.held || self.toward_now(&s.free) > l.unfreed);
+        more.then_some(target)
     }
 
     /// Why the disk is short of the owner's room target, or of the room a job is held for
@@ -7107,11 +7144,15 @@ impl Agent {
         if freed {
             self.cheap = None;
         }
-        // (Freed nothing: what running jobs hold and what it could free as counted then, so a
-        // job's end tries again only when a job held some, or the caches have more to free since:
-        // `toward_due`.)
-        let left = self.cache_size.borrow().1.as_ref().map_or(Default::default(), |s| s.free);
-        self.toward_nothing = (!freed).then_some((ended_at.min(goal), left.held, left.now));
+        // (Short of its goal: what running jobs hold and what it could have deleted now but didn't,
+        // as that count says, so what the caches can free is said less that (`towardable`), and a
+        // job's end tries again only once they can do more: `toward_due`.)
+        let goal = ended_at.min(goal);
+        let left = (free < goal)
+            .then(|| self.cache_size.borrow().1.as_ref().map(|s| s.free))
+            .flatten()
+            .map(|n| TowardLeft { goal, held: n.held, unfreed: self.toward_now(&n) });
+        self.toward_left.set(left);
     }
 
     /// This Mac's caches for the status (room::Caches), `why` they can't be cleared now: what a clear
@@ -7163,20 +7204,62 @@ impl Agent {
     }
 
     /// A job of `id` ran here: this Mac's caches may hold more, so a freeing toward the room target
-    /// is tried again (not after the backup and GC: they read no cache).
+    /// is tried again (not after the backup and GC: they read no cache). After a freeing that fell
+    /// short, once a count says they can do more (`toward_due`): counted again, while the disk is
+    /// short of the goal still and no freeing or clear runs (its end counts them).
     fn worked(&mut self, id: &str) {
         if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
             self.mem.worked_at = now_s();
+            if self.toward_left.get().is_some() && self.caches_task.is_none() && self.disk_free() < self.goal() {
+                self.count_caches();
+            }
         }
     }
 
-    /// Counts this Mac's caches again now (after a clear or a freeing), for the status, and what
-    /// they can free before it next asks for work (`freeable`). (Not asking the NAS anything: on the loop, a
-    /// NAS hanging then would hold it; links aside, the counting thread's checks are its.)
+    /// Asks for this Mac's caches to be counted again (after a clear, room-making, or a job's end
+    /// while a freeing fell short), for the status and what they can free: on the counting thread
+    /// with the NAS, as the loop's status next takes up (`resources`, `count_start`: a walk of their
+    /// files with a lock test of each, seconds, never on the loop); a count under way passed over.
+    /// What a member's ask counts again before it next asks (`freeable`).
     fn count_caches(&mut self) {
-        let n = room::sizes(&self.o.home.join("cache"), self.is_member(), None);
-        *self.cache_size.borrow_mut() = (Some(Instant::now()), Some(n));
+        self.cache_size.borrow_mut().0 = None;
         self.cheap = None;
+    }
+
+    /// Counts this Mac's caches on a thread of their own (room::sizes, with the NAS at `root`: the
+    /// pageview months and heritage clip it has), marked begun once it starts; not while a count is
+    /// under way (one walk at a time: the next loop starts it).
+    fn count_start(&self, root: Option<&store::nasfs::NasRoot>) {
+        let mut t = self.count_thread.borrow_mut();
+        if t.as_ref().is_some_and(|t| !t.is_finished()) {
+            return;
+        }
+        let now = Instant::now();
+        let (cache, member, sized, nas) =
+            (self.o.home.join("cache"), self.is_member(), self.cache_sized.0.clone(), root.cloned());
+        match std::thread::Builder::new()
+            .name("cache count".into())
+            .spawn(move || drop(sized.send((now, room::sizes(&cache, member, nas.as_ref())))))
+        {
+            Ok(h) => {
+                *t = Some(h);
+                self.cache_size.borrow_mut().0 = Some(now);
+            }
+            Err(e) => eprintln!("agent: counting the caches: its thread didn't start: {e}"),
+        }
+    }
+
+    /// A test's count of the caches, through the counting thread (`count_caches`, `count_start`),
+    /// waited for and taken in.
+    #[cfg(test)]
+    fn counted(&mut self, root: Option<&store::nasfs::NasRoot>) {
+        self.count_caches();
+        if let Some(t) = self.count_thread.take() {
+            t.join().unwrap();
+        }
+        self.count_start(root);
+        self.count_thread.take().expect("a count started").join().unwrap();
+        self.counts_in();
     }
 
     /// The lead's: the members' clears and declined asks noted in the history as their statuses
@@ -11684,9 +11767,15 @@ mod tests {
         assert!(short.contains("nothing more to free"), "{short}");
         let v = a.caches_view(None, true, true).room.unwrap();
         assert_eq!((v.target.map(|t| t.bytes), v.free), (Some(big), 40 << 30));
-        // A job ended since: tried again; the target off, nothing is short.
+        // A job ended since: tried again once the caches, counted again, can do more than the
+        // freeing left (task #1478); the target off, nothing is short.
+        a.worked("terrain-hi 3/1/1");
         a.mem.worked_at = now_s() + 1;
-        assert_eq!(a.toward_due(), Some(big), "a job ended since: tried again");
+        a.counted(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        assert_eq!(a.toward_due(), None, "a job ended since, the caches as the freeing left them");
+        put(&c.join("blobs/sources/x/y.bin"), &[0; 1000]);
+        a.counted(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        assert_eq!(a.toward_due(), Some(big), "a job ended since, the caches with more to free: tried again");
         room::set_target(&home, None, "a test").unwrap();
         a.room_target = room::target(&home);
         assert!(a.toward_due().is_none() && a.room_short(true).is_none());
@@ -11872,10 +11961,11 @@ mod tests {
         let f = a.mem.toward.clone().unwrap();
         assert_eq!((f.target, f.goal, f.bytes()), (Some(target), Some(held), 1000), "{f:?}");
         assert!(!copy.exists());
-        // A job ending (the loop lets room-making be tried again) leaves the room held as it is.
+        // A job ending (the loop lets room-making be tried again) leaves the room held as it is,
+        // and the caches, as the freeing left them, aren't freed again (task #1478).
         a.floor_short = None;
         a.mem.worked_at = now_s() + 1;
-        assert_eq!((a.goal(), a.toward_due()), (held, Some(held)));
+        assert_eq!((a.goal(), a.toward_due()), (held, None));
         // Nothing more to free: the status says so, of the room the job needs.
         let short = a.room_short(true).unwrap();
         assert!(short.contains("a job held for its room needs") && short.contains("nothing more to free"), "{short}");
@@ -12014,7 +12104,7 @@ mod tests {
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
         // (A disk whose free space follows the cache's files: 26 GB past the target with none.)
-        *room::TEST_DISK.lock().unwrap() = Some((home.join("cache"), target + (26 << 30)));
+        let _disk = room::TestDisk::set(home.join("cache"), target + (26 << 30));
         let job = |step: &str| JobSpec {
             id: format!("{step} {step}"),
             what: step.into(),
@@ -12053,7 +12143,7 @@ mod tests {
         let copy = home.join("cache/blobs/sources/x/y.bin");
         put(&copy, &[]);
         std::fs::File::options().write(true).open(&copy).unwrap().set_len(6 << 30).unwrap();
-        a.count_caches();
+        a.counted(Some(&nas));
         assert_eq!(a.towardable(), Some(6 << 30));
         let plan = [job("heritage"), job("landmarks"), job("items"), job("overlays")];
         assert!(lead_start(&mut a, &plan, &cond, &nas, &mut w).is_empty(), "{w:?}");
@@ -12097,7 +12187,6 @@ mod tests {
             }
             a.slots[k].running = None;
         }
-        *room::TEST_DISK.lock().unwrap() = None;
     }
 
     /// Task #1477 fourth review: what the caches can free is what a freeing deletes. A heritage clip
@@ -12126,7 +12215,7 @@ mod tests {
         let target = (1u64 << 40) + (100 << 30);
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
-        *room::TEST_DISK.lock().unwrap() = Some((home.join("cache"), target + (61 << 30)));
+        let _disk = room::TestDisk::set(home.join("cache"), target + (61 << 30));
         let job = |step: &str| JobSpec {
             id: format!("{step} {step}"),
             what: step.into(),
@@ -12165,7 +12254,7 @@ mod tests {
         sparse(&home.join("cache/blobs/sources/x/y.bin"), 1 << 30);
         *a.cache_size.borrow_mut() = (Some(Instant::now()), Some(room::sizes(&home.join("cache"), false, Some(&nas))));
         let free = a.cache_size.borrow().1.as_ref().unwrap().free;
-        assert_eq!((free.now, free.held, free.kept), (1 << 30, 0, 40 << 30));
+        assert_eq!((free.now, free.held), (1 << 30, 0));
         assert_eq!(a.towardable(), Some(1 << 30));
         // Items (25 GB, 20 GB free past the target) isn't held for; overlays runs.
         let plan = [job("heritage"), job("landmarks"), job("items"), job("overlays")];
@@ -12181,7 +12270,6 @@ mod tests {
             }
             a.slots[k].running = None;
         }
-        *room::TEST_DISK.lock().unwrap() = None;
     }
 
     /// Task #1477 reviews: of the rooms held at once the most is held, so a small job's never
@@ -12254,21 +12342,23 @@ mod tests {
         assert!(w.iter().any(|w| w.why.contains("given back for the disk room target")), "{w:?}");
         assert_eq!(m.goal(), 70 * g);
         // The freeing's retries. Tried toward 60 GB, a job ending since: tried again, unless that
-        // freeing freed nothing, no job held any of the caches, and they can free no more as
-        // counted since (no walk of the loop's own); some held, or more to free, tried.
+        // freeing fell short and the caches, as counted since (no walk of the loop's own), can do
+        // no more than it left; jobs holding less, or more to free, tried (task #1478).
         a.held_room = Some((60 * g, None));
         a.toward_tried = Some((60 * g, now_s()));
         a.mem.worked_at = now_s() + 1;
-        a.count_caches();
+        a.counted(Some(&nas));
+        assert_eq!(a.toward_due(), Some(60 * g), "it reached its goal: a job's end tries again");
         let now = |a: &Agent| a.cache_size.borrow().1.as_ref().unwrap().free.now;
-        a.toward_nothing = Some((60 * g, 0, now(&a)));
-        assert_eq!(a.toward_due(), None, "freed nothing, none held, the caches no fuller");
-        a.toward_nothing = Some((60 * g, 1000, now(&a)));
-        assert_eq!(a.toward_due(), Some(60 * g), "held by a job, which a job's end may let go of");
-        a.toward_nothing = Some((60 * g, 0, now(&a)));
+        let left = |held, unfreed| Some(TowardLeft { goal: 60 * g, held, unfreed });
+        a.toward_left.set(left(0, now(&a)));
+        assert_eq!(a.toward_due(), None, "fell short, the caches as it left them");
+        a.toward_left.set(left(1000, now(&a)));
+        assert_eq!(a.toward_due(), Some(60 * g), "a job held some it left, let go since");
+        a.toward_left.set(left(0, now(&a)));
         put(&home.join("cache/blobs/sources/x/y.bin"), &[0; 1000]);
         assert_eq!(a.toward_due(), None, "not counted again yet");
-        a.count_caches();
+        a.counted(Some(&nas));
         assert_eq!(a.toward_due(), Some(60 * g), "the caches hold more");
         // A goal raised past the one tried (a freeing cut short by a goal lowered midway records
         // the lower): tried at once.
@@ -12286,6 +12376,10 @@ mod tests {
         put(&cache.join("heritage-merged-2026-10-01-cover.osm.pbf"), &[0; 7000]);
         m2.freeable();
         assert_eq!(m2.disk_room(), 6 * g + 1000);
+        // What it reports freeable past that (task #1478): the part only a freeing empties, the
+        // base packs, not the copy its ask's disk has counted, nor the clip.
+        m2.counted(Some(&nas));
+        assert_eq!(m2.towardable(), Some(5000));
     }
 
     /// Task #1477 review: a member whose ask leaves its caches out (no room target), refused for a
@@ -12370,11 +12464,12 @@ mod tests {
         );
         // (Its caches hold 15 GB of copies now, on a disk whose free space follows them: 20 GB
         // free with them.)
-        (a.held_room, a.toward_tried, a.toward_nothing, a.free_set) = (None, None, None, None);
+        (a.held_room, a.toward_tried, a.free_set) = (None, None, None);
+        a.toward_left.set(None);
         put(&copy, &[]);
         std::fs::File::options().write(true).open(&copy).unwrap().set_len(15 << 30).unwrap();
-        *room::TEST_DISK.lock().unwrap() = Some((home.join("cache"), 35 * g));
-        a.count_caches();
+        let _disk = room::TestDisk::set(home.join("cache"), 35 * g);
+        a.counted(Some(&nas));
         let got = a.member_grants(&nas, &cond, &mut w);
         assert_eq!(got.len(), 1, "{w:?}");
         let held = a.held().expect("held beside the grant");
@@ -12383,7 +12478,101 @@ mod tests {
         let f = a.mem.toward.clone().unwrap();
         assert_eq!((f.goal, f.bytes()), (Some(held), 15 << 30), "{f:?}");
         assert!(a.disk_free() >= held, "the freeing made its room");
-        *room::TEST_DISK.lock().unwrap() = None;
+    }
+
+    /// Task #1478: the freeing's own result is what the caches can free. Loose raw tiles it
+    /// couldn't pack (here too new to: the packer leaves a tile younger than a minute, as it would
+    /// leave them all with the NAS's handle stale) are what it left, so they stop being counted
+    /// freeable (`toward_left`) and no job is held for them; a job's end counts the caches again,
+    /// on the counting thread, and an unchanged count tries nothing again; once the caches change
+    /// (a copy more), what's new is freeable and the freeing is tried again; once some of what it
+    /// left goes, all of it is counted again.
+    #[test]
+    fn a_freeing_that_falls_short_stops_counting_what_it_left_until_the_caches_change() {
+        let g = 1u64 << 30;
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let target = 50 * g;
+        room::set_target(&home, Some(target), "a test").unwrap();
+        a.room_target = room::target(&home);
+        // (A whole raw tile, and a disk whose free space follows the cache's files: half the tile
+        // short of the target with it.)
+        let png = codecs::whole::testfiles::png();
+        let n = png.len() as u64;
+        let _disk = room::TestDisk::set(home.join("cache"), target + n / 2);
+        let tile = home.join("cache/aws-terrarium/10/1/2.png");
+        put(&tile, &png);
+        a.counted(Some(&nas));
+        assert_eq!(a.towardable(), Some(n), "counted before any freeing");
+        assert_eq!(a.toward_due(), Some(target));
+        a.tend_caches(Some(&nas));
+        assert_eq!(a.mem.toward.as_ref().map(|f| f.bytes()), Some(0));
+        assert!(tile.exists());
+        assert_eq!(a.toward_left.get(), Some(TowardLeft { goal: target, held: 0, unfreed: n }));
+        assert_eq!(a.towardable(), Some(0), "what the freeing left isn't freeable");
+        // A job's end: counted again, off the loop; unchanged, nothing tried again.
+        a.worked("terrain-hi 3/1/1");
+        a.mem.worked_at = now_s() + 1;
+        assert_eq!(a.cache_size.borrow().0, None, "a count asked for");
+        a.counted(Some(&nas));
+        assert_eq!((a.toward_due(), a.towardable()), (None, Some(0)), "an unchanged count");
+        // A copy more: freeable, and tried again.
+        put(&home.join("cache/blobs/sources/x/y.bin"), &[0; 1000]);
+        a.counted(Some(&nas));
+        assert_eq!((a.toward_due(), a.towardable()), (Some(target), Some(1000)));
+        // Some of what it left gone: what it left ends, the caches counted whole.
+        std::fs::remove_file(&tile).unwrap();
+        a.counted(Some(&nas));
+        assert_eq!((a.toward_left.get(), a.towardable()), (None, Some(1000)));
+    }
+
+    /// Task #1478: the caches are counted on a thread of their own, with the NAS, never on the
+    /// loop's: a count asked for (after a clear, room-making or a job's end) is the loop's status's
+    /// to start, one at a time.
+    #[test]
+    fn the_caches_are_counted_off_the_loop() {
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        put(&home.join("cache/blobs/sources/x/y.bin"), &[0; 1000]);
+        a.count_caches();
+        assert_eq!(*a.cache_size.borrow(), (None, None), "nothing counted on the loop");
+        a.resources(Some(&nas));
+        let t = a.count_thread.take().expect("counting on a thread of its own");
+        assert_eq!(t.thread().name(), Some("cache count"));
+        t.join().unwrap();
+        a.counts_in();
+        assert_eq!(a.cache_size.borrow().1.as_ref().map(|s| s.free.now), Some(1000));
+        // (One at a time: none started over one under way.)
+        *a.count_thread.borrow_mut() = Some(std::thread::spawn(|| std::thread::sleep(Duration::from_millis(500))));
+        a.count_caches();
+        a.resources(Some(&nas));
+        assert_eq!(a.cache_size.borrow().0, None, "waits for the count under way");
+        a.count_thread.take().unwrap().join().unwrap();
     }
 
     /// A job's end the lead doesn't take (it doesn't answer, or its round failed already) is owed,
