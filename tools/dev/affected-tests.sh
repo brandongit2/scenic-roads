@@ -13,7 +13,9 @@
 # A file a module compiles in (include_str!, include_bytes! or include! outside a #[test] function)
 # runs that module's own tests. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
-# changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests).
+# changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests);
+# one outside its crate's src/, or another crate's, runs the declaring crate's unit tests whole. A file a
+# build script says it reads (`rerun-if-changed`) runs that package's tests whole.
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
 #   tools/dev/affected-tests.sh --nextest <file>  reads such `cargo test` lines from the file and
 #                                          prints the `cargo nextest run` lines running the same tests (#969, below)
@@ -124,10 +126,19 @@ for f in sorted(r.stdout.split()):
         p = os.path.normpath(os.path.join(os.path.dirname(f), m.group(1)))
         if p in cs and reuse.enclosing(src, m.start()) is None:
             included.append((f, p)); break
+# A file a build script says it reads (its `rerun-if-changed` lines, check-reuse.py's script_reads:
+# crates/inputs' digests of its own sources and of every crate its manifest reaches) runs its
+# package's tests whole (#1467's guard failed publish after a change in store, which no test here
+# named): what the script makes of it is compiled into the package, which no module names.
+try:
+    scripted = [(d, hit) for d, pres in reuse.script_reads(reuse.packages(git("ls-files", "-z").split("\0"))).items()
+                if d.startswith("crates/") and (hit := next((f for f in dict.fromkeys(changed) if any(reuse.under(f, p) for p in pres)), None))]
+except reuse.Doubt as e:
+    sys.exit("affected-tests.sh: the build scripts' reads: %s" % e)
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)
-if not changed and not scan_hits and not included:
+if not changed and not scan_hits and not included and not scripted:
     print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 
 _cache = {}
@@ -251,13 +262,14 @@ def globs():
 PATHMOD = re.compile(r'#\[path\s*=\s*"([^"]+)"\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*;')
 _pathed = {}
 def compiled_into():
-    """{file: [the files of other crates declaring it a module by #[path]]}."""
+    """{file: [the files of other crates declaring it a module by #[path], or of its own crate
+    when it's outside the crate's src/ (inputs' build/checks_code_tests.rs)]}."""
     if not _pathed:
         for g in rg(r"#\[path\s*=", ["crates"]):
             if "/src/" not in g: continue
             for m in PATHMOD.finditer(read(g)):
                 t = os.path.normpath(os.path.join(os.path.dirname(g), m.group(1)))
-                if crate_of(t) != crate_of(g): _pathed.setdefault(t, []).append(g)
+                if crate_of(t) != crate_of(g) or not t.startswith("crates/%s/src/" % crate_of(t)): _pathed.setdefault(t, []).append(g)
         _pathed[None] = []
     return _pathed
 
@@ -307,7 +319,7 @@ for f in changed:
             for t in test_files_declaring(c, rel.split("/")[0]):
                 add(c, "--test " + os.path.basename(t).removesuffix(".rs"), None, "uses changed " + f)
         continue
-    # A file another crate compiles in as a module (#[path]): that crate's unit tests, whole. Its code
+    # A file another crate compiles in as a module (#[path]), or its own from outside src/: that crate's unit tests, whole. Its code
     # reaches them through what the crate makes of it, not by name: the plan, in agentcore's tests
     # through seam::for_tests (~430 of them), as check-reuse.py counts it that crate's source.
     for g in compiled_into().get(f, []):
@@ -328,6 +340,8 @@ for f in changed:
 
 for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
 for f, p in included: add_file(f, "compiles in " + p)
+for d, f in scripted:
+    for tgt in sorted(crate_targets(crate_of(d + "/"))): add(crate_of(d + "/"), tgt, None, "%s's build script reads %s" % (d, f))
 if not want:
     print("# the changed Rust files have no tests and no tested users: nothing to run"); sys.exit()
 print("# why:"); print("\n".join(dict.fromkeys(why)))

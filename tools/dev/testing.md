@@ -55,7 +55,11 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   in coord/mod.rs, #969), and a crate's whole unit tests when its source compiles the file in from
   another crate by `#[path]` (agentcore's tests, which run on the plan, after an edit of pipeline's
   agent/build.rs, steps.rs, idents.rs, theplan.rs or tiles.rs: they reach it through
-  `seam::for_tests`, not by name). A moved file counts at its old path too (`--no-renames`, as in
+  `seam::for_tests`, not by name), or from outside its own src/ (inputs' build/checks_code_tests.rs),
+  and a package's whole tests when a file its build script says it reads changed (its
+  `rerun-if-changed` lines, check-reuse.py's `script_reads`: a literal path, that path; a path made
+  as it runs, the package and every crate its manifests reach by path; inputs' digests read those,
+  so a change in store runs inputs' unit tests). A moved file counts at its old path too (`--no-renames`, as in
   check.sh's own triggers). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
   or `<a>..<b>` shows the set for past work.

@@ -324,6 +324,44 @@ fn main() { x::go() }'
 fresh "a build script's output made from a file outside its package, by its #[path] module" s docs 'cargo test -p a --lib' run run
 s() { w crates/a/src/lib.rs 'pub const V: &[&str] = include!(concat!(env!("OUT_DIR"), "/v.rs"));' }
 fresh "OUT_DIR in a package without a build script" s docs 'cargo test -p a --lib' run run
+# (#1467: what a build script says it reads, `rerun-if-changed`, is a source of its package, linked or not.)
+s() { many; w crates/a/build.rs 'fn main() { println!("cargo::rerun-if-changed=../u/src/lib.rs"); }' }
+m() { print '// 2' >> crates/u/src/lib.rs }
+fresh "a file a build script says it reads, in a crate it doesn't link" s m 'cargo test -p b --lib|cargo test -p d --lib' run partial $'cargo test -p b --lib\ncargo test -p d --lib'
+
+# -- affected-tests.sh: a file a build script says it reads runs its package's tests (#1467: inputs'
+# digests read every crate its manifest reaches; a change in store alone listed none of its tests, and
+# publish's run failed on its guard). Each on a toy repo: b's script reruns on paths it makes (reading
+# its path dependency a), c's on a literal file outside the packages, d's on a variable alone; e's names a rerun
+# line in a comment only.
+affected() {  # affected <name> <main's edit> <want commands, |-separated>
+  local d=$(mktemp -d) out
+  ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
+members = ["crates/a", "crates/b", "crates/c", "crates/d", "crates/e"]'
+    w crates/a/Cargo.toml '[package]
+name = "a"'; w crates/a/src/lib.rs 'pub fn v() {}'; w data/x.txt 1
+    for p in b c d e; do w crates/$p/Cargo.toml "[package]
+name = \"$p\"
+[dependencies]
+a = { path = \"../a\" }"; w crates/$p/src/lib.rs '#[test]
+fn t() {}'; done
+    w crates/b/build.rs 'fn main() { for f in ["../a/src/lib.rs"] { println!("cargo::rerun-if-changed={f}"); } }'
+    w crates/c/build.rs 'fn main() { println!("cargo::rerun-if-changed=../../data/x.txt"); }'
+    w crates/d/build.rs 'fn main() { println!("cargo::rerun-if-env-changed=D_RERUN"); }'
+    w crates/e/build.rs '// Not `rerun-if-changed=build.rs`: a variable.
+fn main() { println!("cargo::rerun-if-env-changed=E_RERUN"); }'
+    g add -A; g commit -m b0; $2; g add -A; g commit -m main
+    zsh $here/../affected-tests.sh HEAD 2>&1 ) > $d/out
+  out=$(grep -v '^#' $d/out); rm -rf $d
+  if [[ ${(j:|:)${(f)out}} == $3 ]]; then ok "affected-tests: $1: ${3:-nothing}"
+  else bad "affected-tests: $1: wanted ${3:-nothing}; got:"; print -r -- $out | sed 's/^/    /'; fi
+}
+m() { print '// 2' >> crates/a/src/lib.rs }
+affected "a path dependency's source a build script reads by the paths it makes" m 'cargo test -p b --lib'
+m() { print 2 >> data/x.txt }
+affected "a file a build script names" m 'cargo test -p c --lib'
+m() { print '// 2' >> crates/b/src/lib.rs }
+affected "the build script's own package" m 'cargo test -p b --lib'
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them
