@@ -12792,7 +12792,8 @@ mod tests {
         }
         // (The lead's own answers near its best: the hold ends, and the heavy one goes alone.)
         let (window, alone, _) = read(Some(2.5));
-        assert_eq!((window, alone), (STEP, true), "near the best: a job beside nothing goes");
+        assert!(alone, "near the best: a job beside nothing goes");
+        assert!(window > STEP && window <= 500, "grown on the lead's answer, toward the room held at most: {window}");
         assert_eq!(take("m3", 0).len(), 1, "the aged heavy one goes beside nothing");
         let heavy = {
             let mut s = c.shared.lock().unwrap();
@@ -12800,19 +12801,21 @@ mod tests {
             let ts = vec![(offer.targets[0].0.clone(), String::new())];
             s.leases.grant("m3", Work::Job { step: "slope-hi".into(), targets: ts }, now)
         };
-        // (Beside it, answers near the best: the window grows to the load they test, a step a
-        // minute past the threshold to a step past the 500 in use, no further.)
-        let mut last = (0, None);
-        for _ in 0..70 {
-            take("m4", 2);
-            let (window, _, hold) = read(Some(2.5));
-            last = (window, hold);
+        // (Beside it, answers near the best: the window grows on them, a step a minute past the
+        // threshold, never more than one job past the 500 in use, until a light one fits beside it.)
+        let mut went = None;
+        for i in 0..120 {
+            if !take("m4", 2).is_empty() {
+                went = Some(i);
+                break;
+            }
+            let (window, _, _) = read(Some(2.5));
+            assert!(window <= 500 + 500, "one job past what's in use at most: {window}");
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
             assert!(s.leases.renew(heavy, "m3", None, now));
         }
-        // (Held there: the light one fits now, so the window no longer limits.)
-        assert_eq!(last, (500 + STEP, Some(Hold::NotLimiting)), "grown on its answers to a step past what's in use");
+        assert!(went.is_some(), "grown back on its answers: a light job goes beside the heavy one");
     }
 
     /// A stale answer from a Mac holding no leased jobs (paused, or gone quiet) is left out: it

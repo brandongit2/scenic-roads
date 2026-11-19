@@ -113,9 +113,11 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   leased jobs gave fresh (none older than its span and a beat: no growth on stale data), and
 ///   only once the jobs last started have run a `span_s` (their answers in the reading): doubling a
 ///   `Tuning::grow_s` up to the slow start's threshold (none before the first cut), then a step a
-///   `grow_s`; and never past what its readings tested: under the threshold twice the weight in
-///   use (at least two steps), at or past it a step past the weight in use (a window grown on
-///   readings of a light load would admit a heavy job in one jump);
+///   `grow_s`; and never more than one job past the load its readings tested: the weight in use
+///   and the next job waiting (a step at least), or under the threshold twice the weight in use
+///   (at least two steps) where that's more. A window grown on readings of a light load would
+///   admit several heavy jobs in one jump; one job's is what the next reading past the knee cuts
+///   back;
 /// - **between**, or nothing read: it holds.
 ///
 /// Each reading keeps why it held (`Hold`: the first of those gates it failed), for the lead's
@@ -232,9 +234,6 @@ pub enum Hold {
     /// The window isn't what limits: the room the next job waiting needs fits beside what's in use
     /// (none waiting: the weight in use more than a step under it).
     NotLimiting,
-    /// The window already as far past the weight in use as its readings tested (`Pace::read`'s
-    /// ceiling).
-    Ahead,
 }
 
 impl Hold {
@@ -247,7 +246,6 @@ impl Hold {
             Hold::NotFresh => "not every Mac's answers fresh",
             Hold::Started => "the jobs last started not a span old",
             Hold::NotLimiting => "the window not what limits",
-            Hold::Ahead => "the window already past the load its readings tested",
         }
     }
 }
@@ -689,10 +687,13 @@ impl Pace {
         let dt = self.last.as_ref().map_or(k.read_s, |r| t.saturating_sub(r.at)).min(k.grow_s) as f64
             / k.grow_s.max(1) as f64;
         let unread = ratio.is_none() && self.load.is_none();
-        // (The most its readings tested: slow start, twice the weight in use (two steps at least);
-        // past the threshold, a step past it.)
+        // (The most past the load its readings tested it grows to: one job more, the next one
+        // waiting (a step at least, none waiting); in the slow start, twice the weight in use too
+        // (two steps at least). A jump of one job's weight, which the next reading past the knee
+        // cuts back.)
         let additive = st.threshold.is_some_and(|th| st.window >= th);
-        let ceiling = if additive { in_use + step } else { 2.0 * in_use.max(step) };
+        let one_more = in_use + s.wants.map_or(0.0, f64::from).max(step);
+        let ceiling = if additive { one_more } else { one_more.max(2.0 * in_use.max(step)) };
         let hold = if unread {
             None
         } else if past {
@@ -707,8 +708,6 @@ impl Pace {
             Some(Hold::Started)
         } else if in_use + s.wants.map_or(step, f64::from) <= st.window {
             Some(Hold::NotLimiting)
-        } else if st.window >= ceiling {
-            Some(Hold::Ahead)
         } else {
             None
         };
@@ -1611,41 +1610,60 @@ mod tests {
     }
 
     /// The window never grows on readings with no Mac's answers (the disks alone, nothing listing
-    /// the NAS), nor past what its readings tested: twice the weight in use under the threshold, a
-    /// step past it at the threshold; however much room the next job waiting needs.
+    /// the NAS), nor more than one job past the load its readings tested: the weight in use and the
+    /// next job waiting, or under the threshold twice the weight in use where that's more.
     #[test]
     fn the_window_grows_only_on_answers_and_never_past_the_load_tested() {
         let k = Tuning::default();
         let disks_only = |p: &mut Pace, t: u64, in_use: u32| {
-            let s = Sample { t, answers: &[], blind: false, busy: Some(&[2.0]), pct: 85, in_use, wants: Some(900) };
+            let s = Sample { t, answers: &[], blind: false, busy: Some(&[2.0]), pct: 85, in_use, wants: Some(300) };
             p.read(&s, &k)
         };
-        // (Idle, the disks quiet, a heavy job waiting: held for want of answers.)
+        // (Idle, the disks quiet, a 300 job waiting: held for want of answers.)
         let mut p = Pace::default();
         for t in (0..600).step_by(10) {
             assert_eq!(disks_only(&mut p, t, 0), Verdict::Held);
             assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NoAnswer));
         }
         assert_eq!(p.window(), STEP);
-        // (Answers near the best, nothing in use: two steps at most, then ahead of the load.)
+        // (Answers near the best, nothing in use: doubling to that one job, no further.)
         for t in (600..1200).step_by(10) {
-            at(&mut p, t, 5.0, 0, Some(900));
+            at(&mut p, t, 5.0, 0, Some(300));
+            assert!(p.window() <= 300);
         }
-        assert_eq!(p.window(), 2 * STEP);
-        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::Ahead));
-        // (400 in use under no threshold: doubling to 800, no further, the 900 waiting not let in.)
-        for t in (1200..2400).step_by(10) {
-            at(&mut p, t, 5.0, 400, Some(900));
-        }
-        assert_eq!(p.window(), 800);
-        // (At a threshold: a step past the weight in use.)
-        at(&mut p, 2400, 40.0, 400, Some(900));
+        assert_eq!(p.window(), 300);
+        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NotLimiting));
+        // (Cut at 400 in use: at the threshold, a step a minute to one job past the weight in use,
+        // never past it.)
+        at(&mut p, 1200, 5.0, 400, Some(300));
+        assert_eq!(at(&mut p, 1210, 40.0, 400, Some(300)), Verdict::Cut);
         assert_eq!((p.window(), p.st.threshold), (200, Some(200.0)));
-        for t in (2410..4000).step_by(10) {
-            at(&mut p, t, 5.0, 400, Some(900));
+        for t in (1220..3000).step_by(10) {
+            at(&mut p, t, 5.0, 400, Some(300));
+            assert!(p.window() <= 700);
         }
-        assert_eq!(p.window(), 450, "400 in use and a step");
-        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::Ahead));
+        assert_eq!(p.window(), 700, "400 in use and the 300 waiting");
+        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NotLimiting));
+    }
+
+    /// The re-review's probe: cut at 300 in use (window and threshold 150), one 150 job running
+    /// and another waiting, the NAS near its best for two hours. Past the threshold the window
+    /// grows a step a minute to one job past the weight in use, so the second goes; a ceiling of a
+    /// step past it held it at 200 for good, the pool one heavy job at a time after any cut.
+    #[test]
+    fn past_a_cut_the_window_grows_back_to_take_one_more_job() {
+        let mut p = Pace::default();
+        at(&mut p, 0, 5.0, 300, None);
+        assert_eq!(at(&mut p, 10, 40.0, 300, Some(150)), Verdict::Cut);
+        assert_eq!((p.window(), p.st.threshold), (150, Some(150.0)));
+        let mut t = 10;
+        while t < 2 * 3600 {
+            t += 10;
+            at(&mut p, t, 5.0, 150, Some(150));
+        }
+        assert_eq!(p.window(), 300, "one 150 running and one more");
+        let l = Limits { window: p.window(), alone: p.lone(), ..Default::default() };
+        assert!(l.paced(150, 150), "the second 150 job goes");
     }
 
     /// The pacing's bounds are the pool's settings: each within its range, else its default;
@@ -1722,13 +1740,14 @@ mod tests {
     }
 
     /// What a burst came to: the seconds past the knee and at the cliff, when its last job ended,
-    /// and how often the window was cut.
+    /// how often the window was cut, and the most jobs running at once since its last cut.
     #[derive(Debug)]
     struct Run {
         past_knee_s: u64,
         cliff_s: u64,
         end: u64,
         cuts: usize,
+        most_since_cut: usize,
     }
 
     fn near_and_away() -> Vec<SimMac> {
@@ -1767,7 +1786,7 @@ mod tests {
                 vec![Default::default(); self.macs.len()];
             let mut means: Vec<std::collections::VecDeque<(u64, f64)>> = vec![Default::default(); self.macs.len()];
             let mut said: Vec<Option<(u64, Answer)>> = vec![None; self.macs.len()];
-            let mut run = Run { past_knee_s: 0, cliff_s: 0, end: 0, cuts: 0 };
+            let mut run = Run { past_knee_s: 0, cliff_s: 0, end: 0, cuts: 0, most_since_cut: 0 };
             let (mut t, mut next, mut seed) = (0u64, 0usize, 0x2545_f491_u64);
             loop {
                 running.retain(|&(end, _)| end > t);
@@ -1851,6 +1870,7 @@ mod tests {
                         };
                         if p.read(&s, k) == Verdict::Cut {
                             run.cuts += 1;
+                            run.most_since_cut = 0;
                         }
                         p.window()
                     } else {
@@ -1868,6 +1888,9 @@ mod tests {
                         running.push((t + self.secs, next % self.macs.len()));
                         next += 1;
                         queue -= 1;
+                    }
+                    if run.cuts > 0 {
+                        run.most_since_cut = run.most_since_cut.max(running.len());
                     }
                 }
                 t += TICK;
@@ -1907,6 +1930,9 @@ mod tests {
         say("H1 timeouts at the cliff", &r);
         assert!(r.cliff_s <= 300, "at the cliff only while the jobs out then run");
         assert!(r.cuts >= 1);
+        // (Once the outside load is gone the window grows back past its cut, a job at a time: the
+        // pool gets back to three heavy jobs at once, as many as the NAS takes under the knee.)
+        assert!(r.most_since_cut >= 3, "back to several jobs after the cut: {r:?}");
         // (H2: answers only with each Mac's asks, every 120 s while it holds jobs: no growth on
         // them, never at the cliff.)
         let b = Burst { asks_only: true, ..Burst::of(30, 150, 250, 300) };
