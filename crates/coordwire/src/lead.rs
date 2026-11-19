@@ -133,7 +133,7 @@ pub fn status(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Opti
 }
 
 /// A host's addresses at `PORT`: its tailnet ones as `tailscale status` lists the peer (or this
-/// Mac) of that name, then its LAN name. In a unit test (`buildstore::out::testing`), those a test's
+/// Mac) of that name, then its LAN name. In a unit test (`isolated`), those a test's
 /// lead announced for that host under `root` (`announce`).
 pub fn addresses(root: &store::nasfs::NasRoot, host: &str) -> Vec<String> {
     if crate::isolated() {
@@ -185,7 +185,7 @@ fn announced() -> &'static Announced {
 /// `addresses` (every Mac of a test is this process, on 127.0.0.1, its port its own); `None`: gone.
 /// Nothing outside a test: a real host's addresses are its own.
 pub fn announce(root: &store::nasfs::NasRoot, host: &str, urls: Option<Vec<String>>) {
-    if !buildstore::out::testing() {
+    if !crate::isolated() {
         return;
     }
     let key = (key_of(root), host.to_string());

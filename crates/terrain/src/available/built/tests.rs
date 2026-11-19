@@ -241,7 +241,7 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
     };
     let (coast, island) = (place(2.0, 44.1), place(20.25, 44.25));
     let (first_land, second_land) = (coast.min(island), coast.max(island));
-    assert!(first_land >= 1 && first_land != second_land, "two tiles, not the first made");
+    assert!(first_land >= 1 && first_land + 1 < second_land, "two tiles apart, not the first made");
     // (Paused with `first_land` tiles made, all cut away: the next is land.)
     let at = std::cell::Cell::new(0u32);
     let before_land = || {

@@ -9137,7 +9137,10 @@ mod tests {
             let one = planned(&first, &m, &done);
             assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
             assert!(one == planned(&kept_back(&made()), &m, &done), "a coverage read back in place, state {states}");
-            assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled, state {states}");
+            if states == 0 {
+                // (From the next state on, `one` is the first coverage with its memos filled.)
+                assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled");
+            }
             let p = &one.1;
             most = most.max(p.regions.len().min(p.built.len()).min(p.regions.iter().map(|r| r.units.len()).sum()));
             states += 1;

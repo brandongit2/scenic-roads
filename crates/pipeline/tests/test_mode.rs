@@ -96,18 +96,7 @@ fn only_the_runtime_s_and_pipeline_s_unit_tests_run_testing() {
         }
     }
     // The crates linking the runtime: agentcore, and those depending on them.
-    let mut linking = vec!["agentcore".to_string()];
-    loop {
-        let more: Vec<String> = deps
-            .iter()
-            .filter(|(n, on)| !linking.contains(n) && on.iter().any(|d| linking.contains(d)))
-            .map(|(n, _)| n.clone())
-            .collect();
-        if more.is_empty() {
-            break;
-        }
-        linking.extend(more);
-    }
+    let linking = closure(&deps, "agentcore");
     assert!(linking.contains(&"server".to_string()), "server links agentcore: {linking:?}");
     for c in ["agentcore", "pipeline"] {
         assert!(starts.iter().any(|s| s == c), "{c}'s TEST_START: {starts:?}");
@@ -168,6 +157,131 @@ fn only_a_cfg_test_start_up_constructor_isolates_a_process() {
     for c in ["server", "offload"] {
         assert!(starts.iter().any(|s| s == c), "{c}'s ISOLATED_START: {starts:?}");
     }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// `seed` and the crates depending on it, directly or through others (`deps`: each crate and its
+/// dependencies of any kind).
+fn closure(deps: &[(String, Vec<String>)], seed: &str) -> Vec<String> {
+    let mut linking = vec![seed.to_string()];
+    loop {
+        let more: Vec<String> = deps
+            .iter()
+            .filter(|(n, on)| !linking.contains(n) && on.iter().any(|d| linking.contains(d)))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if more.is_empty() {
+            return linking;
+        }
+        linking.extend(more);
+    }
+}
+
+/// Every crate with its dependencies of any kind (a dev-dependency's unit tests link it too).
+fn crate_deps() -> Vec<(String, Vec<String>)> {
+    let root = std::path::absolute("../..").unwrap();
+    let mut deps = Vec::new();
+    for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let Ok(toml) = std::fs::read_to_string(e.path().join("Cargo.toml")) else { continue };
+        let (mut section, mut on) = (String::new(), Vec::new());
+        for l in toml.lines() {
+            let t = l.trim();
+            if t.starts_with('[') {
+                section = t.to_string();
+            } else if section.ends_with("dependencies]") {
+                if let Some(d) = t.split(['=', '.', ' ']).next().filter(|d| !d.is_empty() && !d.starts_with('#')) {
+                    on.push(d.to_string());
+                }
+            }
+        }
+        deps.push((e.file_name().to_string_lossy().to_string(), on));
+    }
+    deps
+}
+
+/// Every crate that links coordwire, directly or through another, has a start-up constructor
+/// (`TEST_START` or `ISOLATED_START`) in its unit tests' process: else its tests reach this Mac's
+/// own pool and network wherever a coordwire guard is (`coordwire::isolated`).
+#[test]
+fn every_crate_linking_coordwire_isolates_its_unit_tests() {
+    let root = std::path::absolute("../..").unwrap();
+    let mut missing = Vec::new();
+    for c in closure(&crate_deps(), "coordwire").into_iter().skip(1) {
+        let mut files = Vec::new();
+        rs_files(&root.join("crates").join(&c), &mut files);
+        let has = files.iter().any(|f| {
+            std::fs::read_to_string(f).unwrap().lines().any(|l| {
+                l.starts_with("static TEST_START: extern \"C\" fn() = {")
+                    || l.starts_with("static ISOLATED_START: extern \"C\" fn() = {")
+            })
+        });
+        if !has {
+            missing.push(c);
+        }
+    }
+    assert!(missing.is_empty(), "no TEST_START or ISOLATED_START in: {missing:?}");
+}
+
+/// What coordwire does outside its tests that reaches this Mac (a program run, the owner's home, the
+/// agent's folder) is behind `crate::isolated()`: each line naming one sits in a function whose body
+/// does too, but the pure path builders (`app_dir`, `agent_home`).
+#[test]
+fn what_coordwire_reaches_the_mac_with_is_behind_isolated() {
+    let root = std::path::absolute("../..").unwrap();
+    let mut files = Vec::new();
+    rs_files(&root.join("crates/coordwire/src"), &mut files);
+    let (mut bad, mut seen) = (Vec::new(), 0);
+    for f in files {
+        if f.ends_with("testkit.rs") || f.ends_with("test_start.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        // (Its unit tests' module, at the file's foot, left out.)
+        if let Some(t) =
+            (0..lines.len().saturating_sub(1)).find(|&i| lines[i] == "#[cfg(test)]" && lines[i + 1].starts_with("mod "))
+        {
+            lines.truncate(t);
+        }
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        for (i, l) in lines.iter().enumerate() {
+            let code = code_of(l);
+            let reach = ["spawn::command(", "Command::new(", "var_os(\"HOME\")", "agent_home()", "app_dir()"];
+            // (`code_of` empties string literals: HOME is looked for on the line itself.)
+            if !reach.iter().any(|r| code.contains(r) || l.contains(r))
+                || l.trim_start().starts_with("//")
+                || l.contains(" fn ")
+            {
+                continue;
+            }
+            seen += 1;
+            // The function holding it: the nearest line above, less indented, naming `fn`.
+            let Some(h) = (0..i).rev().find(|&j| {
+                let t = lines[j].trim_start();
+                (t.starts_with("fn ") || t.contains(" fn ")) && indent(lines[j]) < indent(l).max(1)
+            }) else {
+                bad.push(format!("{}:{}: outside a function", f.display(), i + 1));
+                continue;
+            };
+            let name = lines[h].split("fn ").nth(1).and_then(|r| r.split(['(', '<']).next()).unwrap_or("");
+            let end = (h + 1..lines.len())
+                .find(|&j| {
+                    indent(lines[j]) == indent(lines[h])
+                        && lines[j].starts_with(&format!("{}}}", " ".repeat(indent(lines[h]))))
+                })
+                .unwrap_or(lines.len() - 1);
+            let body = lines[h..=end].join("\n");
+            if !["app_dir", "agent_home"].contains(&name) && !body.contains("crate::isolated()") {
+                bad.push(format!(
+                    "{}:{}: in `{name}`, which never asks `crate::isolated()`: {}",
+                    f.display(),
+                    i + 1,
+                    l.trim()
+                ));
+            }
+        }
+    }
+    assert!(seen >= 5, "the scan found {seen} lines: it has stopped finding them");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
