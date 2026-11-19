@@ -6,7 +6,8 @@
 //! to the code they cover.
 //!
 //! **The code.** The inputs crate and every crate its manifest's dependencies reach by path (each
-//! manifest's `[dependencies]` and `[target.….dependencies]`, in any form Cargo takes; a form this
+//! manifest's `[dependencies]` and `[target.….dependencies]`, in any form Cargo takes, and a
+//! registry's crate the workspace patches to a path, `[patch.…]` and `[replace]`; a form this
 //! can't read fails the build), each read whole as the app compiles it: each file with its child
 //! modules (`mod x;`, `#[path]` too) and the bytes of every file it compiles in (`include_str!`,
 //! `include_bytes!`, `include!`, by a plain string literal, or a build script's output by
@@ -28,22 +29,28 @@
 //!   re-export followed), or the module whole where it names none there; a path in a string literal
 //!   of an attribute (serde's `default = "one"`) too;
 //! - a macro it invokes (`det!`): each `macro_rules!` of that name in its crate and theirs;
-//! - a type's impls, wherever they are: an impl's header once its type is reached (and its trait,
-//!   for a trait of these crates); a method of it once its header is and its name is called
-//!   anywhere reached (`.m`, `Type::m`, `Self::m`, `<T as Tr>::m`), every method of an impl of a
-//!   crates.io trait (`Display`, `Drop`, `Deserialize`: called by code not seen);
-//! - when any item of a module is reached, its item macros, its traits and those its `use`s bring
-//!   in (what method calls there may call: `use det::Det` and `x.dcos()`), and its globs' enums.
+//! - a type's impls in any module of these crates (one in a function's body too, hoisted): an
+//!   impl's header once its type is reached (and its trait, for a trait of these crates; for an
+//!   impl of a crates.io trait on a crates.io type, a type of these crates in their generic
+//!   arguments, `impl From<Tool> for String`, else its module); a method of it once its header is
+//!   and its name is called anywhere reached (`.m`, `Type::m`, `Self::m`, `<T as Tr>::m`), every
+//!   method of an impl of a crates.io trait (`Display`, `Drop`, `Deserialize`: called by code not
+//!   seen);
+//! - when any item of a module is reached, its item macros, its traits and those its `use`s and
+//!   globs bring in (what method calls there may call: `use det::Det` and `x.dcos()`; a glob's
+//!   module's traits, its re-exports and `use`s among them: `use super::*`), and its globs' enums.
 //!
 //! A `use` names nothing itself: what a name it brings in stands for is taken where the name is
 //! used.
 //!
 //! The gate's code is `gate`'s items and every item of `mod.rs`, with all they name. One cut: the
 //! registry's items (`REGISTRY`) reach none of `mod.rs`'s child modules, else every unit's code would
-//! hold every other's; any other item of `mod.rs` naming one fails the build.
+//! hold every other's; any other item of `mod.rs` naming one fails the build, and so does a unit's
+//! code holding a registry item.
 //!
 //! **What it doesn't see:** code of crates from crates.io (their versions: only through Cargo.lock,
-//! not here), what their macros and derives expand to (serde's), the names in a file `include!`d
+//! not here), what their macros and derives expand to (serde's, and the impls they make), the
+//! names in a file `include!`d
 //! (its bytes count, its names aren't followed), a method of a value whose type no code reached
 //! names (only inferred through code not seen), and what's read at run time (a unit's
 //! `Checks::context` names those). A name it can't place (a local shadowing nothing it knows)
@@ -62,60 +69,62 @@ const INPUTS: &str = "inputs";
 
 /// The items of `src/inputs/mod.rs` that name its child modules, by name: the registry of units and
 /// their checks. Their names of a child module reach nothing (the cut above).
-pub const REGISTRY: [&str; 7] = ["UNITS", "REGIONS", "HERITAGE", "MATCHES", "ELEVATION", "SOURCES", "checks"];
+const REGISTRY: [&str; 7] = ["UNITS", "REGIONS", "HERITAGE", "MATCHES", "ELEVATION", "SOURCES", "checks"];
 
 /// How deep `use`s, re-exports and globs are followed: past it, a cycle.
 const DEPTH: usize = 12;
 
 /// Every crate read, by its name, and every file read (build.rs reruns when one changes).
 pub struct World {
-    pub crates: BTreeMap<String, Crate>,
+    crates: BTreeMap<String, Crate>,
     pub files: Vec<PathBuf>,
     impls: Impls,
 }
 
 /// A crate: its modules by path (`[]` its root), and the crates its code may name (its path
 /// dependencies: their names in code, the crates they are).
-pub struct Crate {
-    pub modules: BTreeMap<Vec<String>, Module>,
-    pub deps: BTreeMap<String, String>,
+struct Crate {
+    modules: BTreeMap<Vec<String>, Module>,
+    deps: BTreeMap<String, String>,
 }
 
 /// A module: its items, in order, its child modules' names, and its `use`s.
 #[derive(Default)]
-pub struct Module {
-    pub items: Vec<Item>,
-    pub children: BTreeSet<String>,
-    pub scope: Scope,
+struct Module {
+    items: Vec<Item>,
+    children: BTreeSet<String>,
+    scope: Scope,
 }
 
 /// `use`s: each name in scope with the paths it stands for, and the globs' paths.
 #[derive(Default)]
-pub struct Scope {
-    pub uses: BTreeMap<String, Vec<Vec<String>>>,
-    pub globs: Vec<Vec<String>>,
+struct Scope {
+    uses: BTreeMap<String, Vec<Vec<String>>>,
+    globs: Vec<Vec<String>>,
 }
 
 /// An item: what it is, the names it's found by, its digest, and what it names (`Names`) and the
 /// `use`s within it.
-pub struct Item {
-    pub kind: Kind,
-    pub names: Vec<String>,
-    pub digest: u128,
-    pub holds: Names,
-    pub scope: Scope,
+struct Item {
+    kind: Kind,
+    names: Vec<String>,
+    digest: u128,
+    holds: Names,
+    scope: Scope,
 }
 
 #[derive(Clone, PartialEq)]
-pub enum Kind {
+enum Kind {
     /// A struct, enum, union or type alias.
     Type,
     Trait,
     MacroRules,
-    /// An impl's header: its type's path and its trait's.
+    /// An impl's header: its type's path and its trait's, and the paths of the types in their
+    /// generic arguments (`Foo` of `impl From<Foo> for String`).
     Impl {
         ty: Option<Vec<String>>,
         tr: Option<Vec<String>>,
+        args: Vec<Vec<String>>,
     },
     /// An impl's method: its header's index, its name.
     Method(usize, String),
@@ -127,15 +136,15 @@ pub enum Kind {
 /// What an item's tokens name: names alone, paths, names called (after `.` or a path's `::`), and
 /// macros invoked.
 #[derive(Default)]
-pub struct Names {
-    pub idents: BTreeSet<String>,
-    pub paths: BTreeSet<Vec<String>>,
-    pub calls: BTreeSet<String>,
-    pub macros: BTreeSet<Vec<String>>,
+struct Names {
+    idents: BTreeSet<String>,
+    paths: BTreeSet<Vec<String>>,
+    calls: BTreeSet<String>,
+    macros: BTreeSet<Vec<String>>,
 }
 
 /// An item's place: its crate, its module, its index there.
-pub type Id = (String, Vec<String>, usize);
+type Id = (String, Vec<String>, usize);
 
 /// Where a path leads: a module, or items.
 enum Place {
@@ -207,20 +216,28 @@ impl World {
                 for (i, item) in module.items.iter().enumerate() {
                     let id = (c.clone(), m.clone(), i);
                     match &item.kind {
-                        Kind::Impl { ty, tr } => {
+                        Kind::Impl { ty, tr, args } => {
                             let of = |p: &Option<Vec<String>>, want: Kind| -> Vec<Id> {
                                 let Some(p) = p else { return Vec::new() };
                                 let places = self.place(c, m, None, p, false, 0);
                                 self.ids(places).into_iter().filter(|j| self.item(j).kind == want).collect()
                             };
-                            let tys = Some(of(ty, Kind::Type)).filter(|v| !v.is_empty());
+                            let mut tys = Some(of(ty, Kind::Type)).filter(|v| !v.is_empty());
                             let trs = tr.as_ref().map(|_| of(tr, Kind::Trait));
+                            // (Neither its type nor its trait placed among these crates': reached with a
+                            // type of these crates in their generic arguments (`impl From<Foo> for
+                            // String`: only a `Foo` calls it), else with its module.)
+                            if tys.is_none() && trs.as_ref().is_none_or(|t| t.is_empty()) {
+                                let inner: Vec<Id> =
+                                    args.iter().flat_map(|a| of(&Some(a.clone()), Kind::Type)).collect();
+                                if inner.is_empty() {
+                                    x.loose.entry((c.clone(), m.clone())).or_default().push(id.clone());
+                                } else {
+                                    tys = Some(inner);
+                                }
+                            }
                             for t in tys.iter().flatten().chain(trs.iter().flatten()) {
                                 x.of.entry(t.clone()).or_default().push(id.clone());
-                            }
-                            // (Neither its type nor its trait placed among these crates': nothing would reach it.)
-                            if tys.is_none() && trs.as_ref().is_none_or(|t| t.is_empty()) {
-                                x.loose.entry((c.clone(), m.clone())).or_default().push(id.clone());
                             }
                             x.on.insert(id, (tys, trs));
                         }
@@ -247,10 +264,16 @@ impl World {
     }
 
     /// The digest of the items `start` names and every item they name (`closure`), `leave_out` left
-    /// out.
-    pub fn digest(&self, start: Vec<Id>, leave_out: &[Id]) -> String {
+    /// out (the guards').
+    #[cfg(test)]
+    fn digest(&self, start: Vec<Id>, leave_out: &BTreeSet<Id>) -> String {
+        self.digest_of(&self.closure(start, leave_out))
+    }
+
+    /// The digest of items `items`.
+    fn digest_of(&self, items: &BTreeSet<Id>) -> String {
         let mut h = xxhash_rust::xxh3::Xxh3::new();
-        for id in &self.closure(start, leave_out) {
+        for id in items {
             let (c, m, _) = id;
             h.update(format!("{c}::{}#{:032x}\n", m.join("::"), self.item(id).digest).as_bytes());
         }
@@ -259,7 +282,7 @@ impl World {
 
     /// The items `start` names and every item they name, transitively (the module docs), with the
     /// registry's cut; `leave_out` never taken.
-    pub fn closure(&self, start: Vec<Id>, leave_out: &[Id]) -> BTreeSet<Id> {
+    fn closure(&self, start: Vec<Id>, leave_out: &BTreeSet<Id>) -> BTreeSet<Id> {
         let mut seen: BTreeSet<Id> = BTreeSet::new();
         let mut called: BTreeSet<String> = BTreeSet::new();
         let mut modules: BTreeSet<(String, Vec<String>)> = BTreeSet::new();
@@ -308,6 +331,15 @@ impl World {
     /// The items item `id` names (its names, paths and macros, and what its own `use`s bring into
     /// scope), but a registry item's in `mod.rs`'s child modules.
     fn edges(&self, id: &Id) -> Vec<Id> {
+        let mut found = self.named_by(id);
+        if self.registry(id) {
+            found.retain(|f| !self.in_child(f));
+        }
+        found
+    }
+
+    /// The items item `id` names, the registry's cut aside (`edges`).
+    fn named_by(&self, id: &Id) -> Vec<Id> {
         let (c, m, _) = id;
         let item = self.item(id);
         let n = &item.holds;
@@ -327,9 +359,6 @@ impl World {
         }
         for p in &n.macros {
             found.extend(self.macro_rules(c, m, &item.scope, p));
-        }
-        if self.registry(id) {
-            found.retain(|f| !self.in_child(f));
         }
         found
     }
@@ -375,14 +404,29 @@ impl World {
             for place in self.place(c, m, None, g, true, 0) {
                 match place {
                     Place::Items(ids) => v.extend(ids),
-                    Place::Module(gc, gm) => {
-                        let module = &self.crates[&gc].modules[&gm];
-                        v.extend(
-                            (0..module.items.len())
-                                .filter(|&i| module.items[i].kind == Kind::Trait)
-                                .map(|i| (gc.clone(), gm.clone(), i)),
-                        );
-                    }
+                    Place::Module(gc, gm) => v.extend(self.traits_in(&gc, &gm, 0)),
+                }
+            }
+        }
+        v
+    }
+
+    /// The traits a glob of module `m` of crate `c` brings into scope: its own, those its `use`s
+    /// bring in (a re-export, or a parent's `use` that a child's `use super::*` takes), and its globs'.
+    fn traits_in(&self, c: &str, m: &[String], depth: usize) -> Vec<Id> {
+        let Some(module) = self.crates.get(c).and_then(|k| k.modules.get(m)) else { return Vec::new() };
+        if depth > DEPTH {
+            return Vec::new();
+        }
+        let trait_ = |j: &Id| self.item(j).kind == Kind::Trait;
+        let mut v: Vec<Id> = self.all(c, m).into_iter().filter(trait_).collect();
+        for p in module.scope.uses.values().flatten() {
+            v.extend(self.ids(self.place(c, m, None, p, true, 0)).into_iter().filter(trait_));
+        }
+        for g in &module.scope.globs {
+            for place in self.place(c, m, None, g, true, 0) {
+                if let Place::Module(gc, gm) = place {
+                    v.extend(self.traits_in(&gc, &gm, depth + 1));
                 }
             }
         }
@@ -424,20 +468,20 @@ impl World {
     }
 
     /// Every item of module `m` of crate `c`.
-    pub fn all(&self, c: &str, m: &[String]) -> Vec<Id> {
+    fn all(&self, c: &str, m: &[String]) -> Vec<Id> {
         let n = self.crates.get(c).and_then(|k| k.modules.get(m)).map_or(0, |x| x.items.len());
         (0..n).map(|i| (c.to_string(), m.to_vec(), i)).collect()
     }
 
     /// Every item of the modules under `m` of crate `c` (`m` among them).
-    pub fn under(&self, c: &str, m: &[String]) -> Vec<Id> {
+    fn under(&self, c: &str, m: &[String]) -> Vec<Id> {
         let k = &self.crates[c];
         k.modules.keys().filter(|p| p.starts_with(m)).flat_map(|p| self.all(c, p)).collect()
     }
 
     /// The items of module `m` of crate `c` found by one of `names` (not methods nor impls: those by
     /// their types and calls).
-    pub fn named(&self, c: &str, m: &[String], names: &[&str]) -> Vec<Id> {
+    fn named(&self, c: &str, m: &[String], names: &[&str]) -> Vec<Id> {
         let Some(module) = self.crates.get(c).and_then(|k| k.modules.get(m)) else { return Vec::new() };
         module
             .items
@@ -591,48 +635,77 @@ struct Dep {
 }
 
 /// The path dependencies of the crate in `dir` (not its dev- or build-dependencies): each one's name
-/// in code and its folder. A `workspace = true` one is the workspace's (`[workspace.dependencies]`,
-/// its manifest added to `files`).
+/// in code and its folder. A `workspace = true` one is the workspace's (`[workspace.dependencies]`);
+/// one the workspace patches to a path (`[patch.…]`, `[replace]`) is that path's (the workspace's
+/// manifest added to `files` when read).
 fn path_deps(dir: &Path, files: &mut Vec<PathBuf>) -> Result<Vec<(String, PathBuf)>, String> {
     let toml = dir.join("Cargo.toml");
-    let mut ws: Option<(PathBuf, Vec<Dep>)> = None;
+    // (The workspace's folder, its dependencies and its patches, read once if needed.)
+    let mut ws: Option<Option<(PathBuf, Vec<Dep>, Vec<Dep>)>> = None;
+    let mut workspace = |files: &mut Vec<PathBuf>| -> Result<Option<(PathBuf, Vec<Dep>, Vec<Dep>)>, String> {
+        if ws.is_none() {
+            let abs = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+            let root = abs.ancestors().skip(1).find(|a| {
+                std::fs::read_to_string(a.join("Cargo.toml"))
+                    .is_ok_and(|t| t.lines().any(|l| strip_comment(l) == "[workspace]"))
+            });
+            ws = Some(match root {
+                Some(r) => {
+                    let m = r.join("Cargo.toml");
+                    files.push(m.clone());
+                    Some((r.to_path_buf(), deps_of(&m, Tables::Workspace)?, deps_of(&m, Tables::Patch)?))
+                }
+                None => None,
+            });
+        }
+        Ok(ws.clone().unwrap())
+    };
     let mut out = Vec::new();
-    for d in deps_of(&toml, false)? {
+    for d in deps_of(&toml, Tables::Deps)? {
         let (d, base) = if d.workspace {
-            if ws.is_none() {
-                let abs = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-                let root = abs
-                    .ancestors()
-                    .skip(1)
-                    .find(|a| {
-                        std::fs::read_to_string(a.join("Cargo.toml"))
-                            .is_ok_and(|t| t.lines().any(|l| strip_comment(l) == "[workspace]"))
-                    })
-                    .ok_or_else(|| {
-                        format!("{}: {} is the workspace's, and no workspace holds it", toml.display(), d.name)
-                    })?;
-                files.push(root.join("Cargo.toml"));
-                ws = Some((root.to_path_buf(), deps_of(&root.join("Cargo.toml"), true)?));
-            }
-            let (root, table) = ws.as_ref().unwrap();
+            let Some((root, table, _)) = workspace(files)? else {
+                return Err(format!("{}: {} is the workspace's, and no workspace holds it", toml.display(), d.name));
+            };
             let w = table.iter().find(|w| w.name == d.name).ok_or_else(|| {
                 format!("{}: {} is the workspace's, and its [workspace.dependencies] hasn't it", toml.display(), d.name)
             })?;
-            (Dep { name: d.name.clone(), package: d.package.clone().or(w.package.clone()), ..w.clone() }, root.clone())
+            (Dep { name: d.name.clone(), package: d.package.clone().or(w.package.clone()), ..w.clone() }, root)
         } else {
             (d, dir.to_path_buf())
         };
-        if let Some(p) = &d.path {
-            out.push((d.name.replace('-', "_"), base.join(p)));
-        }
+        let (path, base) = match &d.path {
+            Some(p) => (p.clone(), base),
+            None => {
+                // (A crate from a registry, unless the workspace patches it to a path.)
+                let package = d.package.clone().unwrap_or(d.name.clone());
+                let patched = workspace(files)?.and_then(|(root, _, patches)| {
+                    patches.into_iter().find(|x| x.name == package).and_then(|x| x.path).map(|p| (p, root))
+                });
+                match patched {
+                    Some(x) => x,
+                    None => continue,
+                }
+            }
+        };
+        out.push((d.name.replace('-', "_"), base.join(path)));
     }
     Ok(out)
 }
 
-/// The dependencies a manifest's dependency tables declare: `[dependencies]` and
-/// `[target.….dependencies]`, each as a table of its own too (`[dependencies.x]`); with `ws`,
-/// `[workspace.dependencies]`. A line there of a form this doesn't read is an error.
-fn deps_of(toml: &Path, ws: bool) -> Result<Vec<Dep>, String> {
+/// The tables of a manifest that `deps_of` reads.
+#[derive(Clone, Copy, PartialEq)]
+enum Tables {
+    /// `[dependencies]` and `[target.….dependencies]`.
+    Deps,
+    /// `[workspace.dependencies]`.
+    Workspace,
+    /// `[patch.<registry>]` and `[replace]` (a `name:version` key by its name).
+    Patch,
+}
+
+/// The dependencies a manifest's tables `which` declare, each as a table of its own too
+/// (`[dependencies.x]`). A line there of a form this doesn't read is an error.
+fn deps_of(toml: &Path, which: Tables) -> Result<Vec<Dep>, String> {
     let text = std::fs::read_to_string(toml).map_err(|e| format!("read {}: {e}", toml.display()))?;
     let mut out: Vec<Dep> = Vec::new();
     // (None: another table; Some(None): a dependency table; Some(Some(i)): dependency i's own.)
@@ -650,12 +723,13 @@ fn deps_of(toml: &Path, ws: bool) -> Result<Vec<Dep>, String> {
             let keys = split_outside(l.trim_start_matches('[').trim_end_matches(']'), '.');
             let keys: Vec<String> =
                 keys.iter().map(|s| unquote(s.trim()).unwrap_or_else(|| s.trim().to_string())).collect();
-            let deps_at = if ws {
-                (keys.len() >= 2 && keys[0] == "workspace" && keys[1] == "dependencies").then_some(2)
-            } else if keys.first().is_some_and(|s| s == "dependencies") {
-                Some(1)
-            } else {
-                (keys.len() >= 3 && keys[0] == "target" && keys[2] == "dependencies").then_some(3)
+            let first = |k: &str| keys.first().is_some_and(|s| s == k);
+            let deps_at = match which {
+                Tables::Workspace => (keys.len() >= 2 && first("workspace") && keys[1] == "dependencies").then_some(2),
+                Tables::Deps if first("dependencies") => Some(1),
+                Tables::Deps => (keys.len() >= 3 && first("target") && keys[2] == "dependencies").then_some(3),
+                Tables::Patch if first("replace") => Some(1),
+                Tables::Patch => (keys.len() >= 2 && first("patch")).then_some(2),
             };
             table = match deps_at {
                 _ if l.starts_with("[[") => None,
@@ -686,7 +760,12 @@ fn deps_of(toml: &Path, ws: bool) -> Result<Vec<Dep>, String> {
                     [n, s] => (n.trim().to_string(), Some(s.trim().to_string())),
                     _ => return Err(format!("{at}: a dependency key this doesn't read: {key}")),
                 };
-                let mut d = Dep { name: unquote(&name).unwrap_or(name), ..Dep::default() };
+                let mut name = unquote(&name).unwrap_or(name);
+                // (`[replace]`'s `"foo:1.2.3"`: crate foo.)
+                if which == Tables::Patch {
+                    name = name.split(':').next().unwrap_or_default().to_string();
+                }
+                let mut d = Dep { name, ..Dep::default() };
                 match sub {
                     Some(s) => set(&mut d, &s, val, &at)?,
                     None if val.starts_with('"') => {}
@@ -797,63 +876,117 @@ fn collect(items: &[syn::Item], path: Vec<String>, out: &mut BTreeMap<Vec<String
                 x.holds = Names::default();
                 m.items.push(x);
             }
-            syn::Item::Impl(x) => {
-                let path_of = |t: &syn::Type| -> Option<Vec<String>> {
-                    let mut t = t;
-                    loop {
-                        match t {
-                            syn::Type::Reference(r) => t = &r.elem,
-                            syn::Type::Paren(p) => t = &p.elem,
-                            syn::Type::Group(g) => t = &g.elem,
-                            syn::Type::Path(p) if p.qself.is_none() => {
-                                let mut v: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
-                                if p.path.leading_colon.is_some() {
-                                    v.insert(0, "::".into());
-                                }
-                                return Some(v);
-                            }
-                            _ => return None,
-                        }
-                    }
-                };
-                let ty = path_of(&x.self_ty);
-                let tr = x.trait_.as_ref().map(|(_, p, _)| {
-                    let mut v: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
-                    if p.leading_colon.is_some() {
-                        v.insert(0, "::".into());
-                    }
-                    v
-                });
-                // (Its header, then each method as an item of its own.)
-                let mut head = x.clone();
-                head.items.retain(|i| !matches!(i, syn::ImplItem::Fn(_)));
-                let at = m.items.len();
-                m.items.push(item(
-                    Kind::Impl { ty, tr },
-                    Vec::new(),
-                    head.to_token_stream(),
-                    local_uses(|v| v.visit_item_impl_mut(&mut head.clone())),
-                ));
-                for i in &x.items {
-                    if let syn::ImplItem::Fn(f) = i {
-                        let scope = local_uses(|v| v.visit_impl_item_fn_mut(&mut f.clone()));
-                        m.items.push(item(
-                            Kind::Method(at, f.sig.ident.to_string()),
-                            Vec::new(),
-                            f.to_token_stream(),
-                            scope,
-                        ));
-                    }
-                }
-            }
+            syn::Item::Impl(x) => push_impl(&mut m, x),
             _ => {
                 let (kind, names) = kind_names(it);
                 let scope = local_uses(|v| v.visit_item_mut(&mut it.clone()));
                 m.items.push(item(kind, names, it.to_token_stream(), scope));
+                for x in nested_impls(|v| v.visit_item_mut(&mut it.clone())) {
+                    push_impl(&mut m, &x);
+                }
             }
         }
     }
     out.insert(path, m);
+}
+
+/// Impl `x`, into module `m`: its header, then each method as an item of its own, then the impls in
+/// its methods' bodies (hoisted: their type may be the module's).
+fn push_impl(m: &mut Module, x: &syn::ItemImpl) {
+    let ty = type_path(&x.self_ty);
+    let tr = x.trait_.as_ref().map(|(_, p, _)| path_segments(p));
+    let mut args = Vec::new();
+    type_paths(&x.self_ty, &mut args);
+    if let Some((_, p, _)) = &x.trait_ {
+        path_args(p, &mut args);
+    }
+    let mut head = x.clone();
+    head.items.retain(|i| !matches!(i, syn::ImplItem::Fn(_)));
+    let at = m.items.len();
+    let scope = local_uses(|v| v.visit_item_impl_mut(&mut head.clone()));
+    m.items.push(item(Kind::Impl { ty, tr, args }, Vec::new(), head.to_token_stream(), scope));
+    let mut nested = Vec::new();
+    for i in &x.items {
+        if let syn::ImplItem::Fn(f) = i {
+            let scope = local_uses(|v| v.visit_impl_item_fn_mut(&mut f.clone()));
+            m.items.push(item(Kind::Method(at, f.sig.ident.to_string()), Vec::new(), f.to_token_stream(), scope));
+            nested.extend(nested_impls(|v| v.visit_impl_item_fn_mut(&mut f.clone())));
+        }
+    }
+    for n in nested {
+        push_impl(m, &n);
+    }
+}
+
+/// The impls within an item's bodies (a function's own), as `visit` visits it: not those in an
+/// impl it holds, which `push_impl` takes with that impl.
+fn nested_impls(visit: impl FnOnce(&mut NestedImpls)) -> Vec<syn::ItemImpl> {
+    let mut v = NestedImpls(Vec::new());
+    visit(&mut v);
+    v.0
+}
+
+struct NestedImpls(Vec<syn::ItemImpl>);
+
+impl VisitMut for NestedImpls {
+    fn visit_item_impl_mut(&mut self, i: &mut syn::ItemImpl) {
+        self.0.push(i.clone());
+    }
+
+    fn visit_item_mod_mut(&mut self, _: &mut syn::ItemMod) {}
+}
+
+/// A path's segments (a leading `::` one of its own).
+fn path_segments(p: &syn::Path) -> Vec<String> {
+    let mut v: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
+    if p.leading_colon.is_some() {
+        v.insert(0, "::".into());
+    }
+    v
+}
+
+/// The path of type `t` (through references, parentheses), if it's one.
+fn type_path(mut t: &syn::Type) -> Option<Vec<String>> {
+    loop {
+        match t {
+            syn::Type::Reference(r) => t = &r.elem,
+            syn::Type::Paren(p) => t = &p.elem,
+            syn::Type::Group(g) => t = &g.elem,
+            syn::Type::Path(p) if p.qself.is_none() => return Some(path_segments(&p.path)),
+            _ => return None,
+        }
+    }
+}
+
+/// Into `out`, the paths of every type within type `t`, `t`'s own among them.
+fn type_paths(t: &syn::Type, out: &mut Vec<Vec<String>>) {
+    match t {
+        syn::Type::Reference(r) => type_paths(&r.elem, out),
+        syn::Type::Paren(p) => type_paths(&p.elem, out),
+        syn::Type::Group(g) => type_paths(&g.elem, out),
+        syn::Type::Slice(x) => type_paths(&x.elem, out),
+        syn::Type::Array(x) => type_paths(&x.elem, out),
+        syn::Type::Ptr(x) => type_paths(&x.elem, out),
+        syn::Type::Tuple(x) => x.elems.iter().for_each(|e| type_paths(e, out)),
+        syn::Type::Path(p) => {
+            out.push(path_segments(&p.path));
+            path_args(&p.path, out);
+        }
+        _ => {}
+    }
+}
+
+/// Into `out`, the paths of the types in path `p`'s generic arguments.
+fn path_args(p: &syn::Path, out: &mut Vec<Vec<String>>) {
+    for s in &p.segments {
+        if let syn::PathArguments::AngleBracketed(a) = &s.arguments {
+            for g in &a.args {
+                if let syn::GenericArgument::Type(t) = g {
+                    type_paths(t, out);
+                }
+            }
+        }
+    }
 }
 
 /// What item `i` is, and the names it's found by.
@@ -1052,16 +1185,10 @@ fn literal(l: &proc_macro2::Literal, attr: bool, n: &mut Names) {
     };
     if attr {
         let segs: Vec<&str> = v.split("::").collect();
+        // (A path, one segment too: serde's `with = "m"` names a module.)
         if segs.iter().all(|s| word(s)) {
-            match segs.as_slice() {
-                [one] => {
-                    n.idents.insert(one.to_string());
-                }
-                _ => {
-                    n.calls.extend(segs[1..].iter().map(|s| s.to_string()));
-                    n.paths.insert(segs.iter().map(|s| s.to_string()).collect());
-                }
-            }
+            n.calls.extend(segs[1..].iter().map(|s| s.to_string()));
+            n.paths.insert(segs.iter().map(|s| s.to_string()).collect());
         }
     }
     let mut rest = v.as_str();
@@ -1466,19 +1593,149 @@ pub fn codes(w: &World) -> Result<Vec<(String, String)>, String> {
     }
     if let Some(((_, m, _), by)) = named.iter().find(|(f, _)| w.in_child(f)) {
         return Err(format!(
-            "the gate's mod.rs: {} names {}, a child module's, and only the registry may ({}; build/checks_code.rs)",
+            "the gate's mod.rs: {} names {}, a child module's, and only the registry may ({}): move it into a child \
+             module; add a name to REGISTRY (build/checks_code.rs) only for a unit's registration",
             by.as_deref().map_or("a `use`".to_string(), |n| format!("`{n}`")),
             m.join("::"),
             REGISTRY.join(", ")
         ));
     }
+    // (The units: the modules the registry names.)
+    let units: BTreeSet<String> = (0..module.items.len())
+        .map(|i| (INPUTS.to_string(), top.clone(), i))
+        .filter(|id| w.registry(id))
+        .flat_map(|id| w.named_by(&id))
+        .filter(|f| w.in_child(f))
+        .map(|(_, m, _)| m[1].clone())
+        .collect();
     let mut out = Vec::new();
     for x in &module.children {
         let mut start = w.under(INPUTS, &[top.clone(), vec![x.clone()]].concat());
         if x == "gate" {
             start.extend(w.all(INPUTS, &top));
         }
-        out.push((x.clone(), w.digest(start, &[])));
+        let items = w.closure(start, &BTreeSet::new());
+        // (A unit's code holding the registry would hold every unit's through it but for the cut.)
+        if let Some(r) = items.iter().find(|j| units.contains(x) && w.registry(j)) {
+            return Err(format!(
+                "{x}'s code reaches the gate's registry item `{}`: name what it needs from a module of its own",
+                w.item(r).names.join(", ")
+            ));
+        }
+        out.push((x.clone(), w.digest_of(&items)));
     }
     Ok(out)
+}
+
+/// What the guards' code leaves out (`resolution_code`, `rule_codes`): modules that move bytes, wait,
+/// retry, pace or count, and compute nothing a resolution or a measure depends on (their bytes come
+/// through whole or not at all), so a change there checks nothing again. Each, with everything under
+/// it, but `PLUMBING_KEPT`: jobrt's resume log is the codec a resumed resolution's pieces are read
+/// back through. The units' own codes keep them all.
+#[cfg(test)]
+const PLUMBING: [&str; 15] = [
+    "jobrt",
+    "store::nasio",
+    "store::nasfs",
+    "store::nas",
+    "store::waits",
+    "store::aimd",
+    "store::deadline",
+    "store::retry",
+    "store::spawn",
+    "store::iopool",
+    "store::clock",
+    "store::cachefile",
+    "buildstore::fetch",
+    "inputs::inputs::pace",
+    "inputs::inputs::regions::progress",
+];
+
+#[cfg(test)]
+const PLUMBING_KEPT: [&str; 1] = ["jobrt::resume_log"];
+
+/// The items of `PLUMBING` (each module there, asserted).
+#[cfg(test)]
+fn plumbing(w: &World) -> BTreeSet<Id> {
+    let split = |s: &str| -> (String, Vec<String>) {
+        let mut v = s.split("::").map(String::from);
+        (v.next().unwrap(), v.collect())
+    };
+    let kept: Vec<(String, Vec<String>)> = PLUMBING_KEPT.iter().map(|k| split(k)).collect();
+    let mut out = BTreeSet::new();
+    for p in PLUMBING {
+        let (c, m) = split(p);
+        assert!(w.crates.get(&c).is_some_and(|k| k.modules.contains_key(&m)), "PLUMBING: no module {p}");
+        out.extend(
+            w.under(&c, &m)
+                .into_iter()
+                .filter(|(ic, im, _)| !kept.iter().any(|(kc, km)| kc == ic && im.starts_with(km))),
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+fn path(p: &[&str]) -> Vec<String> {
+    p.iter().map(|s| s.to_string()).collect()
+}
+
+/// The method `name` of the impls in module `m` of the inputs crate of a type named `ty`.
+#[cfg(test)]
+fn method(w: &World, m: &[String], ty: &str, name: &str) -> Vec<Id> {
+    let items = &w.crates[INPUTS].modules[m].items;
+    let of_ty =
+        |h: usize| matches!(&items[h].kind, Kind::Impl { ty: Some(p), .. } if p.last().is_some_and(|l| l == ty));
+    let v: Vec<Id> = (0..items.len())
+        .filter(|&i| matches!(&items[i].kind, Kind::Method(h, n) if n == name && of_ty(*h)))
+        .map(|i| (INPUTS.to_string(), m.to_vec(), i))
+        .collect();
+    assert!(!v.is_empty(), "{}: {ty}::{name}", m.join("::"));
+    v
+}
+
+/// The code the regions' `RESOLUTION` covers: the items of their resolution's modules (`resolve`,
+/// `tiles`, `geom`, `land`, `stored`, `shapes`, `data`), what of `regions/mod.rs` shapes a
+/// resolution (a resolution's making and its key, `Regions::made`, `outcome_key`; its budgets,
+/// `max_mb`, `op_budget_s`; its data, `data_from`, `Prepared::land_open`; a stored one taken,
+/// `accepted_resolution`, `Recorded`), and all they name but `PLUMBING`. Held to
+/// `regions::RESOLUTION_CODE` by a test.
+#[cfg(test)]
+pub fn resolution_code(w: &World) -> String {
+    let regions = path(&[INPUTS, "regions"]);
+    let mut start: Vec<Id> = ["resolve", "tiles", "geom", "land", "stored", "shapes", "data"]
+        .iter()
+        .flat_map(|m| w.under(INPUTS, &[regions.clone(), vec![m.to_string()]].concat()))
+        .collect();
+    for (ty, m) in [
+        ("Regions", "made"),
+        ("Regions", "outcome_key"),
+        ("Regions", "accepted_resolution"),
+        ("Regions", "data_from"),
+        ("Prepared", "land_open"),
+    ] {
+        start.extend(method(w, &regions, ty, m));
+    }
+    let named = w.named(INPUTS, &regions, &["max_mb", "op_budget_s", "Recorded"]);
+    assert_eq!(named.len(), 3, "regions/mod.rs: max_mb, op_budget_s, Recorded");
+    start.extend(named);
+    w.digest(start, &plumbing(w))
+}
+
+/// The code each elevation measure step's rule (`Step::rule`) covers, by the step's name: its
+/// measuring code and all it names (`headers_of`, `presence_of`, `hollow_of`), `Step::rule` itself
+/// and `PLUMBING` left out. Held to `elevation::RULE_CODES` by a test.
+#[cfg(test)]
+pub fn rule_codes(w: &World) -> Vec<(&'static str, String)> {
+    let m = path(&[INPUTS, "elevation"]);
+    let mut leave_out = plumbing(w);
+    leave_out.extend(method(w, &m, "Step", "rule"));
+    [("headers", "headers_of"), ("presence", "presence_of"), ("hollow", "hollow_of")]
+        .into_iter()
+        .map(|(step, root)| {
+            let start = w.named(INPUTS, &m, &[root]);
+            assert_eq!(start.len(), 1, "elevation's {root}");
+            (step, w.digest(start, &leave_out))
+        })
+        .collect()
 }

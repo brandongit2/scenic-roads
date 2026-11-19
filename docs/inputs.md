@@ -129,8 +129,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 - **The checks' code** (`inputs::code_of`, task #1467): no version is typed. build.rs reads the
   inputs crate and every crate its manifest's dependencies reach by path (`[dependencies]` and
   `[target.….dependencies]`, in each form Cargo takes: `x = { path = … }`, `x.workspace = true` by
-  the workspace's `[workspace.dependencies]`, a `[dependencies.x]` table, a `package =` rename; a
-  form it can't read fails the build) as the app compiles them
+  the workspace's `[workspace.dependencies]`, a `[dependencies.x]` table, a `package =` rename, a
+  registry's crate the workspace patches to a path by `[patch.…]` or `[replace]`; a form it can't
+  read fails the build) as the app compiles them
   (`crates/inputs/build/checks_code.rs`): tokens, with each child module's file and each file
   compiled in (`include_str!` and the like); comments, doc comments, layout and rustfmt's choices
   (a trailing comma where it means nothing, a match arm in braces), `#[cfg(test)]` and `testkit`
@@ -141,18 +142,20 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   module places it (its items, its `use`s, a function's own `use`s and globs, an enum's variants
   by a glob, a `{name}` in a format string), a path to the item it names
   (`super::credits::parse_description`, `::store::whole::write`, through re-exports), a macro to
-  each `macro_rules!` of its name; a type's impls wherever they are, a method once its type is
-  reached and its name is called (`.m(…)`, `Type::m`, `Self::m`), and every method of an impl of a
+  each `macro_rules!` of its name; a type's impls in any module of these crates (one in a
+  function's body too; an impl of a crates.io trait on a crates.io type by the types of these
+  crates in its generic arguments, `impl From<Tool> for String`), a method once its type is reached
+  and its name is called (`.m(…)`, `Type::m`, `Self::m`), and every method of an impl of a
   crates.io trait (`Display`, `Drop`: called by code not seen); with any item of a module, its item
-  macros and the traits in scope there (`use det::Det` for `x.dcos()`). A `use` names nothing
-  itself. The gate's code (`gate`) is `gate.rs`'s and every item of `mod.rs` (`Finding::holds`,
+  macros and the traits in scope there (`use det::Det` for `x.dcos()`, a glob's module's own,
+  re-exported and `use`d ones). A `use` names nothing itself. The gate's code (`gate`) is `gate.rs`'s and every item of `mod.rs` (`Finding::holds`,
   the `Checks` defaults, `ignored`), with all they name; the registry's items (`UNITS`, `checks`,
-  the units' statics) reach no unit's code, and any other item of `mod.rs` naming one of its child
-  modules fails the build. The key names the gate's code and the unit's (`Checks::code`). A release
+  the units' statics) reach no unit's code; any other item of `mod.rs` naming one of its child
+  modules fails the build, and so does a unit's code reaching a registry item. The key names the gate's code and the unit's (`Checks::code`). A release
   changing any code a unit's checks reach checks that unit again, once; one changing the gate's
   checks every unit; any other checks none.
   What it doesn't see: crates from crates.io (their code and versions) and what their macros and
-  derives expand to (serde's); the names in a file `include!`d (its bytes count); a method of a
+  derives expand to (serde's, and the impls they make); the names in a file `include!`d (its bytes count); a method of a
   value whose type no code it reaches names (inferred through code not seen); a newer syn, quote
   or proc-macro2 may digest every item anew, which checks every unit once; files read at run time
   (those a check reads are in its key by `Checks::context`). A name it can't place names nothing;
@@ -171,7 +174,11 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   shapes a resolution (`Regions::made`, `outcome_key`, the budgets `max_mb` and `op_budget_s`,
   `data_from`, `land_open`, `accepted_resolution`, `Recorded`), and all they name; `RULE_CODES`:
   each step's measuring code, `headers_of`, `presence_of`, `hollow_of`, `Step::rule` itself left
-  out), and a test fails when the code moves and the digest doesn't, naming the new digest:
+  out; both without the code that moves bytes, waits, retries, paces or counts and computes
+  nothing they depend on: jobrt but its resume log, store's `nasio`, `nasfs`, `nas`, `waits`,
+  `aimd`, `deadline`, `retry`, `spawn`, `iopool`, `clock` and `cachefile`, buildstore's `fetch`,
+  the gate's `pace` and the regions' `progress`, `PLUMBING` in build/checks_code.rs; the units'
+  own codes keep them), and a test fails when the code moves and the digest doesn't, naming the new digest:
   the developer bumps the number if the change moves what it covers, and sets the digest either way.
   A regions check under new code otherwise takes the outcome recorded for the same inputs.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader

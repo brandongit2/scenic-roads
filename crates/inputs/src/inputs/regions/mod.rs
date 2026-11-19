@@ -191,11 +191,11 @@ impl Got {
 pub const RESOLUTION: u32 = 13;
 
 /// The digest of the code `RESOLUTION` covers, as it was when `RESOLUTION` was last set
-/// (build/checks_code_tests.rs `resolution_code`: the resolution's modules, what of this file shapes
-/// a resolution, and all they name). A test (`checks_code_tests`) fails when that code changes and
+/// (build/checks_code.rs `resolution_code`: the resolution's modules, what of this file shapes a
+/// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "fdaf20d6f69f8d47e0b0e8917685f71d";
+pub const RESOLUTION_CODE: &str = "2022d34b2935d47a4d36ee2c0d8ba9b7";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.
