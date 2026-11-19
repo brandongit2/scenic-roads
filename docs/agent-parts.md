@@ -179,8 +179,11 @@ Planned: the view on the page's machine card and the menu's NAS line (`up`, `slo
 - a timed wait in the plan ran out (`plan_due`'s timers become one deadline the part sleeps to);
 - a 5-min fallback.
 
-A lease's change (the coordinator's `lease_gen`) is not among them: it filters the last plan's
-work again ("its jobs", `plan::refilter_due`, #880 step 2), not `build::plan`.
+What granting reads (`plan::Granting`: the coordinator's `lease_gen`, the build's pause, the
+placement switch, the pool's gates) is not among them: a change to it filters the last plan's work
+again ("its jobs", `plan::refilter_due`, #880 step 2), not `build::plan`. Each plan's log line says
+why it was made, and for a change of what it depends on, which parts of `plan_seen` changed
+(`plan::Seen`); each filtering's line says what granting read changed.
 
 Granting is fast and separate from planning: a free slot's ask (from **jobs** here, or a member's
 by HTTP) is answered from the last `PlanView` at once, not after the next plan. Today's `may_pack`

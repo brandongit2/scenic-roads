@@ -10533,8 +10533,10 @@ mod tests {
         assert_eq!(a.planner().replan_at(&plan, 1000), Some(1000 + PROXY_REPLAN.as_secs()));
     }
 
-    /// The digest of what an idle agent's plan depends on: the same while nothing changes; changed
-    /// by the records, a hand-off waiting, the pool's switches.
+    /// What an idle agent's plan depends on: the same while nothing changes; changed by the
+    /// records, a hand-off waiting, publishing's switches, a held map, the gate, each part named as
+    /// it changes. What granting reads (the leases, the pause, placement, the pool's gates) leaves it
+    /// the same and changes `Granting` alone (task #880 step 2).
     #[test]
     fn the_plans_digest_follows_what_it_depends_on() {
         let d = tempfile::tempdir().unwrap();
@@ -10552,56 +10554,61 @@ mod tests {
             member: false,
         })
         .unwrap();
-        let mut last = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(last, 0);
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
-        // (Each change a different length: the digest doesn't rest on the file times' resolution.)
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        let mut last = a.planner().plan_seen(&r);
+        assert_eq!(a.planner().plan_seen(&r), last);
+        // Each change names its part (each a different length: the digest doesn't rest on the file
+        // times' resolution).
+        let mut changed = |a: &mut Agent, part: &str| {
+            let now = a.planner().plan_seen(&r);
+            assert_ne!(now.digest(), last.digest(), "{part}");
+            assert_eq!(now.changed(Some(&last)), part);
+            last = now;
+        };
         std::fs::write(root.join("state/build/manifest.json"), "{\"a\":\"b\"}").unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        changed(&mut a, "the records");
         std::fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
-        std::fs::create_dir_all(a.handoff_bases(&store::nasfs::NasRoot::local_for_test(&root))[0].join("other-mac"))
-            .unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        changed(&mut a, "the records");
+        std::fs::create_dir_all(a.handoff_bases(&r)[0].join("other-mac")).unwrap();
+        changed(&mut a, "the hand-offs");
         // Publishing's switches (the pool's settings): slope near, and the hold on publishing.
         for sw in [publish::Switches { near: true, held: false }, publish::Switches { near: true, held: true }] {
             a.switches = sw;
-            let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-            assert_ne!(now, last, "{sw:?}");
-            last = now;
+            changed(&mut a, "publishing's switches");
         }
         // A held map's folder made.
         std::fs::create_dir_all(publish::held_dir(&home)).unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        changed(&mut a, "the held maps or the map's head");
         // The test unit put on the gate, then taken off (its flag), with no plan between.
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
         std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last, "on the gate");
-        last = now;
+        changed(&mut a, "the gate");
         std::fs::remove_file(root.join(inputs::inputs::TEST_FLAG)).unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last, "off the gate");
+        changed(&mut a, "the gate");
+        // Two parts at once, both named; none to compare with, the NAS back.
+        std::fs::write(root.join("state/build/jobs.json"), "{\"x\":1}").unwrap();
+        a.switches = publish::Switches::default();
+        let now = a.planner().plan_seen(&r);
+        assert_eq!(now.changed(Some(&last)), "the records, publishing's switches");
+        assert_eq!(now.changed(None), "the NAS back");
         last = now;
-        // The coordinator's leases leave it (task #880 step 2: their change filters the last plan's
-        // work again, plan::refilter_due, by their generation): this Mac's own taken and let go (a
-        // start that didn't go through) moves neither; another worker's taken, then given back,
-        // moves the generation alone.
+        // What granting reads leaves it (task #880 step 2: their change filters the last plan's work
+        // again, plan::refilter_due): the coordinator's leases by their generation, this Mac's own
+        // taken and let go (a start that didn't go through) moving neither, another worker's taken,
+        // then given back, moving the generation alone.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
-        let gen = co.lease_gen();
+        assert_eq!(a.planner().plan_seen(&r), last);
+        let mut granting = a.planner().granting();
+        let granting_changed = |a: &mut Agent, last: &plan::Seen, granting: &mut plan::Granting, what: Option<&str>| {
+            assert_eq!(a.planner().plan_seen(&r), *last, "{what:?}");
+            let now = a.planner().granting();
+            assert_eq!(now.changed(granting).as_deref(), what);
+            *granting = now;
+        };
         let id = co.hold("gc", &[("t".into(), "k".into())]).unwrap();
         co.finish(id, &[]);
-        assert_eq!(co.lease_gen(), gen);
+        granting_changed(&mut a, &last, &mut granting, None);
         let id = {
             let mut s = co.shared.lock().unwrap();
             let t = s.now();
@@ -10611,25 +10618,44 @@ mod tests {
                 t,
             )
         };
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
-        assert_ne!(co.lease_gen(), gen);
-        let gen = co.lease_gen();
+        granting_changed(&mut a, &last, &mut granting, Some("the leases"));
         co.shared.lock().unwrap().leases.cancel(id).unwrap();
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
-        assert_ne!(co.lease_gen(), gen);
-        // The pool's switches the agent holds.
+        granting_changed(&mut a, &last, &mut granting, Some("the leases"));
+        // The pause, the placement switch and the pool's gates, alone and together.
+        a.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "test"));
+        granting_changed(&mut a, &last, &mut granting, Some("the pause"));
         a.placement = true;
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), now);
+        granting_changed(&mut a, &last, &mut granting, Some("placement"));
+        let view = |gates: membership::Gates| PoolView {
+            member: "m-m4".into(),
+            role: membership::Role::Lead,
+            gates,
+            members: Vec::new(),
+            unacked: 0,
+            restart: None,
+            lead: None,
+        };
+        a.pool_seen = Some(view(membership::Gates::default()));
+        let now = a.planner().plan_seen(&r);
+        assert_eq!(now.changed(Some(&last)), "the pool", "the pool's membership is the plan's");
+        last = now;
+        granting = a.planner().granting();
+        a.pool_seen = Some(view(membership::Gates { duties: true, caught_up: true, ..Default::default() }));
+        granting_changed(&mut a, &last, &mut granting, Some("the pool's gates"));
+        a.pause = None;
+        a.placement = false;
+        a.pool_seen = Some(view(membership::Gates::default()));
+        granting_changed(&mut a, &last, &mut granting, Some("the pause, placement and the pool's gates"));
+        granting_changed(&mut a, &last, &mut granting, None);
     }
 
     /// Another worker's lease filters the last plan's work again (task #880 step 2) under a plan
     /// number of its own, told to the coordinator: a grant of a job by its id is of the offers that
-    /// number names, never the last plan's job of that id with other targets (task #923). Nothing
-    /// changed, nothing filtered again.
+    /// number names, never the last plan's job of that id with other targets (task #923). The pause,
+    /// the placement switch and the pool's gates likewise, each alone. Nothing changed, nothing
+    /// filtered again.
     #[test]
-    fn a_lease_change_offers_the_last_plans_work_under_a_new_number() {
+    fn what_granting_reads_offers_the_last_plans_work_under_a_new_number() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -10647,6 +10673,17 @@ mod tests {
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
         let p = a.planner();
+        // (In the pool, as the lead: its membership is the plan's, its gates granting's.)
+        let view = |gates: membership::Gates| PoolView {
+            member: "m-m4".into(),
+            role: membership::Role::Lead,
+            gates,
+            members: Vec::new(),
+            unacked: 0,
+            restart: None,
+            lead: None,
+        };
+        p.inp.pool_seen = Some(view(membership::Gates::default()));
         // (A first look: the gate's view taken in and a plan made, what the digest reads settled.)
         p.look();
         // (The gate's first listing finished, of every unit, listed or failed: the digest reads each
@@ -10657,15 +10694,29 @@ mod tests {
                 .into_iter()
                 .all(|u| inputs::inputs::checks(u).is_none() || w.get(u).is_some() || w.failed(u).is_some())
         });
-        // (A plan made: its result kept, its digest and the leases as it read them.)
+        // (A plan made: its result kept, its digest and what granting reads as it read them.)
         p.n = 5;
         p.held_plan.keep_for_test(seam::Planned::default());
-        p.leases = Some(co.lease_gen());
+        p.granting = p.granting();
         let seen = p.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         let ago = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-        p.last = Some((ago, Duration::ZERO, seen, None));
+        p.last = Some((ago, Duration::ZERO, Some(seen), None));
         p.look();
-        assert_eq!(p.n, 5, "the leases as they were");
+        assert_eq!(p.n, 5, "what granting reads as it was");
+        let again = |p: &mut plan::Planner, what: &str| {
+            let n = p.n;
+            // (The last filtering long enough ago: no sooner than it took, refilter_due.)
+            p.refiltered = Some((ago, Duration::ZERO));
+            p.look();
+            assert!(p.n > n, "{what}: a number of its own");
+            assert_eq!(co.shared.lock().unwrap().plan, p.n, "{what}: told to the coordinator");
+            assert_eq!(p.last.map(|l| l.2), Some(Some(seen)), "{what}: no plan made");
+            assert!(p.held_plan.has_kept(), "{what}");
+            let n = p.n;
+            p.refiltered = Some((ago, Duration::ZERO));
+            p.look();
+            assert_eq!(p.n, n, "{what}: once");
+        };
         {
             let mut s = co.shared.lock().unwrap();
             let t = s.now();
@@ -10675,11 +10726,13 @@ mod tests {
                 t,
             );
         }
-        p.look();
-        assert!(p.n > 5, "a number of its own");
-        assert_eq!(co.shared.lock().unwrap().plan, p.n, "told to the coordinator");
-        assert_eq!(p.last.map(|l| l.2), Some(seen), "no plan made");
-        assert!(p.refiltered.is_some() && p.held_plan.has_kept());
+        again(p, "the leases");
+        p.inp.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "test"));
+        again(p, "the pause");
+        p.inp.placement = true;
+        again(p, "placement");
+        p.inp.pool_seen = Some(view(membership::Gates { duties: true, caught_up: true, ..Default::default() }));
+        again(p, "the pool's gates");
     }
 
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as

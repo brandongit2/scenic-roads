@@ -2,7 +2,7 @@
 
 **Status: planned (task #880).** Built: step 0 (the plan's sections timed as the plan thread's
 phases, `nasread::PLAN`), step 1 (the regions' counts the plan's, its keys handed on in its round)
-and step 2's leases (a lease change filters the last plan's work again). Everything else here is
+and step 2 (a change to what granting reads filters the last plan's work again). Everything else here is
 planned; until a step lands, the code is what is true. Today every plan computes `agent::build::plan` (crates/pipeline/src/agent/build.rs) from
 scratch: every target's key, every target list, every region's work, from the whole records. This
 doc measures where that time goes, how much of it is recomputed though nothing it reads changed,
@@ -15,7 +15,7 @@ update only what each change touches, each step shipping alone.
 
 The Mac mini's `~/Library/Logs/scenic/agent.log`, read only, from the first plan after #965's
 publish (5 Nov 21:35Z) to 6 Nov 12:26Z: 14.9 h, apps 20261105-2124-d1403c86 to
-20261106-1214-b4237b4b. `agent: plan <n> (<why>) took N s` is logged for plans of 10 s or more;
+20261106-1214-b4237b4b. `agent: plan <n> (<why>) took N s` was logged then for plans of 10 s or more;
 a phase line only for a phase of 10 s or more (`nasread::SLOW_PHASE`).
 
 | Plans (≥ 10 s) | n | median s | p90 s | max s | sum s |
@@ -245,8 +245,8 @@ what is assembled each plan is the order alone (2-3 s on the bench).
 | A new pass, new reaches | the pass date, `current_reach` | everything that read the reaches: a full plan |
 | A terrain index or declared source read that wasn't, or the reverse | `TerrainTiles`' held and `unread` sets (`load`) | the keys that came out unknown or read it (§4.1) |
 | An app update | a new process: the state starts empty | a full plan (the "no plan yet" plans, 14 in §1.1's window, 166-260 s); not persisted: a key's versions are the app's |
-| A lease granted, lapsed or given back | the coordinator's `lease_gen` | not `build::plan`: "its jobs" filters the last `Plan` again and offers it. `lease_gen` leaves `plan_seen`'s digest for a trigger of its own |
-| The pause, the placement switches, the pool's gates | `plan_seen` | "its jobs" again, likewise |
+| A lease granted, lapsed or given back | the coordinator's `lease_gen` (`plan::Granting`) | not `build::plan`: "its jobs" filters the last `Plan` again and offers it. Not in `plan_seen`'s digest: a trigger of its own |
+| The pause, the placement switch, the pool's gates | `plan::Granting` | "its jobs" again, likewise. Publishing's switches (`hold-catalog`, `near-slope`) stay in `plan_seen`: `build::plan` reads them (`seam::Publish`) |
 | Time (catalogue cadence, holds, `Publish`) | `Publish`, `held_for` | the publishing chain's ordering only: recomputed every plan |
 
 ## 6. Equal to a full plan

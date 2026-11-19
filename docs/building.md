@@ -58,9 +58,11 @@ from the first (`edit_held`).
   the lead's included, asks it for work (docs/pool.md §7.2). The plan is the lead's **plan** part's
   (`agent::plan`, docs/agent-parts.md §4.4), on a thread of its own: it plans again when a job
   ends, a gate ask comes, what the plan depends on changes (`Planner::plan_seen`, looked at every
-  5 s: the manifest, records, hand-offs, the gate, the pool, the pause, a newer app, switch files,
-  map updates, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
-  five minutes (`why_plan`), but no sooner after a plan than that plan took. Each plan is numbered
+  5 s: the records, hand-offs, the gate, the pool's membership, held maps and map updates, redo
+  asks, a newer app, publishing's switches), at the earliest end of its timed waits (`replan_at`),
+  and otherwise every five minutes (`why_plan`), but no sooner after a plan than that plan took. A
+  change to what granting reads alone (the leases, the pause, the placement switch, the pool's
+  gates: `plan::Granting`) filters the last plan's work again instead (`refilter_due`). Each plan is numbered
   (from the time in ms, so past every earlier lead's) and published whole; the round grants from the
   last one at once, each grant carrying its number (`coord::Grant::plan`), so
   a plan of minutes holds no grant, pause or heartbeat, and a grant from a plan no newer than a

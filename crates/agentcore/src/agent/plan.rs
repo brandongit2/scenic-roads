@@ -3,7 +3,8 @@
 //! its own (`Handle::spawn`) owning all of it (`Planner`). It plans when something it depends on
 //! changes, not each pass of a loop (`why_plan`): a job's end or a start held briefly (told by
 //! **jobs**, `Msg::Kick`), the records' digest (`Planner::plan_seen`, looked at every `LOOK`), a
-//! gate ask, a timed wait in the plan ending (`Planner::replan_at`), or `FALLBACK` at most. Each
+//! gate ask, a timed wait in the plan ending (`Planner::replan_at`), or `FALLBACK` at most; a
+//! change to what granting reads alone (`Granting`) filters the last plan's work again. Each
 //! plan is published whole (`PlanView`, numbered `PlanView::n`); **jobs** grants from the last one
 //! at once (`Agent::lead_grants`), each grant carrying that number (`coord::Grant::plan`), so a
 //! plan of minutes never holds a grant, a pause or the heartbeat. A plan running past
@@ -306,9 +307,13 @@ pub(crate) fn next_n(last: u64, now: std::time::SystemTime) -> u64 {
     (last + 1).max(ms)
 }
 
+/// `why_plan`'s answer when what the plan depends on changed (`Planner::plan_seen`): logged with
+/// the parts that changed (`Seen::changed`).
+const CHANGED: &str = "what it depends on changed";
+
 /// Why a plan is made now, if one is: kicked (`kick`: a job ended, a start held briefly, a gate
-/// ask), none yet, what it depends on changed (`seen` against the last plan's), its timed waits'
-/// earliest end (`at`) came, or `FALLBACK` passed since the last (`age`).
+/// ask), none yet, what it depends on changed (`seen` against the last plan's digest), its timed
+/// waits' earliest end (`at`) came, or `FALLBACK` passed since the last (`age`).
 ///
 /// But a change comes no sooner after the last plan ended than that plan took (`took`): on a busy
 /// pool, jobs end faster than a plan is made (10-18 s on the Mac mini, 30 Oct), and planning on
@@ -331,27 +336,97 @@ pub(super) fn why_plan(
         return Some(k);
     }
     if last_seen != seen {
-        return Some("what it depends on changed");
+        return Some(CHANGED);
     }
     at.is_some_and(|t| now >= t).then_some("a timed wait ended")
 }
 
 /// Whether the last plan's work is filtered again ("its jobs", not `build::plan`: docs/incremental-
-/// planning.md step 2), when no plan is due (`why_plan`): the coordinator's leases changed (a grant,
-/// a lapse, a lease given back: they change what is offered, not what is stale, so they are not in
-/// the plan's digest) and a `build::plan` result is kept (`kept`); no sooner after the last plan, or
-/// the last such filtering, ended (`last`, `refiltered`: their age and how long they took) than it
-/// took, as `why_plan` holds plans to half a core.
+/// planning.md step 2), when no plan is due (`why_plan`): what granting reads changed (`Granting`:
+/// it changes what is offered or granted, not what is stale, so it is not in the plan's digest) and
+/// a `build::plan` result is kept (`kept`); no sooner after the last plan, or the last such
+/// filtering, ended (`last`, `refiltered`: their age and how long they took) than it took, as
+/// `why_plan` holds plans to half a core.
 pub(super) fn refilter_due(
-    leases_changed: bool,
+    granting_changed: bool,
     kept: bool,
     last: Option<(Duration, Duration, u64, Option<u64>)>,
     refiltered: Option<(Duration, Duration)>,
 ) -> bool {
-    leases_changed
+    granting_changed
         && kept
         && last.is_some_and(|(age, took, ..)| age >= took)
         && refiltered.is_none_or(|(age, took)| age >= took)
+}
+
+/// The parts of what a plan depends on (`Planner::plan_seen`), by name, in `Seen`'s order.
+const SEEN: [&str; 8] = [
+    "the records",
+    "the hand-offs",
+    "the gate",
+    "the pool",
+    "the held maps or the map's head",
+    "the redo asks",
+    "a newer app",
+    "publishing's switches",
+];
+
+/// What a plan depends on, read cheaply (`Planner::plan_seen`): a digest of each part of `SEEN`, so
+/// a plan made for a change says which changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Seen(pub(super) [u64; SEEN.len()]);
+
+impl Seen {
+    /// The digest of every part: never 0, which is "not read".
+    pub(super) fn digest(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.0.hash(&mut h);
+        h.finish() | 1
+    }
+
+    /// The parts that differ from `was`, by name; "the NAS back" when there is none to compare with.
+    pub(super) fn changed(&self, was: Option<&Seen>) -> String {
+        let Some(was) = was else { return "the NAS back".into() };
+        let parts: Vec<&str> =
+            SEEN.iter().zip(self.0.iter().zip(was.0.iter())).filter(|(_, (a, b))| a != b).map(|(n, _)| *n).collect();
+        parts.join(", ")
+    }
+}
+
+/// What granting reads and the plan doesn't (docs/incremental-planning.md step 2): the
+/// coordinator's leases' generation, the build's pause, the placement switch and the pool's gates.
+/// A change to any of them filters the last plan's work again (`refilter_due`) instead of planning:
+/// the plan's work is what is stale, and none of them changes that (the pause is applied as jobs
+/// start, placement and the gates as they are granted; the pause's words and the forecast's
+/// "paused", which "its jobs" reads, are made again with it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Granting {
+    pub(super) leases: Option<u64>,
+    pub(super) pause: Option<jobrt::control::Pause>,
+    pub(super) placement: bool,
+    pub(super) gates: Option<membership::Gates>,
+}
+
+impl Granting {
+    /// What changed from `was`, in words: "the leases", "the leases and the pause", ...; None when
+    /// nothing did.
+    pub(super) fn changed(&self, was: &Granting) -> Option<String> {
+        let parts: Vec<&str> = [
+            (self.leases != was.leases, "the leases"),
+            (self.pause != was.pause, "the pause"),
+            (self.placement != was.placement, "placement"),
+            (self.gates != was.gates, "the pool's gates"),
+        ]
+        .into_iter()
+        .filter_map(|(c, n)| c.then_some(n))
+        .collect();
+        match parts.as_slice() {
+            [] => None,
+            [one] => Some(one.to_string()),
+            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        }
+    }
 }
 
 /// The earliest of `at` from `now` on (one at `now` kept: due at once).
@@ -420,11 +495,12 @@ pub(super) struct Planner {
     /// The number of the plan running now, or the last (**jobs**' cancel reads it:
     /// `Handle::newest_n`).
     pub(super) running_n: std::sync::Arc<AtomicU64>,
-    /// (When it ended, how long it took, its digest and its timed waits' end.)
-    pub(super) last: Option<(Instant, Duration, u64, Option<u64>)>,
-    /// The coordinator's leases' generation as the last plan, or its jobs filtered again, read
-    /// it; when its jobs were last filtered again and how long that took (`refilter_due`).
-    pub(super) leases: Option<u64>,
+    /// (When it ended, how long it took, what it depended on (None: read again at once, the NAS
+    /// back) and its timed waits' end.)
+    pub(super) last: Option<(Instant, Duration, Option<Seen>, Option<u64>)>,
+    /// What granting reads as the last plan, or its jobs filtered again, read it; when its jobs
+    /// were last filtered again and how long that took (`refilter_due`).
+    pub(super) granting: Granting,
     pub(super) refiltered: Option<(Instant, Duration)>,
     /// What the planner carries for the plan (seam::PlanHeld): the terrain packs' indexes, the
     /// pass's reaches, the last plan with its keys.
@@ -567,7 +643,7 @@ impl Planner {
             progress: Vec::new(),
             regions_checklist: Default::default(),
             built: Default::default(),
-            leases: None,
+            granting: Granting::default(),
             refiltered: None,
             held_plan,
             refilter: Default::default(),
@@ -673,7 +749,7 @@ impl Planner {
         let Some(root) = self.inp.root.clone() else {
             // (The NAS back: planned at once, whatever the digest.)
             if let Some(l) = self.last.as_mut() {
-                l.2 = 0;
+                l.2 = None;
             }
             self.publish();
             return;
@@ -686,13 +762,19 @@ impl Planner {
         self.tend_redo();
         self.phase("the records' digest");
         let seen = self.plan_seen(&root);
-        let leases = self.coord.as_ref().map(|c| c.lease_gen());
+        let granting = self.granting();
         let now = now_s();
-        let last = self.last.map(|(at, took, s, t)| (at.elapsed(), took, s, t));
+        let last = self.last.map(|(at, took, s, t)| (at.elapsed(), took, s.map_or(0, |s| s.digest()), t));
         let refiltered = self.refiltered.map(|(at, took)| (at.elapsed(), took));
-        if let Some(why) = why_plan(self.kicked, last, seen, now) {
+        let granting_changed = granting.changed(&self.granting);
+        if let Some(why) = why_plan(self.kicked, last, seen.digest(), now) {
+            // (Which part changed, said: how many plans each brings, docs/incremental-planning.md.)
+            let why = match why {
+                CHANGED => format!("{why}: {}", seen.changed(self.last.and_then(|l| l.2).as_ref())),
+                _ => why.to_string(),
+            };
             self.kicked = None;
-            self.leases = leases;
+            self.granting = granting;
             self.phase("the plan");
             let t = Instant::now();
             let mut waiting = Vec::new();
@@ -710,22 +792,22 @@ impl Planner {
             self.offer_plan(&plan);
             self.regions = load_regions(&root);
             let replan_at = self.replan_at(&plan, now_s());
-            self.last = Some((Instant::now(), t.elapsed(), seen, replan_at));
-            if t.elapsed() >= Duration::from_secs(10) {
-                eprintln!("agent: plan {} ({why}) took {} s", self.n, t.elapsed().as_secs());
-            }
+            self.last = Some((Instant::now(), t.elapsed(), Some(seen), replan_at));
+            eprintln!("agent: plan {} ({why}) took {:.1} s", self.n, t.elapsed().as_secs_f64());
             self.jobs = plan;
             self.waiting = waiting;
             // (A new plan: the checklist with it, its regions' steps the plan's.)
             self.phase("the checklist");
             let regions = self.regions.0.clone();
             self.progress = self.checklist(&root, &regions);
-        } else if refilter_due(leases != self.leases, self.held_plan.has_kept(), last, refiltered) {
-            // (The leases changed alone: the last plan's work filtered again and offered, its digest
-            // kept. Numbered as a plan is: its jobs are new specs, and a grant of one by its id must
-            // find the spec of the offer it was granted from, never the last plan's of the same id
-            // with other targets (task #923); a cancel taken meanwhile drops its grants too.)
-            self.leases = leases;
+        } else if refilter_due(granting_changed.is_some(), self.held_plan.has_kept(), last, refiltered) {
+            let what = granting_changed.unwrap_or_default();
+            // (What granting reads changed alone: the last plan's work filtered again and offered,
+            // its digest kept. Numbered as a plan is: its jobs are new specs, and a grant of one by
+            // its id must find the spec of the offer it was granted from, never the last plan's of
+            // the same id with other targets (task #923); a cancel taken meanwhile drops its grants
+            // too.)
+            self.granting = granting;
             self.phase("its jobs again");
             let t = Instant::now();
             let mut waiting = Vec::new();
@@ -743,7 +825,7 @@ impl Planner {
             self.offer_plan(&plan);
             self.refiltered = Some((Instant::now(), t.elapsed()));
             eprintln!(
-                "agent: plan {n}: the last plan's work filtered again (the leases changed) in {} ms",
+                "agent: plan {n}: the last plan's work filtered again ({what} changed) in {} ms",
                 t.elapsed().as_millis()
             );
             self.jobs = plan;
@@ -1097,68 +1179,86 @@ impl Planner {
         }
     }
 
-    /// The work there is, in order (docs/building.md §2, Order).
-    /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
-    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs and the units
-    /// on it with their folders as last listed, the pool
-    /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
-    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, a planet newly fetched)
-    /// and the leases, whose change filters its work again (`refilter_due`).
-    pub(super) fn plan_seen(&self, root: &store::nasfs::NasRoot) -> u64 {
+    /// What an idle agent's plan depends on, read cheaply, by part (`SEEN`): the build's records
+    /// (the snapshot, the brief served, the manifest, the jobs' keys), the hand-offs waiting, the
+    /// gate's view of the inputs and the units on it with their folders as last listed, the pool
+    /// (membership, role), the held maps' folder and the map's head, the owner's redo asks, a newer
+    /// app, and publishing's switches. Equal: the plan would come out the same but for what
+    /// `FALLBACK` covers (time, disk room, a planet newly fetched) and what granting reads, whose
+    /// change filters its work again (`Granting`).
+    pub(super) fn plan_seen(&self, root: &store::nasfs::NasRoot) -> Seen {
+        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        let stat = |h: &mut std::collections::hash_map::DefaultHasher, p: store::nasfs::Loc<'_>| {
+        let stat = |h: &mut DefaultHasher, p: store::nasfs::Loc<'_>| {
             let m = p.metadata().ok();
             m.as_ref().map(|m| (m.len(), m.modified().ok())).hash(h);
         };
-        // (The records: the one path's snapshot, which the lead rewrites whole with each save
-        // (docs/coordination.md steps 8b, 8c); today's files before the pool.)
-        stat(&mut h, (&root.join(crate::pool::records::ONE)).into());
-        // (And the brief its coordinator serves, the plan's (`brief_now`): a save seen at once, an
-        // SMB stat's cache not waited out.)
-        self.coord.as_deref().and_then(|c| c.brief_mark()).hash(&mut h);
-        for f in ["state/build/manifest.json", "state/build/jobs.json"] {
-            stat(&mut h, (&root.join(f)).into());
+        let part = |f: &mut dyn FnMut(&mut DefaultHasher)| {
+            let mut h = DefaultHasher::new();
+            f(&mut h);
+            h.finish()
+        };
+        Seen([
+            part(&mut |h| {
+                // (The records: the one path's snapshot, which the lead rewrites whole with each
+                // save (docs/coordination.md steps 8b, 8c); today's files before the pool.)
+                stat(h, (&root.join(crate::pool::records::ONE)).into());
+                // (And the brief its coordinator serves, the plan's (`brief_now`): a save seen at
+                // once, an SMB stat's cache not waited out.)
+                self.coord.as_deref().and_then(|c| c.brief_mark()).hash(h);
+                for f in ["state/build/manifest.json", "state/build/jobs.json"] {
+                    stat(h, (&root.join(f)).into());
+                }
+            }),
+            part(&mut |h| {
+                for b in self.handoff_bases(root) {
+                    stat(h, (&b).into());
+                    let mut hosts: Vec<PathBuf> =
+                        std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+                    hosts.sort();
+                    for d in hosts {
+                        d.hash(h);
+                        stat(h, (&d).into());
+                    }
+                }
+            }),
+            part(&mut |h| {
+                serde_json::to_string(&*self.inputs.view.borrow()).unwrap_or_default().hash(h);
+                // (And what the gate's part of the plan reads now: the units on the gate (the test
+                // unit's flag) and each one's folder and acceptances as last listed. The view above
+                // is the last plan's, so a unit taken off the gate, or a drop box listed anew, went
+                // unseen until the fallback: #969 review, the gate's test failing on a loaded Mac.)
+                let units = inputs::inputs::units(root);
+                units.hash(h);
+                if let Some((_, w)) = &self.inputs.watch {
+                    for u in &units {
+                        w.get(u).map(|l| (serde_json::to_string(&l.listing).unwrap_or_default(), l.accepted)).hash(h);
+                    }
+                }
+            }),
+            // (Not its gates: what granting reads, `Granting`.)
+            part(&mut |h| self.inp.pool_seen.as_ref().map(|p| (&p.member, p.role, &p.members)).hash(h)),
+            part(&mut |h| {
+                stat(h, (&publish::held_dir(&self.o.home)).into());
+                self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(h);
+            }),
+            // (The owner's redo asks: one taken or done.)
+            part(&mut |h| stat(h, (&self.o.home.join(redo::ASKS)).into())),
+            part(&mut |h| self.newer_app().hash(h)),
+            // (Publishing's switches, the pool's settings as this agent holds them: `build::plan`
+            // reads them, `seam::Publish`.)
+            part(&mut |h| (self.inp.switches.held, self.inp.switches.near).hash(h)),
+        ])
+    }
+
+    /// What granting reads now (`Granting`).
+    pub(super) fn granting(&self) -> Granting {
+        Granting {
+            leases: self.coord.as_ref().map(|c| c.lease_gen()),
+            pause: self.inp.pause.clone(),
+            placement: self.inp.placement,
+            gates: self.inp.pool_seen.as_ref().map(|p| p.gates.clone()),
         }
-        for b in self.handoff_bases(root) {
-            stat(&mut h, (&b).into());
-            let mut hosts: Vec<PathBuf> =
-                std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-            hosts.sort();
-            for d in hosts {
-                d.hash(&mut h);
-                stat(&mut h, (&d).into());
-            }
-        }
-        serde_json::to_string(&*self.inputs.view.borrow()).unwrap_or_default().hash(&mut h);
-        // (And what the gate's part of the plan reads now: the units on the gate (the test unit's
-        // flag) and each one's folder and acceptances as last listed. The view above is the last
-        // plan's, so a unit taken off the gate, or a drop box listed anew, went unseen until the
-        // fallback: #969 review, the gate's test failing on a loaded Mac.)
-        let units = inputs::inputs::units(root);
-        units.hash(&mut h);
-        if let Some((_, w)) = &self.inputs.watch {
-            for u in &units {
-                w.get(u).map(|l| (serde_json::to_string(&l.listing).unwrap_or_default(), l.accepted)).hash(&mut h);
-            }
-        }
-        if let Some(p) = &self.inp.pool_seen {
-            (&p.member, p.role, &p.members).hash(&mut h);
-            serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
-        }
-        serde_json::to_string(&self.inp.pause).unwrap_or_default().hash(&mut h);
-        // (The held maps' folder on this Mac, and the map's head; publishing's switches are the
-        // pool's, below.)
-        stat(&mut h, (&publish::held_dir(&self.o.home)).into());
-        self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(&mut h);
-        // (The owner's redo asks: one taken or done.)
-        stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
-        // (Not the coordinator's leases: they filter the last plan's work again, `refilter_due`.)
-        self.newer_app().hash(&mut h);
-        // (The pool's switches as this agent holds them.)
-        (self.inp.placement, self.inp.switches.held, self.inp.switches.near).hash(&mut h);
-        // (Never 0: that's "not read".)
-        h.finish() | 1
     }
 
     /// When the plan's timed waits end (epoch seconds, past `now`), the earliest: a job's failure or
@@ -1187,6 +1287,7 @@ impl Planner {
         earliest_after(at, now)
     }
 
+    /// The work there is, in order (docs/building.md §2, Order).
     pub(super) fn plan(
         &self,
         root: &store::nasfs::NasRoot,
@@ -3712,17 +3813,17 @@ mod tests {
         assert_eq!(earliest_after([1000, 1200], 1000), Some(1000));
     }
 
-    /// A lease change alone filters the last plan's work again (task #880 step 2), never a plan:
-    /// only with a `build::plan` result kept, and no sooner after the last plan or filtering than
-    /// it took. (Times passed in: no clock.)
+    /// A change to what granting reads alone filters the last plan's work again (task #880 step 2),
+    /// never a plan: only with a `build::plan` result kept, and no sooner after the last plan or
+    /// filtering than it took. (Times passed in: no clock.)
     #[test]
     fn a_lease_change_filters_the_last_plans_work_again() {
         let s = Duration::from_secs;
         let last = |age: u64, took: u64| Some((s(age), s(took), 7, None));
-        // (The leases aren't in the digest: no plan for them.)
+        // (What granting reads isn't in the digest: no plan for it.)
         assert_eq!(why_plan(None, last(20, 0), 7, 1000), None);
         assert!(refilter_due(true, true, last(20, 0), None));
-        assert!(!refilter_due(false, true, last(20, 0), None), "the leases as they were");
+        assert!(!refilter_due(false, true, last(20, 0), None), "what granting reads as it was");
         assert!(!refilter_due(true, false, last(20, 0), None), "no plan's work kept");
         assert!(!refilter_due(true, true, None, None), "no plan yet");
         // A plan of 60 s: not filtered again sooner than 60 s after it; a filtering of 5 s, likewise.
@@ -4025,6 +4126,101 @@ mod tests {
             offered.len(),
             lines.len()
         );
+    }
+
+    /// What granting reads changing alone (task #880 step 2), on a recorded state: a frozen copy of
+    /// the lead's, as `frozen_plan_on_a_private_root`'s (`SCENIC_FROZEN_ROOT`, `SCENIC_FROZEN_HOME`,
+    /// sandboxed alike), as the lead (its gates the pool's default). A plan; then the pause, the
+    /// placement switch and the pool's gates changed and its work filtered again ("its jobs" over
+    /// the kept `build::plan` result, as `Planner::look` does); then a full plan of the same state.
+    /// The jobs, the waits and the offers of the filtering are the full plan's: any line that
+    /// differs is written to `SCENIC_FROZEN_OUT` and fails it; the three times are written there
+    /// too.
+    #[test]
+    #[ignore]
+    fn frozen_refilter_offers_a_full_plans() {
+        let (Ok(root), Ok(home), Ok(out)) = (
+            std::env::var("SCENIC_FROZEN_ROOT"),
+            std::env::var("SCENIC_FROZEN_HOME"),
+            std::env::var("SCENIC_FROZEN_OUT"),
+        ) else {
+            return;
+        };
+        let Some(real) = sandboxed(&root, "frozen_refilter_offers_a_full_plans", &out) else {
+            let lines = std::fs::read_to_string(&out).unwrap();
+            assert!(!lines.lines().any(|l| l.starts_with(['<', '>'])), "the offers differ: {out}");
+            return;
+        };
+        let root = store::nasfs::NasRoot::local_for_test(real);
+        let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
+        let hold = bus::Snap::new(jobrt::control::HoldState::default());
+        let mut p =
+            Planner::new(frozen_options(&root, &home), "frozen".into(), app, 0, None, false, hold, Default::default());
+        let lead = |gates: membership::Gates| PoolView {
+            member: "frozen".into(),
+            role: membership::Role::Lead,
+            gates,
+            members: Vec::new(),
+            unacked: 0,
+            restart: None,
+            lead: None,
+        };
+        p.inp.pool_seen = Some(lead(membership::Gates::default()));
+        // (No forecast: a thread that never ends holds its place.)
+        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
+            loop {
+                std::thread::park()
+            }
+        }));
+        let (manifest, _) = p.planning_records(&root).unwrap();
+        let t = Instant::now();
+        while let Err(why) = p.coverage(&root, &manifest, false) {
+            assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        drop(manifest);
+        eprintln!("frozen: the coverage in {:.1} s", t.elapsed().as_secs_f64());
+        // (A plan's jobs, waits and offers, a line each, and how long it took.)
+        let plan = |p: &Planner| {
+            let t = Instant::now();
+            let mut waiting = Vec::new();
+            let c = p.inp.conditions;
+            let jobs = p.plan(&root, &c, &mut waiting);
+            let took = t.elapsed();
+            let mut lines: Vec<String> = jobs.iter().map(|j| format!("job {j:?}")).collect();
+            lines.extend(waiting.iter().map(|w| format!("waiting {w:?}")));
+            let (date, offered) = p.offered.borrow().clone();
+            lines.push(format!("offered {date}"));
+            lines.extend(offered.iter().map(|o| format!("offer {o:?}")));
+            (lines, took)
+        };
+        let (_, first) = plan(&p);
+        assert!(p.held_plan.has_kept(), "the first plan kept no build::plan result");
+        let was = p.granting();
+        p.inp.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "frozen"));
+        p.inp.placement = !p.inp.placement;
+        p.inp.pool_seen = Some(lead(membership::Gates { duties: true, caught_up: true, ..Default::default() }));
+        assert_eq!(p.granting().changed(&was).as_deref(), Some("the pause, placement and the pool's gates"));
+        p.refilter.set(true);
+        let (again, refiltered) = plan(&p);
+        p.refilter.set(false);
+        let (full, planned) = plan(&p);
+        let mut lines = vec![
+            format!("the first plan: {:.1} s", first.as_secs_f64()),
+            format!("its work filtered again: {:.1} s", refiltered.as_secs_f64()),
+            format!("a full plan: {:.1} s", planned.as_secs_f64()),
+            format!("{} lines filtered again, {} planned", again.len(), full.len()),
+        ];
+        let (a, b): (BTreeSet<&String>, BTreeSet<&String>) = (again.iter().collect(), full.iter().collect());
+        lines.extend(a.difference(&b).map(|l| format!("< {l}")));
+        lines.extend(b.difference(&a).map(|l| format!("> {l}")));
+        if again != full && a == b {
+            lines.push("< > the same lines in another order".into());
+        }
+        for l in &lines[..4] {
+            eprintln!("frozen: {l}");
+        }
+        std::fs::write(&out, lines.join("\n") + "\n").unwrap();
     }
 
     /// The planner's memory over plans in a row (task #1251), on a frozen root as
