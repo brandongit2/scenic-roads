@@ -6,6 +6,7 @@ description = "A job's runtime: control (pause, stop, done), timings, sys, the b
 
 [dependencies]
 store = { path = "../store" }
+det = { path = "../det" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 anyhow.workspace = true

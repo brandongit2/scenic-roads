@@ -2466,6 +2466,7 @@ pub struct KindSpeed {
 
 /// `Speeds` of the clean runs `runs`: each its Mac, step, start (unix s) and work.
 pub fn speeds<'a>(runs: impl IntoIterator<Item = (&'a str, &'a str, u64, &'a Work)>) -> Speeds {
+    use det::Det;
     use std::collections::{BTreeMap, BTreeSet};
     let mut by: BTreeMap<(&str, &str), Vec<(u64, &Work)>> = BTreeMap::new();
     for (mac, step, t, w) in runs {
@@ -2501,9 +2502,9 @@ pub fn speeds<'a>(runs: impl IntoIterator<Item = (&'a str, &'a str, u64, &'a Wor
                 .filter(|(s, _)| shared.as_ref().is_none_or(|e| e.contains(*s)))
                 .map(|(s, r)| (*s, *r))
                 .collect();
-            let ln = on.iter().map(|(_, (r, _))| r.ln()).sum::<f64>() / on.len() as f64;
+            let ln = on.iter().map(|(_, (r, _))| r.dln()).sum::<f64>() / on.len() as f64;
             let speed = KindSpeed {
-                ginsn_s: (ln.exp() / 1e9 * 1000.0).round() / 1000.0,
+                ginsn_s: (ln.dexp() / 1e9 * 1000.0).round() / 1000.0,
                 steps: on.iter().map(|(s, _)| s.to_string()).collect(),
                 runs: on.iter().map(|(_, (_, n))| n).sum(),
                 shared: shared.is_some(),
