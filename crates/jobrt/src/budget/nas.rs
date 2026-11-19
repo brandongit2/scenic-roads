@@ -115,9 +115,11 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   `grow_s`;
 /// - **between**, or nothing read: it holds.
 ///
-/// A job beside nothing goes whatever the window, but not for `Tuning::lone_s` from a reading past
-/// the knee (`Pace::lone`: beside an outside load near the cliff, each lone job would take the NAS
-/// over it, and the hold is all that keeps it off); then again, so nothing waits for good.
+/// A job beside nothing that the window doesn't take goes all the same, but not for
+/// `Tuning::lone_s` from a reading past the knee (`Pace::lone`: beside an outside load near the
+/// cliff, each lone job would take the NAS over it, and the hold is all that keeps it off), each
+/// hold in a row twice as long, to `Tuning::lone_most_s`; a reading near the best ends it. Then
+/// one goes, so nothing waits for good.
 ///
 /// It starts at a step, or at what the jobs already leased weigh where that's more (a lead's
 /// coordinator starting knows nothing of the NAS's load but what runs on it), unless the lead kept
@@ -169,9 +171,6 @@ pub struct State {
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
-
-/// The most times the lone way's hold doubles (`Pace::lone_for`): to 8 times `Tuning::lone_s`.
-pub const LONE_DOUBLINGS: u32 = 3;
 
 impl Default for State {
     fn default() -> Self {
@@ -289,8 +288,13 @@ pub struct Tuning {
     pub span_s: u64,
     /// The longest a kept state is taken up by a restarted lead (s).
     pub restore_s: u64,
-    /// How long a reading past the knee holds a lone job back (s; `Pace::lone`).
+    /// How long a reading past the knee holds a lone job back (s; `Pace::lone`), and the longest
+    /// its doubling makes a hold in a row (s; never under `lone_s`).
     pub lone_s: u64,
+    pub lone_most_s: u64,
+    /// How many spans of its link's history a Mac's floor needs before it counts (measured within
+    /// `floor_s`): younger, its answers may cut, never grow (agentcore::agent::live).
+    pub young_spans: u64,
 }
 
 /// How often the lead reads the pacing, by default (s).
@@ -312,6 +316,11 @@ pub const RESTORE_S: u64 = 30 * 60;
 /// How long a reading past the knee holds a lone job back, by default (s): as long as a job waits
 /// for the budget before it goes as an aged one (`OWN_AGE`).
 pub const LONE_S: u64 = OWN_AGE.as_secs();
+/// The longest a hold in a row lasts, by default (s): 8 times `LONE_S`.
+pub const LONE_MOST_S: u64 = 8 * LONE_S;
+/// The spans of its link's history a Mac's floor needs, by default: ten minutes of listings at
+/// the default span.
+pub const YOUNG_SPANS: u64 = 20;
 
 impl Default for Tuning {
     fn default() -> Self {
@@ -327,6 +336,8 @@ impl Default for Tuning {
             span_s: SPAN_S,
             restore_s: RESTORE_S,
             lone_s: LONE_S,
+            lone_most_s: LONE_MOST_S,
+            young_spans: YOUNG_SPANS,
         }
     }
 }
@@ -345,7 +356,7 @@ pub struct Knob {
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.
-pub const KNOBS: [Knob; 11] = [
+pub const KNOBS: [Knob; 13] = [
     Knob {
         name: "nas-step",
         what: "the window's step a growth cadence, and its least",
@@ -445,6 +456,24 @@ pub const KNOBS: [Knob; 11] = [
         get: |k| k.lone_s as f64 / 60.0,
         set: |k, v| k.lone_s = (v * 60.0) as u64,
     },
+    Knob {
+        name: "nas-lone-most-minutes",
+        what: "holds of a job beside nothing in a row double up to this long",
+        unit: "min",
+        least: 10.0,
+        most: 240.0,
+        get: |k| k.lone_most_s as f64 / 60.0,
+        set: |k, v| k.lone_most_s = (v * 60.0) as u64,
+    },
+    Knob {
+        name: "nas-young-spans",
+        what: "a Mac's floor counts once its link has this many spans measured",
+        unit: "spans",
+        least: 5.0,
+        most: 100.0,
+        get: |k| k.young_spans as f64,
+        set: |k, v| k.young_spans = v as u64,
+    },
 ];
 
 /// The knob named `name`.
@@ -454,7 +483,7 @@ pub fn knob(name: &str) -> Option<&'static Knob> {
 
 impl Tuning {
     /// The tuning with each knob's value as `get` says it (None, or out of its range: its default);
-    /// near never past the knee.
+    /// near never past the knee, the longest hold never under one.
     pub fn of(get: impl Fn(&str) -> Option<f64>) -> Tuning {
         let mut k = Tuning::default();
         for n in &KNOBS {
@@ -463,6 +492,7 @@ impl Tuning {
             }
         }
         k.near = k.near.min(k.slow);
+        k.lone_most_s = k.lone_most_s.max(k.lone_s);
         k
     }
 }
@@ -492,19 +522,22 @@ impl Pace {
         young
     }
 
-    /// Whether a job may go beside nothing whatever the window (`Limits::alone`): not for
-    /// `Tuning::lone_s` from a reading past the knee (a lone job beside an outside load that holds
-    /// the NAS near its cliff goes over it; the knee's reading may be its own), then again.
+    /// Whether a job beside nothing that the window doesn't take may go all the same
+    /// (`Limits::alone`): not for `lone_for` from a reading past the knee (a lone job beside an
+    /// outside load that holds the NAS near its cliff goes over it; the knee's reading may be its
+    /// own); open again once the hold has lasted, or a reading near the best has ended it.
     pub fn lone(&self) -> bool {
         let at = self.last.as_ref().map_or(0, |r| r.at);
         self.st.lone_at.is_none_or(|s| at >= s + self.lone_for())
     }
 
     /// How long the lone way's hold lasts (s): `Tuning::lone_s`, doubled for each hold since the
-    /// NAS last answered near its best, `LONE_DOUBLINGS` times at most (an outside load that holds
-    /// the NAS near its cliff for hours lets a lone job over it ever more rarely).
+    /// NAS last answered near its best, to `Tuning::lone_most_s` at most (an outside load that
+    /// holds the NAS near its cliff for hours lets a lone job over it ever more rarely).
     fn lone_for(&self) -> u64 {
-        self.tuning.lone_s << self.st.lone_n.saturating_sub(1).min(LONE_DOUBLINGS)
+        let k = &self.tuning;
+        let doubled = 1u64.checked_shl(self.st.lone_n.saturating_sub(1)).unwrap_or(u64::MAX);
+        k.lone_s.saturating_mul(doubled).min(k.lone_most_s.max(k.lone_s))
     }
 
     /// A reading (`Sample`) by the bounds `k`: what it did.
@@ -540,13 +573,14 @@ impl Pace {
         let past = over || ratio.is_some_and(|r| r > k.slow);
         // (The lone way's hold: begun at a reading past the knee; once it has lasted its time
         // (`lone_for`), let go by a reading under the knee or a job going beside nothing, a reading
-        // past it then beginning another, twice as long, until a reading near the best.)
+        // past it then beginning another, twice as long; a reading near the best ends it whenever,
+        // and its doubling.)
         let expired = self.st.lone_at.is_some_and(|at| t >= at + self.lone_for());
         if expired && (!past || (self.prev_in_use == 0 && s.in_use > 0)) {
             self.st.lone_at = None;
         }
         if near && !past && ratio.is_some() {
-            self.st.lone_n = 0;
+            (self.st.lone_at, self.st.lone_n) = (None, 0);
         }
         if past && self.st.lone_at.is_none() {
             self.st.lone_at = Some(t);
@@ -1341,7 +1375,8 @@ mod tests {
     }
 
     /// R3: a reading past the knee holds a job beside nothing back for `lone_s` (an outside load
-    /// near the cliff, one job taking it over), then lets one go; under the knee the way is open.
+    /// near the cliff, one job taking it over), then lets one go; a reading near the best ends the
+    /// hold at once; holds in a row double, to `lone_most_s`.
     #[test]
     fn a_reading_past_the_knee_holds_a_lone_job_back_a_while() {
         let mut p = Pace::default();
@@ -1359,10 +1394,19 @@ mod tests {
         assert!(p.lone(), "a `lone_s` on: one goes");
         at(&mut p, 20 + LONE_S, 25.0, 150, None);
         assert!(!p.lone(), "the job gone beside nothing, past the knee: held again");
-        at(&mut p, 30 + LONE_S, 5.0, 150, None);
-        assert!(!p.lone(), "under the knee within its `lone_s`: still held");
-        at(&mut p, 20 + 2 * LONE_S, 5.0, 0, Some(150));
-        assert!(p.lone(), "under the knee after it: open");
+        at(&mut p, 30 + LONE_S, 10.0, 150, None);
+        assert!(!p.lone(), "between near and the knee within its `lone_s`: still held");
+        at(&mut p, 40 + LONE_S, 5.0, 0, Some(150));
+        assert!(p.lone(), "near the best: the hold ended at once");
+        // (An ordinary cut with nothing running after it: the NAS recovered, a heavy job beside
+        // nothing goes at the next reading near its best, not `lone_s` on.)
+        let mut p = Pace::default();
+        at(&mut p, 0, 20.0, 400, None);
+        at(&mut p, 10, 20.0, 0, Some(900));
+        assert!(!p.lone());
+        at(&mut p, 20, 5.0, 0, Some(900));
+        assert!(p.lone(), "recovered: open");
+        assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, 900));
         // (Holds in a row, the NAS never near its best between: each twice as long, to 8 times.)
         let mut p = Pace::default();
         let mut t = 0;
@@ -1376,6 +1420,26 @@ mod tests {
             t += hold * LONE_S + 10;
             at(&mut p, t, 30.0, 150, None);
         }
+        // (The longest hold as set: 20 minutes, holds of 10, 20, 20.)
+        let k = Tuning { lone_most_s: 2 * LONE_S, ..Tuning::default() };
+        let read = |p: &mut Pace, t: u64, in_use: u32| {
+            let answers = [ans("m1", 30.0, 5.0)];
+            let s = Sample { t, answers: &answers, blind: false, busy: None, pct: 85, in_use, wants: Some(150) };
+            p.read(&s, &k);
+            p.lone()
+        };
+        let (mut p, mut t) = (Pace::default(), 0);
+        read(&mut p, t, 0);
+        for hold in [1, 2, 2] {
+            assert!(!read(&mut p, t + hold * LONE_S - 10, 0), "held {hold} times `lone_s`");
+            assert!(read(&mut p, t + hold * LONE_S, 0));
+            t += hold * LONE_S + 10;
+            read(&mut p, t, 150);
+        }
+        let k = Tuning::of(|n| {
+            (n == "nas-lone-minutes").then_some(120.0).or((n == "nas-lone-most-minutes").then_some(10.0))
+        });
+        assert_eq!((k.lone_s, k.lone_most_s), (7200, 7200), "the longest hold never under one");
     }
 
     /// The pacing's bounds are the pool's settings: each within its range, else its default;

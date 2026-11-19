@@ -31,8 +31,8 @@
 //!   for the lead's pacing (`Store::nas_answers`): the floor the least of its means over the
 //!   pacing's floor span on the 10-s ring, over that link's own stints (`Store::set_link`: at
 //!   home or not, the mount; kept in `LINK_FILE` beside the store's file), so a return to a link
-//!   takes its floor up again; a link with less than `LINK_YOUNG_SPANS` of its spans measured says
-//!   its floor is young.
+//!   takes its floor up again; a link with fewer of its spans measured than the pool's
+//!   `nas-young-spans` says its floor is young.
 //! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
 //!   the build may use now (all; while the owner uses the Mac, less those kept for them), the
 //!   Mac's memory floor (crate::agent::memfloor), the owner's disk room target and the jobs' disk
@@ -385,12 +385,6 @@ pub const LINK_FILE: &str = "nas-link.json";
 /// (jobrt::budget::nas::FLOOR_S, nas-floor-hours' most).
 const LINK_KEEP_S: u64 = jobrt::budget::nas::FLOOR_S;
 
-/// How much of its link's history a Mac's floor needs before it counts (spans of the pacing's,
-/// measured: 20 at the default 30 s, ten minutes of listings): younger, its answers may cut the
-/// pool's window, never grow it (jobrt::budget::nas::Answer::fresh; a floor taken on a new link
-/// under load would read the load as its best).
-pub const LINK_YOUNG_SPANS: u64 = 20;
-
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("live::Store")
@@ -459,8 +453,9 @@ impl Store {
     /// (jobrt::budget::nas::Answer): its answer time, the mean of `NAS_MS` over `k.span_s`; its
     /// floor, the least such mean over `k.floor_s` on the 10-s ring within its link's own stints
     /// (`set_link`; none kept: the whole span), never under store::aimd::NAS_LEAST; and whether
-    /// that floor is young (under `LINK_YOUNG_SPANS` of spans measured on the link within
-    /// `k.floor_s`). None: not measured over the span.
+    /// that floor is young (under `k.young_spans` of spans measured on the link within
+    /// `k.floor_s`: its answers may then cut the pool's window, never grow it, as a floor taken on
+    /// a new link under load would read the load as its best). None: not measured over the span.
     pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
         let ms = self.mean(NAS_MS, now, k.span_s)?;
         let from = now.saturating_sub(k.floor_s);
@@ -491,7 +486,7 @@ impl Store {
                 .map(|w| w.iter().map(|x| x.sum).sum::<f64>() / w.iter().map(|x| f64::from(x.n)).sum::<f64>())
                 .fold(least, f64::min);
         }
-        let young = measured * step < LINK_YOUNG_SPANS * k.span_s;
+        let young = measured * step < k.young_spans * k.span_s;
         Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0), young))
     }
 
@@ -1599,6 +1594,8 @@ mod tests {
             s.record(NAS_MS, t, 40.0);
         }
         assert_eq!(s.nas_answers(moved + 899, &k), Some((40.0, 40.0, false)), "measured long enough");
+        let longer = jobrt::budget::nas::Tuning { young_spans: 40, ..k };
+        assert_eq!(s.nas_answers(moved + 899, &longer), Some((40.0, 40.0, true)), "nas-young-spans as set");
         // (Restarted on the same link: its stints kept.)
         s.save();
         let back = Store::new(Some(f.clone()), "m1");
