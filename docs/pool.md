@@ -2744,30 +2744,53 @@ placement and the grants size it, in place of its targets' costs at its lane's p
   job that ran long mostly waited on what else ran, which the run already times.
 - **Placement** where it finishes soonest (§7.2), the run asking the same scheduler.
 
-Code 9 removed code 2's paces and caps rather than adding beside them, so a replay's old and new are
-both code 9; the before below is the code 8 app's replay of the same inputs and copy. The backtest
-(`--replay --from 2026-11-12T14:00 --to 2026-11-19T15:00 --split 2026-11-17T00:00`, the lead's
-records copied read-only from the Mac mini, release builds on the M1; test set, 135 inputs, 4,312
-jobs; minutes, bias, median / p90 of the absolute error):
+Why it is kept: one needs model for the grants, placement and the forecast, not for its accuracy,
+which against code 8 is mixed (below). Code 9 removed code 2's paces and caps rather than keeping
+them beside it, so its replay's old is its new (`forecast::BEFORE_HAS_PATH`); code 8 is the app
+before it (19 Nov 13:55's), replaying the same inputs. The backtest: `--replay --from
+2026-11-11T00:00 --to 2026-11-19T15:00 --split 2026-11-17T00:00`, the lead's records copied read-only
+from the Mac mini, release builds on the M1. Train: 380 inputs (11 Nov 00:00 to 17 Nov 00:00 UTC),
+~102,600 (forecast, job) samples of the end. Test: 135 inputs (17 Nov 00:00 to 19 Nov 15:00 UTC),
+~32,200 samples, 4,312 jobs.
 
-| | code 8 | code 9 |
+**Chosen on train** (minutes: bias, median / p90 of the absolute error; each variant code 9 with one
+change):
+
+| train | end, all | end < 15 min | start, all | run, all |
+|---|---|---|---|---|
+| code 8 | +152, 376 / 1,213 | −1,300, 337 / 1,888 | +110, 358 / 1,132 | +42, 2 / 88 |
+| no pace against the needs | −124, 284 / 906 | −963, 431 / 1,606 | −152, 280 / 889 | +28, 2 / 58 |
+| **the pace, quicker steps only, floor ¼ (kept)** | −151, **273** / 908 | −979, 414 / 1,619 | −178, 274 / 889 | +27, 2 / 55 |
+| the pace both ways (within ¼ to 4) | +10, 300 / 980 | −1,021, 509 / 1,674 | −24, 291 / 965 | +34, 2 / 72 |
+| quicker steps only, floor 0.1 | −151, 277 / 910 | −984, 428 / 1,619 | −178, 278 / 889 | +27, 2 / 55 |
+| quicker steps only, floor ½ | −149, 276 / 909 | −982, 430 / 1,619 | −176, 277 / 895 | +26, 2 / 55 |
+| no NAS floor | −162, 279 / 914 | −1,000, 409 / 1,625 | −188, 280 / 895 | +26, 2 / 52 |
+
+The one-sided variants are within a few minutes of each other; the kept one has the lowest median
+end error, the floor makes no difference, and the pace both ways is worst. Every code 9 variant beats
+code 8 on train's end error overall (376 / 1,213 to under 300 / 1,000) but is worse under 15 min
+(median 337 to 409-509).
+
+**Scored once on test**, the kept variant against code 8:
+
+| test | code 8 | code 9 |
 |---|---|---|
-| end, all | +94, 188 / 647 | +81, 194 / 610 |
-| start, all | 182 / 621 | +46, 188 / 590 |
-| run, all | 1 / 99 | +36, 1 / 101 |
-| targets placed in a forecast's first 6 h (118,399 done) | 80,357 | 81,092 |
-| the right Mac | 44 % | 45 % |
+| end, all | +97, 187 / 632 | +83, 189 / 610 |
+| end < 15 min | −151, 92 / 406 | −153, 93 / 408 |
+| end 15 min-1 h | −157, 100 / 407 | −157, 94 / 411 |
+| end 1-4 h | −80, 100 / 376 | −85, 102 / 383 |
+| end 4-12 h | +138, 231 / 450 | +168, 261 / 526 |
+| end 12 h + | +683, 647 / 1,197 | +617, 640 / 968 |
+| start, all | +61, 181 / 608 | +48, 184 / 589 |
+| run, all | +36, 1 / 98 | +35, 1 / 103 |
+| targets placed in a forecast's first 6 h (118,399 done) | 79,568 | 79,388 |
+| the right Mac | 45 % | 45 % |
 
-The live forecasts over 12 to 19 Nov (2,661, code 8 and before) had their end at +101, 148 / 764.
-Code 9's test end by horizon: under 15 min −150, 95 / 388; 15 min-1 h 98 / 415; 1-4 h 103 / 390;
-4-12 h 269 / 535; 12 h + +619, 641 / 988. The far horizons stay late: the work the pool did in a
-day was placed later than it ran.
-
-Tried and left out, on the test set's span alone (from 17 Nov 00:00, end median / p90): the needs
-without a pace 226 / 829 (bias +203); with each step's pace both ways (a slow step's jobs made
-longer too) 217 / 743; a target's own run at its cost at the lane's pace instead of its needs 213 /
-772; without the NAS floor 223 / 824; with the job under way at its slot's time 228 / 889; the
-one-sided pace kept 188 / 619.
+On test, code 9 doesn't beat code 8: its p90 and bias are better (632 to 610, +97 to +83: the 12 h +
+horizon, p90 1,197 to 968), its median a little worse (187 to 189), the near horizons the same, and
+4-12 h worse (231 / 450 to 261 / 526). The live forecasts over 12 to 19 Nov (2,661, code 8 and
+before) had their end at +101, 148 / 764. The far horizons stay late in both: the work the pool did
+in a day was placed later than it ran.
 
 ## 8. Tasks
 

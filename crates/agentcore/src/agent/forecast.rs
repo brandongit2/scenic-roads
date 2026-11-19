@@ -318,7 +318,8 @@ const NEEDS_PACE_FLOOR: f64 = 0.25;
 /// their time over that, summed; a step with `NEEDS_PACE_JOBS` such jobs at least, no less than
 /// `NEEDS_PACE_FLOOR`. Only a step quicker than its needs is said: the needs' figures run high
 /// (#1415), and a job that ran long mostly waited on what else ran (the NAS, its Mac's other jobs),
-/// which the run already times; scaling slow steps up too made the backtest worse (pool.md §7.9).
+/// which the run already times; scaling slow steps up too did worse on the backtest's train set
+/// (pool.md §7.9, code 9).
 pub fn needs_pace(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<String, f64> {
     let from = now.saturating_sub(NEEDS_PACE_S);
     let mut sized: std::collections::HashMap<jobrt::jobid::JobId, f64> = Default::default();
