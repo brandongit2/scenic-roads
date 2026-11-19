@@ -614,6 +614,20 @@ fn a_folders_remainder_goes_to_its_regions() {
     assert_eq!(p.len(), 1, "{:#?}", wrong.problems);
     assert!(p[0].message.contains("by.q names no region of the folder") && p[0].files == ["p/_remainder.toml"]);
     assert!(!wrong.resolved.contains_key("l") && !wrong.resolved.contains_key("r"));
+    // Nested: the inner folder's first (r alone takes 31.8–32°), then the outer's median line runs
+    // between l's edge, 31°, and r's land as the inner one left it, 31.8°.
+    let mut files = all();
+    files.extend([
+        ("p/l.toml", l),
+        ("p/i/r.toml", r),
+        ("s.toml", s),
+        ("p/_remainder.toml", "of = \"box:30.0,20.0,33.0,21.0\"\n"),
+        ("p/i/_remainder.toml", "of = \"box:31.8,20.0,33.0,21.0\"\n"),
+    ]);
+    let nested = run(&w, &files);
+    assert!(nested.problems.is_empty(), "{:#?}", nested.problems);
+    assert!(in_(&nested, "r", 31.45) && !in_(&nested, "l", 31.45), "inner first");
+    assert!(in_(&nested, "l", 31.35) && !in_(&nested, "r", 31.35));
     // Its parts are the sources' alone; a bad one is the file's fault.
     assert!(file::parse_remainder("of = \"region:l\"\n").is_err());
     assert!(file::parse_remainder("of = \"osm:1\"\nstep = \"10 m\"\n").is_err());
