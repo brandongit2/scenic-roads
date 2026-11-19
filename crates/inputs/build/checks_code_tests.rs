@@ -298,7 +298,7 @@ fn what_it_cant_read_or_cut_is_an_error() {
             (toml, "path = \"../dep\" }", "path = \"../dep\", from = \"x\" }"),
             "Cargo.toml:5: a dependency key",
         ),
-        ("a dependency table's key", (toml, "features = [", "frozen = ["), "Cargo.toml:16: a dependency key"),
+        ("a dependency table's key", (toml, "features = [", "frozen = ["), "Cargo.toml:17: a dependency key"),
     ];
     for (what, edit, says) in cases {
         let e = read_with(d.path(), &[edit]).err().unwrap_or_else(|| panic!("{what}: read"));
