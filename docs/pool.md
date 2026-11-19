@@ -956,10 +956,19 @@ other process).
     floor's room freezing and giving back) stands behind it.
 - **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
   what's available and what compressing frees among it, what the jobs hold, the floor, the swap
-  grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), what
-  the Mac's other processes took more over the same window (`others_grown_mb`: the memory in use
-  and the swap, less what the jobs hold, now less the least), the kernel's pressure level, and a
-  give-back's cool-down. The others' growth is a difference, not a measure of whose memory it is:
+  grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), how
+  much less was available at the window's least (`dip_mb`), what the Mac's other processes took
+  more over the same window (`others_grown_mb`: the memory in use and the swap, less what the jobs
+  hold, the latest less the least), the kernel's pressure level, and a give-back's cool-down. The
+  jobs' own memory is read as each sample has it, the rest of the Mac by its mean over the last
+  minute (`MEAN_OVER`, twelve readings: the time a frozen job is held before it's decided on,
+  `PRESSURE_HOLD`): what's available and what the jobs hold, together, averaged, less what the jobs
+  hold now, so a job's growth (taking from the one what it adds to the other) shows at once while
+  the others' swings are averaged; the dip and the others' growth are read from those means (task
+  #1492: the M1's available swung between 0.05 and 2.5 GB within 10 s on 19 Nov, so one sample
+  granted a job at a peak and the next trough had it below the floor, and the least and most of
+  the samples read as the others' growth). On a steady Mac the means are the samples and the dip
+  is none. The others' growth is a difference, not a measure of whose memory it is:
   it takes in what the pool causes outside its jobs' process groups (the kernel's and the SMB
   client's buffers for their NAS reads, the services they call over XPC) and the swing of
   `compressible` as the compressor's ratio moves under the jobs' own pages, so some of the pool's
@@ -967,14 +976,17 @@ other process).
   which bounds what it can spare a job. The jobs' **room**, what they may hold
   before the Mac is below its floor, is what they hold and what's available, less the swap grown
   and the floor (`Reading::room_mb`); the Mac is below its floor when what's available, the swap
-  grown off, is under it, or the brake acts.
+  grown off, is under it, or the brake acts. Admission goes by the window's least
+  (`Reading::low_usable_mb`, the dip off): a job is granted for its run, not the sample it asked
+  at.
 - **Admission, with reservations** (as the disk room reserves running jobs' space): the floor is
   the only memory setting. A job starts only where available − (each running job's expected peak
   less what it holds now, none once it holds more) − the new job's expected peak ≥ the floor. The
   Mac's ask says what its jobs may hold for one to start (`Ask::mem_mb`, its capacity's
-  `build_mb`: the room, `Reading::admit_mb`, none while no job may start), what each running job
-  holds (`Capacity::held_each`), and why no job may start whatever it needs
-  (`Capacity::mem_held_back`: the brake, available under the floor, or a give-back's cool-down);
+  `build_mb`: the room at the window's least, `Reading::admit_mb`, none while no job may start),
+  what each running job holds (`Capacity::held_each`), and why no job may start whatever it needs
+  (`Capacity::mem_held_back`: the brake, available under the floor at the window's least, or a
+  give-back's cool-down);
   the lead packs each running job at its expected peak or what it holds, the larger, and a new
   one at its expected peak (§7.2, `Sched::pack`), the same arithmetic for its own Mac and every
   member's, from their asks. A Mac held back is granted nothing, a cold start to an empty Mac
@@ -989,7 +1001,7 @@ other process).
   first (§7.2, The memory guard).
 - **Cool-down** (`Reading::cooling`, the agent's `cool_down`): a job the memory guard gives back
   (drained to its safe point, stopped, or yielding) holds new work off its Mac until what's
-  available (the swap grown off) is back past the floor and that job's peak (what it held or its
+  available (the swap grown off, at the window's least) is back past the floor and that job's peak (what it held or its
   expected peak, the larger), or `memguard::COOL_WAIT` has passed, whichever comes first; a later
   give-back starts it again. The wait is the swap window, five minutes, so the swap a give-back's
   shortage grew has left the reading new work is let in by; it outlasts most outside swings (on
@@ -1395,10 +1407,15 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   drains), and the shortfall isn't the other processes' growth. Else no job is: the Mac short by
   the load beside the pool holds new work off through admission (§7.1, `Reading::held_back`), not
   the jobs running, and the guard says so once until the Mac is back. Admission and the drain read
-  the same figure (`Reading::room_mb`: at the floor, nothing granted and nothing drained); a job
-  just granted holds next to nothing, so a fall the rest of the Mac makes after its grant (the M1's
-  available swung between 0.05 and 2.5 GB within 10 s on 19 Nov, its jobs holding nothing) doesn't
-  give it back; a job whose own growth takes the Mac below its floor is. Relieving it, with the
+  one reading (`Reading::room_mb`, admission at the window's least of it: §7.1); a job just
+  granted holds next to nothing, so a fall the rest of the Mac makes after its grant doesn't give
+  it back; a job whose own growth takes the Mac below its floor is. Granted by the window's least
+  (task #1492), a job isn't granted at a peak of the rest of the Mac's swing: replayed over the
+  rings' day of 18-19 Nov and the lead's history (`memguard`'s `the_grants_of_19_november_replayed`),
+  95 of the M1's 787 grants were held back, among them 17 of the 63 it gave back and 460 of the
+  2,390 s its jobs ran below the floor, and the four drains the smoothed reading would still have
+  given back were all such grants; the Mac mini's 2,379, 4 (terrain-deep, at the margin); the M4's
+  9, none. Relieving it, with the
   largest fitting alone, another job stops at its next safe point (`memguard::decide_by`): one that
   yields first, else the newest
   (by its start's minute), then the least progressed (the work lost least), never the largest; one

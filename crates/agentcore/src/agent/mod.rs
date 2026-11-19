@@ -487,8 +487,10 @@ struct Slot {
 /// (memguard::EVERY), enough for a freeze that stopped the fall to show in them, and short beside
 /// the window the swap grown counts in (memguard::SWAP_WINDOW). Past it with the brake no longer
 /// acting but the Mac not back above its floor, the job stays frozen up to the time a pause gives a
-/// safe point (`Agent::grace`), then is given back or, not worth stopping, goes on.
-const PRESSURE_HOLD: Duration = Duration::from_secs(memguard::EVERY.as_secs() * 12);
+/// safe point (`Agent::grace`), then is given back or, not worth stopping, goes on. The span the
+/// rest of the Mac's memory is averaged over (memguard::MEAN_OVER), so the reading it's decided by
+/// holds only the samples since the freeze.
+const PRESSURE_HOLD: Duration = memguard::MEAN_OVER;
 
 /// An agent's slots (`Agent::slots`): `SLOTS` of them fresh, more as a member's packed jobs take
 /// them.

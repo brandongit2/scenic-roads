@@ -46,6 +46,14 @@ pub const DISK_EVERY: Duration = Duration::from_secs(60);
 /// swap hours ago doesn't leave the Mac below its floor for good.
 pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 
+/// The span a sample of the rest of the Mac is averaged over (`Reading`): a minute, twelve of the
+/// sampler's readings, the time the guard keeps a job frozen before it decides on it (crate::agent's
+/// `PRESSURE_HOLD`, this figure), so a decision on a frozen job reads only the samples since the
+/// freeze. A swing shorter than that, which the guard wouldn't act on, neither grants a job nor
+/// reads as the other processes' growth: the M1's available swung between 0.05 and 2.5 GB within
+/// 10 s on 19 Nov, its jobs holding next to nothing (task #1492).
+pub const MEAN_OVER: Duration = Duration::from_secs(EVERY.as_secs() * 12);
+
 /// The longest a give-back's cool-down holds new work off the Mac (`Reading::cooling`): the swap
 /// window, so the swap a give-back's shortage grew has left the reading new work is let in by. It
 /// outlasts most outside swings: on the M4's live series (the 10 s ring, the 7.8 h of 4 Nov since
@@ -53,13 +61,17 @@ pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 /// the median and 190 s at the 90th percentile (docs/pool.md §7.1).
 pub const COOL_WAIT: Duration = SWAP_WINDOW;
 
-/// The Mac's memory as one sample read it (MB), against its floor (crate::agent::memfloor), with
+/// The Mac's memory as the sampler reads it (MB), against its floor (crate::agent::memfloor), with
 /// the jobs' memory sampled beside it: what the guard gives back by, and the asks' room
-/// (docs/pool.md §7.1).
+/// (docs/pool.md §7.1). The jobs' own memory is read as each sample has it, the rest of the Mac by
+/// its mean over the last `MEAN_OVER`: what's available and what the jobs hold, together, as each
+/// sample read them, averaged (a job's growth takes from the one what it adds to the other, so it
+/// shows at once; the other processes' swings are averaged), less what the jobs hold now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Reading {
-    /// The memory available (jobrt::sys::memory_available), and the jobs' memory together.
+    /// The memory available (jobrt::sys::memory_available; the rest of the Mac's share by its mean
+    /// over `MEAN_OVER`), and the jobs' memory together.
     pub avail_mb: u64,
     pub held_mb: u64,
     /// Of `avail_mb`, what macOS frees by compressing idle memory with its pressure left normal
@@ -69,8 +81,15 @@ pub struct Reading {
     pub floor_mb: u64,
     /// The swap grown within `SWAP_WINDOW`: its use now less the least in the window.
     pub swap_grown_mb: u64,
+    /// How much less of `avail_mb` there was at its least within `SWAP_WINDOW` (MB): the lowest of
+    /// the window's means (over `MEAN_OVER`) of what's available and what the jobs hold, under the
+    /// latest; 0 on a steady Mac. Admission goes by that low (`admit_mb`, `held_back`, `cooling`):
+    /// a job granted at a peak of the rest of the Mac's swing is below the floor at its next trough.
+    pub dip_mb: u64,
     /// What the Mac's other processes (not the jobs) took more within `SWAP_WINDOW`: the memory in
-    /// use and the swap, less what the jobs hold, now less the least in the window. A stop weighs
+    /// use and the swap, less what the jobs hold, by its means over `MEAN_OVER` (the series
+    /// `dip_mb` reads), the latest less the least in the window: a swing averaged away is no
+    /// growth. A stop weighs
     /// it (`worth_stopping`): a shortfall the rest of the Mac made isn't the jobs' doing. A
     /// difference, not whose memory it is: what the jobs cause outside their process groups (the
     /// kernel's and SMB's buffers for their reads, services over XPC) and the swing of
@@ -90,6 +109,12 @@ impl Reading {
     /// is memory the Mac didn't have.
     pub fn usable_mb(&self) -> u64 {
         self.avail_mb.saturating_sub(self.swap_grown_mb)
+    }
+
+    /// The usable memory at its least within `SWAP_WINDOW` (MB: `usable_mb` less `dip_mb`), the jobs
+    /// counted at what they hold now: what admission goes by.
+    pub fn low_usable_mb(&self) -> u64 {
+        self.usable_mb().saturating_sub(self.dip_mb)
     }
 
     /// The emergency brake: the kernel's pressure at warning or critical, or swap grown past what
@@ -142,9 +167,10 @@ impl Reading {
         }
     }
 
-    /// What the jobs may hold together for a job to start (MB): `room_mb`, 0 while no job may start
-    /// whatever it needs (`held_back`: the brake, the Mac under its floor, a give-back's
-    /// cool-down). A job starts where this, less every running job's expected peak (or what it
+    /// What the jobs may hold together for a job to start (MB): `room_mb` at the window's low
+    /// (`dip_mb` off: a job is granted for its run, not for the sample it was asked at), 0 while no
+    /// job may start whatever it needs (`held_back`: the brake, the Mac under its floor, a
+    /// give-back's cool-down). A job starts where this, less every running job's expected peak (or what it
     /// holds, the larger), fits its own expected peak: available − the running jobs' growth to
     /// come − its peak ≥ the floor (crate::coord::sched's `pack`). The floor is the only figure:
     /// the jobs' growth is reserved before a new job, and nothing past it.
@@ -152,15 +178,16 @@ impl Reading {
         if self.held_back().is_some() {
             return 0;
         }
-        self.room_mb()
+        self.room_mb().saturating_sub(self.dip_mb)
     }
 
     /// Whether a give-back's cool-down holds new work off the Mac: one began (`cool_mb`), what's
-    /// available (the swap grown off) still short of the floor and the given-back job's peak, and
-    /// `cool_until` not passed. A job given back because the Mac fell below its floor isn't
-    /// followed at once by a smaller one the same fall would give back too.
+    /// available (the swap grown off, at its least in the window: `low_usable_mb`) still short of
+    /// the floor and the given-back job's peak, and `cool_until` not passed. A job given back
+    /// because the Mac fell below its floor isn't followed at once by a smaller one the same fall
+    /// would give back too.
     pub fn cooling(&self) -> bool {
-        self.cool_mb > 0 && self.usable_mb() < self.cool_mb && crate::agent::jobs::now_s() < self.cool_until
+        self.cool_mb > 0 && self.low_usable_mb() < self.cool_mb && crate::agent::jobs::now_s() < self.cool_until
     }
 
     /// Why the Mac is below its floor, in words: "the memory brake is on (…)", else "this Mac has
@@ -179,16 +206,26 @@ impl Reading {
     }
 
     /// Why no job starts here whatever it needs, in words: the brake, the usable memory under the
-    /// floor, or a give-back's cool-down (`cooling`); None when one may.
+    /// floor at its least in the window (`low_usable_mb`), or a give-back's cool-down (`cooling`);
+    /// None when one may.
     pub fn held_back(&self) -> Option<String> {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
         if let Some(b) = self.brake() {
             return Some(format!("the memory brake: {b}"));
         }
-        if self.usable_mb() < self.floor_mb {
+        if self.low_usable_mb() < self.floor_mb {
             return Some(format!(
-                "{} of memory available{}, under the {} floor",
-                gb(self.usable_mb()),
+                "{} of memory available{}{}, under the {} floor",
+                gb(self.low_usable_mb()),
+                if self.dip_mb > 0 {
+                    format!(
+                        " at its least in the last {} min ({} now)",
+                        SWAP_WINDOW.as_secs() / 60,
+                        gb(self.usable_mb())
+                    )
+                } else {
+                    String::new()
+                },
                 if self.swap_grown_mb > 0 { format!(" (swap grew {})", gb(self.swap_grown_mb)) } else { String::new() },
                 gb(self.floor_mb)
             ));
@@ -200,7 +237,7 @@ impl Reading {
                 gb(self.cool_mb),
                 gb(self.floor_mb),
                 gb(self.cool_mb.saturating_sub(self.floor_mb)),
-                gb(self.usable_mb()),
+                gb(self.low_usable_mb()),
                 left.div_ceil(60)
             )
         })
@@ -631,14 +668,20 @@ struct Inner {
     idle_set: Option<u64>,
     /// As a test sets it: when each slot's job was last busy (`Watch::cpu_mark`).
     busy_set: Option<Vec<Option<std::time::Instant>>>,
+    /// As a test sets it: the time the next sample of the Mac's memory is taken at (a series
+    /// replayed at its own pace).
+    at_set: Option<std::time::Instant>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
     /// The swap in use (MB) as each sample read it over the last `SWAP_WINDOW`; and the latest
     /// sample's `Reading` (None: the Mac's memory unknown).
     swap: std::collections::VecDeque<(std::time::Instant, u64)>,
-    /// What the Mac's other processes held (MB: the memory in use and the swap, less the jobs'), as
-    /// each sample read it over the last `SWAP_WINDOW` (`Reading::others_grown_mb`).
-    others: std::collections::VecDeque<(std::time::Instant, u64)>,
+    /// What's available and what the jobs hold, together, and what the Mac's other processes held
+    /// (MB: the memory in use and the swap, less the jobs'), as each sample read them over the last
+    /// `MEAN_OVER`; and their means over it at each sample, over the last `SWAP_WINDOW`
+    /// (`Reading::dip_mb`, `others_grown_mb`).
+    recent: std::collections::VecDeque<(std::time::Instant, u64, u64)>,
+    means: std::collections::VecDeque<(std::time::Instant, u64, u64)>,
     reading: Option<Reading>,
     /// A give-back's cool-down as the agent's loop last set it (`Reading::cool_mb`, `cool_until`).
     cool: (u64, u64),
@@ -829,6 +872,13 @@ impl Sampler {
         }
     }
 
+    /// A test's clock: the time the next sample of the Mac's memory is taken at (None: now).
+    pub fn set_test_at(&self, at: Option<std::time::Instant>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.at_set = at;
+        }
+    }
+
     /// A test's Mac: what it has available with no job running (MB), less what its jobs hold.
     pub fn set_test_idle(&self, idle_mb: Option<u64>) {
         if let Ok(mut g) = self.inner.lock() {
@@ -1005,7 +1055,7 @@ impl Sampler {
                 (a.total() >> 20, a.compressible >> 20, g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20)))
             }
         };
-        let now = std::time::Instant::now();
+        let now = g.at_set.unwrap_or_else(std::time::Instant::now);
         if let Some(n) = swap {
             g.swap.push_back((now, n));
         }
@@ -1013,26 +1063,39 @@ impl Sampler {
             g.swap.pop_front();
         }
         let low = g.swap.iter().map(|(_, n)| *n).min();
-        let others = (g.total_mb + swap.unwrap_or(0)).saturating_sub(avail_mb + held_mb);
-        g.others.push_back((now, others));
-        while g.others.front().is_some_and(|(t, _)| now.duration_since(*t) > SWAP_WINDOW) {
-            g.others.pop_front();
+        // (What's available and what the jobs hold, and the other processes' share, averaged over
+        // `MEAN_OVER`; those means kept over the window for their least.)
+        let both = avail_mb + held_mb;
+        let others = (g.total_mb + swap.unwrap_or(0)).saturating_sub(both);
+        g.recent.push_back((now, both, others));
+        while g.recent.front().is_some_and(|(t, _, _)| now.duration_since(*t) > MEAN_OVER) {
+            g.recent.pop_front();
         }
-        let others_low = g.others.iter().map(|(_, n)| *n).min().unwrap_or(others);
+        let n = g.recent.len() as u64;
+        let (both, others) = g.recent.iter().fold((0, 0), |(b, o), &(_, x, y)| (b + x, o + y));
+        let (both, others) = (both / n, others / n);
+        g.means.push_back((now, both, others));
+        while g.means.front().is_some_and(|(t, _, _)| now.duration_since(*t) > SWAP_WINDOW) {
+            g.means.pop_front();
+        }
+        let both_low = g.means.iter().map(|m| m.1).min().unwrap_or(both);
+        let others_low = g.means.iter().map(|m| m.2).min().unwrap_or(others);
         let pressure = match g.trouble_set {
             Some(true) => 2,
             Some(false) => 1,
             None => jobrt::sys::memory_pressure().unwrap_or(0),
         };
+        let avail_mb = both.saturating_sub(held_mb);
         Some(Reading {
             avail_mb,
             held_mb,
-            compress_mb,
+            compress_mb: compress_mb.min(avail_mb),
             floor_mb: g.floor_mb,
             swap_grown_mb: match (swap, low) {
                 (Some(n), Some(l)) => n.saturating_sub(l),
                 _ => 0,
             },
+            dip_mb: both - both_low,
             others_grown_mb: others - others_low,
             pressure,
             cool_mb: g.cool.0,
@@ -1666,6 +1729,179 @@ mod tests {
         assert_eq!(worth_stopping(&r, &[(0, Some(1536)), (1, Some(0))]), Ok(vec![0]));
     }
 
+    /// The sampler, its clock stepped by `every` from `t0` at each sample: what's available and what
+    /// the jobs hold (MB) fed in turn, the swap steady. The reading after each.
+    fn replay(s: &Sampler, t0: std::time::Instant, series: &[(u64, u64, u64)]) -> Vec<Reading> {
+        series
+            .iter()
+            .map(|&(at_s, avail, held)| {
+                s.set_test(Some(vec![Some(held)]), Some(false));
+                s.set_test_mem(Some(avail), Some(8 * GB));
+                s.set_test_at(Some(t0 + Duration::from_secs(at_s)));
+                s.tick();
+                s.reading().unwrap()
+            })
+            .collect()
+    }
+
+    /// Task #1492: a Mac whose other processes swing (the M1 of 19 Nov, its available between 0.05
+    /// and 2.5 GB within 10 s) is granted by the window's low, not one sample at a peak. Its 10 s
+    /// ring before bldtiles 6/22/34's grant at 09:14:28Z (what was available and what the jobs
+    /// held, each point's mean; the ring's gaps as it has them), fed to the sampler at those times:
+    /// at the grant one sample had 1.46 GB, 0.46 above the 1.0 GB floor, room for its 0.3 GB (the
+    /// median peak the M1's log gives bldtiles); the minute means had fallen to 1.0 GB within the
+    /// five minutes before, so none is granted. The job, granted, was below the floor 40 s later
+    /// (0.53 GB available) and drained at 09:16:42 with nothing done.
+    #[test]
+    fn a_swinging_mac_is_not_granted_at_a_peak() {
+        // (Seconds from the ring's first point; available, held, GB.)
+        let ring: [(u64, f64, f64); 19] = [
+            (0, 1.28, 0.0),
+            (20, 1.12, 0.0),
+            (40, 1.24, 0.0),
+            (60, 1.19, 0.15),
+            (90, 0.83, 0.13),
+            (110, 0.86, 0.0),
+            (120, 1.0, 0.0),
+            (140, 1.52, 0.0),
+            (150, 1.39, 0.0),
+            (160, 0.59, 0.0),
+            (180, 0.67, 0.0),
+            (200, 0.7, 0.0),
+            (220, 0.93, 0.0),
+            (240, 0.95, 0.0),
+            (260, 0.77, 0.0),
+            (280, 0.95, 0.0),
+            (300, 0.95, 0.0),
+            (320, 0.64, 0.0),
+            (340, 1.46, 0.0),
+        ];
+        let mb = |gb: f64| (gb * 1024.0).round() as u64;
+        let series: Vec<(u64, u64, u64)> = ring.iter().map(|&(t, a, h)| (t, mb(a), mb(h))).collect();
+        let s = Sampler::new(1);
+        s.watch(0, Watch { pgid: 999_999, ..Default::default() });
+        s.set(GB, 16 * GB);
+        let r = *replay(&s, std::time::Instant::now(), &series).last().unwrap();
+        // (One sample, as the reading was before: room for the job.)
+        let one = Reading { avail_mb: mb(1.46), floor_mb: GB, pressure: 1, ..Default::default() };
+        assert!(one.admit_mb() >= mb(0.3), "{one:?}");
+        // The window's low: under the floor, nothing granted, and said so.
+        assert!(r.dip_mb > 0 && r.low_usable_mb() < GB && r.admit_mb() == 0, "{r:?}");
+        let why = r.held_back().unwrap();
+        assert!(why.contains("at its least in the last 5 min") && why.contains("under the 1.0 GB floor"), "{why}");
+        // (What's available, the minute's mean, not the peak: 1.0 GB.)
+        assert!(r.avail_mb.abs_diff(GB) < 64, "{r:?}");
+    }
+
+    /// Task #1492: a steady Mac (the rest of it not moving) is granted as one sample has it: the
+    /// window's low is the latest, whatever its jobs do. A job growing 4 GB into what's available
+    /// shows at once (what's available and what the jobs hold move together), as one given back.
+    #[test]
+    fn a_steady_mac_is_granted_as_before() {
+        let s = Sampler::new(1);
+        s.watch(0, Watch { pgid: 999_999, ..Default::default() });
+        s.set(4 * GB, 48 * GB);
+        let t0 = std::time::Instant::now();
+        let mut series: Vec<(u64, u64, u64)> = (0..70).map(|k| (k * EVERY.as_secs(), 20 * GB, 3 * GB)).collect();
+        let at = |k: u64| k * EVERY.as_secs();
+        series.push((at(70), 16 * GB, 7 * GB));
+        series.push((at(71), 23 * GB, 0));
+        let got = replay(&s, t0, &series);
+        let one = |avail: u64, held: u64| Reading {
+            avail_mb: avail,
+            held_mb: held,
+            floor_mb: 4 * GB,
+            pressure: 1,
+            ..Default::default()
+        };
+        for (r, &(_, avail, held)) in got.iter().zip(&series) {
+            assert_eq!((r.dip_mb, r.others_grown_mb, r.avail_mb, r.held_mb), (0, 0, avail, held), "{r:?}");
+            assert_eq!(r.admit_mb(), one(avail, held).admit_mb());
+        }
+        assert_eq!(got[70].admit_mb(), 19 * GB);
+    }
+
+    /// Task #1492: the other processes' growth (`others_grown_mb`) read from the minute means, the
+    /// series admission reads: a swing averaged away is no growth (what's available swinging 2.4 GB
+    /// each 5 s for five minutes, as the M1's did: the least and the most of the samples, which a
+    /// stop had weighed as the others' growth, 2.4 GB apart), while their real growth shows in full
+    /// a minute on, the swing going on beneath it.
+    #[test]
+    fn the_others_growth_is_not_read_from_noise() {
+        let s = Sampler::new(1);
+        s.watch(0, Watch { pgid: 999_999, ..Default::default() });
+        s.set(GB, 16 * GB);
+        let at = |k: u64| k * EVERY.as_secs();
+        let swing = |k: u64, low: u64| if k % 2 == 0 { low } else { low + 2458 };
+        let mut series: Vec<(u64, u64, u64)> = (0..60).map(|k| (at(k), swing(k, 1100), 300)).collect();
+        // (Then they take 1 GB more and keep it.)
+        series.extend((60..80).map(|k| (at(k), swing(k, 1100 - GB), 300)));
+        let got = replay(&s, std::time::Instant::now(), &series);
+        let noisy = &got[59];
+        // (Thirteen samples a minute: the mean moves by a thirteenth of the swing.)
+        assert!(noisy.others_grown_mb <= 2458 / 13 + 1, "{noisy:?}");
+        // (What's available, the minute's mean of the swing, 2.3 GB: above the floor, not short.)
+        assert!(noisy.avail_mb > 2 * GB && noisy.short_mb() == 0, "{noisy:?}");
+        // A minute after their growth, its gigabyte, give or take that thirteenth.
+        let grown = &got[73];
+        assert!(grown.others_grown_mb.abs_diff(GB) <= 2458 / 13 + 1, "{grown:?}");
+    }
+
+    /// Task #1492: the M1's grants of bldtiles 6/22/34 on 19 Nov, granted and given back over and
+    /// over (the lead's history), and the Mac mini's terrain-deep grants the window's low holds
+    /// back, each as its Mac's 10 s ring had it at the grant (the one sample: the point's highest
+    /// available, the jobs' memory, the swap grown; the minute means' available and its dip, GB).
+    /// Replayed over every grant of the rings' day (the M1 18 Nov 10:58Z to 19 Nov 10:58Z, the
+    /// mini from 17 Nov 11:35Z, the M4 the same day as the M1), each job at its step's median peak
+    /// in the M1's log (bldtiles 0.3 GB, terrain-deep 4.3, …, 0.5 others): the M1's 787 grants, 95
+    /// held back by the low, among them 17 of the 63 it gave back and 460 of the 2,390 s its jobs
+    /// ran below the floor; the four drains the smoothed reading would still give back were all
+    /// such grants. The mini's 2,379, 4 held back (terrain-deep, the room a median 0.7 GB under one
+    /// sample's, of 7.4), none given back or below the floor among them; the M4's 9, none. The jobs
+    /// held back aren't lost: each is granted at the next ask the low has room for.
+    #[test]
+    fn the_grants_of_19_november_replayed() {
+        // (When; one sample's available, held, swap grown; the means' available and its dip.)
+        let m1: [(&str, f64, f64, f64, f64, f64); 9] = [
+            ("07:13", 1.63, 0.01, 0.20, 1.01, 0.67),
+            ("08:15", 1.54, 0.04, 0.00, 1.03, 0.79),
+            ("09:14", 1.94, 0.00, 0.00, 1.00, 0.28),
+            ("09:32", 1.50, 0.12, 0.00, 1.17, 0.19),
+            ("09:38", 1.50, 0.02, 0.00, 1.23, 0.23),
+            ("09:54", 1.62, 0.14, 0.00, 1.64, 0.09),
+            ("10:03", 1.71, 0.00, 0.00, 1.13, 0.00),
+            ("10:13", 1.58, 0.09, 0.00, 1.58, 0.07),
+            ("10:22", 1.59, 0.03, 0.00, 1.33, 0.07),
+        ];
+        let mini: [(&str, f64, f64, f64, f64, f64); 4] = [
+            ("06:42", 8.27, 0.86, 0.0, 7.16, 2.91),
+            ("08:02", 6.09, 0.10, 0.0, 5.66, 0.65),
+            ("08:58", 5.81, 1.26, 0.0, 5.95, 1.97),
+            ("10:38", 8.77, 2.01, 0.0, 7.45, 4.50),
+        ];
+        let mb = |gb: f64| (gb * 1024.0).round() as u64;
+        let grants = |rows: &[(&str, f64, f64, f64, f64, f64)], need: f64| -> Vec<String> {
+            rows.iter()
+                .filter(|&&(at, one, held, swap, avail, dip)| {
+                    let r = |avail: f64, dip: f64| Reading {
+                        avail_mb: mb(avail),
+                        held_mb: mb(held),
+                        floor_mb: GB,
+                        swap_grown_mb: mb(swap),
+                        dip_mb: mb(dip),
+                        pressure: 1,
+                        ..Default::default()
+                    };
+                    assert!(r(one, 0.0).admit_mb() >= mb(need), "{at}: one sample had room");
+                    r(avail, dip).admit_mb() >= mb(need)
+                })
+                .map(|row| row.0.to_string())
+                .collect()
+        };
+        assert_eq!(grants(&m1, 0.3), ["09:54", "10:13"]);
+        assert!(grants(&mini, 4.3).is_empty());
+    }
+
     /// The M4's night of 4 Nov replayed under the floor alone and the available as it is reckoned
     /// now (tasks #945, #1244). Recorded (the 10 s ring): at 00:07:30 one terrain-deep job held 3.2
     /// GB, the kernel's level 75 % and its compressor 4.4 GB (40.4 GB not wired); four more started
@@ -1757,11 +1993,17 @@ mod tests {
 
     /// Another process grows (Chrome, Docker's VM) while the jobs hold steady: the Mac falls below
     /// its floor, the newest job is given back; once it's gone the Mac is above the floor again, but
-    /// the give-back's cool-down holds new work until the floor and that job's peak are available.
+    /// the give-back's cool-down holds new work until the floor and that job's peak are available,
+    /// at the window's least (the other process's fall within it: task #1492), or the wait is over.
     #[test]
     fn another_process_growing_gives_a_job_back_and_cools_the_mac_down() {
         let s = Sampler::new(2);
         s.set(6 * GB, 48 * GB);
+        // (Each sample a minute and a second after the last: its own mean over `MEAN_OVER`.)
+        let t0 = std::time::Instant::now();
+        let at = |secs: u64| s.set_test_at(Some(t0 + Duration::from_secs(secs)));
+        let step = MEAN_OVER.as_secs() + 1;
+        at(0);
         for k in 0..2 {
             s.watch(k, Watch { pgid: 999_990 + k as i32, ..Default::default() });
         }
@@ -1777,6 +2019,7 @@ mod tests {
         // (Another process takes 6 GB: 4 available, under the 6 GB floor; the jobs past their
         // room, 6 GB: the newest is given back at its next safe point, not the largest.)
         s.set_test_mem(Some(4 * GB), Some(0));
+        at(step);
         s.tick();
         let r = s.reading().unwrap();
         assert!(r.short_mb() > 0 && r.brake().is_none(), "{r:?}");
@@ -1789,14 +2032,21 @@ mod tests {
         s.set_cool(9 * GB, crate::agent::jobs::now_s() + COOL_WAIT.as_secs());
         s.set_test(Some(vec![Some(5 * GB), None]), Some(false));
         s.set_test_mem(Some(7 * GB), Some(0));
+        at(2 * step);
         s.tick();
         let r = s.reading().unwrap();
         assert!(r.short_mb() == 0 && r.cooling(), "{r:?}");
         assert_eq!(decide_by(&[Some(5 * GB), None], r.room_mb(), &no, &no, &rank), Act::Nothing);
         assert!(r.held_back().is_some_and(|h| h.starts_with("a job was given back: no new job until 9.0 GB")));
         assert_eq!(r.admit_mb(), 0);
-        // (The other process gives 2 GB back: 9 GB available, the cool-down over, 8 GB of room.)
+        // (The other process gives 2 GB back: 9 GB available, but 7 GB at the window's least: still
+        // cooling. Once its fall has left the window: the cool-down over, 8 GB of room.)
         s.set_test_mem(Some(9 * GB), Some(0));
+        at(3 * step);
+        s.tick();
+        let r = s.reading().unwrap();
+        assert!(r.avail_mb == 9 * GB && r.dip_mb == 2 * GB && r.cooling() && r.admit_mb() == 0, "{r:?}");
+        at(2 * step + SWAP_WINDOW.as_secs() + 1);
         s.tick();
         let r = s.reading().unwrap();
         assert!(!r.cooling() && r.held_back().is_none() && r.admit_mb() == 8 * GB, "{r:?}");
@@ -1878,6 +2128,15 @@ mod tests {
         s.tick();
         assert_eq!(s.reading(), None);
         s.set(6 * GB, 48 * GB);
+        // (Each sample a minute and a second on: the mean of the Mac's rest over `MEAN_OVER` is its
+        // own, within the swap window.)
+        let t0 = std::time::Instant::now();
+        let mut step: u32 = 0;
+        let mut next = || {
+            step += 1;
+            s.set_test_at(Some(t0 + (MEAN_OVER + Duration::from_secs(1)) * step));
+        };
+        next();
         s.set_test_mem(Some(20 * GB), Some(4 * GB));
         s.tick();
         let r = s.reading().unwrap();
@@ -1885,6 +2144,7 @@ mod tests {
         // (The swap grew 1 GB; a cool-down set.)
         s.set_cool(14 * GB, 99);
         s.set_test_mem(Some(17 * GB), Some(5 * GB));
+        next();
         s.tick();
         let r = s.reading().unwrap();
         assert_eq!((r.swap_grown_mb, r.cool_mb, r.cool_until), (GB, 14 * GB, 99));
@@ -1894,11 +2154,13 @@ mod tests {
         assert_eq!(r.others_grown_mb, 4 * GB);
         s.set_test(Some(vec![Some(12 * GB)]), Some(false));
         s.set_test_mem(Some(15 * GB), Some(5 * GB));
+        next();
         s.tick();
         assert_eq!(s.reading().unwrap().others_grown_mb, 4 * GB);
         // (This Mac's own memory: its available, what compressing frees part of it.)
         if cfg!(target_os = "macos") {
             s.set_test_mem(None, None);
+            next();
             s.tick();
             let r = s.reading().unwrap();
             assert!(r.avail_mb > 0 && r.compress_mb <= r.avail_mb, "{r:?}");
