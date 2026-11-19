@@ -3882,10 +3882,17 @@ fn phase_sharer(log: PathBuf, into: Phases, stopped: Arc<std::sync::atomic::Atom
 /// Keeps `rec` in the coordinator's timings log (written outside its lock), and beside its job's
 /// spans.
 fn keep_timings(shared: &Mutex<Shared>, rec: &jobrt::timings::RunRec) {
-    let (dir, spans) = {
+    let (dir, spans, live) = {
         let s = shared.lock().unwrap();
-        (s.dir.clone(), s.jobspans.clone())
+        (s.dir.clone(), s.jobspans.clone(), s.live.clone())
     };
+    // (The NAS as the pool saw it over the run, from this lead's live store, beside what its Mac
+    // supplied: task #1418.)
+    let mut rec = rec.clone();
+    if let (Some(l), Some(u)) = (&live, rec.supply.as_mut()) {
+        l.pool_supply(u, rec.start, rec.start + rec.wall_s.ceil() as u64, unix_now());
+    }
+    let rec = &rec;
     if let Err(e) = jobrt::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
     }

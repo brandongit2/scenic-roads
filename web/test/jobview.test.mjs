@@ -65,8 +65,8 @@ test("a record's figures, and its step's medians without it", () => {
 });
 
 test("what its Mac supplied: each part it says, none without", () => {
-  const s = { secs: 600, p: 8, e: 2, free_p: 6.25, free_e: 1.5, kept: 2, build: 4, mem_gb: 15.5, mem_least_gb: 11, floor_gb: 6, nas_ms: 8, nas_ms_most: 31, nas_read_mbs: 52.5 };
-  assert.equal(supplyText(s), "6.3 of 8 performance and 1.5 of 2 efficiency cores free, 2.0 kept for the owner, the build on 4.0; 15.5 GB available (11.0 least) over a 6.0 GB floor; the NAS answering in 8.0 ms (31.0 most); the jobs' NAS 52.5 MB/s read (over 600 s)");
+  const s = { secs: 600, p: 8, e: 2, free_p: 6.25, free_e: 1.5, kept: 2, build: 4, mem_gb: 15.5, mem_least_gb: 11, floor_gb: 6, nas_ms: 8, nas_ms_most: 31, nas_read_mbs: 52.5, pool_read_mbs: 140, nas_busy_pct: 61.4 };
+  assert.equal(supplyText(s), "6.3 of 8 performance and 1.5 of 2 efficiency cores free, 2.0 kept for the owner, the build on 4.0; 15.5 GB available (11.0 least) over a 6.0 GB floor; the NAS answering in 8.0 ms (31.0 most); the jobs' NAS 52.5 MB/s read; the pool's 140.0 MB/s read, its busiest disk 61% busy (over 600 s)");
   // (No efficiency cores, nothing kept, no NAS sampled.)
   assert.equal(supplyText({ secs: 5, p: 10, e: 0, free_p: 9, free_e: 0, build: 1 }), "9.0 of 10 performance cores free, the build on 1.0 (over 5 s)");
   assert.equal(supplyText({ secs: 5, p: 8, e: 2 }), null);

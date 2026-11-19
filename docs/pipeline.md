@@ -404,7 +404,8 @@ The Jobs tab's stages are the one exception.
   threads granted, cores busy (CPU over wall) and peak memory (its timings' record, once it ends),
   what its Mac gave it (the record's `supply`, task #1418: the cores of each kind free of load
   outside the build, those kept for the owner and the build's, the memory available and its least
-  over the floor, the NAS's answer time and the jobs' NAS throughput; `jobview.js` `supplyText`),
+  over the floor, the NAS's answer time, the jobs' NAS throughput and the pool's with the NAS's
+  busiest disk; `jobview.js` `supplyText`),
   its NAS weight ("not recorded": the lead weighs a running job's NAS share from its beats and keeps
   no grant's weight); its start, how long it took, its outcome and why (its error, its agent's exit,
   the history's notes, a pause, spans cut); its figures (wall, CPU, cores busy, peak memory,
@@ -438,8 +439,8 @@ The Jobs tab's stages are the one exception.
   job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
   its memory against its floor; its speed (task #1418: the lead's `speeds`, docs/pool.md §10, Each
   Mac's speed; `words.js` `speedWords`, tested by web/test/words.test.mjs): the instructions a
-  second of a performance core's CPU and of an efficiency core's, over how many steps (every Mac's
-  or its own) and clean runs, the steps on hover; none until the lead has measured it;
+  second of a performance core's CPU and of an efficiency core's, over how many steps (fitted with
+  the other Macs', or its own where it shares none) and clean runs, the steps on hover; none until the lead has measured it;
   then **Live** (`live.js`): the Mac's own `/api/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs): each core's

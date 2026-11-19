@@ -387,7 +387,7 @@ pub struct RunRec {
 /// `nas`): its agent's live readings (agentcore's agent::live, sampled every second whatever ran)
 /// over the run's time, each the mean of its samples there unless said. Each `None`: not sampled
 /// over the run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Supply {
     /// The seconds of the run the readings cover (the cores' samples).
     pub secs: u64,
@@ -395,12 +395,15 @@ pub struct Supply {
     pub p: u32,
     pub e: u32,
     /// The cores of each kind not busy outside the build (the Mac's busy less the build's jobs'
-    /// own CPU there): what the pool had, the owner's and every other program's load taken out.
+    /// own CPU there): the owner's and every other program's load taken out, as it was. The share
+    /// the owner's use keeps from the build (`kept`) is not taken out again: their load is in the
+    /// busy cores already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_e: Option<f64>,
-    /// The cores kept for the owner while they use the Mac (the Mac's less those the build may use).
+    /// The cores kept for the owner while they use the Mac (the Mac's less those the build may
+    /// use: its cap, apart from the load the owner made).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<f64>,
     /// The cores the build's jobs on the Mac kept busy (this one's among them).
@@ -425,6 +428,15 @@ pub struct Supply {
     pub nas_read_mbs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas_write_mbs: Option<f64>,
+    /// The NAS as the pool saw it, stamped by the lead as it keeps the record (its live store's
+    /// pool series over the run, every 10 s): every member's jobs' reads served and writes summed
+    /// (MB/s), and its busiest disk's busy share (%, SNMP). None: kept by no lead with them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_read_mbs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_write_mbs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_busy_pct: Option<f64>,
 }
 
 /// What a job's processes retired (macOS's counts, crate::sys::Rusage): its own process's exactly,
@@ -2431,12 +2443,16 @@ pub const SPEED_RUNS: usize = 20;
 /// Each Mac's speed (task #1418): the instructions its cores retire a second of their CPU, the
 /// performance cores' and the efficiency cores' apart, so a job's need (its `work`) converts to
 /// time on any Mac. Measured from the records alone: each Mac's clean runs (`learnable`, their
-/// `work` counted over `CHECK_S` of CPU or more), the newest `SPEED_RUNS` at each step; a step's
-/// speed on a Mac its runs' instructions over their CPU of that kind (`CHECK_S` of it at least),
-/// and a Mac's the geometric mean over the steps every Mac measured at that kind ran (`shared`:
-/// the same steps' work on each, so a Mac running the heavier code isn't the slower for it); with
-/// no step that every Mac ran, or one Mac alone, each Mac's over its own steps (`shared` false).
-/// The lead's, in its status as `speeds`, shown on the build page's Machines tab.
+/// `work` counted over `CHECK_S` of CPU or more, its performance cores' CPU said: a record without
+/// macOS's split, `RUSAGE_INFO_V4`'s, says none, and is left out), the newest `SPEED_RUNS` at each
+/// step; a step's speed on a Mac is its runs' instructions on a kind of core over their CPU there
+/// (`CHECK_S` of it at least, the runs with CPU there counted). The speeds of each kind are fitted
+/// as `ln speed = Mac + step` over every (Mac, step) measured (least squares), so any step two Macs
+/// both ran ties them, and a Mac running the heavier code isn't the slower for it: a Mac's speed is
+/// its fitted speed at the mean of the steps it's tied to (those of its Macs and steps linked
+/// through shared steps; `linked`: another Mac among them), the geometric mean of its own steps'
+/// where it shares none. A Mac gone from the pool, or one running steps nobody else runs, ties no
+/// other. The lead's, in its status as `speeds`, shown on the build page's Machines tab.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Speeds {
     /// By Mac.
@@ -2453,64 +2469,124 @@ pub struct MacSpeed {
 }
 
 /// A Mac's speed on a kind of core (`Speeds`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KindSpeed {
     /// Billions of instructions a second of a core's CPU.
     pub ginsn_s: f64,
-    /// The steps it's over, and their runs.
+    /// The steps it measured, and their runs.
     pub steps: Vec<String>,
     pub runs: usize,
-    /// Over the steps every Mac measured ran (`Speeds`).
-    pub shared: bool,
+    /// Tied to another Mac through a step both ran (`Speeds`).
+    pub linked: bool,
 }
+
+/// How long the fit (`speeds`) goes on: till no figure moves by this (a log), or `FIT_ROUNDS`.
+const FIT_EPS: f64 = 1e-12;
+const FIT_ROUNDS: usize = 1000;
 
 /// `Speeds` of the clean runs `runs`: each its Mac, step, start (unix s) and work.
 pub fn speeds<'a>(runs: impl IntoIterator<Item = (&'a str, &'a str, u64, &'a Work)>) -> Speeds {
     use det::Det;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     let mut by: BTreeMap<(&str, &str), Vec<(u64, &Work)>> = BTreeMap::new();
-    for (mac, step, t, w) in runs {
+    // (No performance cores' CPU said: no split to read, V4's; or none on them, too rare to tell apart.)
+    for (mac, step, t, w) in runs.into_iter().filter(|r| r.3.p_cpu_s > 0.0) {
         by.entry((mac, step)).or_default().push((t, w));
     }
-    // (Each kind's speed by Mac and step: its instructions over its CPU, and the runs.)
-    let mut rates: [BTreeMap<&str, BTreeMap<&str, (f64, usize)>>; 2] = Default::default();
+    // (Each kind's cells: Mac, step, ln speed, runs.)
+    let mut cells: [Vec<(&str, &str, f64, usize)>; 2] = Default::default();
     for ((mac, step), mut rs) in by {
         rs.sort_by_key(|r| r.0);
         rs.drain(..rs.len().saturating_sub(SPEED_RUNS));
-        let sum = |f: &dyn Fn(&Work) -> (f64, f64)| {
-            rs.iter().map(|(_, w)| f(w)).fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
-        };
-        let p = sum(&|w| (w.p_insn as f64, w.p_cpu_s));
-        let e = sum(&|w| (w.insn.saturating_sub(w.p_insn) as f64, (w.cpu_s - w.p_cpu_s).max(0.0)));
-        for (k, (insn, cpu)) in [p, e].into_iter().enumerate() {
+        let kinds = [
+            |w: &Work| (w.p_insn as f64, w.p_cpu_s),
+            |w: &Work| (w.insn.saturating_sub(w.p_insn) as f64, (w.cpu_s - w.p_cpu_s).max(0.0)),
+        ];
+        for (k, of) in kinds.iter().enumerate() {
+            let on: Vec<(f64, f64)> = rs.iter().map(|(_, w)| of(w)).filter(|x| x.1 > 0.0).collect();
+            let (insn, cpu) = on.iter().fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
             if cpu >= CHECK_S && insn > 0.0 {
-                rates[k].entry(mac).or_default().insert(step, (insn / cpu, rs.len()));
+                cells[k].push((mac, step, (insn / cpu).dln(), on.len()));
             }
         }
     }
     let mut out = Speeds::default();
-    for (k, of) in rates.iter().enumerate() {
-        let mut every: Option<BTreeSet<&str>> = None;
-        for steps in of.values() {
-            let s: BTreeSet<&str> = steps.keys().copied().collect();
-            every = Some(every.map_or(s.clone(), |e| e.intersection(&s).copied().collect()));
-        }
-        let shared = every.filter(|e| of.len() > 1 && !e.is_empty());
-        for (mac, steps) in of {
-            let on: Vec<(&str, (f64, usize))> = steps
-                .iter()
-                .filter(|(s, _)| shared.as_ref().is_none_or(|e| e.contains(*s)))
-                .map(|(s, r)| (*s, *r))
-                .collect();
-            let ln = on.iter().map(|(_, (r, _))| r.dln()).sum::<f64>() / on.len() as f64;
-            let speed = KindSpeed {
-                ginsn_s: (ln.dexp() / 1e9 * 1000.0).round() / 1000.0,
-                steps: on.iter().map(|(s, _)| s.to_string()).collect(),
-                runs: on.iter().map(|(_, (_, n))| n).sum(),
-                shared: shared.is_some(),
-            };
+    for (k, cells) in cells.iter().enumerate() {
+        for (mac, speed) in fit(cells) {
             let m = out.macs.entry(mac.to_string()).or_default();
             *(if k == 0 { &mut m.p } else { &mut m.e }) = Some(speed);
+        }
+    }
+    out
+}
+
+/// `ln speed = Mac + step` fitted over `cells` (Mac, step, ln speed, runs) by least squares, each
+/// set of Macs and steps tied by shared steps on its own (alternating means, which converge to
+/// it): each Mac's speed at the mean of its set's steps (`Speeds`).
+fn fit<'a>(cells: &[(&'a str, &'a str, f64, usize)]) -> Vec<(&'a str, KindSpeed)> {
+    use det::Det;
+    use std::collections::{BTreeMap, BTreeSet};
+    // (The sets: Macs tied by the steps they share, a step's Macs one set.)
+    let mut set: BTreeMap<&str, usize> = BTreeMap::new();
+    let macs: BTreeSet<&str> = cells.iter().map(|c| c.0).collect();
+    for (i, m) in macs.iter().enumerate() {
+        set.insert(m, i);
+    }
+    loop {
+        let mut moved = false;
+        let mut of_step: BTreeMap<&str, usize> = BTreeMap::new();
+        for c in cells {
+            let s = of_step.entry(c.1).or_insert(set[c.0]);
+            *s = (*s).min(set[c.0]);
+        }
+        for c in cells {
+            let low = of_step[c.1];
+            if set[c.0] > low {
+                // (Its whole set joins the lower.)
+                let was = set[c.0];
+                set.values_mut().filter(|v| **v == was).for_each(|v| *v = low);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let mut out = Vec::new();
+    for id in set.values().copied().collect::<BTreeSet<usize>>() {
+        let these: Vec<&(&str, &str, f64, usize)> = cells.iter().filter(|c| set[c.0] == id).collect();
+        let mut m: BTreeMap<&str, f64> = these.iter().map(|c| (c.0, 0.0)).collect();
+        let mut s: BTreeMap<&str, f64> = these.iter().map(|c| (c.1, 0.0)).collect();
+        for _ in 0..FIT_ROUNDS {
+            let mut most = 0.0f64;
+            for (name, x) in s.iter_mut() {
+                let ys: Vec<f64> = these.iter().filter(|c| c.1 == *name).map(|c| c.2 - m[c.0]).collect();
+                let new = ys.iter().sum::<f64>() / ys.len() as f64;
+                most = most.max((new - *x).abs());
+                *x = new;
+            }
+            for (name, x) in m.iter_mut() {
+                let ys: Vec<f64> = these.iter().filter(|c| c.0 == *name).map(|c| c.2 - s[c.1]).collect();
+                let new = ys.iter().sum::<f64>() / ys.len() as f64;
+                most = most.max((new - *x).abs());
+                *x = new;
+            }
+            if most < FIT_EPS {
+                break;
+            }
+        }
+        let mean_step = s.values().sum::<f64>() / s.len() as f64;
+        for (mac, at) in &m {
+            let own: Vec<&&(&str, &str, f64, usize)> = these.iter().filter(|c| c.0 == *mac).collect();
+            out.push((
+                *mac,
+                KindSpeed {
+                    ginsn_s: ((at + mean_step).dexp() / 1e9 * 1000.0).round() / 1000.0,
+                    steps: own.iter().map(|c| c.1.to_string()).collect(),
+                    runs: own.iter().map(|c| c.3).sum(),
+                    linked: m.len() > 1,
+                },
+            ));
         }
     }
     out
@@ -3134,11 +3210,14 @@ mod tests {
     }
 
     /// Task #1418: each Mac's speed, measured from its clean runs' work alone: a step's
-    /// instructions over its CPU on each kind of core (its newest `SPEED_RUNS`), a Mac's the
-    /// geometric mean over the steps every Mac ran, so a Mac running only the heavier step isn't
-    /// counted the slower; with none every Mac ran, each over its own steps, said so.
+    /// instructions over its CPU on each kind of core (its newest `SPEED_RUNS`, those with CPU
+    /// there), fitted as `ln speed = Mac + step`, so a step two Macs ran ties them whatever else
+    /// each ran: a Mac running the heavier step isn't counted the slower, and a Mac gone from the
+    /// pool (or running steps nobody else does) neither ties nor unties the others. A record
+    /// without the performance cores' split is left out.
     #[test]
-    fn each_macs_speed_is_its_instructions_over_its_cpu_on_the_same_steps() {
+    fn each_macs_speed_is_fitted_over_the_steps_macs_share() {
+        use det::Det;
         // (A run's work: G instructions on each kind of core over its seconds there.)
         let w = |p_g: f64, p_s: f64, e_g: f64, e_s: f64| Work {
             insn: ((p_g + e_g) * 1e9) as u64,
@@ -3148,27 +3227,42 @@ mod tests {
             ..Default::default()
         };
         let (a1, a2, b1) = (w(80.0, 10.0, 6.0, 2.0), w(160.0, 20.0, 0.0, 0.0), w(40.0, 10.0, 0.0, 0.0));
-        let (c1, tiny) = (w(90.0, 10.0, 0.0, 0.0), w(5.0, 0.5, 0.0, 0.0));
-        let s = speeds([
+        let (c1, tiny, z1) = (w(90.0, 10.0, 0.0, 0.0), w(5.0, 0.5, 0.0, 0.0), w(50.0, 10.0, 0.0, 0.0));
+        // (A V4 record: no split, its instructions all read as the efficiency cores'.)
+        let v4 = w(0.0, 0.0, 900.0, 10.0);
+        let runs = vec![
             ("m1", "a", 1, &a1),
             ("m1", "a", 2, &a2),
             ("m1", "b", 3, &b1),
+            ("m1", "v4", 3, &v4),
             ("m4", "a", 4, &c1),
             ("m4", "c", 5, &a1),
             ("m4", "b", 6, &tiny),
-        ]);
-        // (m1 at a: 240 G over 30 s; m4 at a: 9 a second; b measured on m1 alone, m4's run there
-        // under a second of CPU: a alone is every Mac's.)
+        ];
+        let s = speeds(runs.clone());
+        // (m1 at a 8 a second (240 G over 30 s), at b 4; m4 at a 9, at c 8; m4's run at b under a
+        // second of CPU. Fitted: m4 9/8 of m1 at every step, each at the mean of a, b and c.)
         let (m1, m4) = (s.macs["m1"].p.clone().unwrap(), s.macs["m4"].p.clone().unwrap());
-        assert_eq!((m1.ginsn_s, m1.runs, m1.steps.clone(), m1.shared), (8.0, 2, vec!["a".to_string()], true));
-        assert_eq!((m4.ginsn_s, m4.runs, m4.steps.clone()), (9.0, 1, vec!["a".to_string()]));
-        // (The efficiency cores: m1's at a, m4's at c; no step both ran: each over its own.)
+        let want = ((2048.0f64 / 9.0).dln() / 3.0).dexp();
+        assert!((m1.ginsn_s - want).abs() < 1e-3 && (m4.ginsn_s - want * 9.0 / 8.0).abs() < 1e-3, "{m1:?} {m4:?}");
+        assert_eq!((m1.runs, m1.steps.clone(), m1.linked), (3, vec!["a".to_string(), "b".to_string()], true));
+        assert_eq!((m4.runs, m4.steps.clone(), m4.linked), (2, vec!["a".to_string(), "c".to_string()], true));
+        // (The efficiency cores: m1's at a (one run with CPU there), m4's at c; no step both ran:
+        // each its own; the V4 record's none.)
         let e = s.macs["m1"].e.clone().unwrap();
-        assert_eq!((e.ginsn_s, e.steps, e.shared), (3.0, vec!["a".to_string()], false));
-        assert_eq!(s.macs["m4"].e.as_ref().map(|e| (e.steps.clone(), e.shared)), Some((vec!["c".to_string()], false)));
+        assert_eq!((e.ginsn_s, e.steps, e.runs, e.linked), (3.0, vec!["a".to_string()], 1, false));
+        let e4 = s.macs["m4"].e.as_ref().map(|e| (e.steps.clone(), e.linked));
+        assert_eq!(e4, Some((vec!["c".to_string()], false)));
+        // (A departed Mac that ran another step alone: its own speed, the others' as they were.)
+        let mut more = runs.clone();
+        more.push(("m0", "z", 7, &z1));
+        let d = speeds(more);
+        assert_eq!(d.macs["m1"].p, Some(m1.clone()));
+        let m0 = d.macs["m0"].p.clone().unwrap();
+        assert_eq!((m0.ginsn_s, m0.linked), (5.0, false));
         // (One Mac: its own steps, the geometric mean of theirs: 8 and 4.)
         let one = speeds([("m1", "a", 1, &a1), ("m1", "b", 2, &b1)]).macs["m1"].p.clone().unwrap();
-        assert_eq!((one.ginsn_s, one.steps.len(), one.shared), (5.657, 2, false));
+        assert_eq!((one.ginsn_s, one.steps.len(), one.linked), (5.657, 2, false));
         // (Its newest runs alone.)
         let old = w(10.0, 10.0, 0.0, 0.0);
         let mut runs = vec![("m1", "a", 0, &old)];

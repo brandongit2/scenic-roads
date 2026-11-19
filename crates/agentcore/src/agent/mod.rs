@@ -3547,7 +3547,7 @@ impl Agent {
         rec.stamp(end, finished, of, &self.nas_counts_path(k), jobrt::sys::top_clock_now());
         let (cores, e) = (mac_cores(), jobrt::sys::efficiency_cores());
         let end_at = rec.start + rec.wall_s.ceil() as u64;
-        rec.supply = self.live.as_ref().and_then(|l| l.supply(rec.start, end_at, cores.saturating_sub(e), e));
+        rec.supply = self.live.as_ref().and_then(|l| l.supply(rec.start, end_at, now_s(), cores.saturating_sub(e), e));
         if let Some(p) = &handed {
             // (Its hand-off reads it from the folder: this Mac's disk, one write.)
             if let Err(e) = serde_json::to_vec(&rec).map_err(std::io::Error::other).and_then(|b| std::fs::write(p, b)) {

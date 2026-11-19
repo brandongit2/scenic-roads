@@ -470,15 +470,17 @@ impl Store {
         (!p.is_empty()).then(|| p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64)
     }
 
-    /// What this Mac supplied from `from` to `to` (unix s, `to` excluded: a run's time; task #1418,
-    /// jobrt::timings::Supply), of its `p` performance and `e` efficiency cores: each series'
-    /// samples then, from the finest ring holding that span (`tier_for`: a run's record is
-    /// stamped as it ends, so its span ends about now). None: no cores sampled then.
-    pub fn supply(&self, from: u64, to: u64, p: u32, e: u32) -> Option<jobrt::timings::Supply> {
-        let k = tier_for(to.saturating_sub(from));
+    /// Each series' samples from `from` to `to` (unix s, `to` excluded) at `now`: how many, their
+    /// sum, their least and most, by series name; None where none. Read from the finest ring still
+    /// holding `from` at `now` (`tier_for` of `now - from`: a record taken late reads a coarser
+    /// ring, not one whose buckets for its time were since used again). A bucket is taken whole
+    /// when its own start is within the span: one starting before `from` is left out, one starting
+    /// before `to` counted with all its samples, up to a step past `to` (a run timed on the 10 s
+    /// ring: its edges within 10 s).
+    fn span(&self, from: u64, to: u64, now: u64) -> Option<impl Fn(&str) -> Option<(u64, f64, f64, f64)> + '_> {
+        let k = tier_for(now.saturating_sub(from));
         let s = self.series.lock().ok()?;
-        // (A series' samples then: how many, their sum, their least and most.)
-        let of = |name: &str| -> Option<(u64, f64, f64, f64)> {
+        Some(move |name: &str| {
             let b = s.get(name)?.buckets(k, from, to.max(from + 1));
             let n: u64 = b.iter().map(|x| u64::from(x.n)).sum();
             (n > 0).then(|| {
@@ -486,7 +488,26 @@ impl Store {
                 let hi = b.iter().map(|x| f64::from(x.hi)).fold(f64::NEG_INFINITY, f64::max);
                 (n, b.iter().map(|x| x.sum).sum(), lo, hi)
             })
-        };
+        })
+    }
+
+    /// The NAS as the pool saw it from `from` to `to` (unix s) at `now`, put in `supply` (task
+    /// #1418; the lead's, as it keeps a run's record): its pool series' means (`record_pool`: the
+    /// members' NAS reads served and writes, MB/s) and its busiest disk's busy share
+    /// (`record_disks`). Each left as it was where none was sampled.
+    pub fn pool_supply(&self, supply: &mut jobrt::timings::Supply, from: u64, to: u64, now: u64) {
+        let Some(of) = self.span(from, to, now) else { return };
+        let mean = |name: &str| of(name).map(|(n, sum, ..)| round(sum / n as f64));
+        supply.pool_read_mbs = mean(&format!("{POOL}{}", NAS_TRAFFIC[0])).or(supply.pool_read_mbs);
+        supply.pool_write_mbs = mean(&format!("{POOL}{}", NAS_TRAFFIC[2])).or(supply.pool_write_mbs);
+        supply.nas_busy_pct = mean(NAS_DISK_BUSY).or(supply.nas_busy_pct);
+    }
+
+    /// What this Mac supplied from `from` to `to` (unix s, `to` excluded: a run's time; task #1418,
+    /// jobrt::timings::Supply) as read at `now`, of its `p` performance and `e` efficiency cores:
+    /// each series' samples then (`span`). None: no cores sampled then.
+    pub fn supply(&self, from: u64, to: u64, now: u64, p: u32, e: u32) -> Option<jobrt::timings::Supply> {
+        let of = self.span(from, to, now)?;
         let mean = |name: &str| of(name).map(|(n, sum, ..)| sum / n as f64);
         let left = |of: u32, busy: Option<f64>| busy.map(|b| round((f64::from(of) - b).max(0.0)));
         Some(jobrt::timings::Supply {
@@ -504,6 +525,9 @@ impl Store {
             nas_ms_most: of(NAS_MS).map(|x| round(x.3)),
             nas_read_mbs: mean(NAS_TRAFFIC[0]).map(round),
             nas_write_mbs: mean(NAS_TRAFFIC[2]).map(round),
+            pool_read_mbs: None,
+            pool_write_mbs: None,
+            nas_busy_pct: None,
         })
     }
 
@@ -891,7 +915,7 @@ impl Rates {
             // (By kind: the build's on the performance cores, all of it on a Mac of no others.)
             let on_p =
                 if jobrt::sys::efficiency_cores() == 0 { Some(c) } else { b.cores_p.filter(|_| jobrt::sys::p_split()) };
-            if let Some(cp) = on_p {
+            if let Some(cp) = on_p.map(|cp| cp.min(c)) {
                 put(OTHERS_CORES_P, Some((p - cp).max(0.0)));
                 put(OTHERS_CORES_E, Some((e - (c - cp)).max(0.0)));
             }
@@ -1304,26 +1328,48 @@ mod tests {
         // (Outside the run: not counted.)
         s.record(OTHERS_CORES_P, t + 10, 8.0);
         s.record(NAS_MS, t + 20, 900.0);
-        let u = s.supply(t, t + 10, 8, 4).unwrap();
+        let n = now_s();
+        let mut u = s.supply(t, t + 10, n, 8, 4).unwrap();
         assert_eq!((u.secs, u.p, u.e), (10, 8, 4));
         assert_eq!((u.free_p, u.free_e, u.kept, u.build), (Some(6.0), Some(3.5), Some(3.0), Some(4.0)));
         assert_eq!((u.mem_gb, u.mem_least_gb, u.floor_gb), (Some(15.5), Some(11.0), Some(6.0)));
         assert_eq!((u.nas_ms, u.nas_ms_most), (Some(8.0), Some(12.0)));
         assert_eq!((u.nas_read_mbs, u.nas_write_mbs), (Some(50.0), None), "no writes sampled: none said");
+        assert_eq!((u.pool_read_mbs, u.pool_write_mbs, u.nas_busy_pct), (None, None, None), "the lead's to stamp");
+        // (The lead's: the pool's NAS traffic and the busiest disk over the run, every 10 s.)
+        let mut tr = [0.0; 7];
+        (tr[0], tr[2]) = (120.0, 30.0);
+        s.record_pool(t, &tr);
+        (tr[0], tr[2]) = (80.0, 10.0);
+        s.record_pool(t + 9, &tr);
+        s.record_disks(t, &[40.0, 70.0]);
+        s.pool_supply(&mut u, t, t + 10, n);
+        assert_eq!((u.pool_read_mbs, u.pool_write_mbs, u.nas_busy_pct), (Some(100.0), Some(20.0), Some(70.0)));
         // (Said in the record, and read back.)
         let rec = jobrt::timings::RunRec { supply: Some(u), ..Default::default() };
         let back: jobrt::timings::RunRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(back.supply, Some(u));
-        assert_eq!(s.supply(t + 30, t + 40, 8, 4), None, "no cores sampled then");
+        assert_eq!(s.supply(t + 30, t + 40, n, 8, 4), None, "no cores sampled then");
         // (Two hours: the 10 s ring's.)
-        let (l, long) = (Store::new(None, "m4"), now_s() - 7200);
+        let (l, long) = (Store::new(None, "m4"), n - 7200);
         for i in (0..7200).step_by(60) {
             l.record(CORES, long + i, 1.0);
             l.record(OTHERS_CORES_P, long + i, 2.0);
         }
-        let u = l.supply(long, long + 7200, 8, 4).unwrap();
+        let u = l.supply(long, long + 7200, n, 8, 4).unwrap();
         assert_eq!((tier_for(7200), u.free_p, u.free_e), (1, Some(6.0), None));
         assert!((119..=120).contains(&u.secs), "{}", u.secs);
+        // (A short run taken late, past the second ring's hour: the 10 s ring's, its buckets for
+        // the run's time not yet used again; the second ring's were, by the samples an hour on.)
+        let (o, old) = (Store::new(None, "m4"), (n - 4000) / 10 * 10);
+        for i in 0..10 {
+            o.record(CORES, old + i, 1.0);
+            o.record(OTHERS_CORES_P, old + i, 2.0);
+            o.record(CORES, old + 3600 + i, 1.0);
+            o.record(OTHERS_CORES_P, old + 3600 + i, 7.0);
+        }
+        let u = o.supply(old, old + 10, n, 8, 4).unwrap();
+        assert_eq!((u.secs, u.free_p), (10, Some(6.0)));
     }
 
     /// Task #517: the NAS's disks (the busiest and each) and the pool's traffic as series; the

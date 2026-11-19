@@ -2787,14 +2787,18 @@ asks passed on are one-shot: the lead's store keeps them (below).
   performance cores' and the efficiency cores' apart, so a job's need (its record's `work`)
   converts to time on any Mac. Measured from the build's records alone, never set by hand: the
   same thread keeps each worker's clean runs' work (`timings::learnable`, their `work` counted over
-  a second of CPU or more), the newest 20 at each step (`timings::SPEED_RUNS`); a step's speed on a
-  Mac is its runs' instructions on a kind of core over their CPU there (a second of it at least),
-  and a Mac's the geometric mean of its steps' over the steps every Mac measured at that kind ran,
-  so each Mac's figure is of the same work (with none such, or one Mac alone, each over its own
-  steps, said so). The lead's status carries them as `speeds` (`timings::Speeds`): `{"macs":
-  {"<Mac>": {"p": {"ginsn_s", "steps": [step, …], "runs", "shared"}, "e": {…}}}}`, a worker's runs
-  its Mac's (`paces::mac_of`); the Machines tab says each Mac's on its card. A member's status
-  carries none.
+  a second of CPU or more and its performance cores' CPU said: a record without macOS's split is
+  left out), the newest 20 at each step (`timings::SPEED_RUNS`); a step's speed on a Mac is its
+  runs' instructions on a kind of core over their CPU there (a second of it at least, the runs
+  with CPU there counted). Each kind's speeds are fitted as `ln speed = Mac + step` over every
+  (Mac, step) measured, by least squares, so any step two Macs both ran ties them and a Mac
+  running the heavier code isn't the slower for it; a Mac's speed is its fitted speed at the mean
+  of the steps tied to it (its set: the Macs and steps linked through shared steps; `linked`:
+  another Mac in it). A Mac gone from the pool, or running steps nobody else runs, is a set of
+  its own (the geometric mean of its steps') and moves no other Mac's. The lead's status carries
+  them as `speeds` (`timings::Speeds`): `{"macs": {"<Mac>": {"p": {"ginsn_s", "steps": [step,
+  …], "runs", "linked"}, "e": {…}}}}`, a worker's runs its Mac's (`paces::mac_of`); the Machines
+  tab says each Mac's on its card. A member's status carries none.
 - **Time by phase** (task #844): each step's runs summed by when they ended, so the build page's
   step rows break a step's time down over the range its footer picks ("Charts show the last": 1 min
   to 7 days). The same thread reads every run of the log (failed ones too) and, every minute, sums

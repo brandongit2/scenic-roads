@@ -941,9 +941,9 @@ function machineCard(m, x) {
   // said on the live block's pressure row.)
   if (st.memory?.said) card.append(h("div", { class: `sub ${st.memory.brake ? "bad" : st.memory.held_back ? "warn" : ""}`, title: "The memory floor: the memory this Mac keeps available (scenic memory, the Settings tab)" }, st.memory.said));
   // (Its speed, the lead's measure from the build's timings (task #1418): the instructions its
-  // cores retire a second of CPU, on its clean runs of the steps every Mac ran.)
+  // cores retire a second of CPU, fitted with the other Macs' over the steps they share.)
   const sp = m.a.speeds?.macs?.[x.name], speed = speedWords(sp);
-  if (speed) card.append(h("div", { class: "sub dim", title: `Its speed, measured from its clean runs' instructions over their CPU (its newest at each step), the geometric mean over its steps: ${(sp.p || sp.e).steps.join(", ")}` }, `Speed: ${speed}`));
+  if (speed) card.append(h("div", { class: "sub dim", title: `Its speed, measured from its clean runs' instructions over their CPU (its newest at each step), fitted as Mac and step together over every Mac's, at the mean of the steps tied to it; its steps: ${(sp.p || sp.e).steps.join(", ")}` }, `Speed: ${speed}`));
   card.append(...[x.role === "member" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }

@@ -933,7 +933,7 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
 done: {end, targets, of, resumed, made}
-supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb, nas_ms, nas_ms_most, nas_read_mbs, nas_write_mbs}
+supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb, nas_ms, nas_ms_most, nas_read_mbs, nas_write_mbs, pool_read_mbs, pool_write_mbs, nas_busy_pct}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
@@ -1067,24 +1067,34 @@ before, and on a Mac keeping no live readings):
 
 - `supply` (jobrt::timings::Supply; its agent's as it takes the record, agentcore's
   agent::live::Store::supply): its Mac's live readings (docs/pool.md §10, Live: sampled every
-  second whatever runs) over the run's time, from the finest of their rings that holds it (a run
-  over an hour: a point every 10 s, the samples within), each the mean of its samples there unless
-  said; a figure not sampled then is left out. `secs`: the seconds the cores' samples cover. `p`,
+  second whatever runs) over the run's time, each the mean of its samples there unless said; a
+  figure not sampled then is left out. Read from the finest ring still holding the run's start
+  when the record is taken (a record taken over an hour after its run began: the 10 s ring's), a
+  bucket of it taken whole when its own start is within the run (one starting before the run left
+  out, one starting before its end counted with all its samples: the run's edges within a
+  bucket's step). `secs`: the seconds the cores' samples cover. `p`,
   `e`: the Mac's performance and efficiency cores (logical; "P" every level but the slowest, as
   jobrt::sys::efficiency_cores counts them). `free_p`, `free_e`: the cores of each kind not busy
   outside the build (`others_cores_p`, `others_cores_e`: each kind's busy less the build's jobs'
-  CPU there), the owner's load and every other program's taken out. `kept`: the cores kept for
-  the owner while they use the Mac (the Mac's less `build_cores_max`). `build`: the cores the
+  CPU there), the owner's load and every other program's taken out as it was. They don't take
+  out `kept` again: the owner's own use is in the busy cores already; `kept` is the build's cap
+  apart from it, the cores kept for the owner while they use the Mac (the Mac's less
+  `build_cores_max`). `build`: the cores the
   build's jobs on the Mac kept busy, this one's among them. `mem_gb`, `mem_least_gb`: the memory
   available (`mem_avail_gb`, the memory guard's reading: jobrt::sys::memory_available, the jobs'
   own memory not counted as compressible), its mean and least; `floor_gb`: the memory floor.
   `nas_ms`, `nas_ms_most`: the NAS's answer time as this Mac measured it (a listing of the
   project's folder every 5 s while a build runs), its mean and most. `nas_read_mbs`,
   `nas_write_mbs`: the bytes the NAS served the Mac's jobs and those they wrote there, together
-  (MB/s, store::nasio's counts): the throughput they had of it.
+  (MB/s, store::nasio's counts): the throughput they had of it. The NAS as the pool saw it,
+  stamped by the lead as it keeps the record (coord's `keep_timings`, its live store's
+  `Store::pool_supply`; absent where the record has no `supply` or the lead's store has no such
+  samples): `pool_read_mbs`, `pool_write_mbs`, every member's jobs' NAS reads served and writes
+  summed (`pool_nas_read_mbs`, `pool_nas_write_mbs`, every 10 s), and `nas_busy_pct`, the NAS's
+  busiest disk's busy share (`nas_disk_busy_pct`, SNMP, every 10 s), their means over the run.
 
 Each Mac's speed is measured from these records (docs/pool.md §10, Each Mac's speed: `work`'s
-instructions over its CPU on each kind of core, the clean runs of the steps every Mac ran).
+instructions over its CPU on each kind of core, fitted over every Mac's steps).
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,
