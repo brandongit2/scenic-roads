@@ -597,14 +597,15 @@ impl Shape {
     /// place in the rings (`edges_meeting`) as its lesser end then its other (direction doesn't
     /// matter to which points are inside); an edge the rings hold twice stays twice, since under
     /// even–odd the two cancel.
-    pub fn edges_in(&self, rg: [i64; 4]) -> Vec<[i32; 4]> {
-        let mut edges: Vec<[i32; 4]> = Vec::new();
+    ///
+    /// Added to `edges`, unsorted: a caller asking of many boxes keeps one list for them all
+    /// (`with_edges`), never a new one grown for each (task #1335: the first plan's fingerprints of
+    /// the slope tiles asked the allocator for 13 GB of such lists, in every block size).
+    pub fn edges_in(&self, rg: [i64; 4], edges: &mut Vec<[i32; 4]>) {
         self.edges_meeting(rg, &mut |_, a, b| {
             edges.push(if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
             false
         });
-        edges.sort_unstable();
-        edges
     }
 
     /// Calls `f` with each ring edge meeting the box `rg`, with its place (`Rings::edge`), once each
@@ -650,8 +651,16 @@ impl Shape {
 
     /// `fingerprint`, worked out (for a box `grown_meets_box`).
     fn fingerprint_made(&self, r: [i32; 4]) -> Option<String> {
-        let rg = self.grown(r);
-        let edges = self.edges_in(rg);
+        with_edges(|edges| {
+            self.edges_in(self.grown(r), edges);
+            edges.sort_unstable();
+            self.fingerprint_of_edges(r, edges)
+        })
+    }
+
+    /// `fingerprint_made` of the box w, s, e, n (E7) from `edges`, those meeting its grown box,
+    /// sorted.
+    fn fingerprint_of_edges(&self, r: [i32; 4], edges: &[[i32; 4]]) -> Option<String> {
         // A reference point on no edge, so its inside-ness doesn't depend on how the grid's cells
         // fall (on an edge, either answer would be right, and the cell decides).
         let on_edge = |p: [i32; 2]| {
@@ -672,9 +681,34 @@ impl Shape {
         if edges.is_empty() && !inside {
             return None;
         }
-        Some(format!("{}:{}:{}", self.buffer_m, inside as u8, store::naming::hash16(bytemuck::cast_slice(&edges))))
+        Some(format!("{}:{}:{}", self.buffer_m, inside as u8, store::naming::hash16(bytemuck::cast_slice(edges))))
     }
 }
+
+/// `f` given this thread's list for edges (`Shape::edges_in`), empty, and the list kept for the
+/// thread's next call, with room for the most edges a call held, `EDGES_KEPT` at most.
+pub fn with_edges<T>(f: impl FnOnce(&mut Vec<[i32; 4]>) -> T) -> T {
+    thread_local! {
+        static EDGES: std::cell::RefCell<Vec<[i32; 4]>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    // (Taken out, not borrowed while `f` runs: `f` may call it again.)
+    let mut v = EDGES.with(|e| std::mem::take(&mut *e.borrow_mut()));
+    v.clear();
+    let out = f(&mut v);
+    v.clear();
+    v.shrink_to(EDGES_KEPT);
+    EDGES.with(|e| {
+        let mut kept = e.borrow_mut();
+        if v.capacity() > kept.capacity() {
+            *kept = v;
+        }
+    });
+    out
+}
+
+/// The most edges a thread's list keeps room for between calls (`with_edges`): 16 MB. A list
+/// larger is of the allocator's large blocks, which go back to the system when freed.
+const EDGES_KEPT: usize = 1 << 20;
 
 /// Whether segment a–b meets the box w, s, e, n (edges included).
 fn segment_meets_box(a: [i64; 2], b: [i64; 2], r: [i64; 4]) -> bool {

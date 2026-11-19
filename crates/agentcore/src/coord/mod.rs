@@ -485,8 +485,8 @@ pub struct Shared {
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
     /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
     pub beats: Option<std::sync::Arc<beats::Beats>>,
-    /// The page's files its agent hands it on the lead (`/pool/view`, docs/coordination.md step 4):
-    /// the forecast's input and the page's regions, each with when it was handed (unix ms).
+    /// The page's files its agent hands it on the lead (`Coordinator::page`, docs/coordination.md
+    /// step 4): the forecast's input and the page's regions, each with when it was handed (unix ms).
     pub page: PageFiles,
     /// The build page's acceptances of the gate's warnings (`/api/inputs`), for the agent to write
     /// (inputs::inputs::apply_ask).
@@ -3349,20 +3349,24 @@ impl Coordinator {
     pub fn pool_view(&self, ask: &ViewAsk) -> serde_json::Value {
         let dir = self.shared.lock().unwrap().dir.clone();
         let status = status_beside(&dir, ask.status_at);
-        pool_view(&self.shared.lock().unwrap(), ask, status)
+        pool_view(&self.shared.lock().unwrap(), status)
     }
 
-    /// The forecast's input its agent made (crate::agent::forecast::Record's bytes), for
-    /// `/pool/view`; unreadable, said and not kept.
+    /// The forecast's input its agent made (crate::agent::forecast::Record's bytes), for its page
+    /// (`page`); unreadable, said and not kept.
     pub fn set_page_forecast(&self, bytes: &[u8]) {
-        let v = crate::agent::forecast::Record::from_bytes(bytes).and_then(|r| Ok(serde_json::to_value(r)?));
-        match v {
-            Ok(v) => self.shared.lock().unwrap().page.forecast = Some((unix_ms(), Arc::new(v))),
+        match crate::agent::forecast::Record::from_bytes(bytes) {
+            Ok(r) => self.shared.lock().unwrap().page.forecast = Some((unix_ms(), Arc::new(r))),
             Err(e) => eprintln!("coordinator: the forecast's input for the page: {e:#}"),
         }
     }
 
-    /// The page's regions as its agent made them again, for `/pool/view`.
+    /// The forecast's input and the regions its agent handed it for its page, shared.
+    pub fn page(&self) -> PageFiles {
+        self.shared.lock().unwrap().page.clone()
+    }
+
+    /// The page's regions as its agent made them again, for its page (`page`).
     pub fn set_page_regions(&self, v: Arc<serde_json::Value>) {
         self.shared.lock().unwrap().page.regions = Some((unix_ms(), v));
     }
@@ -4209,35 +4213,31 @@ fn making(why: &str) -> (u16, serde_json::Value) {
     (200, serde_json::json!({ "making": why }))
 }
 
-/// What the lead's agent hands its coordinator for `/pool/view` besides its own state: the forecast's
-/// input (crate::agent::forecast::Record, as JSON) and the page's regions
-/// (crate::agent::regionsview), each with when it was handed (unix ms: a member asks for it again
-/// only when that changed).
+/// What the lead's agent hands its coordinator for its page (crate::agent::pageview, in process:
+/// `Coordinator::page`) besides its own state: the forecast's input (crate::agent::forecast::Record)
+/// and the page's regions (crate::agent::regionsview), each with when it was handed (unix ms), held
+/// once and shared, never copied (task #1335: the input as a JSON tree, copied into each view
+/// asked, was 35 MB asked of the allocator a forecast).
 #[derive(Clone, Debug, Default)]
 pub struct PageFiles {
-    pub forecast: Option<(u64, Arc<serde_json::Value>)>,
+    pub forecast: Option<(u64, Arc<crate::agent::forecast::Record<'static>>)>,
     pub regions: Option<(u64, Arc<serde_json::Value>)>,
 }
 
-/// What a `/pool/view` asks: the lead's status, the forecast's input and the regions it has, by when
-/// they were made (each answered again only when that changed).
+/// What a `/pool/view` asks: the lead's status as it has it (answered again only when it changed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewAsk {
     /// The lead's status's file as last answered: its change token (`status_token`).
     #[serde(default)]
     pub status_at: Option<u64>,
-    #[serde(default)]
-    pub forecast_at: Option<u64>,
-    #[serde(default)]
-    pub regions_at: Option<u64>,
 }
 
 /// `/pool/view`'s answer (docs/coordination.md step 4: every Mac's page data from the lead's
 /// memory, no NAS): when, its view (`view_of`, unix times), the pause, the Macs' addresses (the
 /// brokers as its agent read the members' heartbeats; else the beats heard), its app, and its
-/// agent's status (`status`: its local copy, as `/api/swarm` takes it), the forecast's input and
-/// regions with their times, each only when the ask's differs.
-fn pool_view(s: &Shared, ask: &ViewAsk, status: LeadStatus) -> serde_json::Value {
+/// agent's status (`status`: its local copy, as `/api/swarm` takes it) only when the ask's
+/// differs.
+fn pool_view(s: &Shared, status: LeadStatus) -> serde_json::Value {
     let unix = held::wall(s);
     let mac = |host: &str, b: &brokers::Broker| serde_json::json!({ "host": host, "urls": b.urls, "https": b.https });
     let macs: Vec<serde_json::Value> = match (&s.brokers, &s.beats) {
@@ -4254,17 +4254,9 @@ fn pool_view(s: &Shared, ask: &ViewAsk, status: LeadStatus) -> serde_json::Value
         "macs": macs,
         "app": s.app,
         "status_at": status.at,
-        "forecast_at": s.page.forecast.as_ref().map(|f| f.0),
-        "regions_at": s.page.regions.as_ref().map(|r| r.0),
     });
     if let Some(v) = status.v {
         a["status"] = v;
-    }
-    if let Some((_, f)) = s.page.forecast.as_ref().filter(|f| ask.forecast_at != Some(f.0)) {
-        a["forecast_input"] = (**f).clone();
-    }
-    if let Some((_, r)) = s.page.regions.as_ref().filter(|r| ask.regions_at != Some(r.0)) {
-        a["regions"] = (**r).clone();
     }
     a
 }
@@ -4926,7 +4918,7 @@ fn route(
             let ask: ViewAsk = serde_json::from_slice(body).unwrap_or_default();
             let dir = shared.lock().unwrap().dir.clone();
             let status = status_beside(&dir, ask.status_at);
-            Ok((200, pool_view(&shared.lock().unwrap(), &ask, status)))
+            Ok((200, pool_view(&shared.lock().unwrap(), status)))
         }
         p @ (crate::agent::gc::CHUNK
         | crate::agent::gc::GONE

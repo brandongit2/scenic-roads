@@ -202,16 +202,23 @@ fn outline(d: &DrawnRegion) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     // (Points to 1e-5 degrees, as the drawn files hold them, so shared edges match exactly.)
     let key = |p: &[f64; 2]| [(p[0] * 1e5).round() as i64, (p[1] * 1e5).round() as i64];
     let mut fill = Vec::new();
-    let mut segs: Vec<Seg> = Vec::new();
+    // (Room made once, each ring's points in the same two lists: task #1335, a region's rings
+    // at full detail, a list each, were 3 GB asked of the allocator for the view.)
+    let rings = || d.shapes.values().flatten().flatten().filter(|r| r.len() >= 3);
+    let mut segs: Vec<Seg> = Vec::with_capacity(rings().map(|r| r.len()).sum());
+    let most = rings().map(|r| r.len() + 1).max().unwrap_or(0);
+    let (mut r, mut pts): (Vec<[i64; 2]>, Vec<[f64; 2]>) = (Vec::with_capacity(most), Vec::with_capacity(most));
     for poly in d.shapes.values().flatten() {
         // (A polygon's rings: its outer one first, then its holes.)
         for (i, ring) in poly.iter().enumerate().filter(|(_, r)| r.len() >= 3) {
-            let mut r: Vec<[i64; 2]> = ring.iter().map(key).collect();
+            r.clear();
+            r.extend(ring.iter().map(key));
             if r.first() != r.last() {
                 r.push(r[0]);
             }
             segs.extend(r.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])));
-            let mut pts: Vec<[f64; 2]> = ring.iter().map(|&p| merc(p)).collect();
+            pts.clear();
+            pts.extend(ring.iter().map(|&p| merc(p)));
             if (area2(&pts) > 0.0) != (i == 0) {
                 pts.reverse();
             }

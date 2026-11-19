@@ -35,6 +35,12 @@ pub trait Lead: Send + Sync {
     /// The view's answer to `ask`.
     fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value>;
 
+    /// The forecast's input and the regions its agent handed it (crate::coord::PageFiles), shared;
+    /// none (a test's lead).
+    fn page(&self) -> crate::coord::PageFiles {
+        Default::default()
+    }
+
     /// What the forecast's waits are worked out from (history::WaitsBasis: `old`, made when the
     /// history's number was `set_at`, and the targets' last finishes), the history's number now and
     /// its numbering's name (`/api/history`'s `epoch`). None: no history here (a test's lead).
@@ -51,6 +57,10 @@ pub trait Lead: Send + Sync {
 impl Lead for crate::coord::Coordinator {
     fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value> {
         Ok(self.pool_view(ask))
+    }
+
+    fn page(&self) -> crate::coord::PageFiles {
+        crate::coord::Coordinator::page(self)
     }
 
     fn waits_basis(&self, old: Arc<history::Waits>, set_at: u64) -> Option<(history::WaitsBasis, u64, String)> {
@@ -277,11 +287,7 @@ impl PageView {
     fn ask_lead(&self, lead: &dyn Lead, now: u64) {
         let ask = {
             let st = self.state.lock().unwrap();
-            ViewAsk {
-                status_at: st.snap.as_ref().and_then(|s| s.status_at),
-                forecast_at: st.record.as_ref().map(|r| ms_of(r.0)),
-                regions_at: st.regions.as_ref().map(|r| ms_of(r.0)),
-            }
+            ViewAsk { status_at: st.snap.as_ref().and_then(|s| s.status_at) }
         };
         let got = lead.view(&ask);
         let mut st = self.state.lock().unwrap();
@@ -297,20 +303,11 @@ impl PageView {
             }
         };
         st.lead_failed = None;
-        let at = |k: &str| v[k].as_u64().map(|ms| SystemTime::UNIX_EPOCH + Duration::from_millis(ms));
-        match (at("forecast_at"), v.get("forecast_input")) {
-            (None, _) => st.record = None,
-            (Some(t), Some(f)) => match serde_json::from_value::<Record<'static>>(f.clone()) {
-                Ok(r) => st.record = Some((t, Arc::new(r))),
-                Err(e) => eprintln!("pageview: the forecast's input: {e:#}"),
-            },
-            (Some(_), None) => {}
-        }
-        match (at("regions_at"), v.get("regions")) {
-            (None, _) => st.regions = None,
-            (Some(t), Some(r)) => st.regions = Some((t, Arc::new(r.clone()))),
-            (Some(_), None) => {}
-        }
+        // (The forecast's input and the regions as the lead holds them: shared, never copied.)
+        let page = lead.page();
+        let at = |ms: u64| SystemTime::UNIX_EPOCH + Duration::from_millis(ms);
+        st.record = page.forecast.map(|(ms, r)| (at(ms), r));
+        st.regions = page.regions.map(|(ms, r)| (at(ms), r));
         // (Its status only when it changed since the last answer: the one kept otherwise.)
         let old = st.snap.take();
         let status = match v.get("status") {
@@ -591,25 +588,27 @@ pub(crate) mod tests {
                     Some(serde_json::json!({ "host": b["host"], "urls": br["urls"], "https": br["https"] }))
                 })
                 .collect();
-            let mut v = serde_json::json!({
+            Ok(serde_json::json!({
                 "status": status,
                 "view": json("lead-view.json").map_or(Value::Null, |v| v["view"].clone()),
                 "pause": json("state/build/pause.json").unwrap_or(Value::Null),
                 "macs": macs,
                 "at": now_s(),
-            });
+            }))
+        }
+
+        fn page(&self) -> crate::coord::PageFiles {
             let at = |p: &str| std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok().map(ms_of);
-            let fpath = "state/build/term/7/forecast-input.json";
-            if let (Some(t), Some(Ok(r))) = (at(fpath), raw(fpath).map(|b| Record::from_bytes(&b))) {
-                v["forecast_at"] = t.into();
-                v["forecast_input"] = serde_json::to_value(r)?;
+            let raw = |p: &str| std::fs::read(self.0.join(p)).ok();
+            let (fpath, rpath) = ("state/build/term/7/forecast-input.json", "state/build/term/7/regions.json");
+            crate::coord::PageFiles {
+                forecast: at(fpath)
+                    .zip(raw(fpath).and_then(|b| Record::from_bytes(&b).ok()))
+                    .map(|(t, r)| (t, Arc::new(r))),
+                regions: at(rpath)
+                    .zip(raw(rpath).and_then(|b| serde_json::from_slice::<Value>(&b).ok()))
+                    .map(|(t, r)| (t, Arc::new(r))),
             }
-            let rpath = "state/build/term/7/regions.json";
-            if let (Some(t), Some(r)) = (at(rpath), json(rpath)) {
-                v["regions_at"] = t.into();
-                v["regions"] = r;
-            }
-            Ok(v)
         }
     }
 
@@ -924,24 +923,24 @@ pub(crate) mod tests {
             assert!(a["view_age_s"].as_u64().is_some_and(|s| s < 60));
             assert_eq!(pv.regions().unwrap()["catalog"], 3);
         }
-        // (The lead's status, the forecast's input and the regions sent only when they changed; the
-        // page's status the one kept meanwhile.)
-        let (st_at, f, r) = {
+        // (The lead's status sent only when it changed, the page's the one kept meanwhile; the
+        // forecast's input and the regions never in the view, the lead's own shared: task #1335.)
+        let st_at = {
             let st = pv.state.lock().unwrap();
             let s = st.snap.as_ref().unwrap();
             assert!(s.status_at.is_some() && s.status["host"] == "m4");
-            (s.status_at, st.record.as_ref().map(|r| ms_of(r.0)), st.regions.as_ref().map(|r| ms_of(r.0)))
+            let page = c.page();
+            assert!(Arc::ptr_eq(&st.record.as_ref().unwrap().1, &page.forecast.unwrap().1), "the lead's input, shared");
+            assert!(Arc::ptr_eq(&st.regions.as_ref().unwrap().1, &page.regions.unwrap().1), "its regions, shared");
+            s.status_at
         };
-        let again = c.pool_view(&ViewAsk { status_at: st_at, forecast_at: f, regions_at: r });
-        assert!(
-            again.get("status").is_none() && again.get("forecast_input").is_none() && again.get("regions").is_none(),
-            "{again}"
-        );
+        let again = c.pool_view(&ViewAsk { status_at: st_at });
+        assert!(again.get("status").is_none(), "{again}");
         assert_eq!(again["status_at"].as_u64(), st_at);
         pv.ask_lead(&Fake(Ok(again)), now);
         assert_eq!(pv.swarm().unwrap()["agent"]["host"], "m4", "the status kept");
         let all = c.pool_view(&ViewAsk::default());
-        assert!(all.get("forecast_input").is_some() && all["status"]["host"] == "m4");
+        assert!(all["status"]["host"] == "m4" && all.get("forecast_input").is_none() && all.get("regions").is_none());
     }
 
     /// A lead as a test sets it: its answer, or none to be had (`Err`).

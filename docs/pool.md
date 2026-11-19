@@ -2739,7 +2739,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
   last ones on the NAS (`state/build/term/<E>/forecast-input.json`, 31 Oct 2026, terms
   664-673): 10.6-11.8 MB of JSON, 0.84-0.98 MB
   compressed. Every time and speed in it is made finite before it's written (`Record::clamp`).
-  Handed to the lead's coordinator for `/pool/view` and to the forecast inputs' archive (§7.9). Read by each Mac's page data (below).
+  Handed to the lead's coordinator for its page (held once, shared with the page's data in
+  process: `Coordinator::page`) and to the forecast inputs' archive (§7.9).
 - **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
   docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
   answers `/api/swarm` and `/api/tocome` from its pageview (`/api/steps` is the steps table), and
@@ -2747,8 +2748,10 @@ asks passed on are one-shot: the lead's store keeps them (below).
   memory (task #1160: the history below); out of the pool the coordinator answers all from its
   memory. While a page has asked in the last 60 s, a thread of the agent asks the lead's view every
   2 s (its coordinator in process, as `POST /pool/view` answers): its coordinator's view, the pause
-  (on the lead the answer's is its coordinator's own), the Macs' addresses, and the lead's status,
-  the forecast's input and the regions when their time changed (the last status kept meanwhile);
+  (on the lead the answer's is its coordinator's own), the Macs' addresses, and the lead's status
+  when it changed (the last status kept meanwhile); the forecast's input and the regions as its
+  coordinator holds them, shared (`Coordinator::page`: as JSON trees copied into each view, 35 MB
+  were asked of the allocator a forecast, task #1335);
   with the lead down, the last view is kept and the answer says its age (`view_age_s`) and since
   when the lead isn't reached (`view_unreached`). The agent's loop hands it only what it holds
   already (this Mac's app, its own coordinator): no NAS read on the loop or on any page's path, and
@@ -2945,8 +2948,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
   the lead's log's map (`agent::publish::Here`: the head's catalogue, made of the map while a
   reader holds it; the plan's regions on the map, the map updates' times,
   `pubtimes::PlannedNotes`, and this view read the same one). regions.json is about 0.96 MB. Handed by
-  the lead's pool step to its coordinator for `/pool/view`, read by each Mac's page data when its
-  time changes. Every Mac's port answers `POST /api/regions` with
+  the lead's pool step to its coordinator for its page (`Coordinator::page`), read by the page's
+  data when its time changes. Every Mac's port answers `POST /api/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; a page that has the
   outlines of the answer's version says so (`{"have": version}`) and gets it without `fill` and
   `edge` (asked again with each map update for its sizes, as often as each poll while the lead

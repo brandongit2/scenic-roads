@@ -1085,9 +1085,13 @@ pub fn region_of(s: &buildstore::coverage::Shape) -> &str {
 /// its middle is in one.
 fn wholly_held(shapes: &[buildstore::coverage::Shape], r: [i32; 4]) -> bool {
     let inner = [r[0] as i64 + 1, r[1] as i64 + 1, r[2] as i64 - 1, r[3] as i64 - 1];
-    let mut edges: Vec<[i32; 4]> = shapes.iter().flat_map(|s| s.edges_in(inner)).collect();
-    edges.sort_unstable();
-    let open = edges.chunk_by(|a, b| a == b).any(|run| run.len() % 2 == 1);
+    let open = buildstore::coverage::with_edges(|edges| {
+        for s in shapes {
+            s.edges_in(inner, edges);
+        }
+        edges.sort_unstable();
+        edges.chunk_by(|a, b| a == b).any(|run| run.len() % 2 == 1)
+    });
     let mid = [((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32];
     !open && shapes.iter().any(|s| s.contains(mid))
 }

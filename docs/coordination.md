@@ -67,7 +67,7 @@ on one disk.
 | Pool settings | `POST /pool/settings`; their generation in each beat's answer (`settings_gen`) | `settings`, each with `by` and `at` | none |
 | Resume progress released | `POST /pool/progress/release`, carried back in the beat's answer | `progress/<member>` | none |
 | The Wikimedia budget, the answers' lease | `POST /pool/budget/take`, `/pool/budget/hold`, `/pool/lease/answers` from each agent's proxy | windows and tokens given in memory; `budget-hold`, `answers-lease` | none |
-| The build page's view | `POST /pool/view` | in memory: the coordinator's view, its agent's status (its `status.json`, which other Macs' `scenic status`, `scenic pool status` and map servers ask it for: `coordwire::lead::status`), the forecast's input, the regions | none |
+| The build page's view | `POST /pool/view` | in memory: the coordinator's view, its agent's status (its `status.json`, which other Macs' `scenic status`, `scenic pool status` and map servers ask it for: `coordwire::lead::status`); the forecast's input and the regions held for its page in process alone (`Coordinator::page`, shared, never copied) | none |
 | The records' brief | `GET /pool/brief` (`ETag` its (epoch, seq)) | the last save's, gzipped, in memory | `state/build/brief.json`, written each save for the map server and the CLI |
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
 | GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/storage.md, GC) | the lead's GC queue | — |
@@ -161,7 +161,7 @@ rule):
 | `POST /pool/release` | `scenic pool release <member>` | the leases released |
 | `POST /pool/progress/release` | `scenic pool release <member> <job>` | what it released, or 400 when it keeps none of that member's |
 | `POST /pool/budget/take`, `/pool/budget/hold`, `/pool/lease/answers` | an agent's proxy, for its jobs (the lead's own in process) | a token or a wait / the hold's end / the lease's word |
-| `POST /pool/view` | the lead's page view (in process), and by HTTP | the view's documents, each only when its time differs from the ask's |
+| `POST /pool/view` | the lead's page view (in process), and by HTTP | the view, its agent's status only when its time differs from the ask's |
 | `GET /pool/brief` | a member's agent: its pool's view, a job as it starts, `--expect-same` | the brief from memory, gzipped; 304 to `If-None-Match` naming its tag; 503 while it has none |
 | `/work/*`, `/task/*`, `/gc/*` | jobs, tasks, map servers and GC | coordinator.md, docs/storage.md (GC) |
 

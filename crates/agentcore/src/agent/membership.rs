@@ -1013,7 +1013,8 @@ pub struct Run {
     /// once a saved state holds them.
     outbox_drained: bool,
     marks: Vec<(PathBuf, String)>,
-    /// The page's regions as last handed to its coordinator (`/pool/view`): what they were made of.
+    /// The page's regions as last handed to its coordinator (crate::coord::PageFiles): what they
+    /// were made of.
     pub regions_handed: Option<super::RegionsKey>,
     /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).

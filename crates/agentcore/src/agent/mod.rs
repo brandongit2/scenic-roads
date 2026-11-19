@@ -9336,8 +9336,8 @@ impl Agent {
         }
         let Some(co) = &self.coord else { return };
         let epoch = run.gates.leads.unwrap_or(0);
-        // The page's files: to its coordinator, which serves every Mac's page from memory
-        // (`/pool/view`, docs/coordination.md step 4).
+        // The page's files: to its coordinator, which holds them for its page (crate::coord::PageFiles,
+        // docs/coordination.md step 4).
         let regions = self.plan.view.get().regions_view.clone();
         if let Some((key, v)) = regions.as_ref() {
             if run.regions_handed.as_ref() != Some(key) {

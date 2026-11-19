@@ -860,7 +860,9 @@ impl Kept {
     /// `v` as kept: its tiles when every line is one, written again byte for byte (`text`), else
     /// its text.
     fn of(v: &str) -> Kept {
-        let mut tiles = Vec::new();
+        // (Room for every line at once: grown line by line, its lists were 1 GB asked of the
+        // allocator in the first plan, task #1335.)
+        let mut tiles = Vec::with_capacity(v.bytes().filter(|&b| b == b'\n').count() + 1);
         let mut again = String::new();
         for l in v.split('\n') {
             let Some(t) = parse_line(l) else { return Kept::Text(v.into()) };

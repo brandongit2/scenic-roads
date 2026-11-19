@@ -138,49 +138,85 @@ const OF_COUNTRY: f64 = 0.5;
 /// Points along each side of a box sampled for those shares.
 const LATTICE: i64 = 128;
 
-/// The points of a regular lattice over a box (E7: cell centres, `LATTICE` a side).
+/// The points of a regular lattice over a box (E7: cell centres, `LATTICE` a side): `lattice_where`
+/// against each point.
+#[cfg(test)]
 fn lattice(b: [i32; 4]) -> impl Iterator<Item = [i32; 2]> {
-    let (w, h) = (b[2] as i64 - b[0] as i64, b[3] as i64 - b[1] as i64);
-    let n = if w < 0 || h < 0 { 0 } else { LATTICE };
-    (0..n).flat_map(move |j| {
-        (0..n).map(move |i| {
-            [
-                (b[0] as i64 + (2 * i + 1) * w / (2 * LATTICE)) as i32,
-                (b[1] as i64 + (2 * j + 1) * h / (2 * LATTICE)) as i32,
-            ]
-        })
-    })
+    let n = if b[2] < b[0] || b[3] < b[1] { 0 } else { LATTICE as usize };
+    (0..n * n).map(move |k| lattice_point(b, k))
 }
 
-/// The points of the lattice over box `b` (`lattice`, in its order) where `point` holds, read a
-/// block of the lattice at a time: where `block` gives one answer for every point of a block's box
-/// (Some), that answer, else `point`'s for each (task #1457: a lattice over a long coast's outline,
-/// a point test each, was most of rail-feeds' countries).
-fn lattice_where(
+/// The `k`th point of the lattice over box `b` (`lattice`: row by row from the south-west).
+fn lattice_point(b: [i32; 4], k: usize) -> [i32; 2] {
+    let (w, h) = (b[2] as i64 - b[0] as i64, b[3] as i64 - b[1] as i64);
+    let (i, j) = ((k % LATTICE as usize) as i64, (k / LATTICE as usize) as i64);
+    [(b[0] as i64 + (2 * i + 1) * w / (2 * LATTICE)) as i32, (b[1] as i64 + (2 * j + 1) * h / (2 * LATTICE)) as i32]
+}
+
+/// Some points of the lattice over a box (`lattice`), as a bit each: 2 KB, where a list of them
+/// was up to 128 KB (task #1335: a list for each of the coverage's shapes, held at once, was 0.4 GB
+/// of the first plan's most).
+struct Points {
     b: [i32; 4],
-    block: impl Fn([i32; 4]) -> Option<bool>,
-    point: impl Fn([i32; 2]) -> bool,
-) -> Vec<[i32; 2]> {
-    const B: usize = 16;
-    let pts: Vec<[i32; 2]> = lattice(b).collect();
-    if pts.is_empty() {
-        return pts;
+    bits: Vec<u64>,
+}
+
+impl Points {
+    fn len(&self) -> usize {
+        self.bits.iter().map(|w| w.count_ones() as usize).sum()
     }
-    let n = LATTICE as usize;
-    let mut keep = vec![false; pts.len()];
-    for bj in (0..n).step_by(B) {
-        for bi in (0..n).step_by(B) {
-            let (j1, i1) = ((bj + B).min(n) - 1, (bi + B).min(n) - 1);
-            let (lo, hi) = (pts[bj * n + bi], pts[j1 * n + i1]);
-            let all = block([lo[0], lo[1], hi[0], hi[1]]);
-            for j in bj..=j1 {
-                for i in bi..=i1 {
-                    keep[j * n + i] = all.unwrap_or_else(|| point(pts[j * n + i]));
+
+    fn is_empty(&self) -> bool {
+        self.bits.iter().all(|&w| w == 0)
+    }
+
+    /// The points, in the lattice's order.
+    fn iter(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
+        let b = self.b;
+        self.bits.iter().enumerate().flat_map(move |(i, &w)| {
+            (0..64).filter(move |k| w >> k & 1 == 1).map(move |k| lattice_point(b, i * 64 + k))
+        })
+    }
+
+    /// Those for which `f` is false let go.
+    fn retain(&mut self, f: impl Fn([i32; 2]) -> bool) {
+        for (i, w) in self.bits.iter_mut().enumerate() {
+            let mut rest = *w;
+            while rest != 0 {
+                let k = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                if !f(lattice_point(self.b, i * 64 + k)) {
+                    *w &= !(1u64 << k);
                 }
             }
         }
     }
-    pts.into_iter().zip(keep).filter_map(|(p, k)| k.then_some(p)).collect()
+}
+
+/// The points of the lattice over box `b` (`lattice`) where `point` holds, read a block of the
+/// lattice at a time: where `block` gives one answer for every point of a block's box (Some), that
+/// answer, else `point`'s for each (task #1457: a lattice over a long coast's outline, a point test
+/// each, was most of rail-feeds' countries).
+fn lattice_where(b: [i32; 4], block: impl Fn([i32; 4]) -> Option<bool>, point: impl Fn([i32; 2]) -> bool) -> Points {
+    const B: usize = 16;
+    let n = if b[2] < b[0] || b[3] < b[1] { 0 } else { LATTICE as usize };
+    let mut bits = vec![0u64; (n * n).div_ceil(64)];
+    for bj in (0..n).step_by(B) {
+        for bi in (0..n).step_by(B) {
+            let (j1, i1) = ((bj + B).min(n) - 1, (bi + B).min(n) - 1);
+            let (lo, hi) = (lattice_point(b, bj * n + bi), lattice_point(b, j1 * n + i1));
+            let all = block([lo[0], lo[1], hi[0], hi[1]]);
+            for j in bj..=j1 {
+                for i in bi..=i1 {
+                    let k = j * n + i;
+                    if all.unwrap_or_else(|| point(lattice_point(b, k))) {
+                        bits[k / 64] |= 1 << (k % 64);
+                    }
+                }
+            }
+        }
+    }
+    Points { b, bits }
 }
 
 /// A territory's ISO 3166-1 code. An outline keeps its ISO 3166-2 code when it has both (Hong
@@ -279,7 +315,7 @@ pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Res
             })
         })
         .collect();
-    let mut left: Vec<Vec<[i32; 2]>> =
+    let mut left: Vec<Points> =
         cov.shapes.iter().zip(&boxes).map(|(s, &b)| lattice_where(b, |r| s.inside_box(r), |p| s.inside(p))).collect();
     let mut held: BTreeMap<(usize, &[String]), usize> = BTreeMap::new();
     let mut found: BTreeSet<String> = BTreeSet::new();
@@ -291,7 +327,7 @@ pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Res
                 continue;
             }
             let before = pts.len();
-            pts.retain(|p| !t.contains(*p));
+            pts.retain(|p| !t.contains(p));
             if pts.len() < before {
                 *held.entry((i, codes.as_slice())).or_default() += before - pts.len();
             }
@@ -314,7 +350,7 @@ pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Res
             },
             |p| near.iter().any(|s| s.contains(p)),
         );
-        let held_own = held_own.iter().filter(|p| t.contains(**p)).count();
+        let held_own = held_own.iter().filter(|p| t.contains(*p)).count();
         if !own.is_empty() && held_own as f64 >= OF_COUNTRY * own.len() as f64 {
             found.extend(codes.iter().cloned());
         }
@@ -691,13 +727,18 @@ mod tests {
                 [e7(3.8, 43.8, 6.2, 46.2), e7(4.5, 44.5, 5.5, 45.5), e7(5.9, 44.0, 7.0, 45.0), e7(8.0, 8.0, 9.0, 9.0)]
             {
                 assert_eq!(
-                    lattice_where(b, |r| sh.inside_box(r), |p| sh.inside(p)),
+                    lattice_where(b, |r| sh.inside_box(r), |p| sh.inside(p)).iter().collect::<Vec<_>>(),
                     lattice(b).filter(|p| sh.inside(*p)).collect::<Vec<_>>()
                 );
+                let mut held = lattice_where(b, |r| sh.contains_box(r), |p| sh.contains(p));
+                assert_eq!(held.iter().collect::<Vec<_>>(), lattice(b).filter(|p| sh.contains(*p)).collect::<Vec<_>>());
+                // (Let go of some, as a territory takes them: the others kept, in order.)
+                held.retain(|p| p[0] % 3 != 0);
                 assert_eq!(
-                    lattice_where(b, |r| sh.contains_box(r), |p| sh.contains(p)),
-                    lattice(b).filter(|p| sh.contains(*p)).collect::<Vec<_>>()
+                    held.iter().collect::<Vec<_>>(),
+                    lattice(b).filter(|p| sh.contains(*p) && p[0] % 3 != 0).collect::<Vec<_>>()
                 );
+                assert_eq!(held.len(), held.iter().count());
                 blocked += lattice_where(b, |r| sh.contains_box(r).map(|_| true), |_| false).len();
             }
         }
