@@ -693,6 +693,12 @@ fn a_remainder_that_cant_be_taken_holds_its_folder() {
     assert_eq!(p.len(), 1, "{:#?}", over.problems);
     assert!(p[0].found == ["l", "r"] && p[0].about == ["p"] && p[0].files == ["p/_remainder.toml"], "{:?}", p[0]);
     assert!(folder_held(&over));
+    // Two overlapping only off the coast (21°N): nothing there to take, nothing said.
+    let off = run_with(&[(
+        "p/_remainder.toml",
+        "of = \"box:30.0,20.0,33.0,21.5\"\n[by]\nl = \"box:30.0,19.0,31.7,22.0\"\nr = \"box:31.3,21.1,33.0,22.0\"\n",
+    )]);
+    assert!(said(&off, "overlap by").is_empty() && !folder_held(&off), "{:#?}", off.problems);
     // A region of the folder without water.
     let m = "id = \"m\"\nname = \"M\"\noutline = [\"box:40.0,40.0,40.1,40.1\"]\n";
     let dry = run_with(&[("p/m.toml", m)]);
@@ -713,6 +719,88 @@ fn a_remainder_that_cant_be_taken_holds_its_folder() {
     let out = run_with(&[("q.toml", far)]);
     assert!(said(&out, "its outline may reach").is_empty(), "{:#?}", out.problems);
     assert!(out.resolved.contains_key("l") && out.resolved.contains_key("r"), "{:#?}", out.problems);
+    // A folder whose regions have no land anywhere: its remainder's rest would go to no one.
+    let mut files = all();
+    files.extend([
+        ("s.toml", s),
+        ("n/m.toml", "id = \"m\"\nname = \"M\"\noutline = [\"box:40.0,40.0,40.1,40.1\"]\nwater = []\n"),
+        ("n/_remainder.toml", "of = \"box:40.1,40.0,40.2,40.1\"\n"),
+    ]);
+    let out = run(&w, &files);
+    let p = said(&out, "none of its regions has land or lakes");
+    assert!(p.len() == 1 && p[0].files == ["n/_remainder.toml"], "{:#?}", out.problems);
+    assert!(!out.resolved.contains_key("m"));
+}
+
+/// Two places' remainders overlapping, neither folder holding the other (#1448 review): which is
+/// taken first says nothing of whose it is, so the second holds its folder, naming both files;
+/// meeting on a line, nothing is said.
+#[test]
+fn two_places_remainders_overlapping_hold_the_second() {
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n";
+    let s = "id = \"s\"\nname = \"S\"\nwater = [{ buffer = \"box:30.0,20.0,33.0,21.0\", by = \"10 km\" }]\n";
+    let run_with = |p_of: &'static str, t_of: &'static str| {
+        let mut files = all();
+        files.extend([
+            ("p/l.toml", l),
+            ("t/r.toml", r),
+            ("s.toml", s),
+            ("p/_remainder.toml", p_of),
+            ("t/_remainder.toml", t_of),
+        ]);
+        run(&w, &files)
+    };
+    let over = run_with("of = \"box:30.0,20.0,32.0,21.0\"\n", "of = \"box:31.5,20.0,33.0,21.0\"\n");
+    let p: Vec<_> = over
+        .problems
+        .iter()
+        .filter(|p| p.check == "rg-ref" && p.message.contains("meets p/_remainder.toml's"))
+        .collect();
+    assert_eq!(p.len(), 1, "{:#?}", over.problems);
+    assert!(p[0].files == ["t/_remainder.toml", "p/_remainder.toml"] && p[0].about == ["t", "p"], "{:?}", p[0]);
+    assert!(over.resolved.contains_key("l") && !over.resolved.contains_key("r"));
+    let apart = run_with("of = \"box:30.0,20.0,31.5,21.0\"\n", "of = \"box:31.5,20.0,33.0,21.0\"\n");
+    assert!(apart.problems.is_empty(), "{:#?}", apart.problems);
+    let at = |id: &str, x: f64| area_of(&apart.resolved[id].geometry).contains([e7(x), e7(20.5)]);
+    assert!(at("l", 31.4) && at("r", 31.6) && !at("r", 31.4));
+}
+
+/// A remainder whose `of` runs out to sea (#1448 review): the sea in it is cut off with its region's
+/// outline, once, the land to the coastline its region's in one piece; a region without water from
+/// another folder inside it keeps what it has.
+#[test]
+fn a_remainder_reaching_the_sea_keeps_the_coastline() {
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,20.5\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,20.5\"]\nwater = []\n";
+    let s = "id = \"s\"\nname = \"S\"\nwater = [{ buffer = \"box:30.0,20.0,33.0,21.0\", by = \"10 km\" }]\n";
+    let d = "id = \"d\"\nname = \"D\"\noutline = [\"box:31.4,20.6,31.6,20.8\"]\n";
+    let mut files = all();
+    files.extend([
+        ("p/l.toml", l),
+        ("p/r.toml", r),
+        ("s.toml", s),
+        ("d.toml", d),
+        ("p/_remainder.toml", "of = \"box:30.0,20.0,33.0,21.5\"\n"),
+    ]);
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:#?}", out.problems);
+    let land = |id: &str| {
+        let mut g = out.resolved[id].geometry.clone();
+        g.shapes.retain(|s| !s.water);
+        g
+    };
+    let has = |id: &str, x: f64, y: f64| area_of(&land(id)).contains([e7(x), e7(y)]);
+    assert!(has("l", 30.5, 20.9) && has("l", 30.5, 20.999) && !has("l", 30.5, 21.2), "to the coast, no sea");
+    assert!(has("r", 32.5, 20.999) && !has("r", 32.5, 21.2));
+    assert!(has("d", 31.5, 20.7) && !has("l", 31.5, 20.7) && !has("r", 31.5, 20.7), "d keeps its own");
+    // (One piece each, its coast the coastline's straight edge: no slivers taken back by the coast.)
+    for id in ["l", "r"] {
+        let g = land(id);
+        assert_eq!(g.shapes.len(), 1, "{id}: {:?}", g.shapes.len());
+    }
 }
 
 /// One coastline (#649): land past a region's outline's coast, along it, is its own, with or

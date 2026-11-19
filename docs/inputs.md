@@ -633,25 +633,29 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 
 An unknown field is `rg-toml`; a bad part, `by` id or step `rg-part`. After every region's land is made
 and before any water, the folders' remainders are taken in turn, the deepest folder first (an outer
-place's then holds nothing an inner one gave), cell by cell: what of `of` no region takes
-(every region's outline, every region without water as stored) goes to the folder's regions with land
-(every region under the folder but its waters regions): to each region in `by` the pieces
-inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over the remainder,
-hold the folder naming both, `rg-ref`; under it the piece is the first's in id order); the rest to the
-nearest region (its land and lakes), split at the median line as a `nearest` is on a grid of `step`.
-Each piece is its region's land or lake as the coastline's land has it. What's free is worked out on
-the regions' outlines before their cut to the coastline's land (each region's outline kept for it in
-the cells an `of` reaches), and a region's pieces are added to its outline before that cut, as one
-outline: the remainder meets each region on its outline's own line, never on a second cut of it. So the
-declaration names no member and no neighbour: one region's outline changing moves the remainder's lines
-with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline reads a
-region's land before the remainders. The folder must have a region with land, every region of it a
-`water` key, none be held and every `by` name one of them; and no held region elsewhere may reach the
+place's then holds nothing an inner one gave), cell by cell: what of `of` no region takes (every
+region's outline, every region without water as stored), sea and all, goes to the folder's regions with
+land (every region under the folder but its waters regions): to each region in `by` the pieces inside
+its part (a piece once: two parts overlapping on its land and lakes past `HAIR_KM2`, summed over the
+remainder, hold the folder naming both, `rg-ref`; under it the piece is the first's in id order); the
+rest to the nearest region (its land and lakes), split at the median line as a `nearest` is on a grid
+of `step`. What's free is worked out on the regions' outlines before their cut to the coastline's land
+(each region's outline kept for it in the cells an `of` reaches), and a region's pieces are added to
+its outline before that cut, as one outline: the remainder meets each region on its outline's own line
+and the coastline only in that one cut, never on a second cut of either; the sea in it goes there. So
+the declaration names no member and no neighbour: one region's outline changing moves the remainder's
+lines with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline
+reads a region's land before the remainders. The folder must have a region with land, every region of
+it a `water` key, none be held and every `by` name one of them; no held region elsewhere may reach the
 remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
-naming anything else may reach anywhere: what it would take is free and can't be told). Else each is
-held, the file named (`rg-ref`). A paused check keeps each remainder as a piece (task #897,
-docs/pool.md), by the folder's whole key. Without `by` the whole remainder is split at the median line:
-the file's comment says why (no official source draws the lines there).
+naming anything else may reach anywhere: what it would take is free and can't be told); some region of
+it must have land for the rest to be nearest; and its `of` may not meet the pieces of a remainder taken
+before it, in a folder that neither holds it nor is held by it, on more than `HAIR_KM2` of land and
+lakes (two places' remainders overlapping: which is first says nothing of whose it is; the `of`s must
+be cut apart). Else each is held, the file named (`rg-ref`; an overlap names both files). A paused
+check keeps each remainder as a piece (task #897, docs/pool.md), by the folder's whole key. Without
+`by` the whole remainder is split at the median line: the file's comment says why (no official source
+draws the lines there).
 
 ```toml
 # canada/provinces/ontario/_remainder.toml: the Great Lakes' Canadian water, by the province's own lines
