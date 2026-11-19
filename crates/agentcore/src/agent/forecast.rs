@@ -1097,13 +1097,15 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// Whether the code before `VERSION` has a way of its own in this app (`Input::code`), so that a
 /// backtest's old run (crate::agent::fccheck::backtest) differs from its new. False since code 9,
 /// which replaced code 2's paces and caps with each job's needs over its Mac's supply rather than
-/// keeping them beside it: a record rerun as code 8 runs as code 9, and the backtest says so. Set it
-/// with the first change that keeps the code before's way behind `Input::code`.
+/// keeping them beside it, and code 10 (task #1505: a lease past its measured time timed by its
+/// step's slower runs where the room held for a waiting job weighs it, crate::coord::sched's
+/// `run_end`) kept no way before either: a record rerun as code 9 runs as code 10, and the backtest
+/// says so. Set it with the first change that keeps the code before's way behind `Input::code`.
 pub const BEFORE_HAS_PATH: bool = false;
 
 /// A stretch of a lane's work of one step (a "run" of the schedule: `Runs`, the page's run

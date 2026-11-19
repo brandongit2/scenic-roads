@@ -9902,6 +9902,157 @@ mod tests {
         }
     }
 
+    /// Task #1505 (the mini, 19 Nov: room held for the catalogue for over two hours behind the
+    /// regions inputs check, not measured, its status saying "about 159 min left" by its
+    /// progress, 5 to 8 of its 12 cores idle): a job the room held for a big job (terrain-deep, 6
+    /// GB, on a member of 4 GB more than slope-hi's) waits for (slope-hi, about 4 GB) with no
+    /// measured time left is timed by the time left its beats say by its progress, so small jobs
+    /// (bldtiles, 1 GB, a minute) go, round after round, to end before it, never one that would
+    /// end after it, and the hold says which end it took. Not measured, past its measured time,
+    /// or past its step's slower runs too, with no progress said, only those fitting beside the
+    /// big job go; past its measured time but within its step's slower runs (a target never run
+    /// itself), by those. Once it ends, the big job starts as soon as the small ones free its room.
+    #[test]
+    fn a_held_big_job_times_a_job_it_waits_for_by_its_progress_past_its_measured_time() {
+        let offer = |step: &str, ts: &[String]| Offer {
+            step: step.into(),
+            targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+            job: None,
+        };
+        let grants = |w: &client::Client, a: &Ask| -> Vec<(u64, String)> {
+            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+            let more = std::mem::take(&mut g.more);
+            std::iter::once(g)
+                .chain(more)
+                .filter_map(|g| match g.work {
+                    Granted::Job { step, .. } => Some((g.lease, step)),
+                    Granted::Task { .. } => None,
+                })
+                .collect()
+        };
+        let steps = |g: &[(u64, String)]| g.iter().map(|g| g.1.clone()).collect::<Vec<_>>();
+        let cost = |mb: u64, secs: u64| {
+            let sizes = [("threads".to_string(), 1)].into();
+            Cost { peak_mb: mb, secs, worker: None, v: 0, sizes, ..Default::default() }
+        };
+        let long = vec!["6/3/1".to_string()];
+        // (How slope-hi's job is measured: not at all (its memory by its floor alone), by its own
+        // run (300 s), or by its step's other targets' runs alone (eight of 100 s, two of 30,000).)
+        for kind in ["unmeasured", "own run", "step's runs"] {
+            let (_d, c, w, clock) = every((0, 0));
+            let big: Vec<String> = (1..=2).map(|i| format!("6/1/{i}")).collect();
+            let small: Vec<String> = (1..=400).map(|i| format!("6/2/{i}")).collect();
+            for (step, ts, mb, secs) in [("terrain-deep", &big, 6000, 600), ("bldtiles", &small, 1000, 60)] {
+                for t in ts {
+                    c.add_costs_by(&[(cost_key(step, t), Cost { v: cost_version(step), ..cost(mb, secs) })], "m1");
+                    c.add_disks(&[(cost_key(step, t), 100)]);
+                }
+            }
+            let v = cost_version("slope-hi");
+            match kind {
+                "unmeasured" => {
+                    c.add_floors(&[(cost_key("slope-hi", &long[0]), Floor { mb: 4000, alone: false, v })]);
+                }
+                "own run" => c.add_costs_by(&[(cost_key("slope-hi", &long[0]), Cost { v, ..cost(4000, 300) })], "m1"),
+                _ => {
+                    for i in 0..10 {
+                        let k = cost_key("slope-hi", &format!("6/9/{i}"));
+                        c.add_costs_by(&[(k, Cost { v, ..cost(4000, if i < 8 { 100 } else { 30_000 }) })], "m1");
+                    }
+                }
+            }
+            c.add_disks(&[(cost_key("slope-hi", &long[0]), 100)]);
+            // (Its Mac's memory 4 GB past slope-hi's as measured: its step's model's has a margin.)
+            let mem = 4000 + c.shared.lock().unwrap().sched.pack_need("slope-hi", &long).m.mem_mb;
+            let a = |want: usize| Ask {
+                want,
+                can: vec!["slope-hi".into(), "terrain-deep".into(), "bldtiles".into()],
+                ..every_ask("m1", "bldtiles", mem, 100_000)
+            };
+            let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+            c.offer("p", vec![offer("slope-hi", &long)]);
+            let l = grants(&w, &a(1));
+            assert_eq!(steps(&l), ["slope-hi"], "{kind}");
+            let lease = l[0].0;
+            let (secs, slow) = {
+                let s = &c.shared.lock().unwrap().sched;
+                let ts = long.iter().map(String::as_str);
+                (s.batch_secs("slope-hi", ts.clone(), "m1", 0).map(|s| s.0), s.batch_p90("slope-hi", ts, "m1"))
+            };
+            // (Past its measured time: within its step's slower runs where they're longer.)
+            let past = match kind {
+                "unmeasured" => {
+                    assert_eq!(secs, None, "its time not measured");
+                    0
+                }
+                "own run" => {
+                    assert_eq!((secs, slow), (Some(300), Some(300)), "its own run's time, its slower runs' too");
+                    400
+                }
+                _ => {
+                    let (m, p) = (secs.unwrap(), slow.unwrap());
+                    assert!(p > m + 3000, "its step's slower runs well past its measured time: {m} s, {p} s");
+                    m + 1
+                }
+            };
+            // (Beaten as the time passes, within its lease's time.)
+            let mut ran = 0;
+            while ran < past {
+                let step = (past - ran).min(300);
+                clock.advance(Duration::from_secs(step));
+                ran += step;
+                assert!(w.beat(lease, None).unwrap());
+            }
+            c.offer("p", vec![offer("terrain-deep", &big), offer("bldtiles", &small)]);
+            let fill = |c: &Coordinator, w: &client::Client, n: usize, said: &str| {
+                let g = grants(w, &a(8));
+                assert_eq!(steps(&g), vec!["bldtiles"; n], "{kind}: {}", why(c));
+                assert!(why(c).contains("room held for a job of terrain-deep"), "{kind}: {}", why(c));
+                assert!(why(c).contains(said), "{kind}: {}", why(c));
+                for (l, _) in g {
+                    w.give_back(l, "the test").unwrap();
+                }
+            };
+            // No progress said: 4 GB left, short of terrain-deep's 6; only the 2 beside it
+            // once slope-hi ends go, but within its step's slower runs: ending before them, 4.
+            match kind {
+                "unmeasured" => {
+                    fill(&c, &w, 2, "the job it waits for running with no measured time and no progress said")
+                }
+                "own run" => fill(
+                    &c,
+                    &w,
+                    2,
+                    "the job it waits for running past its measured time and its step's slower runs, no progress said",
+                ),
+                _ => fill(&c, &w, 4, "past its measured time, by its step's slower runs"),
+            }
+            // Its progress says 10 hours left: 4 go, round after round, to end before it.
+            let said = |left: u64| crate::agent::jobs::Live { left_s: Some(left), targets: 1, ..Default::default() };
+            assert!(w.beat_told(lease, Some("1/10 tiles"), Some(said(36_000)), None).unwrap().0);
+            for _ in 0..2 {
+                fill(&c, &w, 4, "expected to end in 600 min, the last of them by its progress");
+            }
+            // Two minutes left by it: none that would end after it, only the 2 beside.
+            assert!(w.beat_told(lease, Some("9/10 tiles"), Some(said(120)), None).unwrap().0);
+            fill(&c, &w, 2, "expected to end in 2 min, by its progress");
+            // Its time said passed, nothing said since: as with none said.
+            clock.advance(Duration::from_secs(150));
+            assert!(w.beat(lease, None).unwrap());
+            let g = grants(&w, &a(8));
+            let n = if kind == "step's runs" { 4 } else { 2 };
+            assert_eq!(steps(&g), vec!["bldtiles"; n], "{kind}: {}", why(&c));
+            // slope-hi ends: beside 2 small ones 6 GB is left and terrain-deep goes at once; beside
+            // 4, nothing goes until two end.
+            w.give_back(lease, "the test").unwrap();
+            for (l, _) in &g[2..] {
+                assert!(grants(&w, &a(8)).is_empty(), "{kind}: {}", why(&c));
+                w.give_back(*l, "the test").unwrap();
+            }
+            assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{kind}: {}", why(&c));
+        }
+    }
+
     /// Task #973 review: the room held for a big job (terrain-deep, 5 GB) waits for the jobs that
     /// free it soonest, not the oldest: on a member of 8 GB running a long job (slope-hi, 3 GB, 10
     /// hours) and a short one since (bldtiles, 3 GB, 5 minutes), it waits for the short one alone,

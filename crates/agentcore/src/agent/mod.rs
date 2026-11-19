@@ -3456,7 +3456,9 @@ impl Agent {
             .as_ref()
             .and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None))))
             .map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
-        let live = self.job_live(k);
+        // (And its time left by its progress's pace, as the status last said it: the end the lead's
+        // room held for a waiting job takes for it when it has no measured time left, task #1505.)
+        let live = self.job_live(k).map(|v| jobs::Live { left_s: self.slots[k].job_eta, ..v });
         match self.slots[k].lease.clone() {
             // (Its lease through the lead wherever it is now: this process's coordinator while it
             // leads, the lead's by HTTP while it's a member, whoever granted it: docs/pool.md §7.6.)

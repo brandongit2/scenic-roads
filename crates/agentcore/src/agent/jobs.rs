@@ -160,6 +160,11 @@ pub struct Live {
     /// over (`cores_since`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_ms: Option<u64>,
+    /// Its time left by its progress's pace (whole seconds), as its status says it (its
+    /// `JobProgress::eta_s`; set by its agent as it beats, not by `read`): the lead keeps it off
+    /// the lease's view as it does `ran_s` (crate::coord::lease::Lease::left_by_progress).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_s: Option<u64>,
 }
 
 impl Live {
@@ -190,6 +195,7 @@ impl Live {
             ran_s: None,
             cpu_ms: None,
             stopped_ms: None,
+            left_s: None,
         }
     }
 
@@ -1097,6 +1103,7 @@ mod tests {
                 ran_s: None,
                 cpu_ms: None,
                 stopped_ms: None,
+                left_s: None,
             }
         );
     }

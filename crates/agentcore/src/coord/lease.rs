@@ -107,6 +107,10 @@ pub struct Lease {
     /// Its job's progress as its worker's beats said it (`Pace`; in memory alone).
     #[serde(skip)]
     pub pace: Pace,
+    /// Its job's time left by its progress's pace as its worker's last beat said it
+    /// (crate::agent::jobs::Live::left_s, s), and when (`left_by_progress`; in memory alone).
+    #[serde(skip)]
+    left_said: Option<(Instant, u64)>,
     /// The threads its job is counted for (0: not said): granted, then as its agent controls them
     /// (docs/pool.md §7.1, Threads controlled live: the more of what it runs on now and what its
     /// agent has told it, `Leases::running_on`), the cores the pool's own work takes on its Mac,
@@ -149,6 +153,15 @@ impl Lease {
     /// lead's restart, 326 of the lead's 5,830 to 6 Nov, a median quarter of their runs).
     pub fn ran(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.began())
+    }
+
+    /// How long its job has left at `now` by its progress's pace (s): what its worker's last beat
+    /// said (`left_said`), less the time since. None when that didn't say it (no progress yet,
+    /// paused, an older agent's beat) or the time it said has passed: then nothing says when it
+    /// ends (crate::coord::sched's `Run`, task #1505).
+    pub fn left_by_progress(&self, now: Instant) -> Option<u64> {
+        let (at, s) = self.left_said?;
+        s.checked_sub(now.saturating_duration_since(at).as_secs()).filter(|&s| s > 0)
     }
 
     /// Its job began before its lease (taken up at a lead's restart, or held
@@ -688,6 +701,7 @@ impl Leases {
                 moved: None,
                 still_most: 0,
                 pace: Pace::default(),
+                left_said: None,
                 slot: None,
                 threads: 0,
                 start_threads: 0,
@@ -747,11 +761,17 @@ impl Leases {
         // (How long its job has run: its start, kept off its view, which moves whenever its job's
         // work does.)
         let ran = live.as_mut().and_then(|v| v.ran_s.take());
+        // (Its time left by its progress, likewise: it falls as the time passes, work or none.)
+        let left = live.as_mut().map(|v| v.left_s.take());
         match self.by_id.get_mut(&id) {
             Some(l) if l.worker == worker && lasts => {
                 l.deadline = now + self.ttl;
                 if let Some(r) = ran {
                     l.began = now.checked_sub(Duration::from_secs(r)).or(l.began);
+                }
+                // (A view that doesn't say it (none yet, paused, an older agent's) clears it.)
+                if let Some(left) = left {
+                    l.left_said = left.map(|s| (now, s));
                 }
                 // (Its work moved: its progress line, or anything its job's view says but its CPU
                 // time, changed.)

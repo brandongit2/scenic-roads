@@ -1200,19 +1200,31 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   longest target that finishes soonest on the Mac, not the step's first in plan order); none when that pick
   starts with a target not measured (a cold start, which the cold rules decide). While it waits, a later job still goes
   (backfilling, `Backfill`, task #973) when it fits beside it once the jobs it waits for end (the
-  Mac's jobs expected to end soonest by their measured times (`Sched::batch_secs`, less what
-  they've run), as few as free its room, any past its time or not measured first; every other job
-  still running), or when, its time measured, it ends by its runs' high percentile
-  (`needs::Book::secs_p90`, `needs-high-pct`) before those are expected to end; none of the second kind while one
-  of them is past its time or not measured. So a hold never idles a Mac for as long as its
-  running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores idle, while room
-  was held for timetables-todo), never waits for a long job while a shorter one frees its room,
-  and the big job waits only for jobs expected to end no later than those it first waited for,
-  until one overruns: never starved. The refusal
-  names the target it waits for (its step and tile), the jobs it waits for and when they're
-  expected to end, also when nothing offered after it was held back (task #1170: that case had
-  said only the room left, and the lead's status showed no hold). The forecast packs by the same
-  rule, its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
+  Mac's jobs expected to end soonest, as few as free its room, any with no end said first; every
+  other job still running), or when, its time measured, it ends by its runs' high percentile
+  (`needs::Book::secs_p90`, `needs-high-pct`) before those are expected to end; none of the second
+  kind while one of them has no end said. A job's end (`Sched::run_end`, task #1505) is its measured
+  time (`Sched::batch_secs`) less what it has run; not measured, or past it, the time left its
+  progress's pace says, as its status shows it ("about 159 min left": its agent's estimate, sent
+  with each beat as `Live::left_s`, less the time since the beat, `Lease::left_by_progress`); else,
+  measured and past it, its step's runs' high percentile for its targets (`Sched::batch_p90`, the
+  margin a job going beside the hold is held to) less what it has run, while it's within it; else
+  none (it may end any moment). A job not measured has no model either (its step's model stands in
+  for a target's own run, §7.7), so with no progress said it has no end. So a hold never idles a Mac
+  for as long as its running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores
+  idle, while room was held for timetables-todo; on 19 Nov it ran 2 jobs for over two hours, room
+  held for the catalogue behind the regions inputs check, not measured, at "33 %, about 159 min
+  left" by its progress), never waits for a long job while a shorter one frees its room, and the
+  big job waits only for jobs expected to end no later than those it first waited for, until one
+  overruns its end: never starved. The refusal names the target it waits for (its step and tile),
+  the jobs it waits for, when they're expected to end and which end the hold took (the last of them
+  to end's: "by its measured time", "by its progress", "past its measured time, by its step's
+  slower runs"; or the one with none: "running with no measured time and no progress said",
+  "running past its measured time and its step's slower runs, no progress said"), on the build
+  page's flags too, also when nothing offered after it was held back (task #1170: that case had said
+  only the room left, and the lead's status showed no hold). The forecast packs by the same
+  rule (its leases saying no progress: each ends by its measured time or its step's slower runs,
+  code 10, §7.9), its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target passes to: the others take it. Each job is as many targets as fit the batch length by their measured
   times on its Mac (§7.7, Batch length; a target of no run of its own: its step's model, §7.7, What a step needs), a step kept to the lead in one job. The agent starts every job granted, each in a slot of
@@ -2792,6 +2804,12 @@ horizon, p90 1,197 to 968), its median a little worse (187 to 189), the near hor
 before) had their end at +101, 148 / 764. The far horizons stay late in both: the work the pool did
 in a day was placed later than it ran.
 
+**What changed (code 10, task #1505).** The room held for a waiting job (§7.2, Room held for a big
+job) times a job it waits for that is past its measured time by its step's slower runs while it's
+within them, as the live scheduler does: a leased job of the record past its time no longer stops
+the jobs that would end before it. The run's leases say no progress, so that end alone is new in the
+forecast. No way of code 9's is kept (`forecast::BEFORE_HAS_PATH`): old equals new in a backtest.
+
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
@@ -3480,7 +3498,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   is: `{phase, class, phase_since, target, target_since, targets_done, targets, nas_read,
   nas_wrote, net_in, net_out, ran_s}` (bytes since the job began; `ran_s` how long it has run, from
   its process's start, carried through a take-over: the lead takes its lease's job start from it,
-  `Lease::began`, and keeps it off the view it shows, task #992). A job's run (the time on its
+  `Lease::began`, and keeps it off the view it shows, task #992), and on the beat alone `left_s`, its
+  time left by its progress's pace as the status says it (its progress's `eta_s`), which the lead
+  keeps off the view too, for the room held for a waiting job (§7.2, task #1505). A job's run (the time on its
   "done" or "fail" event, the forecast's and the page's time run, the NAS budget's time past its
   prediction) is from that start, not its lease's grant: a lease read back at a lead's restart is
   younger than its job. Read back, an end whose lease began before a lead's restart reads at

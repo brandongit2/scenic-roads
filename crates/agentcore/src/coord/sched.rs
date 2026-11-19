@@ -429,39 +429,73 @@ struct RoomWait {
 }
 
 /// A job on the Mac an ask packs for, as the room held for a waiting job weighs it (`Backfill`):
-/// its memory, disk and cores (tenths), and in how long it's expected to end (s from now) by its
-/// measured time (`Sched::batch_secs`) less what it has run (0: past it; None: not measured).
+/// its memory, disk and cores (tenths), and in how long it's expected to end (s from now; None: it
+/// may end any moment, nothing saying when) and by what (`End`, `Sched::run_end`).
 #[derive(Clone, Copy, Debug)]
 struct Run {
     mem_mb: u64,
     disk_mb: u64,
     cores: u32,
     ends: Option<u64>,
+    by: End,
 }
 
 impl Run {
-    /// A job measured `m`, counting for `cores` (tenths), of measured time `secs`, run `ran` s.
-    fn of(m: Measured, cores: u32, secs: Option<u64>, ran: u64) -> Run {
-        Run { mem_mb: m.mem_mb, disk_mb: m.disk_mb, cores, ends: secs.map(|s| s.saturating_sub(ran)) }
+    /// A job measured `m`, counting for `cores` (tenths), expected to end as `end` says.
+    fn of(m: Measured, cores: u32, end: (Option<u64>, End)) -> Run {
+        Run { mem_mb: m.mem_mb, disk_mb: m.disk_mb, cores, ends: end.0, by: end.1 }
+    }
+}
+
+/// What a job's expected end (`Run::ends`) is taken from (`Sched::run_end`, task #1505), as the
+/// room held for a waiting job says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum End {
+    /// Its measured time (`Sched::batch_secs`) less what it has run.
+    Measured,
+    /// Its progress's pace, as its worker's last beat said it (`Lease::left_by_progress`): a job
+    /// not measured or past its measured time.
+    Progress,
+    /// Past its measured time with no progress said: its step's runs' 90th percentile for its
+    /// targets (`Sched::batch_p90`) less what it has run, while it's within them.
+    Slow,
+    /// No end: past its measured time and its step's slower runs, no progress said.
+    Overdue,
+    /// No end: not measured, no progress said.
+    Unmeasured,
+}
+
+impl End {
+    /// Its words, of a job whose pronoun is `its`.
+    fn words(self, its: &str) -> String {
+        match self {
+            End::Measured => format!("by {its} measured time"),
+            End::Progress => format!("by {its} progress"),
+            End::Slow => format!("past {its} measured time, by {its} step's slower runs"),
+            End::Overdue => format!("past {its} measured time and {its} step's slower runs, no progress said"),
+            End::Unmeasured => "with no measured time and no progress said".to_string(),
+        }
     }
 }
 
 /// The room held for a waiting job (`RoomWait`) and what may still go while it waits (`Sched::pack`,
 /// task #973: backfilling, so a hold never idles a Mac's cores for as long as its running jobs
 /// last). The jobs it waits for (`waits_on`) are those of its Mac expected to end soonest, as few
-/// as free its room once they end, any past its time or not measured first (it may end any
-/// moment); `shadow` is when they're expected to have ended (s from now, by their measured times;
-/// 0 where one is past its time or not measured). A later job goes when it fits beside the
-/// waiting one once those end, every other job still running (`beside`), or, its time measured,
-/// ends before `shadow` by its runs' 90th percentile. A job of the second kind ends before the
-/// jobs waited for, so it's among them next time without putting off when they end; once one of
-/// them overruns, no more of that kind goes. So the waiting job waits only for a finite set of
-/// jobs, ending no later than those it first waited for while none overruns, and never for a
-/// long job while a shorter one frees its room.
+/// as free its room once they end, any with no end said first (it may end any moment); `shadow`
+/// is when they're expected to have ended (s from now, by each one's `Run::ends`: its measured
+/// time, else its progress, else its step's slower runs, task #1505; 0 where one has none) and
+/// `by` what the last of them to end (or the one with none) is timed by. A later job goes when it
+/// fits beside the waiting one once those end, every other job still running (`beside`), or, its
+/// time measured, ends before `shadow` by its runs' 90th percentile. A job of the second kind ends
+/// before the jobs waited for, so it's among them next time without putting off when they end;
+/// once one of them has no end said, no more of that kind goes. So the waiting job waits only for
+/// a finite set of jobs, ending no later than those it first waited for while each ends when
+/// expected, and never for a long job while a shorter one frees its room.
 struct Backfill {
     w: RoomWait,
     waits_on: usize,
     shadow: u64,
+    by: End,
     /// The room left beside it once the jobs it waits for end, every other job still running:
     /// memory, disk (None: not said), cores (tenths); None: short of it even then.
     beside: Option<(u64, Option<u64>, u32)>,
@@ -477,19 +511,23 @@ impl Backfill {
                 (m + r.mem_mb, d + r.disk_mb, c + r.cores)
             })
         };
-        // (Soonest to end first: one past its time or not measured as ending now, so it's waited
-        // for, which stops the second kind.)
+        // (Soonest to end first: one with no end said as ending now, so it's waited for, which
+        // stops the second kind.)
         let mut runs = runs.to_vec();
         runs.sort_by_key(|r| r.ends.unwrap_or(0));
         let waits_on = (0..=runs.len()).find(|&k| fits(free(&runs[..k]))).unwrap_or(runs.len());
         let waited = &runs[..waits_on];
-        let shadow = waited.iter().try_fold(0, |s, r| r.ends.filter(|&x| x > 0).map(|x| s.max(x))).unwrap_or(0);
+        // (The last of them to end, and what times it; one with none, sorted first, makes it 0.)
+        let (shadow, by) = match waited.first() {
+            Some(r) if r.ends.is_none() => (0, r.by),
+            _ => waited.iter().map(|r| (r.ends.unwrap_or(0), r.by)).max_by_key(|e| e.0).unwrap_or((0, End::Measured)),
+        };
         let left = free(waited);
         let beside = fits(left).then(|| {
             let (m, d, c) = left;
             (m - w.mem_mb, room.disk_mb.map(|_| d - w.disk_mb), c - w.cores)
         });
-        Backfill { shadow, waits_on, beside, w }
+        Backfill { shadow, by, waits_on, beside, w }
     }
 
     /// Whether a job of measure `m` (and `fill` of a shared cache's disk), counting for `busy`
@@ -534,13 +572,15 @@ impl Backfill {
         if w.cores > cores {
             s += &format!("; {} cores, {} left", tenths(w.cores), tenths(cores));
         }
-        let (jobs, its) = match self.waits_on {
-            1 => ("the job it waits for".to_string(), "its"),
-            n => (format!("the {n} jobs it waits for"), "their"),
-        };
-        let when = match self.shadow {
-            0 => format!("{jobs} running past {its} measured time or not measured"),
-            t => format!("{jobs} expected to end in {} min", t.div_ceil(60)),
+        // (Which end the hold took, task #1505: of several, the last to end's, or the one with none.)
+        let by = self.by.words("its");
+        let when = match (self.waits_on, self.shadow) {
+            (1, 0) => format!("the job it waits for running {by}"),
+            (1, t) => format!("the job it waits for expected to end in {} min, {by}", t.div_ceil(60)),
+            (n, 0) => format!("the {n} jobs it waits for running, one {by}"),
+            (n, t) => {
+                format!("the {n} jobs it waits for expected to end in {} min, the last of them {by}", t.div_ceil(60))
+            }
         };
         let then = if later {
             "nothing offered after it fits beside it or ends before then"
@@ -1819,10 +1859,7 @@ impl Sched {
         let mut runs: Vec<Run> = jobs
             .iter()
             .zip(&needs)
-            .map(|(&(l, st, ts), n)| {
-                let secs = self.lease_need(l, st, ts).1;
-                Run::of(n.m, self.need_cores(st, n, total).1, secs, l.ran(now).as_secs())
-            })
+            .map(|(&(l, st, ts), n)| Run::of(n.m, self.need_cores(st, n, total).1, self.run_end(l, st, ts, now)))
             .collect();
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
         // past them is an overcommit, trusting its busy cores (task #688 review). At most one per
@@ -2499,7 +2536,38 @@ impl Sched {
     /// A job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for `cores`
     /// (tenths), just granted, as room held for a waiting job weighs it (`Run`).
     fn run_of(&self, step: &str, targets: &[String], worker: &str, m: Measured, cores: u32) -> Run {
-        Run::of(m, cores, self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0), 0)
+        let end = match self.batch_secs(step, targets.iter().map(String::as_str), worker, 0) {
+            Some((s, _)) if s > 0 => (Some(s), End::Measured),
+            Some(_) => (None, End::Overdue),
+            None => (None, End::Unmeasured),
+        };
+        Run::of(m, cores, end)
+    }
+
+    /// When held job `l` of `step` over `targets` is expected to end, at `now` (s from now; None:
+    /// it may end any moment), and by what (task #1505): within its measured time (`lease_need`'s,
+    /// `batch_secs`), by it; else by its progress's pace where its worker's beats say it
+    /// (`Lease::left_by_progress`: the time left its status shows); else, measured and past it, by
+    /// its step's runs' 90th percentile for its targets (`batch_p90`, the margin a job granted
+    /// beside the room held is held to) while it's within them; else none. A job not measured
+    /// has no model either (`secs_on`: its step's model stands in for a target's own run).
+    fn run_end(&self, l: &Lease, step: &str, targets: &[(String, String)], now: Instant) -> (Option<u64>, End) {
+        let ran = l.ran(now).as_secs();
+        let secs = self.lease_need(l, step, targets).1;
+        let left = |s: u64| s.checked_sub(ran).filter(|&x| x > 0);
+        if let Some(x) = secs.and_then(left) {
+            return (Some(x), End::Measured);
+        }
+        if let Some(x) = l.left_by_progress(now) {
+            return (Some(x), End::Progress);
+        }
+        if secs.is_none() {
+            return (None, End::Unmeasured);
+        }
+        match self.batch_p90(step, targets.iter().map(|t| t.0.as_str()), &l.worker).and_then(left) {
+            Some(x) => (Some(x), End::Slow),
+            None => (None, End::Overdue),
+        }
     }
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
