@@ -493,13 +493,15 @@ the Earth once: the check moves nothing, and a place in two regions, or in none 
   the map, is new). A divided place's outline is the union of its regions: a group file gives no
   border, and its name, order and symbol are read by no resolution.
 - **Special files** are the `.toml` files whose name starts with `_`: never a region (an id has no
-  `_`, so a region file can't be named so). Three are known, and any other `_*.toml` is an error
+  `_`, so a region file can't be named so). Four are known, and any other `_*.toml` is an error
   (`rg-special`) naming them; so are the old names `pins.toml` and `rules.toml`, which say to
   rename them. A `_` name that isn't a `.toml` is ignored (drafts).
   - `_group.toml`, in any folder: its group (above).
   - `_pins.toml` (at the top) names the OSM pass the folder is written against (§6.1.5).
   - `_rules.toml` (optional, at the top) holds the rules for the whole folder: `cover = "earth"`,
     §6.1.3 "Land and water". Unknown fields are an error (`rg-rules`).
+  - `_remainder.toml` (optional, in any folder but the top): its regions' share of what a place's
+    outline holds and theirs don't, §6.1.3 "Remainders".
 - **Symbols' images:** `.svg`, `.png` and `.jpg` files and `.zip` bundles of them, anywhere (§6.1.3, "Symbols").
 - Every other file (a `.poly`, `.txt`, `.toml.removed`) is ignored: neither checked, read nor copied.
 
@@ -618,8 +620,41 @@ the subfolder's own business; a folder without one is handed to region by region
 a waters region's (it has no outline to hold one). A waters region in a folder another region
 hands out to that ends with nothing is listed and not built (below); elsewhere it is `rg-empty`.
 
+**Remainders.** Where a place's own outline holds land or big lakes its regions' outlines don't
+(the province's border runs out into a lake its counties stop at the shore of; a stretch of desert
+no district's relation draws), its folder declares who has it, once, in `_remainder.toml`
+(crate::inputs::regions::tiles, `remainders`):
+
+| Field | Type | |
+|---|---|---|
+| `of` | a part: the place (`osm:<relation>`), naming no region, group or line | required |
+| `[by]` | region id = a part: the official division's piece of each region of the folder that has one (a national boundary file's polygon, its lines run into the lake) | optional |
+| `step` | the median line's grid, as a `nearest`'s (100 m to 20 km) | optional, default `1 km` |
+
+Unknown fields are an error (`rg-part`, `rg-toml`). After every region's land is made and before any
+water, the folders' remainders are taken in turn, the deepest folder first (an outer place's then
+holds nothing an inner one gave), cell by cell: the land and big lakes of `of` that no region takes
+(every region's land and lakes as made, every region without water as stored) go to the folder's
+regions with land (every region under the folder but its waters regions): to each region in `by`
+the pieces inside its part (in their ids' order, a piece only once); the rest to the nearest region
+(its land and lakes), split at the median line as a `nearest` is on a grid of `step`. Each piece is
+its region's land or lake as the coastline's land has it. So the declaration names no member and no
+neighbour: one region's outline changing moves the remainder's lines with it, and a new region of the
+folder takes its share. A `land:` or `region:` in an outline reads a region's land before the
+remainders. Every region of the folder must have a `water` key, none be held and every `by` name one
+of them; else each is held, the file named (`rg-ref`). Without `by` the whole remainder is split at
+the median line: the file's comment says why (no official source draws the lines there).
+
+```toml
+# canada/provinces/ontario/_remainder.toml: the Great Lakes' Canadian water, by the province's own lines
+of = "osm:68841"
+[by]
+essex-county = "shape:ontario-lio-essex-county.geojson"
+```
+
 A divided place is the union of its regions: nothing of it is left over to hand out, and land
-inside it that no region covers is the cover check's, as any land in no region is. With
+inside it that no region covers (but what a `_remainder.toml` gives) is the cover check's, as any
+land in no region is. With
 `cover = "earth"` in `_rules.toml`, then, the cover check, which moves nothing: a place is in one
 region by the regions' definitions, or the check says where it isn't. Past `HAIR_KM2` (0.1 km²: what
 the outlines' own snapping leaves where two definitions meet exactly, measured on the whole input,
@@ -799,7 +834,8 @@ Mac's server (§6.1.9).
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
   (within a twentieth of the distance).
 - **Progress:** a resolve counts its steps as it goes (`regions::progress`, task #1145): the regions
-  without water, the land and the water (by region, the one under way by its cells), the lakes, the
+  without water, the land and the water (by region, the one under way by its cells), between them
+  the remainders (by folder, the one under way by its cells), the lakes, the
   coast's cells, splits and fills, each region's area, the hand-outs (by region, the one under way by
   the cells of the unions of the members it hands to and of its stretches), the stray water (by
   region, the one under way by its stretches), the 200-nmi zones, the cover check's every cell, the
@@ -992,12 +1028,12 @@ All errors; ids `rg-<check>.<hash16>`. `rg-cover`'s ids are its regions' and its
 | `rg-shape` | a GeoJSON missing, not a (Multi)Polygon, or invalid |
 | `rg-line` | a line under two points, ways that don't join, a cut line crossing itself |
 | `rg-cut` | a cut line ending inside a piece |
-| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too); two waters regions in a folder a hand-out gives to as one member |
+| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too); two waters regions in a folder a hand-out gives to as one member; a remainder whose folder's regions can't all take it (one without water or held, a `by` naming none of them) |
 | `rg-loop` | a loop of `region:` references |
 | `rg-empty` | a result with no area (but a waters region in a folder another region hands out to) |
 | `rg-pin` | no OSM pin, or one that isn't a date |
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
-| `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
+| `rg-special` | a `_*.toml` that isn't `_group.toml`, `_remainder.toml` (not at the top), `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`/`symbol`, or an empty name |
 | `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, a kind empty or of more than one line, a source not `https://`); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |

@@ -702,7 +702,11 @@ fn a_name_starting_with_an_underscore_is_special() {
     assert_eq!(special("eu/_group.toml"), Some(Special::Group));
     assert_eq!(special("eu/_pins.toml"), None);
     assert_eq!(special("_draft.toml"), None);
+    assert_eq!(special("eu/_remainder.toml"), Some(Special::Remainder));
+    assert_eq!(special("_remainder.toml"), None, "the top has no folder of regions to give it to");
     let ok = |p: &str, t: &str| checks.file(p, t.as_bytes()).findings;
+    assert!(ok("eu/_remainder.toml", "of = \"osm:1\"\n").is_empty());
+    assert_eq!(ok("eu/_remainder.toml", "of = \"land:a\"\n")[0].check(), "rg-part");
     assert!(ok("_pins.toml", "osm = \"2026-09-28\"\n").is_empty());
     assert!(ok("_rules.toml", "cover = \"earth\"\n").is_empty());
     for (p, t) in [("_draft.toml", ""), ("eu/_pins.toml", "osm = \"2026-09-28\"\n"), ("eu/_rules.toml", "")] {
@@ -713,6 +717,7 @@ fn a_name_starting_with_an_underscore_is_special() {
             fs[0].message.contains("_pins.toml")
                 && fs[0].message.contains("_rules.toml")
                 && fs[0].message.contains("_group.toml")
+                && fs[0].message.contains("_remainder.toml")
         );
     }
     for (old, new) in [("pins.toml", "_pins.toml"), ("rules.toml", "_rules.toml")] {

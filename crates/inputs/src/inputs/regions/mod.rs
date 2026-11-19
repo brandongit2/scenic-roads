@@ -585,10 +585,11 @@ impl Checks for Regions {
             c.findings.push(finding(&file::Fault { check: "special", message }, path));
         } else if resolve::is_special(path) && known.is_none() {
             let message = format!(
-                "{name}: a file whose name starts with _ is special, and the special files are {} and {} (at the top) and {} (in any folder)",
+                "{name}: a file whose name starts with _ is special, and the special files are {} and {} (at the top), {} (in any folder) and {} (in any but the top)",
                 resolve::PINS,
                 resolve::RULES,
-                resolve::GROUP
+                resolve::GROUP,
+                resolve::REMAINDER
             );
             c.findings.push(finding(&file::Fault { check: "special", message }, path));
         } else if known == Some(resolve::Special::Group) {
@@ -609,6 +610,10 @@ impl Checks for Regions {
                     c.facts.insert("rules".into(), serde_json::to_value(&r).unwrap_or_default());
                 }
                 Err(f) => c.findings.push(finding(&f, path)),
+            }
+        } else if known == Some(resolve::Special::Remainder) {
+            if let Err(f) = file::parse_remainder(text) {
+                c.findings.push(finding(&f, path));
             }
         } else if known == Some(resolve::Special::Pins) {
             match file::parse_pins(text) {

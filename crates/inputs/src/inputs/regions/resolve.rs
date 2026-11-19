@@ -43,6 +43,8 @@ pub struct Folder {
     pub pins: BTreeMap<String, String>,
     /// `_rules.toml`, when there and read.
     pub rules: Option<super::tiles::Rules>,
+    /// Each folder's `_remainder.toml` read, by the folder's path: (the file's path, it).
+    pub remainders: BTreeMap<String, (String, super::file::Remainder)>,
     /// Two region files with one id, or two shapes with one name.
     pub problems: Vec<Problem>,
     /// Each file's bytes' hash, by path (what a region's resolution is kept by: `Memo`).
@@ -84,6 +86,8 @@ pub const GROUP: &str = "_group.toml";
 pub const PINS: &str = "_pins.toml";
 /// The rules for the whole folder (at the folder's top).
 pub const RULES: &str = "_rules.toml";
+/// A folder's declared remainder, in any folder but the top (§6.1.3 "Remainders").
+pub const REMAINDER: &str = "_remainder.toml";
 
 /// The known special files.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,13 +95,15 @@ pub enum Special {
     Group,
     Pins,
     Rules,
+    Remainder,
 }
 
-/// Which known special file an inputs folder path is: `_group.toml` in any folder, `_pins.toml` and
-/// `_rules.toml` at the top.
+/// Which known special file an inputs folder path is: `_group.toml` in any folder, `_remainder.toml`
+/// in any but the top, `_pins.toml` and `_rules.toml` at the top.
 pub fn special(path: &str) -> Option<Special> {
     match (file_name(path), path.contains('/')) {
         (GROUP, _) => Some(Special::Group),
+        (REMAINDER, true) => Some(Special::Remainder),
         (PINS, false) => Some(Special::Pins),
         (RULES, false) => Some(Special::Rules),
         _ => None,
@@ -148,6 +154,11 @@ impl Folder {
             } else if kind == Some(Special::Pins) {
                 if let Some(Ok(pins)) = text.map(super::file::parse_pins) {
                     f.pins = pins;
+                }
+            } else if kind == Some(Special::Remainder) {
+                if let Some(Ok(r)) = text.map(super::file::parse_remainder) {
+                    let dir = p.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                    f.remainders.insert(dir, (p.clone(), r));
                 }
             } else if name.ends_with(".toml") {
                 if let Some(Ok(r)) = text.map(|t| super::file::parse(&name, t)) {

@@ -645,6 +645,90 @@ pub fn parse_pins(text: &str) -> Result<BTreeMap<String, String>, Fault> {
     pins_of(raw)
 }
 
+/// A folder's declared remainder (`_remainder.toml`, §6.1.3 "Remainders"): the land and lakes of
+/// `of` that no region's outline takes go to the folder's regions, each the pieces inside its
+/// official part in `by`, the rest to the nearest of them, split at the median line (on a grid of
+/// `step_m`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Remainder {
+    pub of: Part,
+    pub by: BTreeMap<String, Part>,
+    pub step_m: f64,
+}
+
+impl Remainder {
+    /// Every part it names, `of` first, then `by`'s in its members' order.
+    pub fn parts(&self) -> Vec<&Part> {
+        std::iter::once(&self.of).chain(self.by.values()).collect()
+    }
+
+    /// Its parts as a region's outline, for reading their leaves as a region's are
+    /// (`resolve::gather`): id `_remainder`, which no region has (an id has no `_`).
+    pub fn as_region(&self) -> Region {
+        Region {
+            id: "_remainder".into(),
+            name: "_remainder".into(),
+            outline: self.parts().into_iter().cloned().collect(),
+            minus: Vec::new(),
+            intersect: Vec::new(),
+            water: Vec::new(),
+            water_key: false,
+            hand_out: None,
+            disabled: false,
+            lines: BTreeMap::new(),
+            pins: BTreeMap::new(),
+            symbol: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRemainder {
+    of: toml::Value,
+    #[serde(default)]
+    by: BTreeMap<String, toml::Value>,
+    step: Option<String>,
+}
+
+/// `_remainder.toml`, parsed: `of` a part, `by` a table of region ids to parts, `step` a distance
+/// of 100 m to 20 km (default 1 km). Its parts name no region, group or line (they're read before
+/// the regions' remainders, from the sources alone).
+pub fn parse_remainder(text: &str) -> Result<Remainder, Fault> {
+    let raw: RawRemainder =
+        toml::from_str(text).map_err(|e| fault("toml", format!("_remainder.toml: {}", e.message())))?;
+    let at = |f: Fault| Fault { check: f.check, message: format!("_remainder.toml: {}", f.message) };
+    let plain = |p: Part, k: &str| -> Result<Part, Fault> {
+        let mut v = Vec::new();
+        p.walk(&mut v);
+        let mut lines = Vec::new();
+        p.lines(&mut lines);
+        if v.iter().any(|q| matches!(q, Part::Region(_) | Part::Land(_) | Part::Group(_) | Part::Rest))
+            || !lines.is_empty()
+        {
+            return Err(fault(
+                "part",
+                format!("_remainder.toml: {k} names a region, a group or a line: its parts are the sources' alone"),
+            ));
+        }
+        Ok(p)
+    };
+    let of = plain(parse_part(&raw.of).map_err(at)?, "of")?;
+    let mut by = BTreeMap::new();
+    for (id, v) in &raw.by {
+        if !valid_id(id) {
+            return Err(fault("part", format!("_remainder.toml: by.{id}: not a region's id")));
+        }
+        by.insert(id.clone(), plain(parse_part(v).map_err(at)?, &format!("by.{id}"))?);
+    }
+    let step = raw.step.as_deref().unwrap_or(DEFAULT_STEP).trim();
+    let step_m = parse_distance(step).map_err(|e| fault("part", format!("_remainder.toml: step: {e}")))?;
+    if !(MIN_STEP_M..=MAX_STEP_M).contains(&step_m) {
+        return Err(fault("part", format!("_remainder.toml: step {step:?}: 100 m to 20 km")));
+    }
+    Ok(Remainder { of, by, step_m })
+}
+
 /// A region file, parsed and checked as a file (§6.1.8: `rg-toml`, `rg-id`, `rg-part`, `rg-line`,
 /// `rg-pin`): its name, `<id>.toml`, is its id's. Every fault, not only the first.
 pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {

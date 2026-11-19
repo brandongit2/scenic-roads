@@ -576,6 +576,51 @@ fn a_missing_county_is_a_gap_naming_its_neighbours() {
     }
 }
 
+/// Task #1448: a folder's declared remainder. What of its `of` no region's outline takes goes to the
+/// folder's regions: by default to the nearest, split at the median line; with `by`, each the pieces
+/// inside its official part first, the rest by nearest. What another region takes (one outside the
+/// folder) stays its own; nothing overlaps, nothing is left. A `by` naming no region of the folder
+/// holds the folder's regions.
+#[test]
+fn a_folders_remainder_goes_to_its_regions() {
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n";
+    let s = "id = \"s\"\nname = \"S\"\nwater = [{ buffer = \"box:30.0,20.0,33.0,21.0\", by = \"10 km\" }]\n";
+    let q = "id = \"q\"\nname = \"Q\"\noutline = [\"box:31.4,20.4,31.6,20.6\"]\nwater = []\n";
+    let run_with = |rem: &str| {
+        let mut files = all();
+        files.extend([("p/l.toml", l), ("p/r.toml", r), ("s.toml", s), ("q.toml", q), ("p/_remainder.toml", rem)]);
+        run(&w, &files)
+    };
+    let in_ =
+        |out: &resolve::Outcome, id: &str, x: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(20.2)]);
+    let median = run_with("of = \"box:30.0,20.0,33.0,21.0\"\n");
+    assert!(median.problems.is_empty(), "{:#?}", median.problems);
+    assert!(in_(&median, "l", 31.2) && !in_(&median, "r", 31.2));
+    assert!(in_(&median, "r", 31.8) && !in_(&median, "l", 31.8));
+    assert!(in_(&median, "r", 31.6) && !in_(&median, "l", 31.6), "east of the median line, 31.5°");
+    let mid = |out: &resolve::Outcome, id: &str| area_of(&out.resolved[id].geometry).contains([e7(31.5), e7(20.5)]);
+    assert!(mid(&median, "q") && !mid(&median, "l") && !mid(&median, "r"), "what q takes stays q's");
+    // Official lines: l's to 31.7°, the rest to the nearest.
+    let official = run_with("of = \"box:30.0,20.0,33.0,21.0\"\n[by]\nl = \"box:30.0,19.0,31.7,22.0\"\n");
+    assert!(official.problems.is_empty(), "{:#?}", official.problems);
+    assert!(in_(&official, "l", 31.6) && !in_(&official, "r", 31.6), "l's by its official part");
+    assert!(in_(&official, "r", 31.85) && !in_(&official, "l", 31.85));
+    assert!(mid(&official, "q") && !mid(&official, "l"));
+    // A `by` naming no region of the folder: the folder's regions held, saying why.
+    let wrong = run_with("of = \"box:30.0,20.0,33.0,21.0\"\n[by]\nq = \"box:30.0,19.0,31.7,22.0\"\n");
+    let p: Vec<_> = wrong.problems.iter().filter(|p| p.check == "rg-ref").collect();
+    assert_eq!(p.len(), 1, "{:#?}", wrong.problems);
+    assert!(p[0].message.contains("by.q names no region of the folder") && p[0].files == ["p/_remainder.toml"]);
+    assert!(!wrong.resolved.contains_key("l") && !wrong.resolved.contains_key("r"));
+    // Its parts are the sources' alone; a bad one is the file's fault.
+    assert!(file::parse_remainder("of = \"region:l\"\n").is_err());
+    assert!(file::parse_remainder("of = \"osm:1\"\nstep = \"10 m\"\n").is_err());
+    assert!(file::parse_remainder("of = \"osm:1\"\nby = { \"L\" = \"osm:2\" }\n").is_err());
+    assert!(file::parse_remainder("of = \"osm:1\"\nsplit = \"median\"\n").is_err());
+}
+
 /// One coastline (#649): land past a region's outline's coast, along it, is its own, with or
 /// without `cover`.
 #[test]

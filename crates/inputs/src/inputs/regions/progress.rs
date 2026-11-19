@@ -15,6 +15,7 @@ use std::sync::Mutex;
 pub enum Step {
     Plain,
     Land,
+    Remainders,
     Water,
     Lakes,
     Coast,
@@ -33,9 +34,10 @@ pub enum Step {
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Step; 16] = [
+    pub const ALL: [Step; 17] = [
         Step::Plain,
         Step::Land,
+        Step::Remainders,
         Step::Water,
         Step::Lakes,
         Step::Coast,
@@ -57,6 +59,7 @@ impl Step {
         match self {
             Step::Plain => ("the regions without water", "regions"),
             Step::Land => ("the land", "regions"),
+            Step::Remainders => ("the remainders", "folders"),
             Step::Water => ("the water", "regions"),
             Step::Lakes => ("the lakes", "cells"),
             Step::Coast => ("the coast", "cells"),
@@ -225,7 +228,7 @@ mod tests {
         // Steps passed over count as done; one begun again, or before, begins nothing.
         p.begin(Step::Cover, 16_200);
         let at = p.share();
-        assert!((at - 12.0 / n).abs() < 1e-12);
+        assert!((at - 13.0 / n).abs() < 1e-12);
         p.begin(Step::Land, 2);
         p.begin(Step::Cover, 10);
         assert_eq!(p.line(), "the cover check, 0 of 16200 cells");
@@ -234,7 +237,7 @@ mod tests {
         for _ in 0..20_000 {
             p.one();
         }
-        assert!((p.share() - 13.0 / n).abs() < 1e-12);
+        assert!((p.share() - 14.0 / n).abs() < 1e-12);
         p.begin(Step::Stored, 0);
         assert_eq!(p.share(), 1.0, "a step of nothing is done");
     }
