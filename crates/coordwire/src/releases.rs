@@ -76,7 +76,7 @@ pub fn rollback(c: &Client, current: &str, previous: &str) -> Result<Asked> {
 /// (jobrt::appupdate::check), the lead found as crate::lead says: the one its agent keeps (no NAS
 /// needed), else the declared one's; with none, nothing.
 pub fn check(home: &Path, root: Option<&store::nasfs::NasRoot>, running: &str) -> Result<Option<String>> {
-    let agent = (!buildstore::out::testing()).then(|| home.join("agent"));
+    let agent = (!crate::isolated()).then(|| home.join("agent"));
     let Some(lead) = Client::to_lead(agent.as_deref(), root, &store::sys::host_name())? else { return Ok(None) };
     jobrt::appupdate::check(home, &lead, running)
 }

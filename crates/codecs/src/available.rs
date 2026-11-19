@@ -176,14 +176,12 @@ impl Tile {
     }
 }
 
-/// A stored tile's length unzipped (`blob` gzip'd, as `gzip` makes it, or not): the gzip trailer's
-/// own count, so no tile is unzipped and read to say what its bytes took.
+/// A stored tile's length unzipped (`blob` gzip'd, as `gzip` makes it, and a pack stores it): the
+/// gzip trailer's own count, so no tile is unzipped and read to say what its bytes took.
 pub fn unzipped_len(blob: &[u8]) -> Result<u32> {
-    if blob.starts_with(&[0x1f, 0x8b]) && blob.len() >= 18 {
-        let t = &blob[blob.len() - 4..];
-        return Ok(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
-    }
-    Ok(Tile::decode(blob)?.encode().len() as u32)
+    ensure!(blob.starts_with(&[0x1f, 0x8b]) && blob.len() >= 18, "an available tile isn't gzip'd");
+    let t = &blob[blob.len() - 4..];
+    Ok(u32::from_le_bytes([t[0], t[1], t[2], t[3]]))
 }
 
 /// `b` gzip'd with no time or name in its header.
@@ -357,9 +355,8 @@ mod tests {
         for t in [t, w] {
             let raw = t.encode().len() as u32;
             assert_eq!(unzipped_len(&t.gzipped()).unwrap(), raw);
-            assert_eq!(unzipped_len(&t.encode()).unwrap(), raw, "not zipped: read whole");
         }
-        assert!(unzipped_len(&[0x1f, 0x8b, 8]).is_err());
+        assert!(unzipped_len(&tile().encode()).is_err() && unzipped_len(&[0x1f, 0x8b, 8]).is_err());
     }
 
     #[test]

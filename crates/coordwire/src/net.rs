@@ -121,11 +121,11 @@ pub const NAMES: &str = ".config/scenic/names";
 /// The public names a proxy on this Mac serves it under (tools/caddy: map.brandontsang.net on the
 /// M6), from `~/<NAMES>`: names the owner gave it, so `ours` takes them and the members' pages
 /// there may call the others (agentcore::coord::brokers::Broker's `pages`). Read again every minute;
-/// none in a unit test (`buildstore::out::testing`).
+/// none in a unit test (`isolated`).
 pub fn names() -> Vec<String> {
     use std::sync::Mutex;
     static KEPT: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
-    if buildstore::out::testing() {
+    if crate::isolated() {
         return Vec::new();
     }
     let mut k = KEPT.lock().unwrap_or_else(|e| e.into_inner());
@@ -226,7 +226,7 @@ pub const DEFAULT_PORT: u16 = 7311;
 /// unit test, loopback alone (agentcore::coord::listen_ip): never the Mac's network names, Tailscale or
 /// firewall.
 pub fn urls(port: u16) -> Vec<String> {
-    if buildstore::out::testing() {
+    if crate::isolated() {
         return vec![format!("http://127.0.0.1:{port}")];
     }
     let mut out: Vec<String> = Vec::new();
@@ -244,7 +244,7 @@ pub fn urls(port: u16) -> Vec<String> {
 /// may have opened its page by address. Origins alone (agentcore::coord::brokers::origins_of): a LAN
 /// address is any device's on the network to claim, so never one to send to. None in a unit test.
 pub fn lan_urls(port: u16) -> Vec<String> {
-    if buildstore::out::testing() {
+    if crate::isolated() {
         return Vec::new();
     }
     let mut out: Vec<String> = Vec::new();
@@ -259,6 +259,9 @@ pub fn lan_urls(port: u16) -> Vec<String> {
 
 /// This Mac's IPv4 addresses, as ifconfig lists them.
 fn inet4() -> Vec<std::net::Ipv4Addr> {
+    if crate::isolated() {
+        return Vec::new();
+    }
     let Ok(o) = store::spawn::output(&mut store::spawn::command("/sbin/ifconfig")) else { return Vec::new() };
     let text = String::from_utf8_lossy(&o.stdout);
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -272,19 +275,22 @@ fn inet4() -> Vec<std::net::Ipv4Addr> {
 }
 
 /// `port`'s address over HTTPS, when `tailscale serve` proxies it ("https://<this Mac's tailnet
-/// name>/<path>"). None in a unit test (`buildstore::out::testing`): no Mac's own Tailscale decides
+/// name>/<path>"). None in a unit test (`isolated`): no Mac's own Tailscale decides
 /// it, and no test starts its app (#1110: each coordinator a test started ran the Tailscale app's
 /// binary, ~430 launches an agentcore run).
 pub fn served_https(port: u16) -> Option<String> {
-    if buildstore::out::testing() {
+    if crate::isolated() {
         return None;
     }
     https_in(&tailscale_json(&["serve", "status", "--json"])?, port)
 }
 
 /// What Tailscale's command line says to `args` (a `--json` one), bounded to 3 s: a stuck daemon
-/// mustn't hold up whoever asks. None: no Tailscale, or no answer.
+/// mustn't hold up whoever asks. None: no Tailscale, or no answer, or a unit test (`isolated`).
 pub fn tailscale_json(args: &[&str]) -> Option<serde_json::Value> {
+    if crate::isolated() {
+        return None;
+    }
     let cli = [
         "/opt/homebrew/bin/tailscale",
         "/usr/local/bin/tailscale",

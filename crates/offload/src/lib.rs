@@ -619,6 +619,19 @@ impl Offload {
     }
 }
 
+/// Its unit tests' process is out of reach of this Mac's own pool and network from its start
+/// (`coordwire::go_isolated`), before any test runs: run by the loader as the test binary starts.
+#[cfg(test)]
+#[used]
+#[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(not(target_os = "macos"), link_section = ".init_array")]
+static ISOLATED_START: extern "C" fn() = {
+    extern "C" fn start() {
+        coordwire::go_isolated();
+    }
+    start
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -122,6 +122,55 @@ fn only_the_runtime_s_and_pipeline_s_unit_tests_run_testing() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// `coordwire::go_isolated` (this process out of reach of this Mac's own pool and network, `coordwire::isolated`)
+/// is named only in a `#[cfg(test)]` start-up constructor (`ISOLATED_START`, in a crate's lib.rs
+/// or main.rs), within its first eight lines, and where it is defined. The crates whose unit tests
+/// link coordwire without the test flag (the server's, which link the runtime; offload's) each have
+/// one; where the test flag is set (`go_testing`), it implies isolation.
+#[test]
+fn only_a_cfg_test_start_up_constructor_isolates_a_process() {
+    let root = std::path::absolute("../..").unwrap();
+    let mut bad = Vec::new();
+    let mut starts = Vec::new();
+    for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let mut files = Vec::new();
+        rs_files(&e.path(), &mut files);
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            let defined_here = f.ends_with("coordwire/src/lib.rs");
+            let start = lines.iter().position(|l| l.starts_with("static ISOLATED_START: extern \"C\" fn() = {"));
+            if let Some(s) = start {
+                let ok = (f.ends_with("src/lib.rs") || f.ends_with("src/main.rs"))
+                    && lines[s.saturating_sub(4)..s].contains(&"#[cfg(test)]");
+                if !ok {
+                    bad.push(format!(
+                        "{}: an ISOLATED_START outside a lib.rs's or main.rs's #[cfg(test)]",
+                        f.display()
+                    ));
+                }
+                starts.push(name.clone());
+            }
+            for (i, l) in lines.iter().enumerate() {
+                let code = code_of(l);
+                if !names(&code, "go_isolated") {
+                    continue;
+                }
+                let in_start = start.is_some_and(|s| i > s && i < s + 8);
+                let defined = defined_here && code.trim() == "pub fn go_isolated() {";
+                if !in_start && !defined {
+                    bad.push(format!("{}:{}: go_isolated named outside an ISOLATED_START", f.display(), i + 1));
+                }
+            }
+        }
+    }
+    for c in ["server", "offload"] {
+        assert!(starts.iter().any(|s| s == c), "{c}'s ISOLATED_START: {starts:?}");
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
 /// Line `l`'s code: its string literals' contents and its comment left out.
 fn code_of(l: &str) -> String {
     let (mut out, mut quoted, mut escaped) = (String::new(), false, false);

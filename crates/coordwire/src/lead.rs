@@ -49,9 +49,9 @@ pub fn agent_home() -> PathBuf {
 }
 
 /// This Mac's agent's folder for a process that isn't the agent (the CLI, the map server, the
-/// updater): `agent_home`; None in a unit test, which never reads the Mac's own lead.
+/// updater): `agent_home`; None in a unit test (`isolated`), which never reads the Mac's own lead.
 pub fn this_macs_agent() -> Option<PathBuf> {
-    (!buildstore::out::testing()).then(agent_home)
+    (!crate::isolated()).then(agent_home)
 }
 
 /// The lead the agent of `home` keeps; None when it keeps none (or it doesn't read).
@@ -136,7 +136,7 @@ pub fn status(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Opti
 /// Mac) of that name, then its LAN name. In a unit test (`buildstore::out::testing`), those a test's
 /// lead announced for that host under `root` (`announce`).
 pub fn addresses(root: &store::nasfs::NasRoot, host: &str) -> Vec<String> {
-    if buildstore::out::testing() {
+    if crate::isolated() {
         return announced().lock().unwrap().get(&(key_of(root), host.to_string())).cloned().unwrap_or_default();
     }
     let mut out: Vec<String> = crate::net::tailscale_json(&["status", "--json"])

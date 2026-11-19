@@ -17,6 +17,22 @@ pub mod testkit;
 
 use serde::{Deserialize, Serialize};
 
+static ISOLATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Puts this process out of reach of this Mac's own pool and network, for a unit test's process
+/// (a crate's `cfg(test)` start-up constructor, as `buildstore::out::go_testing`'s is, which
+/// implies it): the agent's lead, the owner's public names, this Mac's addresses, its Tailscale
+/// and the app's releases are never asked, whatever the Mac holds.
+pub fn go_isolated() {
+    ISOLATED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process is out of reach of this Mac's own pool and network (`go_isolated`, or a
+/// crate's unit tests with their test flag: `buildstore::out::testing`).
+pub fn isolated() -> bool {
+    ISOLATED.load(std::sync::atomic::Ordering::Relaxed) || buildstore::out::testing()
+}
+
 /// How workers reach the coordinator (`lead::find`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Contact {

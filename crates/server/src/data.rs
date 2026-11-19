@@ -841,7 +841,7 @@ impl Data {
         }
         let v = match (self.nas_root(), self.pool()) {
             (Some(root), Some(pool)) if pool.is_online() => {
-                let home = this_macs_agent();
+                let home = coordwire::lead::this_macs_agent();
                 coordwire::lead::status(home.as_deref(), Some(&root)).unwrap_or(serde_json::Value::Null)
             }
             _ => serde_json::Value::Null,
@@ -991,18 +991,6 @@ impl Default for Reach {
 pub fn host() -> &'static str {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     HOST.get_or_init(store::sys::host_name)
-}
-
-/// This Mac's agent's folder, where its lead is found (`coordwire::lead::this_macs_agent`); None in
-/// the server's own unit tests, which never read the Mac's own lead (the real pool's coordinator:
-/// a test's mirror would slow to the real agent's jobs, and ask it over the network at each
-/// round). The test flag `coordwire` goes by isn't set in them: they link the runtime, whose own
-/// test behaviours it would turn on (crates/pipeline/tests/test_mode.rs).
-pub fn this_macs_agent() -> Option<PathBuf> {
-    if cfg!(test) {
-        return None;
-    }
-    coordwire::lead::this_macs_agent()
 }
 
 /// `~/Library/Application Support/scenic`.

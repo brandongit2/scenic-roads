@@ -206,6 +206,22 @@ impl AppState {
     }
 }
 
+/// The server's unit tests' process is offline and out of reach of this Mac's own pool and network
+/// from its start (`buildstore::fetch::go_offline`, `coordwire::go_isolated`), before any test
+/// runs: run by the loader as the test binary starts. Not the test flag (`buildstore::out::go_testing`):
+/// the tests link the runtime, whose own test behaviours it would turn on (crates/pipeline/tests/test_mode.rs).
+#[cfg(test)]
+#[used]
+#[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(not(target_os = "macos"), link_section = ".init_array")]
+static ISOLATED_START: extern "C" fn() = {
+    extern "C" fn start() {
+        buildstore::fetch::go_offline();
+        coordwire::go_isolated();
+    }
+    start
+};
+
 /// A server for tests over `root`, a local folder laid out like the NAS project folder (as with
 /// `--root`: the real NAS is never looked for), with this Mac's files in `home`. Nothing runs in
 /// the background.
@@ -1015,6 +1031,20 @@ async fn catalogue_h(State(s): State<S>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The unit tests' process is out of reach of this Mac's own pool and network from its start
+    /// (`ISOLATED_START`), whatever the Mac holds: no lead of its agent, no names of the owner's,
+    /// no Tailscale or ifconfig asked.
+    #[test]
+    fn the_unit_tests_never_reach_this_macs_pool_or_network() {
+        assert!(coordwire::isolated());
+        assert!(coordwire::lead::this_macs_agent().is_none());
+        assert!(coordwire::net::names().is_empty());
+        assert!(coordwire::net::served_https(7311).is_none());
+        assert!(coordwire::net::tailscale_json(&["status", "--json"]).is_none());
+        assert!(coordwire::net::lan_urls(7311).is_empty());
+        assert_eq!(coordwire::net::urls(7311), ["http://127.0.0.1:7311"]);
+    }
 
     #[test]
     fn the_default_port_is_not_8080() {
