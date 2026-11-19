@@ -5008,7 +5008,7 @@ mod tests {
         let asking = buildstore::coverage::Asking::new(&reykjavik);
         assert!(asking.contains([-219_000_000, 641_300_000]));
         assert!(!asking.contains([-213_860_000, 641_300_000]));
-        let line = buildstore::asked::line(&reykjavik, None, &|_| None).unwrap();
+        let line = buildstore::asked::line(&reykjavik, None, &buildstore::asked::no_questions).unwrap();
         let rec = buildstore::asked::Record::new(&reykjavik, asking.asked(), Vec::new(), line);
         let content = "work/asked/timetables-todo.2222222222222222.json";
         m.insert(buildstore::asked::logical("timetables-todo"), content.into());

@@ -90,24 +90,46 @@ impl Record {
     }
 }
 
+/// A question of a record's `also` answered again now (`line`'s and `target_line`'s `reask`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Now(String),
+    /// A question of a form this build doesn't ask (a form since changed): taken for an answer
+    /// flipped, so its step re-runs once.
+    OfAnotherForm,
+    /// One that can't be answered now (what it names can't be read: I/O): the key waits.
+    NotNow,
+}
+
 /// The key line of a run that reads `now` of the coverage by the cheap test: with no record, `none`;
 /// with record `prev` (put as content `content`), its line while `now` is what it read
 /// (nothing asked again) or `cov` answers its questions as they were answered (`reask` answering its
-/// `also` questions now), else a new one naming it. None while a question can't be answered now
-/// (`reask` None).
+/// `also` questions now), else a new one naming it; a record that doesn't parse, or a question of
+/// another form, a new one too. None only while a question can't be answered now (`Answer::NotNow`).
 fn line_of(
     cov: &Coverage,
     now: &str,
     none: impl FnOnce() -> String,
-    prev: Option<(&str, &Record)>,
-    reask: &dyn Fn(&str) -> Option<String>,
+    prev: Option<(&str, Prev)>,
+    reask: &dyn Fn(&str) -> Answer,
 ) -> Option<String> {
-    let Some((content, r)) = prev else { return Some(none()) };
+    let (content, r) = match prev {
+        None => return Some(none()),
+        Some((content, Prev::Unparsed)) => return Some(changed(now, content)),
+        Some((content, Prev::Record(r))) => (content, r),
+    };
     if r.version == now {
         return Some(r.line.clone());
     }
-    let also: Vec<(String, String)> =
-        r.also.iter().map(|(q, _)| Some((q.clone(), reask(q)?))).collect::<Option<_>>()?;
+    let also: Vec<(String, String)> = r
+        .also
+        .iter()
+        .map(|(q, _)| match reask(q) {
+            Answer::Now(a) => Some((q.clone(), a)),
+            Answer::OfAnotherForm => Some((q.clone(), UNANSWERED.to_string())),
+            Answer::NotNow => None,
+        })
+        .collect::<Option<_>>()?;
     Some(if answers(cov, &r.asked, also.into_iter()) == r.answers { r.line.clone() } else { changed(now, content) })
 }
 
@@ -116,42 +138,46 @@ fn changed(now: &str, content: &str) -> String {
     store::naming::hash16(format!("changed {now} {content}").as_bytes())
 }
 
-/// What a target's record holds as the plan reads it: the record, or one that reads but doesn't
-/// parse (a format since changed): taken for answers flipped (`target_line`).
+/// A record as the plan and the run read it: the record, or one that reads but doesn't parse (a
+/// format since changed): taken for answers flipped.
 pub enum Prev<'a> {
     Record(&'a Record),
     Unparsed,
 }
 
-/// An answer no run gets: a question a target's record asked that can't be answered now (its form
-/// since changed) answers this, so its answers differ from the record's.
+/// A record's format: bumped with any change to `Record` or `coverage::Asked` that changes what
+/// parses, so what's kept of a record by it (the plan's heads, agent::tiles) is read again.
+pub const RECORD_FMT: u32 = 2;
+
+/// The `reask` of a step that asks no question whole: any it finds is of another form.
+pub fn no_questions(_: &str) -> Answer {
+    Answer::OfAnotherForm
+}
+
+/// An answer no run gets: a question of another form answers this, so its answers differ from the
+/// record's.
 const UNANSWERED: &str = "\u{0}unanswered";
 
 /// The key line of a world step keyed on what it asked: with no record yet, a new one of the
 /// coverage's version; with record `prev`, `line_of`'s, the coverage's version its cheap test.
-pub fn line(cov: &Coverage, prev: Option<(&str, &Record)>, reask: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+pub fn line(cov: &Coverage, prev: Option<(&str, Prev)>, reask: &dyn Fn(&str) -> Answer) -> Option<String> {
     let v = cov.version();
     line_of(cov, &v, || store::naming::hash16(format!("none {v}").as_bytes()), prev, reask)
 }
 
 /// The key line of a target keyed on what it asked, `geo` what its key reads of the coverage by
 /// geometry (its cheap test): with no record yet, `geo` itself, the line it keyed by before it
-/// asked; with record `prev`, `line_of`'s, a question `reask` can't answer taken for an answer
-/// flipped; a record that doesn't parse (`Prev::Unparsed`), a new line naming it. Never none: a
-/// record of another form re-runs its target once, never wedges it.
+/// asked; with record `prev`, `line_of`'s, a question `reask` can't answer (a target's questions
+/// read nothing that can fail: of another form) taken for an answer flipped. Never none: a record
+/// of another form re-runs its target once, never wedges it.
 pub fn target_line(
     cov: &Coverage,
     geo: &str,
     prev: Option<(&str, Prev)>,
     reask: &dyn Fn(&str) -> Option<String>,
 ) -> String {
-    let r = match prev {
-        None => None,
-        Some((content, Prev::Unparsed)) => return changed(geo, content),
-        Some((content, Prev::Record(r))) => Some((content, r)),
-    };
-    let flips = |q: &str| Some(reask(q).unwrap_or_else(|| UNANSWERED.to_string()));
-    line_of(cov, geo, || geo.to_string(), r, &flips).expect("every question answered")
+    let flips = |q: &str| reask(q).map_or(Answer::OfAnotherForm, Answer::Now);
+    line_of(cov, geo, || geo.to_string(), prev, &flips).expect("every question answered")
 }
 
 /// A run of a step keyed on what it asks: the coverage asked through (`asking`), where its record
@@ -165,27 +191,34 @@ pub struct Run<'a> {
     asking: Asking<'a>,
 }
 
-/// The record `out` names at `logical`, with its content name.
-fn record_at(out: &crate::out::Out, logical: &str) -> Result<Option<(String, Record)>> {
+/// The record `out` names at `logical`, with its content name: None when it names none, its
+/// record None when it doesn't parse (`Prev::Unparsed`). An error only when it can't be read.
+fn record_at(out: &crate::out::Out, logical: &str) -> Result<Option<(String, Option<Record>)>> {
     let Some(c) = out.get(logical) else { return Ok(None) };
     let b = out.path(c).read().with_context(|| format!("read {c}"))?;
-    Ok(Some((c.to_string(), Record::from_bytes(&b).with_context(|| c.to_string())?)))
+    Ok(Some((c.to_string(), Record::from_bytes(&b).ok())))
+}
+
+/// `record_at`'s as `line_of` takes it.
+fn prev_of(p: &Option<(String, Option<Record>)>) -> Option<(&str, Prev<'_>)> {
+    p.as_ref().map(|(c, r)| (c.as_str(), r.as_ref().map_or(Prev::Unparsed, Prev::Record)))
 }
 
 impl<'a> Run<'a> {
     /// World step `step`'s run over `cov`: its line from the record `out` names (`reask` answering
-    /// its questions asked whole, as the plan's does). An error when that record can't be read, or
-    /// asks what can't be answered now.
+    /// its questions asked whole, as the plan's does: one that doesn't parse, or a question of
+    /// another form, a new line). An error when that record can't be read, or asks what can't be
+    /// answered now (`Answer::NotNow`).
     pub fn start(
         out: &crate::out::Out,
         step: &str,
         cov: &'a Coverage,
-        reask: &dyn Fn(&str) -> Option<String>,
+        reask: &dyn Fn(&str) -> Answer,
     ) -> Result<Run<'a>> {
         let logical = logical(step);
         let prev = record_at(out, &logical)?;
-        let line = line(cov, prev.as_ref().map(|(c, r)| (c.as_str(), r)), reask)
-            .context("the record before this run asks what can't be answered now")?;
+        let line =
+            line(cov, prev_of(&prev), reask).context("the record before this run asks what can't be answered now")?;
         Ok(Run { logical, cov, version: cov.version(), line, asking: Asking::new(cov) })
     }
 
@@ -202,16 +235,8 @@ impl<'a> Run<'a> {
         reask: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Run<'a>> {
         let logical = target_logical(step, target);
-        let line = match out.get(&logical) {
-            None => target_line(cov, &geo, None, reask),
-            Some(c) => {
-                let b = out.path(c).read().with_context(|| format!("read {c}"))?;
-                match Record::from_bytes(&b) {
-                    Ok(r) => target_line(cov, &geo, Some((c, Prev::Record(&r))), reask),
-                    Err(_) => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
-                }
-            }
-        };
+        let prev = record_at(out, &logical)?;
+        let line = target_line(cov, &geo, prev_of(&prev), reask);
         Ok(Run { logical, cov, version: geo, line, asking: Asking::new(cov) })
     }
 
@@ -256,8 +281,8 @@ mod tests {
 
     /// A run asking of points near Lyon, under the line `line` works out from `prev`: its record.
     fn run(c: &Coverage, prev: Option<&(String, Record)>) -> (String, Record) {
-        let none = |_: &str| None;
-        let l = line(c, prev.map(|(n, r)| (n.as_str(), r)), &none).unwrap();
+        let none = |_: &str| Answer::NotNow;
+        let l = line(c, prev.map(|(n, r)| (n.as_str(), Prev::Record(r))), &none).unwrap();
         let a = Asking::new(c);
         a.contains(e7(4.85, 45.75));
         a.contains(e7(5.7, 45.75));
@@ -268,10 +293,11 @@ mod tests {
 
     #[test]
     fn a_change_far_from_what_was_asked_keeps_the_line_and_one_under_it_changes_it() {
-        let none = |_: &str| None;
+        let none = |_: &str| Answer::NotNow;
         let lyon_and_oslo = cov(&[(4.85, 45.75, 60.0), (10.75, 59.9, 40.0)]);
         let first = run(&lyon_and_oslo, None);
-        let line_of = |c: &Coverage, r: &(String, Record)| line(c, Some((r.0.as_str(), &r.1)), &none).unwrap();
+        let line_of =
+            |c: &Coverage, r: &(String, Record)| line(c, Some((r.0.as_str(), Prev::Record(&r.1))), &none).unwrap();
         // The key the run was recorded done under is the one worked out after it.
         assert_eq!(line(&lyon_and_oslo, None, &none).unwrap(), first.1.line);
         assert_eq!(line_of(&lyon_and_oslo, &first), first.1.line);
@@ -302,9 +328,41 @@ mod tests {
         // (Another version, the point answered the same: the question decides.)
         let other = cov(&[(4.85, 45.75, 61.0)]);
         assert_ne!(other.version(), c.version());
-        assert_eq!(line(&other, Some(("n", &r)), &|_| Some("FR".into())).unwrap(), "l");
-        assert_ne!(line(&other, Some(("n", &r)), &|_| Some("FR,IT".into())).unwrap(), "l");
-        assert_eq!(line(&other, Some(("n", &r)), &|_| None), None);
+        let rec = || Some(("n", Prev::Record(&r)));
+        assert_eq!(line(&other, rec(), &|_| Answer::Now("FR".into())).unwrap(), "l");
+        let flipped = line(&other, rec(), &|_| Answer::Now("FR,IT".into())).unwrap();
+        assert_ne!(flipped, "l");
+        // Task #1473 re-review: what it names can't be read now, the key waits; a question of
+        // another form, or a record that doesn't parse, is a new line (its step re-runs once),
+        // never a wait for good.
+        assert_eq!(line(&other, rec(), &|_| Answer::NotNow), None);
+        let other_form = line(&other, rec(), &|_| Answer::OfAnotherForm).unwrap();
+        assert_eq!(other_form, flipped);
+        let unparsed = line(&other, Some(("n", Prev::Unparsed)), &|_| Answer::NotNow).unwrap();
+        assert_eq!(unparsed, flipped);
+    }
+
+    /// Task #1473 re-review: a world step's run over a record that doesn't parse goes ahead under
+    /// the line the plan works out, and the plan's line after it is its own record's.
+    #[test]
+    fn a_world_run_over_a_record_of_another_form_goes_ahead() {
+        let none = |_: &str| Answer::NotNow;
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
+        let c = cov(&[(4.85, 45.75, 60.0)]);
+        out.put_bytes(&logical("rail"), "json.zst", b"not a record").unwrap();
+        out.save().unwrap();
+        let content = out.get(&logical("rail")).unwrap().to_string();
+        let plan = line(&c, Some((&content, Prev::Unparsed)), &none).unwrap();
+        let run = Run::start(&out, "rail", &c, &none).unwrap();
+        run.asking().contains(e7(4.85, 45.75));
+        run.put(&mut out, Vec::new()).unwrap();
+        out.save().unwrap();
+        let content = out.get(&logical("rail")).unwrap().to_string();
+        let r = Record::from_bytes(&out.path(&content).read().unwrap()).unwrap();
+        assert_eq!(r.line, plan);
+        assert_eq!(line(&c, Some((&content, Prev::Record(&r))), &none).unwrap(), plan);
     }
 
     /// The version a record asked answers every question as it was answered: its line, nothing
@@ -317,9 +375,9 @@ mod tests {
         let asked_again = std::cell::Cell::new(false);
         let reask = |_: &str| {
             asked_again.set(true);
-            None
+            Answer::NotNow
         };
-        assert_eq!(line(&c, Some(("n", &r)), &reask).unwrap(), "l");
+        assert_eq!(line(&c, Some(("n", Prev::Record(&r))), &reask).unwrap(), "l");
         assert!(!asked_again.get());
     }
 

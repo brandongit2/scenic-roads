@@ -95,7 +95,9 @@ fn timetables_todo_reruns_only_where_a_region_change_changes_an_answer() {
     };
     let run_job = |cov: &Coverage| {
         let mut out = crate::out::open(&root, &scratch, "timetables-todo").unwrap();
-        let asked = buildstore::asked::Run::start(&out, "timetables-todo", cov, &|_| None).unwrap();
+        let asked =
+            buildstore::asked::Run::start(&out, "timetables-todo", cov, &|_| buildstore::asked::Answer::OfAnotherForm)
+                .unwrap();
         let r = run(&mut out, asked.asking(), &root).unwrap();
         asked.put(&mut out, Vec::new()).unwrap();
         out.save().unwrap();

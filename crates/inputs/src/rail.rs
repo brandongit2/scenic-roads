@@ -211,15 +211,21 @@ pub fn parse_countries_question(q: &str) -> Option<(String, OwnCode)> {
 pub const GONE: &str = "gone";
 
 /// The answer `cov` gives question `q` (`countries_question`) now, from the outlines it names
-/// (`outlines`; None: no longer named, `GONE`): the countries, comma-separated. None for another
-/// question, or while they can't be worked out now.
-pub fn reask_countries(cov: &Coverage, q: &str, outlines: Option<&Outlines>) -> Option<String> {
-    let (_, own) = parse_countries_question(q)?;
+/// (`outlines`; None: no longer named, `GONE`): the countries, comma-separated. Of another form for
+/// another question (buildstore::asked::Answer: its step re-runs once); not now while they can't
+/// be worked out now.
+pub fn reask_countries(cov: &Coverage, q: &str, outlines: Option<&Outlines>) -> buildstore::asked::Answer {
+    use buildstore::asked::Answer;
+    let Some((_, own)) = parse_countries_question(q) else { return Answer::OfAnotherForm };
     match outlines {
-        None => Some(GONE.to_string()),
-        Some(o) => {
-            countries(cov, o, &own).map_err(|e| eprintln!("rail-feeds' countries: {e:#}")).ok().map(|c| c.join(","))
-        }
+        None => Answer::Now(GONE.to_string()),
+        Some(o) => match countries(cov, o, &own) {
+            Ok(c) => Answer::Now(c.join(",")),
+            Err(e) => {
+                eprintln!("rail-feeds' countries: {e:#}");
+                Answer::NotNow
+            }
+        },
     }
 }
 

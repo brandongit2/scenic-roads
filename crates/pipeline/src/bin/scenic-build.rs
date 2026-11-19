@@ -1299,7 +1299,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // jobs' z6 tiles.
             let cov = coverage_of(&out, &args)?;
             let to = opt(&args, "--out").map_or_else(|| out.root().clone(), store::nasfs::NasRoot::from_arg);
-            let asked = buildstore::asked::Run::start(&out, "timetables-todo", &cov, &|_| None)?;
+            let asked = buildstore::asked::Run::start(&out, "timetables-todo", &cov, &buildstore::asked::no_questions)?;
             let r = roads::timetables::run(&mut out, asked.asking(), &to)?;
             asked.put(&mut out, Vec::new())?;
             out.save()?;
@@ -5139,7 +5139,7 @@ fn z6_tiles(args: &[String], step: &str) -> Result<Vec<TileId>> {
 fn bld_fetch_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let sources = ::inputs::inputs::sources::read(out.root(), &out.manifest)?;
-    let asked = buildstore::asked::Run::start(out, "bld-fetch", &cov, &|_| None)?;
+    let asked = buildstore::asked::Run::start(out, "bld-fetch", &cov, &buildstore::asked::no_questions)?;
     ::bld::bld::fetch::run(::bld::bld::fetch::Args { root: out.root(), sources: &sources, cov: asked.asking() })?;
     asked.put(out, Vec::new())?;
     out.save()
@@ -6245,18 +6245,25 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     // asks it, when the coverage isn't the version it asked: of the outlines it names, opened again
     // unless they're this pass's, `GONE` once no longer named.)
     let asked = {
-        let reask = |q: &str| -> Option<String> {
-            let (c, _) = rail::parse_countries_question(q)?;
+        // (A question of another form: an answer flipped; outlines that can't be opened now: the
+        // run stops, as the plan's key waits.)
+        let reask = |q: &str| -> buildstore::asked::Answer {
+            let Some((c, _)) = rail::parse_countries_question(q) else {
+                return buildstore::asked::Answer::OfAnotherForm;
+            };
             if c == outlines_content {
                 return rail::reask_countries(&cov, q, Some(&outlines));
             }
             if !out.manifest.values().any(|v| *v == c) {
                 return rail::reask_countries(&cov, q, None);
             }
-            let o = buildstore::outlines::Outlines::open(&out.path(&c))
-                .map_err(|e| eprintln!("rail-feeds: {c}: {e:#}"))
-                .ok()?;
-            rail::reask_countries(&cov, q, Some(&o))
+            match buildstore::outlines::Outlines::open(&out.path(&c)) {
+                Ok(o) => rail::reask_countries(&cov, q, Some(&o)),
+                Err(e) => {
+                    eprintln!("rail-feeds: {c}: {e:#}");
+                    buildstore::asked::Answer::NotNow
+                }
+            }
         };
         buildstore::asked::Run::start(out, "rail-feeds", &cov, &reask)?
     };
@@ -6385,7 +6392,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 2. Stops beyond the coverage.
     parts.start(1);
     let p = phase("marking the stops beyond the coverage");
-    let asked = buildstore::asked::Run::start(out, "rail", &cov, &|_| None)?;
+    let asked = buildstore::asked::Run::start(out, "rail", &cov, &buildstore::asked::no_questions)?;
     let asking = asked.asking();
     let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, asking);
     let pairs_file = scratch.join("pairs.bin");

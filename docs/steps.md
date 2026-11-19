@@ -980,13 +980,15 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   `Coverage::shapes_key` of the tile and 1 km around): with no record the key's line is that, so
   the keying itself moved no key; with one, the record's line while that geometry reads as its run
   read it (the record's head, read once per record as the plan loads and kept in the agent's
-  folder by content hash, `<hash>.asked-head`, so a start reads only new ones) or the coverage
-  answers what it asked the same (the record read and asked again once per geometry and record,
-  every target's on rayon's threads as the plan begins, `idents::warm_asked`: a trees tile's mask
-  takes 30–130 ms); else a new line naming the record. A record that reads but doesn't parse, or
-  asks a question that can't be answered now (a form since changed), takes that new line too,
-  plan and run alike: its target re-runs once, never waits for good; only a record that can't be
-  read waits. A z6 tile's roads keep the record in their folder from preparing to
+  folder by content hash with the record format it was read by, `<hash>.asked-head`, so a start
+  reads only new ones; one the manifest no longer names goes after a fortnight untouched, as the
+  packs' indexes and water digests do) or the coverage answers what it asked the same (the record
+  read and asked again once per geometry and record, every target's on rayon's threads as the plan
+  begins once the coverage, its countries, the pass, the spacing or the reaches change,
+  `idents::warm_asked`); else a new line naming the record. A record that reads but doesn't parse,
+  or asks a question of another form, takes that new line too, plan and run alike, for the z6
+  tiles and the world steps both (`asked::Answer::OfAnotherForm`): its step re-runs once, never
+  waits for good; only what can't be read now (the record, outlines a question names) waits. A z6 tile's roads keep the record in their folder from preparing to
   their commit (resumed with it); with none there, the record from before goes. A prune and a
   "none" tile's drop remove it with the tile's files, and a z3 tile's whole tree run (`put_z3`,
   which asks nothing) its z6 tiles'.

@@ -177,20 +177,27 @@ pub fn coverage_cover(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// What world step `t`'s run asked of the coverage, as the coverage answers it now
 /// (buildstore::asked::line: its record's line while the coverage is the version it asked, or
-/// answers all it asked the same); asked again once a coverage version and record. None while the
-/// record, or the outlines its questions name, can't be read now.
+/// answers all it asked the same); asked again once a coverage version and record. A record that
+/// doesn't parse, or a question of another form, a new line (its step re-runs once). None while
+/// the record, or the outlines its questions name, can't be read now.
 pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    use buildstore::asked::{line, Answer, Prev};
     let Some(c) = x.m.get(&buildstore::asked::logical(t)) else {
-        return Some(vec![buildstore::asked::line(x.cov, None, &|_| None)?]);
+        return Some(vec![line(x.cov, None, &buildstore::asked::no_questions)?]);
     };
-    let r = x.tiles.asked(c)?;
+    let Some(r) = x.tiles.asked(c)? else {
+        return Some(vec![line(x.cov, Some((c, Prev::Unparsed)), &buildstore::asked::no_questions)?]);
+    };
     let v = x.cov.version();
     if r.version == v {
         return Some(vec![r.line.clone()]);
     }
-    let reask = |q: &str| -> Option<String> {
-        let (o, _) = inputs::rail::parse_countries_question(q)?;
-        inputs::rail::reask_countries(x.cov, q, x.tiles.outlines(x.m, &o)?.as_ref())
+    let reask = |q: &str| -> Answer {
+        let Some((o, _)) = inputs::rail::parse_countries_question(q) else { return Answer::OfAnotherForm };
+        match x.tiles.outlines(x.m, &o) {
+            Some(outlines) => inputs::rail::reask_countries(x.cov, q, outlines.as_ref()),
+            None => Answer::NotNow,
+        }
     };
     // (And whether the outlines each question names are named still: once they aren't, its answer is GONE.)
     let named: Vec<bool> = r
@@ -200,8 +207,7 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .map(|(o, _)| x.m.values().any(|v| *v == o))
         .collect();
     let l = x.tiles.memo(&format!("coverage:asked {t}"), &format!("{v} {c} {named:?}"), || {
-        buildstore::asked::line(x.cov, Some((c, &r)), &reask)
-            .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
+        line(x.cov, Some((c, Prev::Record(&r))), &reask).ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
     });
     l.ok().map(|l| vec![l])
 }
@@ -266,24 +272,32 @@ fn asked_line(
 /// Works out, on rayon's threads, the line of every target whose record's geometry moved
 /// (`asked_line`, for the four steps keyed so: steps::ASKED_PER_TARGET), kept in the tiles' memo
 /// for the plan's keys to find: where the coverage's geometry moved under many records (a regions
-/// intake: about 2,364 trees tiles at 30–130 ms each to ask a mask again, 10 ms–0.25 s a unit
-/// tile's ways), the plan's thread asks none of them one by one. Each geometry as the step's key
-/// reads it (`coverage_clip`, `ways`, `coverage_inside`, `coverage_shapes`); a line that can't be
-/// worked out now is left to the key that reads it. Once per coverage, pass, spacing and set of
-/// records (the plan runs it every loop: none of that changed, nothing done).
+/// intake: every z6 tile's record asked again, a trees tile's mask in tens of milliseconds by one
+/// measurement on the mini), the plan's thread asks none of them one by one. Each geometry as the
+/// step's key reads it (`coverage_clip`, `ways`, `coverage_inside`, `coverage_shapes`); a line
+/// that can't be worked out now is left to the key that reads it. Once per what those geometries
+/// read: the coverage's version and its shapes' countries, the pass, the spacing and the pass's
+/// reaches (the plan runs it every loop: none of that changed, nothing done). A record put since
+/// is asked again by its key alone.
 pub fn warm_asked(x: &KeyCtx) {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let fine = tiles.spacing(m);
     let mut each: Vec<(&str, String)> = Vec::new();
-    let mut records = String::new();
     for step in super::steps::ASKED_PER_TARGET {
         let p = format!("work/asked/{step}/");
-        for (l, c) in m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)) {
+        for (l, _) in m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)) {
             each.push((step, l[p.len()..].replace('-', "/")));
-            records.push_str(c);
         }
     }
-    let from = format!("{} {} {} {}", cov.version(), x.date, fine.digest(), store::naming::hash16(records.as_bytes()));
+    let countries: Vec<&str> = cov.shapes.iter().map(|s| s.country.as_str()).collect();
+    let from = format!(
+        "{} {} {} {} {}",
+        cov.version(),
+        store::naming::hash16(countries.join("\0").as_bytes()),
+        x.date,
+        fine.digest(),
+        m.get(&roads::reach::logical(x.date)).map_or("-", String::as_str),
+    );
     let _ = tiles.memo("coverage:asked warm", &from, || {
         warm(x, &fine, &each);
         Ok(String::new())
@@ -306,10 +320,11 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
             "pois" => Some(clip_geo(cov, u)),
             "trees" => Some(inside_geo(cov, u)),
             "bldtiles" => bld.get(&(u.x, u.y)).cloned().flatten(),
-            _ => reach
+            "unit" => reach
                 .and_then(|r| r.get(u))
                 .filter(|r| u.z == 6 && r.builds(cov, fine))
                 .map(|r| r.coverage_key(cov, u, fine)),
+            _ => None,
         };
         let Some(geo) = geo else { return };
         let mask = |q: &str| trees::treepacks::mask_answer(cov, u, q);

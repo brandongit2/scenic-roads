@@ -29,6 +29,21 @@ impl std::fmt::Display for Unread {
 /// for a fortnight: its pack may be named again).
 const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 
+/// A target record's head as kept here (`<hash16>.asked-head`, `TerrainTiles::asked_heads`), with
+/// the record format it was read by (buildstore::asked::RECORD_FMT): one of another is read again,
+/// so a build reading records otherwise can't take an old head for one it would parse.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Head {
+    fmt: u32,
+    version: String,
+    line: String,
+}
+
+/// What's kept in the agent's folder by content hash, with the manifest entries naming them: each
+/// kept file's extension and the prefix of the logical names whose contents it's of (`tidy`).
+const KEPT: [(&str, &str); 3] =
+    [("idx", "layers/terrain/"), ("water", codecs::terrain_water::IDX_PREFIX), ("asked-head", "work/asked/")];
+
 /// A pack's tiles as held: (tile key, XXH3), sorted by key; shared by the copies (`TerrainTiles`).
 type Held = std::sync::Arc<[(u64, u64)]>;
 
@@ -87,8 +102,9 @@ pub struct TerrainTiles {
     /// terrain::terrain_deep::Kept). Shared by the copies, as `memo` is.
     deep: std::sync::Arc<terrain::terrain_deep::Kept>,
     /// What the world steps keyed on what they asked of the coverage last asked (buildstore::asked:
-    /// the records `m` names, `asked::logical`), by content name (None: it can't be read now).
-    asked: HashMap<String, Option<std::sync::Arc<buildstore::asked::Record>>>,
+    /// the records `m` names, `asked::logical`), by content name (None: it can't be read now;
+    /// Some(None): it reads but doesn't parse, buildstore::asked::Prev::Unparsed).
+    asked: HashMap<String, Option<Option<std::sync::Arc<buildstore::asked::Record>>>>,
     /// Of what each target keyed so last asked (`asked::target_logical`), by content name: what it
     /// read of the coverage by geometry and the line it ran under (`Record::version`, `line`), all
     /// a key reads of it while that geometry reads the same; the record itself is read again only
@@ -97,6 +113,9 @@ pub struct TerrainTiles {
     /// (one that can't be read now: tried again with the next load). None: one that reads but
     /// doesn't parse (buildstore::asked::Prev::Unparsed).
     asked_heads: HashMap<String, Option<(String, String)>>,
+    /// Files kept in the agent's folder since its last `tidy` (water digests, record heads; new
+    /// packs' indexes are counted by `load`).
+    kept_new: usize,
     /// The root the last load read from: where `outlines` opens the outlines a record's question
     /// names, only when asked (never held open: a coverage of the version a record asked asks
     /// nothing again).
@@ -182,6 +201,11 @@ impl TerrainTiles {
         self.held.retain(|c, _| want.contains(c.as_str()));
         let missing: Vec<&str> = want.iter().copied().filter(|c| !self.held.contains_key(*c)).collect();
         if missing.is_empty() {
+            // (New water digests or heads kept: what's no longer named goes, as below.)
+            if self.kept_new > 0 {
+                self.tidy(m);
+                self.kept_new = 0;
+            }
             return 0;
         }
         let dir = self.dir.as_deref();
@@ -199,9 +223,10 @@ impl TerrainTiles {
                 }
             }
         }
-        // (New packs: those gone from the manifest a fortnight go from here.)
-        if n > 0 {
-            self.tidy(&want);
+        // (New packs, digests or heads: those gone from the manifest a fortnight go from here.)
+        if n + self.kept_new > 0 {
+            self.tidy(m);
+            self.kept_new = 0;
         }
         n
     }
@@ -371,23 +396,26 @@ impl TerrainTiles {
             let n = store::naming::parse_content_name(c)?;
             Some(dir.as_deref()?.join(format!("{}.asked-head", n.hash16)))
         };
-        // (Its head kept here, else read whole and kept; an I/O error tried again, a record that
-        // doesn't parse taken as one, never tried again.)
+        // (Its head kept here, of this build's record format (`Head`), else read whole and kept; an
+        // I/O error tried again, a record that doesn't parse taken as one, never tried again.)
         let got: Vec<(&String, std::io::Result<Option<(String, String)>>)> = missing
             .par_iter()
             .map(|c| {
                 let k = kept(c);
-                if let Some(h) =
-                    k.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok())
-                {
-                    return (*c, Ok(Some(h)));
+                let here = k
+                    .as_ref()
+                    .and_then(|p| std::fs::read(p).ok())
+                    .and_then(|b| serde_json::from_slice::<Head>(&b).ok());
+                if let Some(h) = here.filter(|h| h.fmt == buildstore::asked::RECORD_FMT) {
+                    return (*c, Ok(Some((h.version, h.line))));
                 }
                 let head = root
                     .join(c)
                     .read()
                     .map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| (r.version, r.line)));
-                if let (Ok(Some(h)), Some(p)) = (&head, &k) {
-                    let b = serde_json::to_vec(h).expect("a head serializes");
+                if let (Ok(Some((version, line))), Some(p)) = (&head, &k) {
+                    let h = Head { fmt: buildstore::asked::RECORD_FMT, version: version.clone(), line: line.clone() };
+                    let b = serde_json::to_vec(&h).expect("a head serializes");
                     if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
                         .map_err(anyhow::Error::from)
                         .and_then(|()| store::whole::write(p, &b))
@@ -398,6 +426,7 @@ impl TerrainTiles {
                 (*c, head)
             })
             .collect();
+        self.kept_new += got.iter().filter(|(_, h)| matches!(h, Ok(Some(_)))).count();
         for (c, r) in got {
             match r {
                 Ok(h) => {
@@ -415,13 +444,10 @@ impl TerrainTiles {
             if self.asked.contains_key(c) {
                 continue;
             }
-            let r = root
-                .join(c)
-                .read()
-                .map_err(anyhow::Error::from)
-                .and_then(|b| buildstore::asked::Record::from_bytes(&b));
-            let r = match r {
-                Ok(r) => Some(std::sync::Arc::new(r)),
+            // (One that can't be read now: tried again with the next load; one that doesn't
+            // parse, held as such: its step re-runs once.)
+            let r = match root.join(c).read() {
+                Ok(b) => Some(buildstore::asked::Record::from_bytes(&b).ok().map(std::sync::Arc::new)),
                 Err(e) => {
                     eprintln!("agent: {c} can't be read now ({e:#})");
                     None
@@ -431,8 +457,9 @@ impl TerrainTiles {
         }
     }
 
-    /// The coverage record of content name `c` (buildstore::asked), None while it can't be read now.
-    pub fn asked(&self, c: &str) -> Option<std::sync::Arc<buildstore::asked::Record>> {
+    /// The coverage record of content name `c` (buildstore::asked): Some(None) for one that doesn't
+    /// parse, None while it can't be read now.
+    pub fn asked(&self, c: &str) -> Option<Option<std::sync::Arc<buildstore::asked::Record>>> {
         self.asked.get(c)?.clone()
     }
 
@@ -446,7 +473,7 @@ impl TerrainTiles {
     /// A target's record of content name `c`, read now (one held, `hold_asked`: that): Ok(None) for
     /// one that doesn't parse, an error only while it can't be read.
     pub fn target_asked(&self, c: &str) -> Result<Option<std::sync::Arc<buildstore::asked::Record>>, Unread> {
-        if let Some(Some(r)) = self.asked.get(c) {
+        if let Some(Some(Some(r))) = self.asked.get(c) {
             return Ok(Some(r.clone()));
         }
         let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
@@ -473,7 +500,7 @@ impl TerrainTiles {
     #[cfg(test)]
     pub fn hold_asked(&mut self, content: &str, r: buildstore::asked::Record) {
         self.asked_heads.insert(content.to_string(), Some((r.version.clone(), r.line.clone())));
-        self.asked.insert(content.to_string(), Some(std::sync::Arc::new(r)));
+        self.asked.insert(content.to_string(), Some(Some(std::sync::Arc::new(r))));
     }
 
     /// The seas closed off from the world ocean `m` names (Some(None): none written); None while
@@ -684,6 +711,7 @@ impl TerrainTiles {
                 .as_ref()
                 .and_then(|p| std::fs::read(p).ok())
                 .and_then(|b| codecs::terrain_water::WaterIdx::from_bytes(&b).ok());
+            let from_nas = local.is_none();
             let got = match local {
                 Some(w) => Ok(w),
                 None => root.join(c).read().map_err(anyhow::Error::from).and_then(|b| {
@@ -702,6 +730,7 @@ impl TerrainTiles {
             match got {
                 Ok(w) => {
                     self.unread.remove(c);
+                    self.kept_new += usize::from(from_nas);
                     self.water.insert(c.to_string(), w);
                 }
                 Err(e) => {
@@ -733,18 +762,30 @@ impl TerrainTiles {
         self.unread.iter()
     }
 
-    /// Removes the kept indexes of packs not in `want` untouched for `KEEP_GONE` (and temporary
-    /// files a write cut short left, an hour old).
-    fn tidy(&self, want: &BTreeSet<&str>) {
+    /// Removes what's kept in the agent's folder by content hash that `m` no longer names (`KEPT`:
+    /// the packs' indexes, the water digests, the targets' record heads), once untouched for
+    /// `KEEP_GONE`, and temporary files a write cut short left, an hour old.
+    fn tidy(&self, m: &BTreeMap<String, String>) {
         let Some(dir) = &self.dir else { return };
         let Ok(rd) = std::fs::read_dir(dir) else { return };
-        let named: BTreeSet<&str> =
-            want.iter().filter_map(|c| store::naming::parse_content_name(c)).map(|c| c.hash16).collect();
+        let named: Vec<(&str, BTreeSet<&str>)> = KEPT
+            .iter()
+            .map(|&(ext, p)| {
+                let hs = m
+                    .range(p.to_string()..)
+                    .take_while(|(l, _)| l.starts_with(p))
+                    .filter_map(|(_, c)| store::naming::parse_content_name(c))
+                    .map(|c| c.hash16)
+                    .collect();
+                (ext, hs)
+            })
+            .collect();
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).unwrap_or_default();
-            let gone = match name.strip_suffix(".idx") {
-                Some(h) => !named.contains(h) && age > KEEP_GONE,
+            let kept = named.iter().find_map(|(ext, hs)| Some((name.strip_suffix(&format!(".{ext}"))?, hs)));
+            let gone = match kept {
+                Some((h, hs)) => !hs.contains(h) && age > KEEP_GONE,
                 None => store::whole::is_tmp(&e.path()) && age > Duration::from_secs(3600),
             };
             if gone {
@@ -1009,10 +1050,58 @@ mod tests {
         assert_eq!(t.asked_head(gone), None);
         assert!(t.unread.contains_key(gone) && !t.unread.contains_key(bad));
         // Another start: the head from here, the NAS's file gone.
-        std::fs::remove_file(d.path().join("nas").join(good)).unwrap();
+        let nas_good = d.path().join("nas").join(good);
+        std::fs::rename(&nas_good, d.path().join("aside")).unwrap();
         let mut again = TerrainTiles::new(Some(d.path().join("kept")));
         again.load_asked(&root, &m);
         assert_eq!(again.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        // A head kept by another record format: read again from the NAS (here, gone: unread).
+        let kept = d.path().join("kept/1111111111111111.asked-head");
+        let old = serde_json::json!({"fmt": buildstore::asked::RECORD_FMT - 1, "version": "geo", "line": "old"});
+        std::fs::write(&kept, old.to_string()).unwrap();
+        let mut other = TerrainTiles::new(Some(d.path().join("kept")));
+        other.load_asked(&root, &m);
+        assert_eq!(other.asked_head(good), None);
+        std::fs::rename(d.path().join("aside"), &nas_good).unwrap();
+        other.load_asked(&root, &m);
+        assert_eq!(other.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+    }
+
+    /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,
+    /// record heads) goes once the manifest no longer names it and it's been untouched for
+    /// `KEEP_GONE`; what it names, or was touched since, stays.
+    #[test]
+    fn kept_files_the_manifest_no_longer_names_go_after_a_while() {
+        let d = tempfile::tempdir().unwrap();
+        let t = TerrainTiles::new(Some(d.path().into()));
+        let (named, gone, fresh) = ("1111111111111111", "2222222222222222", "3333333333333333");
+        let m: BTreeMap<String, String> = [
+            ("layers/terrain/hi/6-1-2", format!("layers/terrain/hi/6-1-2.{named}.pack")),
+            (codecs::terrain_water::IDX_PREFIX, format!("{}x.{named}.bin", codecs::terrain_water::IDX_PREFIX)),
+            ("work/asked/pois/6-1-2", format!("work/asked/pois/6-1-2.{named}.json.zst")),
+        ]
+        .into_iter()
+        .map(|(l, c)| (l.to_string(), c))
+        .collect();
+        let old = std::time::SystemTime::now() - KEEP_GONE - Duration::from_secs(60);
+        let mut files = Vec::new();
+        for ext in ["idx", "water", "asked-head"] {
+            for (h, at) in [(named, Some(old)), (gone, Some(old)), (fresh, None)] {
+                let f = d.path().join(format!("{h}.{ext}"));
+                std::fs::write(&f, b"x").unwrap();
+                if let Some(at) = at {
+                    std::fs::File::options().write(true).open(&f).unwrap().set_modified(at).unwrap();
+                }
+                files.push((f, h != gone));
+            }
+        }
+        let other = d.path().join("other.txt");
+        std::fs::write(&other, b"x").unwrap();
+        t.tidy(&m);
+        for (f, stays) in files {
+            assert_eq!(f.exists(), stays, "{}", f.display());
+        }
+        assert!(other.exists());
     }
 
     /// Task #968: what the terrain names of the declared sources (terrain::terrain_resume::inputs, as
