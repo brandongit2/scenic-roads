@@ -382,7 +382,7 @@ fn t() {}'; done
       for p in a b c d e f g h x xsys; do
         print "[[package]]\nname = \"$p\"\nversion = \"$([[ $p == x* ]] && print 1.0.0 || print 0.0.0)\""
         case $p in [bcde]) print 'dependencies = ["a"]' ;; f) print 'dependencies = ["xsys"]' ;; g) print 'dependencies = ["x"]' ;;
-          h) print 'dependencies = ["f"]' ;; xsys) print 'source = "registry+https://github.com/rust-lang/crates.io-index"\ndependencies = ["x"]' ;; esac
+          h) print 'dependencies = ["f"]' ;; xsys) print 'source = "registry+toy"\ndependencies = ["x"]' ;; esac
       done } > Cargo.lock
     g add -A; g commit -m b0; $2; g add -A; g commit -m main
     zsh $here/../affected-tests.sh HEAD 2>&1 ) > $d/out
