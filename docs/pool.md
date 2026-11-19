@@ -533,23 +533,32 @@ disk unbounded, and beside its jobs a job of its own needs the disk it was grant
 starts (the grant's own measure, its shared cache's fill among it), so one granted for its caches
 would be granted and given back each loop. Instead a job its coordinator holds back with its disk
 short now (`sched::Held::disk_mb`) whose memory and cores fit the Mac once its jobs end, the disk
-left out (the ask's memory, its cores less those busy outside the pool: short of the memory left
-beside running jobs too, as on the mini, it's held for by the room held for a waiting job once its
-disk is there), has the caches freed toward its room, the target and reservations among it
-(`Agent::held_room`, task #1477): the lead's own ask's refusal says it to the lead's agent; a
-member's ask answered with nothing is a 202 naming the disk (`held_disk_mb`), which the member
-holds when its ask's disk left its caches out (no target; with one they were counted already).
-An older member takes the 202 for nothing granted, as it does the 204 an older lead sends. Only a
-decision sets or ends a held room, never time or a job ending: each answer to the Mac's ask (a
-job held for its disk holds it; a grant, or an answer holding none, ends it), a job waiting for
-its room as it starts (its start ends it), a member waiting out a job it gave back for the target
-(held each loop it waits; its next ask's answer decides), and a target change (it ends). Of
-several, the largest is held. Once the disk has it, the job is granted and starts. Room-making
-that fell short holds the jobs after it for ten minutes (`FLOOR_SHORT_HOLD`) unless a job ends or
-the target changes first. A freeing is tried again toward a goal raised past the one the last
-freeing ended at (one cut short by a lowered goal records the lower) at once; toward as much, once
-a job has ended, unless that freeing freed nothing and the caches can free no more now; else after
-ten minutes (`TOWARD_RETRY`). There is no
+left out (the most its jobs could hold, `limit_mb`, and its cores for jobs: short of the memory
+left beside running jobs too, as on the mini), and whose disk its caches can give (the capacity's
+`freeable_mb`: every cache a freeing toward it empties, as last counted; past that, none is freed
+for it and the refusal says so), has the caches freed toward its room, the target and
+reservations among it (`Agent::held_room`, task #1477), and room is held for its memory and cores
+meanwhile (the room held for a waiting job counts that disk as the job's), so a job beside it
+ending before the freeing is done lets no other job take its room. The lead's own ask's refusal
+says it to the lead's agent; a member's answer names the disk (`held_disk_mb`): a 202 with
+nothing granted, or beside a grant in its 200. An older member takes the 202 for nothing granted,
+as it does the 204 an older lead sends; an older member's capacity says no `freeable_mb`, and no
+room is held for its job's disk. Only a decision sets or ends a held room, never time or a job
+ending: each answer to the Mac's ask (a job held for its disk holds it; an answer naming none ends
+it; one held back before or past the disk is weighed, memory held back, a cold start, the load,
+the cores or the NAS budget, keeps the last), a pause, a quit or the Mac's own hold (they end an
+answer's), a job waiting for its room as it starts (its start ends it), a member waiting out a job
+it gave back for the target (held each loop it waits; its next ask's answer decides), and a target
+change (it ends). Of several, the largest is held. Once the disk has it, the job is granted and
+starts when the rest of its room is there too (the mini's waits for the memory of the job beside
+it). The caches are counted at most every ten minutes (`CACHE_COUNT`: a walk of their files,
+2.6 s for the mini's 224,000 blobs), and what a freeing could do more is known no sooner: room-making
+that fell short holds the jobs after it that long (`FLOOR_SHORT_HOLD`) unless a job ends or the
+target changes first. A freeing is tried again toward a goal raised past the one the last freeing
+ended at (one cut short by a lowered goal records the lower) at once; toward as much, once a job has
+ended, unless that freeing freed nothing, kept nothing a job's end could let go of (files a job
+held, or the NAS lacked) and the caches hold no more as last counted; else once they're counted
+again (`TOWARD_RETRY`). There is no
 fixed reserve: the room target is the only floor (a Mac with 49 GB free, a 20 GB target and no
 caches offers 29 GB, less its reservations). An older agent's `reserve_mb`
 (a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,

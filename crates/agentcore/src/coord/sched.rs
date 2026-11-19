@@ -63,11 +63,14 @@ pub struct Held {
     pub words: String,
     /// The job held back with its disk short now (the first refused for its room, `Rule::Room`, or
     /// the one room is held for, `Rule::Waiting`) whose memory and cores fit its Mac once its jobs
-    /// end, the disk left out (the ask's memory, its cores less those busy outside the pool: short
-    /// of memory now beside running jobs, it's held for by `Backfill` once its disk is there): the
-    /// disk it needs (MB: its step's disk floor and its shared cache's fill among it, the whole
-    /// copies counted free for it taken off), which its Mac's agent frees its caches toward past
-    /// its room target and reservations (crate::agent's `held_room`). None: no such job.
+    /// end, the disk left out (the most its jobs could hold, `ask_limit`, and its cores for jobs,
+    /// `ask_cores`), and whose disk its caches can give (`Capacity::freeable_mb`): the disk it
+    /// needs (MB: its step's disk floor and its shared cache's fill among it, the whole copies
+    /// counted free for it taken off), which its Mac's agent frees its caches toward past its room
+    /// target and reservations (crate::agent's `held_room`); room is held for it meanwhile
+    /// (`Backfill`, `room_wait`). None: no such job. A rule that doesn't weigh the disk
+    /// (`Rule::decides_disk`) names none, and the coordinator keeps the worker's last through it
+    /// (`Shared::pack`).
     pub disk_mb: Option<u64>,
 }
 
@@ -103,6 +106,14 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Whether an answer held back by it decides the disk hold (`Held::disk_mb`): the room rules
+    /// weigh the disk, and work for other Macs or none at all holds nothing for this one. The
+    /// others (memory held back, a cold start, the load, the cores, the NAS budget) hold back
+    /// before or past the disk: the worker's last hold stands through them.
+    pub fn decides_disk(self) -> bool {
+        matches!(self, Rule::Room | Rule::Waiting | Rule::Away | Rule::Empty)
+    }
+
     /// The rule in a few words.
     pub fn name(self) -> &'static str {
         match self {
@@ -461,16 +472,14 @@ impl Backfill {
 
     /// The refusal of `room` and the `cores` left (`words`'s), held as `Rule::Waiting`: with the
     /// disk the waiting job needs when its disk is short now and its memory and cores fit its Mac
-    /// once its jobs end (`whole`: `Sched::fits_whole`), so the disk freed now isn't what it waits
-    /// for then (`Held::disk_mb`).
-    fn held(&self, room: &Ask, cores: u32, whole: (u64, u32), later: bool) -> Held {
+    /// once its jobs end (`whole`) and its disk is within `reach` (`disk_reach`), so the disk freed
+    /// now isn't what it waits for then (`Held::disk_mb`).
+    fn held(&self, room: &Ask, cores: u32, whole: (u64, u32), reach: u64, later: bool) -> Held {
         let w = &self.w;
+        let need = w.disk_mb.saturating_sub(w.credit);
         let short = room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
-        let rest = w.mem_mb <= whole.0 && w.cores <= whole.1;
-        Held {
-            disk_mb: (short && rest).then(|| w.disk_mb.saturating_sub(w.credit)),
-            ..held_by(Rule::Waiting, self.words(room, cores, later))
-        }
+        let rest = w.mem_mb <= whole.0 && w.cores <= whole.1 && need <= reach;
+        Held { disk_mb: (short && rest).then_some(need), ..held_by(Rule::Waiting, self.words(room, cores, later)) }
     }
 
     /// The refusal in words, of `room` and the `cores` left; `later`: an offer after it was held
@@ -585,12 +594,26 @@ impl Refused {
     /// The disk the blocked target needs (MB, the whole copies counted for it, `copies`, taken off)
     /// when its disk is past the room left `room` (`Held::disk_mb`) and its memory and cores fit its
     /// Mac once its jobs end (`fits_whole`, as `Backfill::held` weighs them: short of memory now
-    /// beside them, it's held for once the disk is freed, `room_wait`); None when it would never
-    /// fit there, or none is blocked.
-    fn disk_alone(&self, room: &Ask, copies: u64, fits_whole: impl FnOnce(&str, &str, u64) -> bool) -> Option<u64> {
+    /// beside them, it's held for once the disk is freed, `room_wait`) and within `reach`, the most
+    /// its Mac's disk can give (`disk_reach`); None when it would never fit there, or none is blocked.
+    fn disk_alone(
+        &self,
+        room: &Ask,
+        copies: u64,
+        reach: u64,
+        fits_whole: impl FnOnce(&str, &str, u64) -> bool,
+    ) -> Option<u64> {
         let (step, target, m) = self.blocked.as_ref()?;
-        (room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && fits_whole(step, target, m.mem_mb))
-            .then(|| m.disk_mb - copies)
+        let need = m.disk_mb.saturating_sub(copies);
+        (room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && need <= reach && fits_whole(step, target, m.mem_mb))
+            .then_some(need)
+    }
+
+    /// The disk the blocked target needs past `reach` (MB), when it does: no cache is freed for it
+    /// (`disk_alone`).
+    fn past_reach(&self, copies: u64, reach: u64) -> Option<u64> {
+        let (_, _, m) = self.blocked.as_ref()?;
+        Some(m.disk_mb.saturating_sub(copies)).filter(|&n| n > reach)
     }
 
     /// The room rule's refusal in words, of `a` and the room left `room` (its disk with the whole
@@ -684,6 +707,23 @@ fn book_cores(b: &crate::needs::Book, step: &str, targets: &[String]) -> Option<
         grant: v.iter().map(|c| c.grant).max().unwrap_or(0),
         busy_tenths: v.iter().map(|c| c.busy_tenths).collect::<Option<Vec<u32>>>().and_then(|b| b.into_iter().max()),
     })
+}
+
+/// The most disk `a`'s Mac can give a job held back for its disk (MB): its ask's disk (its free
+/// space less its room target and its jobs' reservations) and what its caches can free past that
+/// (`Capacity::freeable_mb`). Not said (an older app's, or not counted yet), no bound: such a hold
+/// names the disk as before, and no room is held for it (`room_wait`).
+fn disk_reach(a: &Ask) -> u64 {
+    match a.cap.as_ref().and_then(|c| c.freeable_mb) {
+        Some(f) => a.disk_mb.unwrap_or(0).saturating_add(f),
+        None => u64::MAX,
+    }
+}
+
+/// What `a`'s Mac's caches can free past its ask's disk (MB, `Capacity::freeable_mb`; 0 not said):
+/// counted as the disk a job its room is held for has (`room_wait`).
+fn caches_free(a: &Ask) -> u64 {
+    a.cap.as_ref().and_then(|c| c.freeable_mb).unwrap_or(0)
 }
 
 /// The cores `a`'s Mac has for its jobs together: its capacity's (else the ask's), less the in-use
@@ -1612,8 +1652,12 @@ impl Sched {
         let outside = outside_cores(a, ours);
         cores = cores.saturating_sub(outside * 10);
         // (Its Mac's memory and cores (tenths) once its jobs end, the disk left out: what a job held
-        // back for its disk must fit for its disk to be named, `Held::disk_mb`.)
-        let whole = (a.mem_mb, total.saturating_sub(outside) * 10);
+        // back for its disk must fit for its disk to be named, `Held::disk_mb`. Its ceiling, not the
+        // room the memory has now: a Mac under pressure still frees its caches for a job its memory
+        // takes once the pressure eases.)
+        let whole = (super::ask_limit(a).unwrap_or(a.mem_mb), total * 10);
+        // (And the disk it can give such a job, its caches freed: `disk_reach`.)
+        let reach = disk_reach(a);
         // (The jobs it holds as room held for a waiting job weighs them (`Backfill`): how long each
         // has run, `Lease::ran`.)
         let mut runs: Vec<Run> = jobs
@@ -1778,7 +1822,10 @@ impl Sched {
                 if pick.is_empty() {
                     refused.push((o, fill, credit));
                     if waiting.is_none() {
-                        let whole = disk_with(a, fill, credit);
+                        // (Its whole room, and of the disk what its caches can free too: a job
+                        // whose disk they give is held for, its memory and cores kept as they're
+                        // freed, `Held::disk_mb`.)
+                        let whole = disk_with(a, fill, credit.saturating_add(caches_free(a)));
                         waiting = self.room_wait(o, &whole, &room_o, now).map(|(m, ts)| {
                             let n = self.pack_need(&o.step, &ts);
                             let w = RoomWait {
@@ -1831,7 +1878,7 @@ impl Sched {
                 }
                 let p90 = || self.batch_p90(&o.step, ts.iter().map(String::as_str), &a.worker);
                 if let Some(w) = waiting.as_ref().filter(|w| !w.lets(&n.m, fill, need, p90)) {
-                    held_why.get_or_insert_with(|| w.held(&room, cores, whole, true));
+                    held_why.get_or_insert_with(|| w.held(&room, cores, whole, reach, true));
                     continue;
                 }
                 // (One counted for no cores (a records-only step's, task #838) adds no load to wait
@@ -1871,9 +1918,10 @@ impl Sched {
                     // (Room held for the first offer refused for its room, nothing after it held
                     // back for it: that hold is why, task #1170; a lead whose last offer waited had
                     // said only the room left, and no hold.)
-                    None if nas_waits == 0 && waiting.is_some() => waiting
-                        .as_ref()
-                        .map_or_else(|| held_by(Rule::Waiting, String::new()), |w| w.held(&room, cores, whole, false)),
+                    None if nas_waits == 0 && waiting.is_some() => waiting.as_ref().map_or_else(
+                        || held_by(Rule::Waiting, String::new()),
+                        |w| w.held(&room, cores, whole, reach, false),
+                    ),
                     None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
@@ -1881,11 +1929,19 @@ impl Sched {
                             let n = self.pack_need(st, &[t.to_string()]);
                             mem_mb <= whole.0 && self.need_cores(st, &n, total).1 <= whole.1
                         };
-                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit, fits_whole) } else { None };
+                        let disk_mb = r.disk_alone(&room, credit, reach, fits_whole);
+                        // (Past what its disk can give, its caches freed: none freed for it.)
+                        let past = r.past_reach(credit, reach).map_or(String::new(), |n| {
+                            format!(
+                                "; its {:.1} GB is past what this Mac's disk can give with its caches freed ({:.1} GB): none are freed for it",
+                                n as f64 / 1024.0,
+                                reach as f64 / 1024.0
+                            )
+                        });
                         let held = held_by(
                             if nas_waits == 0 { Rule::Room } else { Rule::Nas },
                             format!(
-                                "{}{}",
+                                "{}{}{past}",
                                 // (Targets it would take passed over for the NAS budget alone in
                                 // this answer (`nas_wait`): said first, so a wait for the NAS
                                 // doesn't read as one for memory (task #931: on 4 Nov every
@@ -2108,7 +2164,8 @@ impl Sched {
 
     /// What offer `o` waits for when refused for its room alone (`pack`, task #965): the measure
     /// (memory, disk) of its first target in plan order `a`'s worker could take with its whole room
-    /// `whole` (every job it holds ended), when the room left `room` doesn't fit it. None when
+    /// `whole` (every job it holds ended, its disk with what its caches can free: `caches_free`),
+    /// when the room left `room` doesn't fit it. None when
     /// there's none (nothing open, a cold start: `own_cold_waits`'s, or none that ever fits this
     /// Mac: the room isn't held for what can't go here), or that one fits the room left (held back
     /// for another reason, the NAS budget's say). With it, the targets it's of (the job's).

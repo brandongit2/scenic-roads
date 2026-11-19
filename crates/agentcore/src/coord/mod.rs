@@ -755,7 +755,14 @@ impl Shared {
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
         let unix = self.wall_s();
-        let (picks, why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
+        let (picks, mut why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
+        // (Nothing granted for a rule that doesn't weigh the disk (memory held back, the load, …:
+        // `sched::Rule::decides_disk`): the job its last answer held back for its disk is held for
+        // still, its caches freed toward it through the wait (task #1477 review: the mini under
+        // memory pressure ended its hold each answer, and the freeing for it midway).)
+        if let Some(w) = why.as_mut().filter(|w| picks.is_empty() && !w.rule.decides_disk() && w.disk_mb.is_none()) {
+            w.disk_mb = self.refused.get(&a.worker).and_then(|(_, h)| h.disk_mb);
+        }
         let mut offered: Vec<String> = Vec::new();
         for o in offers {
             if !offered.contains(&o.step) {
@@ -909,6 +916,18 @@ impl Shared {
             q.pop_front();
         }
         q.push_back(answer);
+    }
+
+    /// Grant `g` to `worker`'s ask as its answer's body, with the disk a job held back for its disk
+    /// needs (`HELD_DISK`, `sched::Held::disk_mb`) when the ask held one back beside it: its agent
+    /// frees toward it as the lead's own does, whatever it was granted. An older member reads the
+    /// grant alone.
+    fn granted(&self, worker: &str, g: &Grant) -> Result<serde_json::Value> {
+        let mut v = serde_json::to_value(g)?;
+        if let (Some(mb), Some(o)) = (self.refused.get(worker).and_then(|(_, h)| h.disk_mb), v.as_object_mut()) {
+            o.insert(HELD_DISK.to_string(), mb.into());
+        }
+        Ok(v)
     }
 
     /// `worker`'s ask refused before any packing, `why` (the lead moving, the build paused, another
@@ -1132,8 +1151,9 @@ pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
 
-/// The key of a member's ask answered with nothing granted, a job held back for its disk alone
-/// (`/work/ask`'s 202): the disk it needs (MB, `sched::Held::disk_mb`).
+/// The key of a member's answer naming a job held back for its disk alone: the disk it needs (MB,
+/// `sched::Held::disk_mb`), with nothing granted (`/work/ask`'s 202) or beside a grant (its 200,
+/// `Shared::granted`).
 pub const HELD_DISK: &str = "held_disk_mb";
 
 /// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
@@ -1191,6 +1211,14 @@ pub struct Capacity {
     /// The disk its jobs have reserved and not taken yet (MB): each granted or running job's
     /// measured disk less what it has written so far (docs/pool.md §7.1).
     pub reserved_mb: u64,
+    /// What its agent can free of its caches for a job held back for its disk, past what `disk_mb`
+    /// counts (MB: every kind a freeing toward a held room empties, as last counted on a thread of
+    /// its own, crate::agent's `towardable`; 0 for a member with a room target, whose `disk_mb`
+    /// counts them). The lead names a job's disk to free toward (`sched::Held::disk_mb`) and holds
+    /// room for it (`sched`'s `room_wait`) only within it. None: not counted yet, or an older
+    /// app's, which frees toward no held room: no room held for a job's disk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freeable_mb: Option<u64>,
     /// Its owner used it within the last five minutes (cond::AWAY_S).
     pub in_use: bool,
     /// The cores its in-use share keeps free of its jobs while its owner uses it
@@ -4553,7 +4581,7 @@ fn route(
                     let answer =
                         Answer { at, want: a.want.max(1), got: 1, offered: vec![o.step], held: None, refused: None };
                     s.answered(&a.worker, answer);
-                    return Ok((200, serde_json::to_value(g)?));
+                    return Ok((200, s.granted(&a.worker, &g)?));
                 }
             }
             if s.pass.is_empty() {
@@ -4572,7 +4600,7 @@ fn route(
                 let offers: Vec<Offer> = s.offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
                 // (As many jobs as the ask wants that fit its room together.)
                 if let Some(g) = s.pack(&a, &offers, false, now) {
-                    return Ok((200, serde_json::to_value(g)?));
+                    return Ok((200, s.granted(&a.worker, &g)?));
                 }
             }
             let picked = match &s.placement {
@@ -4603,7 +4631,7 @@ fn route(
                     plan,
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
-                return Ok((200, serde_json::to_value(g)?));
+                return Ok((200, s.granted(&a.worker, &g)?));
             }
             // Nothing granted. A job held back for its disk alone: the disk it needs said
             // (`HELD_DISK`, `sched::Held::disk_mb`), for the member to free its caches toward
@@ -9586,8 +9614,9 @@ mod tests {
     /// Task #1477 (the mini, 18 Nov: 56 GB free, its 50 GB target and 6 GB of reservations
     /// leaving 0 GB for jobs, a job of 7.1 GB waiting while its caches held 485 GB, none freed for
     /// it): the lead's own ask refused for a job's disk alone says the disk that job needs
-    /// (`Held::disk_mb`), which its agent frees its caches toward; short of memory too (freeing
-    /// the disk wouldn't start it), or granted, none.
+    /// (`Held::disk_mb`), which its agent frees its caches toward, kept through an answer that
+    /// doesn't weigh the disk (its memory held back); past what its caches can free, past the
+    /// whole memory of its Mac (freeing the disk wouldn't start it), or granted, none.
     #[test]
     fn a_job_held_for_its_disk_alone_says_the_disk_it_needs() {
         let (_d, c, _w, _clock) = every((0, 0));
@@ -9608,6 +9637,22 @@ mod tests {
         assert!(why.contains("disk short by"), "{why}");
         let need = c.own_held_disk_mb().expect("held for its disk alone");
         assert!(need >= 7_000, "its measured disk at least: {need} MB");
+        // Its memory held back (task #1477 third review: the mini under pressure): no answer that
+        // weighs the disk, so the hold stands; one that weighs it decides again.
+        let pressed = Capacity { mem_held_back: Some("memory pressure at warning".into()), ..cap.clone() };
+        assert!(c.ask_own(&Ask { cap: Some(pressed), ..ask(0, 0) }, &BTreeSet::new(), 0).is_none());
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why.contains("memory"), "{why}");
+        assert_eq!(c.own_held_disk_mb(), Some(need));
+        // Within what its caches can free past its disk: named; past it, none freed for it, and
+        // said.
+        let counted = |mb: u64| Ask { cap: Some(Capacity { freeable_mb: Some(mb), ..cap.clone() }), ..ask(30_000, 0) };
+        assert!(c.ask_own(&counted(need), &BTreeSet::new(), 0).is_none());
+        assert_eq!(c.own_held_disk_mb(), Some(need));
+        assert!(c.ask_own(&counted(need - 1), &BTreeSet::new(), 0).is_none());
+        assert_eq!(c.own_held_disk_mb(), None);
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why.contains("none are freed for it"), "{why}");
         // Past the whole memory of its Mac too: it never fits there, none.
         assert!(c.ask_own(&ask(1_000, 0), &BTreeSet::new(), 0).is_none());
         assert_eq!(c.own_held_disk_mb(), None);
@@ -9616,9 +9661,10 @@ mod tests {
         assert_eq!(c.own_held_disk_mb(), None);
     }
 
-    /// Task #1477 review: a member's ask answered with nothing, a job held back for its disk
-    /// alone, names the disk it needs (a 202, `HELD_DISK`); an older member's `ask` takes it for
-    /// nothing granted, as the 204 that holds none.
+    /// Task #1477 reviews: a member's ask answered with nothing, a job held back for its disk
+    /// alone, names the disk it needs (a 202, `HELD_DISK`), and with a grant beside it (the 200's
+    /// `HELD_DISK`); an older member's `ask` takes the 202 for nothing granted, as the 204 that
+    /// holds none.
     #[test]
     fn a_members_answer_names_the_disk_a_job_held_for_it_needs() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -9628,6 +9674,11 @@ mod tests {
         assert!(w.ask(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap().is_none());
         // Past the whole memory of its Mac too: nothing named.
         assert!(matches!(w.ask_held(&every_ask("m1", "slope-hi", 1_000, 20_000)).unwrap(), (None, None)));
+        // Granted a job, another held back for its disk: the 200 names it too (task #1477 third
+        // review: the member's hold ended at each grant, the lead's didn't).
+        measured_offer(&c, "slope-hi", &[("6/2/1", Some((2000, 1_000, 60))), ("6/2/2", Some((2000, 30_000, 60)))]);
+        let (g, held) = w.ask_held(&Ask { want: 2, ..every_ask("m1", "slope-hi", 64_000, 20_000) }).unwrap();
+        assert!(g.is_some() && held.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
     }
 
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,

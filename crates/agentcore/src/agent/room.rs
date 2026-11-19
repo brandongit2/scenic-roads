@@ -1204,6 +1204,19 @@ impl Sizes {
     pub fn clearable(&self, level: Level) -> u64 {
         self.clear.iter().filter(|(k, _)| level == Level::Deep || !deep(k)).map(|(_, b)| b).sum()
     }
+
+    /// What a freeing toward the target or a held room (`toward`) can free (bytes): every cache it
+    /// empties, the cheap ones and `TOWARD_ORDER`'s (not the heritage answers, which only a deep
+    /// clear takes). Files a job holds now among them: an upper bound.
+    pub fn towardable(&self) -> u64 {
+        self.clear.iter().filter(|(k, _)| *k != "answers").map(|(_, b)| b).sum()
+    }
+
+    /// Of those, what `TOWARD_ORDER`'s caches hold (bytes): what a freeing empties past the cheap
+    /// ones (room-making's).
+    pub fn past_cheap(&self) -> u64 {
+        TOWARD_ORDER.iter().filter_map(|k| self.clear.get(*k)).sum()
+    }
 }
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a

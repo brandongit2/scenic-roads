@@ -75,7 +75,7 @@ pub trait LeaseCalls {
         Ok(self.ask_held(a)?.0)
     }
 
-    /// `ask`, and with nothing granted, the disk (MB) a job held back for its disk alone needs
+    /// `ask`, and the disk (MB) a job held back for its disk alone needs, granted or not
     /// (super::HELD_DISK; None: none, or a lead too old to say).
     fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)>;
 
@@ -152,7 +152,10 @@ impl LeaseCalls for Client {
     fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)> {
         let a = Ask { worker: self.worker.clone(), sent: Some(super::held::sent()), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
-            (200, v) => Ok((Some(serde_json::from_value(v)?), None)),
+            (200, v) => {
+                let held = v[super::HELD_DISK].as_u64();
+                Ok((Some(serde_json::from_value(v)?), held))
+            }
             (409, v) => Err(Refused {
                 why: v["error"].as_str().unwrap_or("the lead gives this Mac no work as it is").to_string(),
                 pause: serde_json::from_value(v["pause"].clone()).ok().flatten(),
