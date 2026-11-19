@@ -1867,6 +1867,7 @@ impl Coordinator {
                 provisional_at: Default::default(),
                 paces: Default::default(),
                 batch_s: 0,
+                holds: BTreeMap::new(),
             },
             pass: String::new(),
             plan: 0,
@@ -9593,6 +9594,130 @@ mod tests {
         assert!(why(&c).contains("the job it waits for expected to end in 5 min"), "{}", why(&c));
         w.give_back(s[0].0, "the test").unwrap();
         assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{}", why(&c));
+    }
+
+    /// The jobs an ask is granted: lease, step and targets.
+    fn job_grants(w: &client::Client, a: &Ask) -> Vec<(u64, String, Vec<String>)> {
+        let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+        let more = std::mem::take(&mut g.more);
+        std::iter::once(g)
+            .chain(more)
+            .filter_map(|g| match g.work {
+                Granted::Job { step, targets, .. } => Some((g.lease, step, targets.into_iter().map(|t| t.0).collect())),
+                Granted::Task { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Task #1479 (the mini, 18-19 Nov): placement on, a step's pick starts from its longest target
+    /// drawn to the Mac, so room is held for that one, not for the step's first target in plan
+    /// order, and its smaller targets go only as a later job would, beside it or ending before the
+    /// jobs it waits for. On a member of 8 GB full of terrain-deep's 2 GB jobs of 10 minutes, its
+    /// 5 GB long pole (offered after a short 2 GB target) is held for as each job ends, none of
+    /// the others taking the room freed, and starts once the jobs it waits for end. (Before, a hold
+    /// came only with nothing of the step fitting, named the step's first target, 10/913/366, 1.8
+    /// GB, which placement takes last, and the small ones took each room freed: the mini's 4.8 GB
+    /// 10/313/304 waited from 02:44Z past 05:06Z while 26 smaller ones went.)
+    #[test]
+    fn a_steps_long_pole_is_held_for_its_smaller_targets_waiting_beside_it() {
+        let (_d, c, w, clock) = every((0, 0));
+        c.set_placement(Some(placement(&[])));
+        let small = Some((2000, 100, 600));
+        let mut ts: Vec<(String, Option<(u64, u64, u64)>)> =
+            vec![("10/1/1".into(), Some((2000, 100, 60))), ("10/1/2".into(), Some((5000, 100, 3000)))];
+        ts.extend((3..=20).map(|i| (format!("10/1/{i}"), small)));
+        let ts: Vec<(&str, Option<(u64, u64, u64)>)> = ts.iter().map(|(t, m)| (t.as_str(), *m)).collect();
+        let a = |want: usize| Ask { want, ..every_ask("m1", "terrain-deep", 8000, 100_000) };
+        let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+        // The member full of the 10-minute ones, the long pole not offered yet.
+        measured_offer(&c, "terrain-deep", &ts[2..]);
+        let mut held: Vec<u64> = job_grants(&w, &a(8)).into_iter().map(|g| g.0).collect();
+        assert_eq!(held.len(), 4, "{}", why(&c));
+        clock.advance(Duration::from_secs(60));
+        measured_offer(&c, "terrain-deep", &ts);
+        // A job ends: 2 GB free, a small one would fit; held for the long pole, which two more free.
+        for left in ["the 2 jobs it waits for", "the job it waits for"] {
+            w.give_back(held.remove(0), "the test").unwrap();
+            assert!(job_grants(&w, &a(8)).is_empty(), "{}", why(&c));
+            assert!(why(&c).starts_with("room held for a job of terrain-deep 10/1/2 (4.9 GB of memory"), "{}", why(&c));
+            assert!(why(&c).contains(left), "{}", why(&c));
+        }
+        // 6 GB free: it starts.
+        w.give_back(held.remove(0), "the test").unwrap();
+        let g = job_grants(&w, &a(8));
+        assert_eq!(g[0].2, ["10/1/2"], "{}", why(&c));
+    }
+
+    /// Task #1479: room held for a waiting job is bounded by the jobs it waits for. Room held for
+    /// terrain-deep (7 GB) on a member of 8 GB waits for slope-hi (4 GB), holding back bldtiles (2
+    /// GB, too long to end first, too large to fit beside it); slope-hi ends, but the room goes to
+    /// pack, offered since before it in plan order: every job its hold was bounded by has ended
+    /// without it starting, so the hold lapses and bldtiles goes in the room left. The hold is kept
+    /// lapsed while it waits, as the forecast's copy of the state keeps it, and goes once its job is
+    /// granted.
+    #[test]
+    fn a_hold_whose_jobs_ended_without_its_job_lapses() {
+        let (_d, c, w, clock) = every((0, 0));
+        let offer = |step: &str, t: &str| Offer {
+            step: step.into(),
+            targets: vec![(t.into(), format!("k {t}"), 0)],
+            job: None,
+        };
+        for (step, t, mb, secs) in [
+            ("slope-hi", "6/3/1", 4000, 600),
+            ("terrain-deep", "10/1/1", 7000, 600),
+            ("bldtiles", "6/2/1", 2000, 3000),
+            ("bldtiles", "6/2/2", 2000, 3000),
+            ("pack", "6/1/1", 4000, 600),
+        ] {
+            let sizes = [("threads".to_string(), 1)].into();
+            let cost = Cost { peak_mb: mb, secs, worker: None, v: cost_version(step), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key(step, t), cost)], "m1");
+            c.add_disks(&[(cost_key(step, t), 100)]);
+        }
+        let a = |want: usize| Ask {
+            want,
+            can: vec!["slope-hi".into(), "terrain-deep".into(), "bldtiles".into(), "pack".into()],
+            ..every_ask("m1", "bldtiles", 8000, 100_000)
+        };
+        let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+        let steps = |g: &[(u64, String, Vec<String>)]| g.iter().map(|g| g.1.clone()).collect::<Vec<_>>();
+        let holds = |c: &Coordinator| c.sched_state().holds;
+        c.offer("p", vec![offer("slope-hi", "6/3/1")]);
+        let b = job_grants(&w, &a(1));
+        assert_eq!(steps(&b), ["slope-hi"]);
+        c.offer("p", vec![offer("terrain-deep", "10/1/1"), offer("bldtiles", "6/2/1"), offer("bldtiles", "6/2/2")]);
+        assert!(job_grants(&w, &a(8)).is_empty(), "{}", why(&c));
+        assert!(why(&c).contains("room held for a job of terrain-deep 10/1/1"), "{}", why(&c));
+        assert!(holds(&c).iter().all(|h| h.target == "10/1/1" && !h.lapsed), "{:?}", holds(&c));
+        clock.advance(Duration::from_secs(600));
+        w.give_back(b[0].0, "the test").unwrap();
+        c.offer(
+            "p",
+            vec![
+                offer("pack", "6/1/1"),
+                offer("terrain-deep", "10/1/1"),
+                offer("bldtiles", "6/2/1"),
+                offer("bldtiles", "6/2/2"),
+            ],
+        );
+        let g = job_grants(&w, &a(8));
+        assert_eq!(steps(&g), ["pack", "bldtiles", "bldtiles"], "{}", why(&c));
+        assert!(!why(&c).contains("room held"), "{}", why(&c));
+        let kept = holds(&c);
+        assert!(kept.len() == 1 && kept[0].target == "10/1/1" && kept[0].lapsed, "{kept:?}");
+        // (The forecast's scheduler made from the state keeps it as it is.)
+        let st = c.sched_state();
+        let clk = sched::Clock { now: Instant::now(), unix: unix_now() };
+        let copy = sched::Sched::from_state(crate::agent::seam::for_tests(), &st, clk, Duration::from_secs(3600));
+        assert_eq!(copy.state(clk).holds, st.holds);
+        // Its room freed (pack offered no more), it's granted: nothing held.
+        for (lease, ..) in g {
+            w.give_back(lease, "the test").unwrap();
+        }
+        c.offer("p", vec![offer("terrain-deep", "10/1/1"), offer("bldtiles", "6/2/1"), offer("bldtiles", "6/2/2")]);
+        assert_eq!(steps(&job_grants(&w, &a(1))), ["terrain-deep"], "{}", why(&c));
+        assert!(holds(&c).is_empty(), "{:?}", holds(&c));
     }
 
     /// Task #965: the lead's own measured job first in the plan (terrain-water, its floor 9 GB:

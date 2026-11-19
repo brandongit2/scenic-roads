@@ -268,6 +268,25 @@ pub struct Sched {
     /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
     /// `JOB_S`): `batch_len`.
     pub batch_s: u64,
+    /// The room each worker's last ask held for waiting jobs, by worker (`Hold`, task #1479).
+    pub holds: BTreeMap<String, Vec<Hold>>,
+}
+
+/// Room held for a waiting job (`Backfill`) as kept from one of its Mac's asks to the next
+/// (`Sched::holds`, task #1479): the job it's for (its step and first target), the jobs its
+/// waiting is bounded by (leases: those it first waited for and those granted while it held, beside
+/// it or ending before those), and whether it has lapsed. Once every one of those has ended and
+/// its job still can't go, its room went to work its hold doesn't hold back (an offer before it in
+/// plan order, a job grown past its measure): it lapses, held no more, the others going as if it
+/// weren't there, until an ask doesn't hold room for it (granted, fitting the room left, offered
+/// no more). A job whose room its Mac's jobs ending don't free (its disk, freed from its caches
+/// meanwhile: crate::agent's `held_room`) is bounded by none of them: `jobs` None.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hold {
+    pub step: String,
+    pub target: String,
+    pub jobs: Option<BTreeSet<u64>>,
+    pub lapsed: bool,
 }
 
 /// What one `Sched::pack` keeps of the leases while it packs, made again at each grant: the NAS
@@ -401,10 +420,12 @@ struct RoomWait {
 }
 
 /// A job on the Mac an ask packs for, as the room held for a waiting job weighs it (`Backfill`):
-/// its memory, disk and cores (tenths), and in how long it's expected to end (s from now) by its
-/// measured time (`Sched::batch_secs`) less what it has run (0: past it; None: not measured).
+/// its lease, its memory, disk and cores (tenths), and in how long it's expected to end (s from
+/// now) by its measured time (`Sched::batch_secs`) less what it has run (0: past it; None: not
+/// measured).
 #[derive(Clone, Copy, Debug)]
 struct Run {
+    lease: u64,
     mem_mb: u64,
     disk_mb: u64,
     cores: u32,
@@ -412,15 +433,16 @@ struct Run {
 }
 
 impl Run {
-    /// A job measured `m`, counting for `cores` (tenths), of measured time `secs`, run `ran` s.
-    fn of(m: Measured, cores: u32, secs: Option<u64>, ran: u64) -> Run {
-        Run { mem_mb: m.mem_mb, disk_mb: m.disk_mb, cores, ends: secs.map(|s| s.saturating_sub(ran)) }
+    /// Lease `lease`'s job measured `m`, counting for `cores` (tenths), of measured time `secs`,
+    /// run `ran` s.
+    fn of(lease: u64, m: Measured, cores: u32, secs: Option<u64>, ran: u64) -> Run {
+        Run { lease, mem_mb: m.mem_mb, disk_mb: m.disk_mb, cores, ends: secs.map(|s| s.saturating_sub(ran)) }
     }
 }
 
 /// The room held for a waiting job (`RoomWait`) and what may still go while it waits (`Sched::pack`,
 /// task #973: backfilling, so a hold never idles a Mac's cores for as long as its running jobs
-/// last). The jobs it waits for (`waits_on`) are those of its Mac expected to end soonest, as few
+/// last). The jobs it waits for (`waited`, their leases) are those of its Mac expected to end soonest, as few
 /// as free its room once they end, any past its time or not measured first (it may end any
 /// moment); `shadow` is when they're expected to have ended (s from now, by their measured times;
 /// 0 where one is past its time or not measured). A later job goes when it fits beside the
@@ -429,10 +451,10 @@ impl Run {
 /// jobs waited for, so it's among them next time without putting off when they end; once one of
 /// them overruns, no more of that kind goes. So the waiting job waits only for a finite set of
 /// jobs, ending no later than those it first waited for while none overruns, and never for a
-/// long job while a shorter one frees its room.
+/// long job while a shorter one frees its room; past them, its hold lapses (`Hold`).
 struct Backfill {
     w: RoomWait,
-    waits_on: usize,
+    waited: Vec<u64>,
     shadow: u64,
     /// The room left beside it once the jobs it waits for end, every other job still running:
     /// memory, disk (None: not said), cores (tenths); None: short of it even then.
@@ -461,7 +483,7 @@ impl Backfill {
             let (m, d, c) = left;
             (m - w.mem_mb, room.disk_mb.map(|_| d - w.disk_mb), c - w.cores)
         });
-        Backfill { shadow, waits_on, beside, w }
+        Backfill { shadow, waited: waited.iter().map(|r| r.lease).collect(), beside, w }
     }
 
     /// Whether a job of measure `m` (and `fill` of a shared cache's disk), counting for `busy`
@@ -506,7 +528,7 @@ impl Backfill {
         if w.cores > cores {
             s += &format!("; {} cores, {} left", tenths(w.cores), tenths(cores));
         }
-        let (jobs, its) = match self.waits_on {
+        let (jobs, its) = match self.waited.len() {
             1 => ("the job it waits for".to_string(), "its"),
             n => (format!("the {n} jobs it waits for"), "their"),
         };
@@ -1674,7 +1696,7 @@ impl Sched {
             .zip(&needs)
             .map(|(&(l, st, ts), n)| {
                 let secs = self.lease_need(l, st, ts).1;
-                Run::of(n.m, self.need_cores(st, n, total).1, secs, l.ran(now).as_secs())
+                Run::of(l.id, n.m, self.need_cores(st, n, total).1, secs, l.ran(now).as_secs())
             })
             .collect();
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
@@ -1795,6 +1817,10 @@ impl Sched {
             offers.sort_by_key(|o| p.slack_of(&o.step));
         }
         let mut held = mine.len();
+        // (The room its last ask held for waiting jobs (`Hold`), and what this one holds, lapsed or
+        // not: kept for its next ask.)
+        let kept = self.holds.get(&a.worker).cloned().unwrap_or_default();
+        let mut named: Vec<Hold> = Vec::new();
         let mut grants: Vec<Pick> = Vec::new();
         // (Why the last round granted nothing: a job open but short of cores, or nothing open in
         // the room left.)
@@ -1828,26 +1854,33 @@ impl Sched {
                 let room_o = disk_with(&room, fill, credit);
                 let pick =
                     if o.job.is_some() { self.pick_own(o, &room_o, now) } else { self.pick_every(o, &room_o, now) };
+                // (Its job once its Mac's room frees (`room_wait`) when that's not the job the room
+                // left gives: none at all, or, a step's targets, a smaller one than the one its pick
+                // starts with in the whole room, which then goes only as any later job would,
+                // beside it or ending before the jobs it waits for (task #1479: the mini's
+                // terrain-deep jobs of 1-2 GB took the room its 4.8 GB long pole waited for, for
+                // hours).)
+                if waiting.is_none() && (pick.is_empty() || o.job.is_none()) {
+                    // (Its whole room, and of the disk what its caches can free too: a job
+                    // whose disk they give is held for, its memory and cores kept as they're
+                    // freed, `Held::disk_mb`.)
+                    let whole = disk_with(a, fill, credit.saturating_add(caches_free(a)));
+                    if let Some((m, ts)) = self.room_wait(o, &whole, &room_o, now) {
+                        let n = self.pack_need(&o.step, &ts);
+                        let w = RoomWait {
+                            step: o.step.clone(),
+                            target: ts.first().cloned().unwrap_or_default(),
+                            mem_mb: m.mem_mb,
+                            disk_mb: m.disk_mb + fill,
+                            cores: self.need_cores(&o.step, &n, total).1,
+                            credit,
+                        };
+                        let b = Backfill::of(w, &room, cores, &runs);
+                        waiting = self.hold(&kept, &mut named, b, &a.worker, now);
+                    }
+                }
                 if pick.is_empty() {
                     refused.push((o, fill, credit));
-                    if waiting.is_none() {
-                        // (Its whole room, and of the disk what its caches can free too: a job
-                        // whose disk they give is held for, its memory and cores kept as they're
-                        // freed, `Held::disk_mb`.)
-                        let whole = disk_with(a, fill, credit.saturating_add(caches_free(a)));
-                        waiting = self.room_wait(o, &whole, &room_o, now).map(|(m, ts)| {
-                            let n = self.pack_need(&o.step, &ts);
-                            let w = RoomWait {
-                                step: o.step.clone(),
-                                target: ts.first().cloned().unwrap_or_default(),
-                                mem_mb: m.mem_mb,
-                                disk_mb: m.disk_mb + fill,
-                                cores: self.need_cores(&o.step, &n, total).1,
-                                credit,
-                            };
-                            Backfill::of(w, &room, cores, &runs)
-                        });
-                    }
                     continue;
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
@@ -1881,11 +1914,13 @@ impl Sched {
                             cores: need,
                             credit,
                         };
-                        waiting = Some(Backfill::of(w, &room, cores, &runs));
+                        let b = Backfill::of(w, &room, cores, &runs);
+                        waiting = self.hold(&kept, &mut named, b, &a.worker, now);
                     }
                     continue;
                 }
                 let p90 = || self.batch_p90(&o.step, ts.iter().map(String::as_str), &a.worker);
+                let backfilled = waiting.as_ref().map(|w| (w.w.step.clone(), w.w.target.clone()));
                 if let Some(w) = waiting.as_ref().filter(|w| !w.lets(&n.m, fill, need, p90)) {
                     held_why.get_or_insert_with(|| w.held(&room, cores, whole, reach, true));
                     continue;
@@ -1903,10 +1938,10 @@ impl Sched {
                     }
                     continue;
                 }
-                got = Some((o, pick, n));
+                got = Some((o, pick, n, backfilled));
                 break;
             }
-            let Some((o, pick, n)) = got else {
+            let Some((o, pick, n, backfilled)) = got else {
                 let nas_waits = self.nas_waits_at(now);
                 why = Some(match short {
                     _ if held_why.is_some() => held_why.unwrap_or_else(|| held_by(Rule::Waiting, String::new())),
@@ -1984,8 +2019,17 @@ impl Sched {
             // (A cold start's too: its step unmeasured, its cache's fill may be.)
             let fill = self.cache_fill(&o.step, &caches, a) + copies.spent(&o.step);
             let m = n.m;
-            runs.push(self.run_of(&o.step, &ts, &a.worker, Measured { disk_mb: m.disk_mb + fill, ..m }, busy, 0));
-            grants.push(self.grant(a, o, pick, threads, m.mem_mb, fill, clock));
+            let p = self.grant(a, o, pick, threads, m.mem_mb, fill, clock);
+            runs.push(self.run_of(p.lease, &o.step, &ts, &a.worker, Measured { disk_mb: m.disk_mb + fill, ..m }, busy));
+            // (Granted while room was held for a waiting job, beside it or ending before the jobs
+            // it waits for: its hold waits for it too, `Hold`.)
+            if let Some(js) = backfilled
+                .and_then(|(st, t)| named.iter_mut().find(|h| h.step == st && h.target == t))
+                .and_then(|h| h.jobs.as_mut())
+            {
+                js.insert(p.lease);
+            }
+            grants.push(p);
             held += 1;
             caches.extend(crate::needs::cache_of(&o.step));
             cold_here |= n.cold;
@@ -1999,8 +2043,45 @@ impl Sched {
             }
             by_threads = by_threads.saturating_sub(threads);
         }
+        if named.is_empty() {
+            self.holds.remove(&a.worker);
+        } else {
+            self.holds.insert(a.worker.clone(), named);
+        }
         let why = why.filter(|_| grants.len() < want);
         (grants, why)
+    }
+
+    /// Room held for waiting job `b` on `worker`'s Mac (`Hold`), as its last ask kept it (`kept`) or
+    /// this one has (`named`, where it goes): a new hold bounded by the jobs `b` waits for (none
+    /// where they don't free its room, `Backfill::beside`), one kept lapsing once every job
+    /// bounding it has ended. None: lapsed, nothing held for it.
+    fn hold(&self, kept: &[Hold], named: &mut Vec<Hold>, b: Backfill, worker: &str, now: Instant) -> Option<Backfill> {
+        let of = |h: &Hold| h.step == b.w.step && h.target == b.w.target;
+        let bounds = || b.beside.is_some().then(|| b.waited.iter().copied().collect::<BTreeSet<u64>>());
+        let i = match named.iter().position(of) {
+            Some(i) => i,
+            None => {
+                named.push(kept.iter().find(|h| of(h)).cloned().unwrap_or_else(|| Hold {
+                    step: b.w.step.clone(),
+                    target: b.w.target.clone(),
+                    jobs: bounds(),
+                    lapsed: false,
+                }));
+                named.len() - 1
+            }
+        };
+        let h = &mut named[i];
+        match h.jobs.as_mut() {
+            Some(js) => {
+                let live: BTreeSet<u64> = self.worker_jobs(worker, now).map(|l| l.id).collect();
+                js.retain(|id| live.contains(id));
+                h.lapsed |= js.is_empty();
+            }
+            // (Its room coming from its Mac's jobs now: bounded by them from here.)
+            None => h.jobs = bounds(),
+        }
+        (!h.lapsed).then_some(b)
     }
 
     /// What a thread of a job of `step` over `targets` adds to its memory at most (MB), and the
@@ -2174,12 +2255,15 @@ impl Sched {
     }
 
     /// What offer `o` waits for when refused for its room alone (`pack`, task #965): the measure
-    /// (memory, disk) of its first target in plan order `a`'s worker could take with its whole room
-    /// `whole` (every job it holds ended, its disk with what its caches can free: `caches_free`),
-    /// when the room left `room` doesn't fit it. None when
-    /// there's none (nothing open, a cold start: `own_cold_waits`'s, or none that ever fits this
-    /// Mac: the room isn't held for what can't go here), or that one fits the room left (held back
-    /// for another reason, the NAS budget's say). With it, the targets it's of (the job's).
+    /// (memory, disk) of the job `a`'s worker would be granted of it with its whole room `whole`
+    /// (every job it holds ended, its disk with what its caches can free: `caches_free`), when the
+    /// room left `room` doesn't fit it: the lead's own planned job whole, or the target a step's
+    /// pick starts with there (`pick_run`: placement on, the longest drawn to it; task #1479: by
+    /// plan order it named terrain-deep's shortest, 10/913/366, 1.8 GB, which placement takes
+    /// last, while the pick, its room freed, started a 4.8 GB job), its waits on the NAS not
+    /// noted. None when there's none (nothing open, a cold start: `own_cold_waits`'s, or none that
+    /// ever fits this Mac: the room isn't held for what can't go here), or that one fits the room
+    /// left (held back for another reason, the NAS budget's say). With it, the targets it's of.
     pub(super) fn room_wait(
         &self,
         o: &Offer,
@@ -2196,11 +2280,8 @@ impl Sched {
             let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
             (self.job_need(&o.step, &ts)?, ts)
         } else {
-            let held = self.leases.held(&o.step, now);
-            o.targets.iter().find_map(|(t, k, _)| {
-                let m = self.measured(&o.step, t)?;
-                self.may_take_measured(o, whole, t, k, &m, &held, now).then(|| (m, vec![t.clone()]))
-            })?
+            let t = self.pick_run(o, whole, now, false).into_iter().next()?.0;
+            (self.measured(&o.step, &t)?, vec![t])
         };
         let m = Measured { disk_mb: m.disk_mb.max(job_disk), ..m };
         (fits(&m, whole) && !fits(&m, room)).then_some((m, ts))
@@ -2288,10 +2369,11 @@ impl Sched {
         }
     }
 
-    /// A job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for `cores`
-    /// (tenths), that has run `ran` s, as room held for a waiting job weighs it (`Run`).
-    fn run_of(&self, step: &str, targets: &[String], worker: &str, m: Measured, cores: u32, ran: u64) -> Run {
-        Run::of(m, cores, self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0), ran)
+    /// Lease `lease`'s job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for
+    /// `cores` (tenths), just granted, as room held for a waiting job weighs it (`Run`).
+    fn run_of(&self, lease: u64, step: &str, targets: &[String], worker: &str, m: Measured, cores: u32) -> Run {
+        let secs = self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0);
+        Run::of(lease, m, cores, secs, 0)
     }
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
@@ -2402,6 +2484,12 @@ impl Sched {
     /// its room. A cold start (`measured` None) by its provisional need, one job of its step in the
     /// pool at a time.
     pub(super) fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        self.pick_run(o, a, now, true)
+    }
+
+    /// `pick_every`, a target it would take but for the NAS budget noted waiting (`nas_wait`) when
+    /// `note`: not for the job a hold waits for (`room_wait`), weighed in a room the Mac hasn't got.
+    fn pick_run(&self, o: &Offer, a: &Ask, now: Instant, note: bool) -> Vec<(String, String)> {
         let held = self.held_of(&o.step, now);
         // (Each target's failures looked up only where the worker failed any; the step's work done
         // taken out once, each target looked up in it: an ask weighs every target of every offer.)
@@ -2466,7 +2554,9 @@ impl Sched {
                     None => held.is_empty() && self.cold_fits(&o.step, std::slice::from_ref(t), a, now),
                 }
                 && (nas_fits(t, &JobLoad::default()) || {
-                    self.nas_wait(&o.step, t, now);
+                    if note {
+                        self.nas_wait(&o.step, t, now);
+                    }
                     false
                 })
         };
@@ -2718,10 +2808,24 @@ pub struct State {
     /// The batch length set (`Sched::batch_s`, task #927: 0, not set or a record before it).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub batch_s: u64,
+    /// The room held for waiting jobs (`Sched::holds`; task #1479: a record before it has none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holds: Vec<Kept>,
 }
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+/// A hold kept (`State::holds`, `Hold`): its worker, its job, the jobs bounding it as their places
+/// in `State::leases` (those still out), and whether it has lapsed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub worker: String,
+    pub step: String,
+    pub target: String,
+    pub jobs: Option<Vec<usize>>,
+    pub lapsed: bool,
 }
 
 impl State {
@@ -2791,18 +2895,18 @@ impl Sched {
     pub fn state(&self, clock: Clock) -> State {
         let now = clock.now;
         let age = |t: Instant| now.saturating_duration_since(t).as_secs();
+        let jobs: Vec<Lease> =
+            self.leases.all(now).into_iter().filter(|l| matches!(l.work, Work::Job { .. })).collect();
         State {
-            leases: self
-                .leases
-                .all(now)
-                .into_iter()
+            leases: jobs
+                .iter()
                 .filter_map(|l| {
                     // (Its job's start when it's older than its lease: `Lease::began`, task #992.)
                     let granted_at = l.granted_at.min(clock.unix.saturating_sub(l.ran(now).as_secs()));
                     match &l.work {
                         Work::Job { step, targets } => Some(Leased {
                             granted_at,
-                            busy_tenths: self.held_need(&l, step, targets, now).busy_now,
+                            busy_tenths: self.held_need(l, step, targets, now).busy_now,
                             worker: l.worker.clone(),
                             step: step.clone(),
                             targets: targets.clone(),
@@ -2810,6 +2914,20 @@ impl Sched {
                         }),
                         Work::Task { .. } => None,
                     }
+                })
+                .collect(),
+            holds: self
+                .holds
+                .iter()
+                .flat_map(|(w, hs)| hs.iter().map(move |h| (w, h)))
+                .map(|(w, h)| Kept {
+                    worker: w.clone(),
+                    step: h.step.clone(),
+                    target: h.target.clone(),
+                    jobs: h.jobs.as_ref().map(|js| {
+                        jobs.iter().enumerate().filter(|(_, l)| js.contains(&l.id)).map(|(i, _)| i).collect()
+                    }),
+                    lapsed: h.lapsed,
                 })
                 .collect(),
             offers: self.offers.clone(),
@@ -2861,6 +2979,7 @@ impl Sched {
         let now = clock.now;
         let mut leases = Leases::new(ttl);
         leases.app = s.app.clone();
+        let mut ids = Vec::with_capacity(s.leases.len());
         for l in &s.leases {
             // (Granted, by the wall clock, when it was where the record says: its job has run
             // since. Its lease counts from now, as before.)
@@ -2869,6 +2988,16 @@ impl Sched {
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
             leases.from_record(id, at, l.busy_tenths, clock.unix, now);
             leases.set_threads(id, l.threads);
+            ids.push(id);
+        }
+        let mut holds: BTreeMap<String, Vec<Hold>> = BTreeMap::new();
+        for k in &s.holds {
+            holds.entry(k.worker.clone()).or_default().push(Hold {
+                step: k.step.clone(),
+                target: k.target.clone(),
+                jobs: k.jobs.as_ref().map(|js| js.iter().filter_map(|&i| ids.get(i).copied()).collect()),
+                lapsed: k.lapsed,
+            });
         }
         let workers = s
             .workers
@@ -2933,6 +3062,7 @@ impl Sched {
             provisional_at: Default::default(),
             paces: s.paces.clone(),
             batch_s: s.batch_s,
+            holds,
         };
         sched.set_offers(s.offers.clone());
         sched
