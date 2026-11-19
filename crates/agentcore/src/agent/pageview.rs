@@ -399,11 +399,6 @@ fn members_of(status: &Value, now: u64) -> Vec<Value> {
         .collect()
 }
 
-/// A time as unix ms.
-fn ms_of(t: SystemTime) -> u64 {
-    t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
-
 /// The swarm's answer at `now` from snapshot `s` and the last forecast run here.
 fn answer(s: &Snap, forecast: Option<&Forecast>, app: &str, now: u64) -> Value {
     let mut agent = s.status.clone();
@@ -566,6 +561,11 @@ pub fn spawn(pv: Arc<PageView>) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// A time as unix ms.
+    fn ms_of(t: SystemTime) -> u64 {
+        t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    }
+
     use super::super::forecast::{self, Basis, Cadence, Cost, Input, Machine};
     use super::*;
     use crate::coord::history::Event;

@@ -476,6 +476,15 @@ struct Stopped {
     why: String,
 }
 
+/// What a forecast is of (`Planner::refresh_forecast`): the regions' work (with why it can't all
+/// be listed, when it can't), or a plan that stopped short of it, by its reason. A forecast
+/// whose shape isn't the plan's now is never shown nor taken in.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Shape {
+    Regions(Option<String>),
+    Stopped(String),
+}
+
 /// The plan's state, owned by its thread (or the round, in line).
 pub(super) struct Planner {
     pub(super) o: Options,
@@ -568,7 +577,7 @@ pub(super) struct Planner {
     pub(super) forecast: std::cell::RefCell<Option<forecast::Forecast>>,
     /// What the forecast's plan was (`forecast_of`): the regions' work, or where the plan stopped
     /// short of it and its jobs (`Stopped`).
-    pub(super) forecast_shape: std::cell::RefCell<Option<String>>,
+    pub(super) forecast_shape: std::cell::RefCell<Option<Shape>>,
     /// When each (Mac, step) last had its grants' departure from the forecast, or its many grants of
     /// a step the forecast doesn't model, logged (`forecast_record`): once an hour at most.
     pub(super) departed: std::cell::RefCell<BTreeMap<(String, String), u64>>,
@@ -584,7 +593,7 @@ pub(super) struct Planner {
     pub(super) regions_making: std::cell::RefCell<Option<std::thread::JoinHandle<regionsview::Made>>>,
     /// The forecast being run off the plan (its own thread, `start_forecast`): its answer, its
     /// record's bytes and how long it took, taken in once it's done (`take_forecast`).
-    pub(super) forecasting: std::cell::RefCell<Option<std::thread::JoinHandle<Forecasted>>>,
+    pub(super) forecasting: std::cell::RefCell<Option<(Shape, std::thread::JoinHandle<Forecasted>)>>,
     /// This Mac's tiles to come in its last forecast, as cache hints (room::Hints::of_tocome,
     /// task #843), with that forecast's time.
     pub(super) upcoming: std::cell::RefCell<Option<(u64, std::sync::Arc<room::Hints>)>>,
@@ -888,7 +897,7 @@ impl Planner {
             queued: self.queued.borrow().clone(),
             ready: self.ready.borrow().clone(),
             regions_view: self.regions_view.borrow().clone(),
-            forecasting: self.forecasting.borrow().as_ref().is_some_and(|h| !h.is_finished()),
+            forecasting: self.forecasting.borrow().as_ref().is_some_and(|(_, h)| !h.is_finished()),
             catalogue_low: self.catalogue_low.get(),
         };
         self.view.set(view);
@@ -1657,28 +1666,27 @@ impl Planner {
         }
     }
 
-    /// What the forecast made next is of, when it differs from the last plan's: its in-flight run
-    /// is let go (its answer never taken in) and the forecast held is cleared, so a forecast of
-    /// another plan is never shown. The first plan's, with nothing before it, changes nothing.
-    fn forecast_of(&self, shape: String) {
-        self.take_forecast();
-        let was = self.forecast_shape.replace(Some(shape.clone()));
-        if was.is_some_and(|w| w != shape) {
-            self.forecasting.borrow_mut().take();
+    /// The forecast for a plan of `shape`: one of another shape held is cleared, one under way
+    /// for another is left to end (never two at once; its answer is dropped whole when it does,
+    /// `take_forecast`), and a new one (`make`'s record) starts once none is under way and the
+    /// last is `forecast::EVERY` old or none is held.
+    fn refresh_forecast(&self, shape: Shape, make: impl FnOnce() -> forecast::Record<'static>) {
+        if self.forecast_shape.replace(Some(shape.clone())).as_ref() != Some(&shape) {
             *self.forecast.borrow_mut() = None;
+        }
+        self.take_forecast();
+        let stale =
+            self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
+        if stale && self.forecasting.borrow().is_none() {
+            self.start_forecast(shape, make());
         }
     }
 
     /// The forecast of a plan that stopped short of the regions' work (`Stopped`): its jobs placed,
     /// no region's work, and `why` as the forecast's own (the build page says it, no finish shown).
-    /// Made again at most each `forecast::EVERY`, or at once when what stopped it or its jobs changed.
     fn forecast_stopped(&self, jobs: &[JobSpec], why: &str) {
-        let ids: Vec<&str> = jobs.iter().map(|j| j.id.as_str()).collect();
-        self.forecast_of(format!("stopped: {why}; jobs {}", ids.join(",")));
-        let stale =
-            self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
-        if stale && self.forecasting.borrow().is_none() {
-            let record = self.forecast_record(
+        self.refresh_forecast(Shape::Stopped(why.to_string()), || {
+            self.forecast_record(
                 jobs,
                 &[],
                 &[],
@@ -1688,9 +1696,8 @@ impl Planner {
                 Some(why.to_string()),
                 &seam::Left::default(),
                 &|_, _| 0,
-            );
-            self.start_forecast(record);
-        }
+            )
+        });
     }
 
     /// `region_jobs`' plan: the jobs, or where it stopped short of the regions' work.
@@ -2233,17 +2240,14 @@ impl Planner {
         // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
         // again at most each `forecast::EVERY`: idle, the plan's made each loop).
         // (Run on a thread of its own, `start_forecast`: the loop reads the last one done and never
-        // waits on it, task #544.) (One kept from a plan that stopped short is let go: `forecast_of`.)
-        self.forecast_of("the regions' work".into());
-        let stale =
-            self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
-        if stale && self.forecasting.borrow().is_none() {
-            // (What can't be listed now: the regions' work after a new pass, or while the z6 tiles wait.)
-            let blind = match newer {
-                Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
-                None if planned.regions.is_empty() => Some("the z6 tiles wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
-                None => None,
-            };
+        // waits on it, task #544.) (What can't be listed now: the regions' work after a new pass, or
+        // while the z6 tiles wait.)
+        let blind = match newer {
+            Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
+            None if planned.regions.is_empty() => Some("the z6 tiles wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
+            None => None,
+        };
+        self.refresh_forecast(Shape::Regions(blind.clone()), || {
             let z6: BTreeMap<String, usize> = buildstore::coverage::coverage_tiles(cov)
                 .into_iter()
                 .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
@@ -2271,7 +2275,7 @@ impl Planner {
             let mut chains = self.held_plan.chains_left(&round);
 
             chains[1].splice(0..0, summits_held);
-            let record = self.forecast_record(
+            self.forecast_record(
                 &before,
                 &planned.regions,
                 &planned.drops,
@@ -2281,9 +2285,8 @@ impl Planner {
                 blind,
                 &planned.left,
                 &peak,
-            );
-            self.start_forecast(record);
-        }
+            )
+        });
         plan.retain(|w| !w.targets.is_empty());
         // (A job a step's work in the plan: an offered step's is its place in the plan's order, its
         // targets granted as many as fit a quarter of an hour, `offer_plan`; the pyramids' fill a z6
@@ -2899,7 +2902,7 @@ impl Planner {
     /// scale took the loop for a quarter hour, 21 Oct): the loop reaps, starts jobs and writes the
     /// status meanwhile, and takes it in once it's done (`take_forecast`). Its record's bytes are
     /// made there too (as data, for the NAS: written by the lead's pool step, `pool_lead_files`).
-    pub(super) fn start_forecast(&self, record: forecast::Record<'static>) {
+    pub(super) fn start_forecast(&self, shape: Shape, record: forecast::Record<'static>) {
         let app = self.app.clone();
         let coord = self.coord.clone();
         let host = self.host.clone();
@@ -2924,7 +2927,7 @@ impl Planner {
             Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, upcoming, waits, took: took.elapsed() }
         });
         match run {
-            Ok(h) => *self.forecasting.borrow_mut() = Some(h),
+            Ok(h) => *self.forecasting.borrow_mut() = Some((shape, h)),
             Err(e) => eprintln!("agent: the forecast's thread: {e}"),
         }
     }
@@ -2933,10 +2936,14 @@ impl Planner {
     /// then, its record's bytes for the NAS. A fault in it costs the status its forecast, never the
     /// agent.
     pub(super) fn take_forecast(&self) {
-        if !self.forecasting.borrow().as_ref().is_some_and(|h| h.is_finished()) {
+        if !self.forecasting.borrow().as_ref().is_some_and(|(_, h)| h.is_finished()) {
             return;
         }
-        let Some(h) = self.forecasting.borrow_mut().take() else { return };
+        let Some((shape, h)) = self.forecasting.borrow_mut().take() else { return };
+        // (One of a plan that isn't the plan's now: dropped whole, before any of its effects.)
+        if self.forecast_shape.borrow().as_ref() != Some(&shape) {
+            return;
+        }
         match h.join() {
             Ok(done) => {
                 // (Its time, in the log.)
@@ -4005,7 +4012,7 @@ mod tests {
     fn apart(p: &Planner, c: &crate::coord::Coordinator, forecast: Option<Out>) -> Vec<String> {
         use crate::agent::allocs;
         let busy = || {
-            p.forecasting.borrow().as_ref().is_some_and(|h| !h.is_finished())
+            p.forecasting.borrow().as_ref().is_some_and(|(_, h)| !h.is_finished())
                 || p.regions_making.borrow().as_ref().is_some_and(|h| !h.is_finished())
         };
         while busy() {
@@ -4121,11 +4128,14 @@ mod tests {
             p.inp.map = Some(std::sync::Arc::new(here));
         }
         // (No forecast: a thread that never ends holds its place.)
-        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
-            loop {
-                std::thread::park()
-            }
-        }));
+        *p.forecasting.borrow_mut() = Some((
+            Shape::Stopped(String::new()),
+            std::thread::spawn(|| -> Forecasted {
+                loop {
+                    std::thread::park()
+                }
+            }),
+        ));
         let pass = match env("SCENIC_FROZEN_PASS") {
             Some(d) if d == "none" => None,
             Some(d) => Some(d),
@@ -4213,11 +4223,14 @@ mod tests {
         };
         p.inp.pool_seen = Some(lead(membership::Gates::default()));
         // (No forecast: a thread that never ends holds its place.)
-        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
-            loop {
-                std::thread::park()
-            }
-        }));
+        *p.forecasting.borrow_mut() = Some((
+            Shape::Stopped(String::new()),
+            std::thread::spawn(|| -> Forecasted {
+                loop {
+                    std::thread::park()
+                }
+            }),
+        ));
         let (manifest, _) = p.planning_records(&root).unwrap();
         let t = Instant::now();
         while let Err(why) = p.coverage(&root, &manifest, false) {
@@ -4315,11 +4328,14 @@ mod tests {
             lead: None,
         });
         // (No forecast: a thread that never ends holds its place.)
-        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
-            loop {
-                std::thread::park()
-            }
-        }));
+        *p.forecasting.borrow_mut() = Some((
+            Shape::Stopped(String::new()),
+            std::thread::spawn(|| -> Forecasted {
+                loop {
+                    std::thread::park()
+                }
+            }),
+        ));
         let mut lines = Vec::new();
         let mut say = |l: String| {
             eprintln!("frozen: {l}");

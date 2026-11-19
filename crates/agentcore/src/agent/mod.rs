@@ -12872,7 +12872,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = test_agent(Options {
+        let a = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
@@ -15983,11 +15983,11 @@ mod tests {
         a: &mut Agent,
         root: &store::nasfs::NasRoot,
         pass: Option<&str>,
-    ) -> (Vec<JobSpec>, forecast::Forecast) {
+    ) -> (Vec<JobSpec>, Vec<Waiting>, forecast::Forecast) {
         let p = a.planner();
         *p.forecast.borrow_mut() =
             Some(forecast::Forecast { at: now_s(), why: Some("STALE".into()), ..Default::default() });
-        *p.forecast_shape.borrow_mut() = Some("the regions' work".into());
+        *p.forecast_shape.borrow_mut() = Some(plan::Shape::Regions(None));
         let (mut w, mut held) = (Vec::new(), Holds::default());
         let jobs = p.region_jobs(root, pass, None, &mut w, &mut held);
         assert!(p.forecast.borrow().is_none(), "the forecast of another plan is not kept");
@@ -15995,7 +15995,7 @@ mod tests {
         loop {
             p.take_forecast();
             if let Some(f) = p.forecast.borrow().clone() {
-                return (jobs, f);
+                return (jobs, w, f);
             }
             assert!(t.elapsed() < Duration::from_secs(60), "no forecast made");
             std::thread::sleep(Duration::from_millis(20));
@@ -16041,7 +16041,7 @@ mod tests {
                 outlines_made: true,
                 ..base("outlines", "the pass's outlines are being assembled")
             },
-            Case { pass: Some(date), outlines_made: true, failures: 3, ..base("coverage", "") },
+            Case { pass: Some(date), outlines_made: true, failures: 3, ..base("coverage", ".rgeo") },
         ];
         for c in cases {
             let d = tempfile::tempdir().unwrap();
@@ -16070,17 +16070,77 @@ mod tests {
             }
             let manifest = if c.garbled { b"{ not json".to_vec() } else { serde_json::to_vec(&m).unwrap() };
             put(&root.join("state/build/manifest.json"), &manifest);
+            // (The coverage unread: the region's geometry gone, so it fails at once.)
+            if c.name == "coverage" {
+                fn drop_rgeo(d: &Path) {
+                    for e in std::fs::read_dir(d).unwrap().flatten() {
+                        let p = e.path();
+                        if p.is_dir() {
+                            drop_rgeo(&p);
+                        } else if p.extension().is_some_and(|x| x == "rgeo") {
+                            std::fs::remove_file(p).unwrap();
+                        }
+                    }
+                }
+                drop_rgeo(&root);
+            }
             let mut a = agent(&nas, &home);
-            a.planner().inp.mem.retry.insert(format!("outlines {date}"), (c.failures, 0));
-            let (jobs, f) = forecast_after(&mut a, &nas, c.pass);
+            a.mem.retry.insert(format!("outlines {date}"), (c.failures, 0));
+            let (jobs, waiting, f) = forecast_after(&mut a, &nas, c.pass);
             let why = f.why.clone().unwrap_or_default();
             assert!(why.contains(c.reason) && !why.is_empty(), "{}: {why}", c.name);
             assert!(!why.contains("STALE") && f.done_at.is_none(), "{}: {f:?}", c.name);
-            // (The jobs the plan returned are the forecast's: no more placed than they are.)
+            // (The jobs the plan returned are the forecast's: its steps are theirs, none more.)
             let steps: BTreeSet<&str> =
                 jobs.iter().filter_map(|j| j.record.as_ref()).map(|w| w.step.as_str()).collect();
-            assert!(f.placed.iter().all(|p| steps.contains(p.step.as_str())), "{}: {:?}", c.name, f.placed);
+            assert!(f.steps.iter().all(|s| steps.contains(s.step.as_str())), "{}: {:?}", c.name, f.steps);
+            if c.name == "outlines" {
+                assert!(f.steps.iter().any(|s| s.step == "outlines"), "{:?}", f.steps);
+            }
+            // (The coverage's wait says what the forecast does.)
+            if c.name == "coverage" {
+                assert!(
+                    waiting.iter().any(|w| w.what == "Building the regions" && w.why == why),
+                    "{waiting:?} / {why}"
+                );
+            }
         }
+    }
+
+    /// Task #1444: a forecast under way for another plan is never dropped nor run beside a new one:
+    /// the plan's own waits for it to end, and the held forecast of another shape is cleared.
+    #[test]
+    fn a_forecast_under_way_for_another_plan_is_left_to_end_and_none_starts_beside_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        put(&root.join("state/build/manifest.json"), b"{ not json");
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let mut a = agent(&nas, &home);
+        let p = a.planner();
+        let (stop, release) = std::sync::mpsc::channel::<()>();
+        let old = plan::Shape::Regions(None);
+        *p.forecasting.borrow_mut() = Some((
+            old.clone(),
+            std::thread::spawn(move || -> Forecasted {
+                release.recv().ok();
+                panic!("a run for another plan's answer is dropped whole, before it is joined")
+            }),
+        ));
+        *p.forecast_shape.borrow_mut() = Some(old.clone());
+        *p.forecast.borrow_mut() = Some(forecast::Forecast { at: now_s(), ..Default::default() });
+        let (mut w, mut held) = (Vec::new(), Holds::default());
+        p.region_jobs(&nas, None, None, &mut w, &mut held);
+        assert!(p.forecast.borrow().is_none(), "the held forecast of another shape is cleared");
+        assert_eq!(p.forecasting.borrow().as_ref().map(|f| &f.0), Some(&old), "the run under way stays, alone");
+        // (It ends: its answer, of another plan's shape, never taken in; the plan's own then starts.)
+        stop.send(()).unwrap();
+        let t = std::time::Instant::now();
+        while p.forecasting.borrow().as_ref().is_some_and(|f| f.0 == old) {
+            assert!(t.elapsed() < Duration::from_secs(30));
+            std::thread::sleep(Duration::from_millis(20));
+            p.region_jobs(&nas, None, None, &mut w, &mut held);
+        }
+        assert!(p.forecast.borrow().is_none() || p.forecast.borrow().as_ref().unwrap().why.is_some());
     }
 
     #[test]
@@ -20395,7 +20455,7 @@ mod membership_tests {
             targets: vec![("available-terrain".into(), "k1".into()), ("available-bathymetry".into(), "k2".into())],
         }];
         let chains = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), polar];
-        let mut forecast_of = |a: &mut Agent| {
+        let forecast_of = |a: &mut Agent| {
             a.planner().forecast_record(&[], &[], &[], &[], chains.clone(), &[], None, &Default::default(), &|_, _| 0)
         };
         let rec = forecast_of(&mut a);

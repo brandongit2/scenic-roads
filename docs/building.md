@@ -355,10 +355,12 @@ from the first (`edit_held`).
   Every plan has its forecast, whichever way the planner leaves (`Planner::region_jobs`, the one exit): the
   regions' work as above, or, where it stops short of it (the build's records unread, an app older than the
   regions' readers' switch, the pass's outlines under way, no regions declared or readable, no pass yet, the
-  coverage unread), the jobs it did return, placed, with the reason as the forecast's own `why` (the build
-  page says it, no finish shown). It is made again at most each minute, or at once when its reason or those jobs
-  change; a forecast of another plan (the regions' work, or another stop), held or under way, is let go,
-  never shown beside the plan that replaced it.
+  coverage unread or still being read), the jobs it did return, placed, with the reason as the forecast's own
+  `why` (the build page says it, no finish shown). A forecast is of one shape: the regions' work (with why it
+  can't all be listed, when it can't: a newer pass declared changes it) or a stop (by its reason, not its
+  jobs). It is made again at most each minute, or at once when the plan's shape changes: the held one is
+  cleared, a run under way for the old shape ends first (one at a time) and its answer is dropped whole, no
+  effect of it applied (`Planner::refresh_forecast`, `take_forecast`).
 - **The history** (`coord::history`): the last week's events on the lead's disk
   (`coord/history.jsonl`) and in its coordinator's memory: jobs, leases, tasks, map tiles planned,
   map updates, pauses, workers, agents, conditions, cache clears and freeings (a member's noted to

@@ -1441,8 +1441,10 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   replay, comes with the needs model's predicted peak (task #1415; planned).
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
-  starting jobs and writing the status never wait on it. The status keeps one for the plan it holds only: a plan that stops short of the regions' work
-  makes its own (its jobs, the reason as its `why`), and one of another plan is let go (docs/building.md, The forecast). Its three runs go side by side (three
+  starting jobs and writing the status never wait on it. The status keeps one for the plan it holds
+  only: a plan that stops short of the regions' work makes its own (its jobs, the reason as its
+  `why`), and a run for another plan is left to end, one at a time, its answer dropped whole
+  (docs/building.md, The forecast). Its three runs go side by side (three
   threads, each at the utility QoS: `forecast::low_priority`), each cut once it has computed
   `forecast::BUDGET` (15 s of its thread's CPU time, not wall time, #584: a loaded Mac starves
   utility threads, 4 s of CPU took 15 s on the mini at load 34; a run of 7 Nov's worldwide queue,

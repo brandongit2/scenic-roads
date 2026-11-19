@@ -329,7 +329,7 @@ fn watch(home: &Path, tx: &Sender<In>, sweep: Duration) {
         // added, says nothing to the watch.)
         #[cfg(target_os = "macos")]
         while kq.as_ref().is_none_or(|k| k.stale()) {
-            kq = None;
+            drop(kq.take());
             std::fs::create_dir_all(&cancels).ok();
             kq = Kqueue::on(&[home, &cancels]);
             if kq.is_none() {

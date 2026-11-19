@@ -625,6 +625,7 @@ pub mod tests {
     }
 
     /// The key own_key had until task #464's fix (gap 11).
+    #[cfg(test)]
     fn old_own_key(z: u8, x: u32, y: u32, k: usize) -> u64 {
         (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64
     }
