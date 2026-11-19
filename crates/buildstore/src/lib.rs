@@ -24,7 +24,7 @@ pub mod out;
 pub mod outlines;
 pub mod pending;
 pub mod rawpack;
-pub mod recipes;
 pub mod reads;
+pub mod recipes;
 pub mod records;
 pub mod room;

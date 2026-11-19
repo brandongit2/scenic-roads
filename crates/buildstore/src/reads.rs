@@ -528,12 +528,24 @@ mod tests {
             f();
             rec.end()
         };
-        let entry = key(&|| { let _ = v.get("a/1"); });
-        let absent = key(&|| { let _ = v.get("a/3"); });
-        let has = key(&|| { let _ = v.contains_key("a/1"); });
-        let prefix = key(&|| { let _ = v.under("a/").count(); });
-        let set = key(&|| { let _ = v.matching(writes_b).count(); });
-        let held = key(&|| { let _ = v.holds("w"); });
+        let entry = key(&|| {
+            let _ = v.get("a/1");
+        });
+        let absent = key(&|| {
+            let _ = v.get("a/3");
+        });
+        let has = key(&|| {
+            let _ = v.contains_key("a/1");
+        });
+        let prefix = key(&|| {
+            let _ = v.under("a/").count();
+        });
+        let set = key(&|| {
+            let _ = v.matching(writes_b).count();
+        });
+        let held = key(&|| {
+            let _ = v.holds("w");
+        });
         let outer = {
             rec.begin();
             rec.found(entry);

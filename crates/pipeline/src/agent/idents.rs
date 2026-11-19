@@ -55,8 +55,7 @@ fn required(x: &KeyCtx, logicals: impl IntoIterator<Item = String>) -> Option<Ve
 /// The pass's extracts (`sources/osm/<date>/pieces/`) by content; None with none (the reach).
 pub fn pieces(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let p = format!("sources/osm/{}/pieces/", x.date);
-    let v: Vec<String> =
-        x.m.under(&p).map(|(_, c)| c.clone()).collect();
+    let v: Vec<String> = x.m.under(&p).map(|(_, c)| c.clone()).collect();
     (!v.is_empty()).then_some(v)
 }
 
@@ -96,11 +95,7 @@ pub fn inland_water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
     let prefix = format!("layers/{}/", inputs::water::LAYER);
     x.m.get(&format!("{prefix}root/0-0-0"))?;
-    Some(
-        x.m.under(&prefix)
-            .map(|(l, c)| format!("{l}={c}"))
-            .collect(),
-    )
+    Some(x.m.under(&prefix).map(|(l, c)| format!("{l}={c}")).collect())
 }
 
 /// The build's normalized buildings (`work/bld/6-x-y`, bldprep's) and their side files
@@ -1102,12 +1097,10 @@ pub fn road_ids(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// The z6 tiles built (landmarks::ovconv::cover_of their base packs), as rail stops keep them; None
 /// before any.
 pub fn built_tiles(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let v: Vec<String> = landmarks::ovconv::cover_of(
-        x.m.under("base/").map(|(l, _)| l),
-    )
-    .iter()
-    .map(|(a, b)| format!("6/{a}/{b}"))
-    .collect();
+    let v: Vec<String> = landmarks::ovconv::cover_of(x.m.under("base/").map(|(l, _)| l))
+        .iter()
+        .map(|(a, b)| format!("6/{a}/{b}"))
+        .collect();
     (!v.is_empty()).then_some(v)
 }
 

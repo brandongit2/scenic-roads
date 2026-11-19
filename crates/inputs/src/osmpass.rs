@@ -972,10 +972,7 @@ fn end_part() {
 }
 
 /// The newest pass before `date`'s with outlines in `manifest`: its date and their content name.
-pub fn previous_outlines<'a>(
-    manifest: impl buildstore::reads::Manifest<'a>,
-    date: &str,
-) -> Option<(&'a str, &'a str)> {
+pub fn previous_outlines<'a>(manifest: impl buildstore::reads::Manifest<'a>, date: &str) -> Option<(&'a str, &'a str)> {
     manifest
         .under("sources/osm/")
         .filter_map(|(k, v)| match k.split('/').collect::<Vec<_>>()[..] {

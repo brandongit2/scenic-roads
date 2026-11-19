@@ -684,9 +684,7 @@ pub fn logical(date: &str) -> String {
 /// reads of it (terrain_pack::water_source_pin, agent::build), so a new pass's basemap makes again
 /// the depth whose water changed. (Task #916 step 6d: from terrain_pack.)
 pub fn water_pin<'a>(m: impl buildstore::reads::Manifest<'a>) -> Option<(&'a str, &'a str)> {
-    m.under("layers/basemap/world-")
-        .last()
-        .map(|(l, c)| (l.as_str(), c.as_str()))
+    m.under("layers/basemap/world-").last().map(|(l, c)| (l.as_str(), c.as_str()))
 }
 
 /// The fill the water and the terrain read with the build manifest `m`: the one made from the

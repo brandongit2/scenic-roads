@@ -409,13 +409,7 @@ impl ReadSetsHeld {
 /// Of the keys `sets` read in context `at`, those the diff to `now` would have kept, against how
 /// `memo` (the plan of `now`) has them. The rest of the context changed (`Context::rest`), none
 /// would be.
-fn compare(
-    at: &Context,
-    sets: &build::ReadSets,
-    built: std::time::Duration,
-    now: &Context,
-    memo: &KeyMemo,
-) -> Shadow {
+fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now: &Context, memo: &KeyMemo) -> Shadow {
     use buildstore::reads::{Changes, Diff};
     let t = std::time::Instant::now();
     let d = Diff {

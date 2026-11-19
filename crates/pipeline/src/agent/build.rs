@@ -537,12 +537,7 @@ pub fn unit_terrain_from<'m>(area: &roads::staging::Area, m: impl Manifest<'m>) 
 /// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the z6 tile's reach and the
 /// content names of the packs its staged tiles are in): a plan works out only the z6 tiles next to
 /// what changed.
-pub fn unit_terrain<'m>(
-    u: TileId,
-    r: &Reach,
-    m: impl Manifest<'m>,
-    tiles: &TerrainTiles,
-) -> Result<String, Unread> {
+pub fn unit_terrain<'m>(u: TileId, r: &Reach, m: impl Manifest<'m>, tiles: &TerrainTiles) -> Result<String, Unread> {
     let area = roads::staging::Area::of(u, Some(r));
     let from = [serde_json::to_string(r).unwrap_or_default(), unit_terrain_from(&area, m)].join("\n");
     tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || {
@@ -1218,12 +1213,7 @@ fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
     // (Kept by `tiles` with what they're worked out from: the coverage's shapes, the terrain packs
     // and the mids by content, the basemap. A plan works them out again only when one changes; not
     // kept while a slope z6 tile's key can't be told.)
-    let named = |prefix: &str| {
-        m.under(&prefix)
-            .map(|(l, c)| format!("{l}={c}"))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let named = |prefix: &str| m.under(&prefix).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
     let from = h(&[
         &cov.version(),
         &named("layers/terrain/"),
@@ -1288,10 +1278,7 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
         let mut ts: BTreeSet<(u32, u32)> = BTreeSet::new();
         for p in prefixes {
             ts.extend(
-                m.under(&p)
-                    .filter_map(|(l, _)| TileId::parse(&l[p.len()..]))
-                    .filter(|u| u.z == 6)
-                    .map(|u| (u.x, u.y)),
+                m.under(&p).filter_map(|(l, _)| TileId::parse(&l[p.len()..])).filter(|u| u.z == 6).map(|u| (u.x, u.y)),
             );
         }
         ts.into_iter().filter(|t| !pieces.contains(t)).map(|(x, y)| none(step, &format!("6/{x}/{y}"))).collect()

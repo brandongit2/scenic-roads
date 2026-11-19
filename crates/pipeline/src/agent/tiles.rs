@@ -736,9 +736,7 @@ impl TerrainTiles {
     /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
     /// with the next load, its targets' keys unknown meanwhile).
     fn load_water(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let want: BTreeSet<&str> = m.under(codecs::terrain_water::IDX_PREFIX)
-            .map(|(_, c)| c.as_str())
-            .collect();
+        let want: BTreeSet<&str> = m.under(codecs::terrain_water::IDX_PREFIX).map(|(_, c)| c.as_str()).collect();
         self.water.retain(|c, _| want.contains(c.as_str()));
         for c in want {
             if self.water.contains_key(c) {
@@ -810,10 +808,8 @@ impl TerrainTiles {
         let named: Vec<(&str, BTreeSet<&str>)> = KEPT
             .iter()
             .map(|&(ext, p)| {
-                let hs = m.under(&p)
-                    .filter_map(|(_, c)| store::naming::parse_content_name(c))
-                    .map(|c| c.hash16)
-                    .collect();
+                let hs =
+                    m.under(&p).filter_map(|(_, c)| store::naming::parse_content_name(c)).map(|c| c.hash16).collect();
                 (ext, hs)
             })
             .collect();

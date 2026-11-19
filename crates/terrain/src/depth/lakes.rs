@@ -111,8 +111,7 @@ pub fn read_by(z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
 
 /// The packs manifest `m` names, by source id and z6 tile, with their content names.
 pub fn named<'a>(m: impl buildstore::reads::Manifest<'a>) -> impl Iterator<Item = (&'a str, (u32, u32), &'a str)> {
-    m.under(PREFIX)
-        .filter_map(|(l, c)| tile_of(l).map(|(id, t)| (id, t, c.as_str())))
+    m.under(PREFIX).filter_map(|(l, c)| tile_of(l).map(|(id, t)| (id, t, c.as_str())))
 }
 
 // ---- the estimates -------------------------------------------------------------------------------
