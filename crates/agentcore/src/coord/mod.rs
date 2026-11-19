@@ -1362,13 +1362,14 @@ pub struct HandoffRefusal {
     pub why: String,
 }
 
-/// The offered targets of a step whose measure is past the whole room of every Mac that runs it
+/// The offered targets of a step whose measure fits no Mac that runs it at its best
 /// (`Coordinator::too_big`; the status's `too_big`, crate::agent::flags::too_big): how many, the
 /// first and its measure (MB; its step's disk floor among its disk), and the Mac with the most
-/// memory for jobs among those that run it with its whole room (MB: the most its jobs could hold
-/// together, `ask_limit`; its disk for jobs with what its caches can free, None: not said). No
-/// packing grants it nor holds room for it (`Sched::room_wait`: room isn't held for what fits no
-/// Mac): it waits, so it's said.
+/// memory for jobs at its best among those that run it, with its room then (MB, sched's
+/// `best_room`: its memory less its floor, `ask_limit`; its disk for jobs with what its jobs
+/// reserve and its caches can free, None: not said, which fits nothing). No packing grants it nor
+/// holds room for it (`Sched::room_wait`: room isn't held for what fits no Mac): it waits, so it's
+/// said.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TooBig {
     pub step: String,
@@ -2387,13 +2388,18 @@ impl Coordinator {
         self.shared.lock().unwrap().handoffs_refused.values().cloned().collect()
     }
 
-    /// The offered targets past the whole room of every Mac heard from that runs their step
-    /// (`TooBig`, `Sched::too_big`), by their last asks.
+    /// The offered targets that fit no Mac heard from that runs their step at its best (`TooBig`,
+    /// `Sched::too_big`), by their last asks: this Mac's own with its capacity (`own_cap`), as a
+    /// member's carries its (its ask is kept without it, `ask_own`).
     pub fn too_big(&self) -> Vec<TooBig> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        let macs: Vec<(&str, &Ask)> =
-            s.workers_around().filter_map(|(n, w)| Some((n.as_str(), w.ask.as_ref()?))).collect();
+        let own =
+            s.workers.get(&self.me).and_then(|w| w.ask.as_ref()).map(|a| Ask { cap: s.own_cap.clone(), ..a.clone() });
+        let macs: Vec<(&str, &Ask)> = s
+            .workers_around()
+            .filter_map(|(n, w)| Some((n.as_str(), if *n == self.me { own.as_ref()? } else { w.ask.as_ref()? })))
+            .collect();
         s.sched.too_big(&macs, now)
     }
 
@@ -12083,6 +12089,68 @@ mod tests {
         // (A step no Mac runs: nothing to weigh it against.)
         measured_offer(&c, "lo", &[("3/1/1", Some((90_000, 100, 2000)))]);
         assert!(c.too_big().iter().all(|b| b.step != "lo"));
+    }
+
+    /// Task #1501: a target is weighed against each Mac at its best, not its room now: past a busy
+    /// member's memory and disk now but within its memory less its floor and its disk with its
+    /// jobs' reservations given back, it isn't flagged; past every Mac's best, it is. The lead's
+    /// own ask is weighed with its capacity (its ask is kept without it, and leaves its disk out
+    /// while it runs nothing), and a Mac whose disk isn't said fits nothing, its disk said not said.
+    #[test]
+    fn too_big_weighs_each_mac_at_its_best() {
+        let (_d, c, w, _clock) = every((0, 0));
+        // (m1 busy: 4 GB for a job now, 1 GB of disk; at its best 30 GB, and 6 GB with its jobs'
+        // 5 GB reserved given back.)
+        let cap = Capacity {
+            limit_mb: 30_000,
+            disk_mb: 1_000,
+            reserved_mb: 5_000,
+            ..every_ask("m1", "pack", 0, 0).cap.unwrap()
+        };
+        let busy = Ask { disk_mb: Some(1_000), cap: Some(cap), ..every_ask("m1", "pack", 4_000, 0) };
+        assert!(w.ask(&busy).unwrap().is_none());
+        measured_offer(
+            &c,
+            "pack",
+            &[
+                ("6/1/1", Some((10_000, 3_000, 2000))),
+                ("6/1/2", Some((40_000, 100, 2000))),
+                ("6/1/3", Some((1_000, 7_000, 2000))),
+            ],
+        );
+        let big = c.too_big();
+        assert_eq!(big.len(), 1, "{big:?}");
+        let b = &big[0];
+        assert_eq!((b.targets, b.mac.as_str(), b.mac_mem_mb, b.mac_disk_mb), (2, "m1", 30_000, Some(6_000)), "{b:?}");
+        assert_eq!((b.target.as_str(), b.mem_mb), ("6/1/2", 40_000), "past its best memory; 6/1/1 within it");
+
+        // (The lead's own, m4: 4 GB for a job now, its disk left out of its ask as it runs nothing;
+        // at its best 30 GB and 6 GB, as its capacity says. Kept without its capacity, it was
+        // weighed at its 4 GB and its disk not said, and fit nothing.)
+        let (_d, c, _w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("r", Some((10_000, 1_500, 2000)))]);
+        let cap = Capacity { at: unix_now(), limit_mb: 30_000, disk_mb: 6_000, cores: 8, ..Default::default() };
+        c.set_capacity(Some(cap.clone()));
+        let own = Ask { mem_mb: 4_000, disk_mb: None, cap: Some(cap), ..every_ask("m4", "pack", 0, 0) };
+        assert!(c.ask_own(&own, &BTreeSet::new(), 0).is_none(), "4 GB now: not granted");
+        assert_eq!(c.too_big(), Vec::new(), "within the lead's best");
+        // (Past its best: flagged, with its room at best.)
+        measured_offer(&c, "pack", &[("r", Some((10_000, 1_500, 2000))), ("r2", Some((31_000, 1_500, 2000)))]);
+        let big = c.too_big();
+        assert_eq!(big.len(), 1, "{big:?}");
+        let b = &big[0];
+        assert_eq!((b.target.as_str(), b.mac.as_str(), b.mac_mem_mb, b.mac_disk_mb), ("r2", "m4", 30_000, Some(6_000)));
+
+        // (A member with no capacity and no disk said: a target within its memory fits nothing.)
+        let (_d, c, w, _clock) = every((0, 0));
+        let blind = Ask { disk_mb: None, cap: None, ..every_ask("m1", "pack", 20_000, 0) };
+        assert!(w.ask(&blind).unwrap().is_none());
+        measured_offer(&c, "pack", &[("h", Some((7_500, 100, 2000)))]);
+        let big = c.too_big();
+        assert_eq!(big.len(), 1, "{big:?}");
+        assert_eq!((big[0].mac_mem_mb, big[0].mac_disk_mb), (20_000, None));
+        let f = crate::agent::flags::too_big(&crate::agent::Status { too_big: big, ..Default::default() });
+        assert!(f[0].said.contains("has 19.5 GB of memory and disk not said for jobs at its best"), "{}", f[0].said);
     }
 
     /// Task #1367: an ask no offer reached the room rule for says so, not the room left: no offer

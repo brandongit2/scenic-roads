@@ -743,6 +743,20 @@ fn disk_reach(a: &Ask) -> u64 {
     }
 }
 
+/// What `a`'s Mac can hold for jobs at its best (MB; task #1501), not as busy as it is now: its
+/// memory less its floor, nothing else on it (`ask_limit`, the most its jobs could hold together;
+/// without it, the ask's memory), and its disk for jobs (the ask's, else its capacity's: the lead's
+/// own ask leaves it out while it runs nothing) with what its jobs have reserved and its caches can
+/// free given back (`Capacity::reserved_mb`, `caches_free`). The disk None: not said. What
+/// `too_big` weighs a target against: a target past a busy Mac's room now but within this waits
+/// for it, and isn't flagged.
+fn best_room(a: &Ask) -> (u64, Option<u64>) {
+    let mem = super::ask_limit(a).unwrap_or(a.mem_mb);
+    let reserved = a.cap.as_ref().map_or(0, |c| c.reserved_mb);
+    let disk = a.disk_mb.or(a.cap.as_ref().map(|c| c.disk_mb)).map(|d| d + reserved + caches_free(a));
+    (mem, disk)
+}
+
 /// What `a`'s Mac's caches can free past its ask's disk (MB, `Capacity::freeable_mb`; 0 not said):
 /// counted as the disk a job its room is held for has (`room_wait`).
 fn caches_free(a: &Ask) -> u64 {
@@ -2324,21 +2338,25 @@ impl Sched {
     }
 
     /// The offered targets (not held by a job nor done) whose measure (`measured`, its step's disk
-    /// floor among its disk; the lead's own planned job's whole, `job_need`) is past the whole room
-    /// of every Mac in `macs` (each by its last ask) that runs its step: its memory past the most
-    /// its jobs could hold together (`ask_limit`), or its disk past its disk for jobs with what its
-    /// caches can free; one `TooBig` an offer with any. Targets not measured say nothing.
+    /// floor among its disk; the lead's own planned job's whole, `job_need`) fits no Mac in `macs`
+    /// that runs its step at its best (`best_room`, by its last ask): past its memory or its disk,
+    /// a Mac whose disk isn't said fitting nothing; one `TooBig` an offer with any, with the Mac of
+    /// the most memory at its best among them. Targets not measured say nothing.
     pub(super) fn too_big(&self, macs: &[(&str, &Ask)], now: Instant) -> Vec<super::TooBig> {
         let mut out = Vec::new();
         for o in &self.offers {
             let can: Vec<(&str, u64, Option<u64>)> = macs
                 .iter()
                 .filter(|(_, a)| a.can.contains(&o.step))
-                .map(|(n, a)| (*n, super::ask_limit(a).unwrap_or(a.mem_mb), a.disk_mb.map(|d| d + caches_free(a))))
+                .map(|(n, a)| {
+                    let (mem, disk) = best_room(a);
+                    (*n, mem, disk)
+                })
                 .collect();
             let Some(&(mac, mac_mem_mb, mac_disk_mb)) = can.iter().max_by_key(|c| (c.1, c.2)) else { continue };
-            let most_disk = can.iter().map(|c| c.2).collect::<Option<Vec<u64>>>().and_then(|d| d.into_iter().max());
-            let past = |m: &Measured| m.mem_mb > mac_mem_mb || most_disk.is_some_and(|d| m.disk_mb > d);
+            let past = |m: &Measured| {
+                !can.iter().any(|&(_, mem, disk)| m.mem_mb <= mem && disk.is_some_and(|d| m.disk_mb <= d))
+            };
             let (held, done) = (self.held_of(&o.step, now), self.done_of(&o.step));
             let open: Vec<String> = o
                 .targets

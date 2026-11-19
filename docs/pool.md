@@ -2932,12 +2932,16 @@ asks passed on are one-shot: the lead's store keeps them (below).
     since the second refusal (§7.3, a hand-off refused every time backs off), so the loop slows but doesn't stop
     by itself; the flag stands until a hand-off of the target is merged or the plan offers it no
     more. It has no window or setting of its own: the backoff is a failure's.
-  - *too-big*: an offered step's targets whose measure (memory, or disk with the step's disk
-    floor) is past the whole room of every Mac heard from that runs the step, by their last asks
-    (the most its jobs could hold together; its disk for jobs with what its caches can free:
-    `Coordinator::too_big`, the status's `too_big`). No packing grants one, and no room is held for
-    it (`room_wait`), so it would wait unsaid: a flag per offer, how many, the first with its
-    memory and disk, and the Mac with the most memory for jobs with its whole room. A memory
+  - *too-big*: an offered step's targets whose measure (memory, and disk with the step's disk
+    floor) fits no Mac heard from that runs the step even at its best, by their last asks (the
+    lead's own with its capacity): its memory less its floor (the most its jobs could hold
+    together, `Capacity::limit_mb`), and its disk for jobs with what its jobs have reserved and its
+    caches can free given back (`sched`'s `best_room`; `Coordinator::too_big`, the status's
+    `too_big`). A Mac that hasn't said its disk fits nothing, and the flag says its disk is not
+    said. A target past a busy Mac's room now but within its best isn't flagged: it waits for that
+    Mac to be quieter. No packing grants one that fits no Mac, and no room is held for it
+    (`room_wait`), so it would wait unsaid: a flag per offer, how many, the first with its memory
+    and disk, and the Mac with the most memory for jobs at its best, with that room. A memory
     scaled up past every run (§7.7, What a step needs) can put a target there. It stands until a
     Mac with the room asks, or the measure or the plan changes.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set

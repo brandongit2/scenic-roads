@@ -73,12 +73,14 @@
 //!   worker its job ran on, an hour doubling with each after, so the loop slows but doesn't stop
 //!   by itself (a first alone may be a one-off, and holds nothing). Flagged
 //!   until a hand-off of the target is merged, or the plan offers it no more.
-//! - **Too big** (`too-big`): an offered step's targets whose measure is past the whole room of
-//!   every Mac that runs it (`Status::too_big`, crate::coord::Coordinator::too_big): no packing
-//!   grants them nor holds room for them, so they'd wait unsaid. A flag per offer: how many, the
-//!   first with its memory and disk, and the Mac with the most memory for jobs among those that run
-//!   it with its whole room. Flagged until a Mac with the room asks, or the measure or the plan
-//!   changes.
+//! - **Too big** (`too-big`): an offered step's targets whose measure fits no Mac that runs it
+//!   even at its best (its memory less its floor; its disk for jobs with what its jobs reserve and
+//!   its caches can free; a disk not said fits nothing: `Status::too_big`,
+//!   crate::coord::Coordinator::too_big): no packing grants them nor holds room for them, so
+//!   they'd wait unsaid. One past a busy Mac's room now but within its best waits for it, unflagged.
+//!   A flag per offer: how many, the first with its memory and disk, and the Mac with the most
+//!   memory for jobs at its best among those that run it, with that room. Flagged until a Mac with
+//!   the room asks, or the measure or the plan changes.
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -215,7 +217,7 @@ pub fn too_big(st: &Status) -> Vec<Flag> {
                 kind: "too-big".into(),
                 mac: b.mac.clone(),
                 said: format!(
-                    "{}: {n} past every Mac that runs it, so none is granted; {first} needs {} of memory and {} of disk, the largest Mac, {}, has {} of memory and {disk} for jobs",
+                    "{}: {n} past every Mac that runs it, so none is granted; {first} needs {} of memory and {} of disk, the largest Mac, {}, has {} of memory and {disk} for jobs at its best",
                     b.step,
                     gb(b.mem_mb),
                     gb(b.disk_mb),

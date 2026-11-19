@@ -1057,7 +1057,7 @@ pub struct Status {
     /// (flags::refused).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs_refused: Vec<crate::coord::HandoffRefusal>,
-    /// The offered targets past every Mac's whole room (crate::coord::Coordinator::too_big): the
+    /// The offered targets that fit no Mac at its best (crate::coord::Coordinator::too_big): the
     /// lead's, each round; flagged (flags::too_big).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub too_big: Vec<crate::coord::TooBig>,
