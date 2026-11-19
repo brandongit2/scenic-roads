@@ -1789,12 +1789,12 @@ offered by, its source's time below, and one a target):
   (Threads, §7.1). Disk alike, of the step's disk measures of the way it runs now (a disk floor's
   carries none, and counts), by size alone.
 - **NAS** (`model::Moves`): the bytes it asked of the NAS (read, whether the NAS or this Mac's page
-  cache answered: task #1417, `held`; written; read back) and its creates, lists, stats and deletes
-  per unit, at the `needs-nas-pct` percentile (70), what a job's moves in all are predicted as. A
-  target's NAS rate, what the scheduler holds the NAS to (`Book::nas_made`), is its runs' of about
+  cache answered: task #1417, `held`; written; read back) and its creates, lists, stats and deletes.
+  A target's NAS rate, what the scheduler holds the NAS to (`Book::nas_made`), is its runs' of about
   its size: their moves over their time together (a mean rate, so a second's run doesn't set it, nor
   a run's moves at one percentile over its time at another), at the lead's pace, over its Mac's time
-  for a worker; none where no run of it moved and took time.
+  for a worker; none where no run of it moved and took time. A job's moves in all are its rate over
+  their predicted time together (`Book::nas_load`).
 
 "Runs of about its size" are those of half to twice its units (`model::about`; fewer than
 `MIN_RUNS` so, the nearest `MIN_RUNS` of half its units or more): work per unit isn't one figure
@@ -1831,11 +1831,12 @@ supply explains (its Mac's cores all taken, the NAS slow) is not off; one off by
 or a regression is. `needs-relearn` runs (5) in a row off on one side of their work, and the step
 learns its times from the first of them on, as a cost version's bump does for code (its memory and
 disk not: a run of empty targets says nothing of a full one's peak). `scenic pool needs` prints
-each step's runs, where it relearned from, its sizes best first with their work, rest, NAS and
-memory per unit, its parallelism, its memory by place, and its runs flagged.
+each step's runs, where it relearned from, its sizes best first with their work and rest per unit,
+the NAS rate of its runs of about one unit, its memory at one, its parallelism, its memory by
+place, and its runs flagged.
 
 **The knobs** (`jobrt::needs::KNOBS`): every percentile and window above is a pool setting,
-`scenic pool set needs-work-pct|needs-high-pct|needs-nas-pct|needs-runs|needs-off|needs-relearn
+`scenic pool set needs-work-pct|needs-high-pct|needs-runs|needs-off|needs-relearn
 <number>|off` or the build page's Settings ("Needs model"), each within its range; not set, its
 default. Every book reads them as the pool has them, with each Mac's speed and the jobs' records
 (`needs::Inputs`: the scheduler's, the forecast's and its backtest's, the plan's lanes, an update's
@@ -1900,7 +1901,7 @@ targets, each Mac's speed measured from its records): time 1.10 and 0.83, memory
 5.1 % (by over a GB 2.1 % and 0.6 %), reserved 3.26× and 3.22×, NAS 2.38 and 1.47. The defaults
 were picked by the same test, run before a target's times were read of the runs of about its size
 and its memory of every run at or above it: `needs-high-pct` 95 missed 4.5 % of the targets'
-memory where 90 missed 6.4 %; `needs-nas-pct` 70 erred 1.89 where 50 erred 2.34; `needs-runs` 100
+memory where 90 missed 6.4 %; `needs-runs` 100
 missed 8.6 %.
 
 **Each Mac's speed** (`crate::paces`, tasks #926, #1418): each Mac's time against the lead's, the
@@ -2828,6 +2829,14 @@ asks passed on are one-shot: the lead's store keeps them (below).
     since the second refusal (§7.3, a hand-off refused every time backs off), so the loop slows but doesn't stop
     by itself; the flag stands until a hand-off of the target is merged or the plan offers it no
     more. It has no window or setting of its own: the backoff is a failure's.
+  - *too-big*: an offered step's targets whose measure (memory, or disk with the step's disk
+    floor) is past the whole room of every Mac heard from that runs the step, by their last asks
+    (the most its jobs could hold together; its disk for jobs with what its caches can free:
+    `Coordinator::too_big`, the status's `too_big`). No packing grants one, and no room is held for
+    it (`room_wait`), so it would wait unsaid: a flag per offer, how many, the first with its
+    memory and disk, and the Mac with the most memory for jobs with its whole room. A memory
+    scaled up past every run (§7.7, What a step needs) can put a target there. It stands until a
+    Mac with the room asks, or the measure or the plan changes.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).

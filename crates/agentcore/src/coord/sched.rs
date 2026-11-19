@@ -2285,6 +2285,57 @@ impl Sched {
         (fits(&m, whole) && !fits(&m, room)).then_some((m, ts))
     }
 
+    /// The offered targets (not held by a job nor done) whose measure (`measured`, its step's disk
+    /// floor among its disk; the lead's own planned job's whole, `job_need`) is past the whole room
+    /// of every Mac in `macs` (each by its last ask) that runs its step: its memory past the most
+    /// its jobs could hold together (`ask_limit`), or its disk past its disk for jobs with what its
+    /// caches can free; one `TooBig` an offer with any. Targets not measured say nothing.
+    pub(super) fn too_big(&self, macs: &[(&str, &Ask)], now: Instant) -> Vec<super::TooBig> {
+        let mut out = Vec::new();
+        for o in &self.offers {
+            let can: Vec<(&str, u64, Option<u64>)> = macs
+                .iter()
+                .filter(|(_, a)| a.can.contains(&o.step))
+                .map(|(n, a)| (*n, super::ask_limit(a).unwrap_or(a.mem_mb), a.disk_mb.map(|d| d + caches_free(a))))
+                .collect();
+            let Some(&(mac, mac_mem_mb, mac_disk_mb)) = can.iter().max_by_key(|c| (c.1, c.2)) else { continue };
+            let most_disk = can.iter().map(|c| c.2).collect::<Option<Vec<u64>>>().and_then(|d| d.into_iter().max());
+            let past = |m: &Measured| m.mem_mb > mac_mem_mb || most_disk.is_some_and(|d| m.disk_mb > d);
+            let (held, done) = (self.held_of(&o.step, now), self.done_of(&o.step));
+            let open: Vec<String> = o
+                .targets
+                .iter()
+                .filter(|(t, k, _)| !held.contains(t) && done.get(t.as_str()) != Some(&k.as_str()))
+                .map(|t| t.0.clone())
+                .collect();
+            let job_disk = self.job_floor(&o.step);
+            let big: Vec<(String, Measured)> = if o.job.is_some() {
+                self.job_need(&o.step, &open).filter(&past).map(|m| (String::new(), m)).into_iter().collect()
+            } else {
+                open.iter()
+                    .filter_map(|t| {
+                        let m = self.measured(&o.step, t)?;
+                        Some((t.clone(), Measured { disk_mb: m.disk_mb.max(job_disk), ..m }))
+                    })
+                    .filter(|(_, m)| past(m))
+                    .collect()
+            };
+            if let Some((target, m)) = big.first() {
+                out.push(super::TooBig {
+                    step: o.step.clone(),
+                    targets: if o.job.is_some() { open.len() } else { big.len() },
+                    target: target.clone(),
+                    mem_mb: m.mem_mb,
+                    disk_mb: m.disk_mb,
+                    mac: mac.to_string(),
+                    mac_mem_mb,
+                    mac_disk_mb,
+                });
+            }
+        }
+        out
+    }
+
     /// What became of the targets of the offers `a`'s worker was granted none of in the room left
     /// `room` (`pack`'s room rule, task #1170), each offer with its shared cache's fill and the
     /// whole copies counted free for it (`Copies`): those held by jobs, done, or kept from it after

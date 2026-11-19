@@ -73,6 +73,12 @@
 //!   worker its job ran on, an hour doubling with each after, so the loop slows but doesn't stop
 //!   by itself (a first alone may be a one-off, and holds nothing). Flagged
 //!   until a hand-off of the target is merged, or the plan offers it no more.
+//! - **Too big** (`too-big`): an offered step's targets whose measure is past the whole room of
+//!   every Mac that runs it (`Status::too_big`, crate::coord::Coordinator::too_big): no packing
+//!   grants them nor holds room for them, so they'd wait unsaid. A flag per offer: how many, the
+//!   first with its memory and disk, and the Mac with the most memory for jobs among those that run
+//!   it with its whole room. Flagged until a Mac with the room asks, or the measure or the plan
+//!   changes.
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -85,7 +91,7 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -192,7 +198,33 @@ pub fn of(
     v.extend(stale(st, runs, factor, now));
     v.extend(repeat(st, now));
     v.extend(refused(st, now));
+    v.extend(too_big(st));
     v
+}
+
+/// The too-big flags (the module's doc): one per offer of `Status::too_big`.
+pub fn too_big(st: &Status) -> Vec<Flag> {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    st.too_big
+        .iter()
+        .map(|b| {
+            let first = if b.target.is_empty() { format!("its job of {}", b.targets) } else { b.target.clone() };
+            let n = if b.targets == 1 { "target".to_string() } else { format!("{} targets", b.targets) };
+            let disk = b.mac_disk_mb.map_or("disk not said".to_string(), |d| format!("{} of disk", gb(d)));
+            Flag {
+                kind: "too-big".into(),
+                mac: b.mac.clone(),
+                said: format!(
+                    "{}: {n} past every Mac that runs it, so none is granted; {first} needs {} of memory and {} of disk, the largest Mac, {}, has {} of memory and {disk} for jobs",
+                    b.step,
+                    gb(b.mem_mb),
+                    gb(b.disk_mb),
+                    b.mac,
+                    gb(b.mac_mem_mb)
+                ),
+            }
+        })
+        .collect()
 }
 
 /// How many times in a row a target's hand-offs are refused before it's flagged: once may be a

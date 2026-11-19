@@ -1057,6 +1057,10 @@ pub struct Status {
     /// (flags::refused).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs_refused: Vec<crate::coord::HandoffRefusal>,
+    /// The offered targets past every Mac's whole room (crate::coord::Coordinator::too_big): the
+    /// lead's, each round; flagged (flags::too_big).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub too_big: Vec<crate::coord::TooBig>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -4972,6 +4976,7 @@ impl Agent {
         if let Some(c) = &self.coord {
             let factor = c.overdue().0;
             status.handoffs_refused = c.handoffs_refused();
+            status.too_big = c.too_big();
             status.flags = flags::of(self.o.the_plan, &status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());

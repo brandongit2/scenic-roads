@@ -1360,6 +1360,25 @@ pub struct HandoffRefusal {
     pub why: String,
 }
 
+/// The offered targets of a step whose measure is past the whole room of every Mac that runs it
+/// (`Coordinator::too_big`; the status's `too_big`, crate::agent::flags::too_big): how many, the
+/// first and its measure (MB; its step's disk floor among its disk), and the Mac with the most
+/// memory for jobs among those that run it with its whole room (MB: the most its jobs could hold
+/// together, `ask_limit`; its disk for jobs with what its caches can free, None: not said). No
+/// packing grants it nor holds room for it (`Sched::room_wait`: room isn't held for what fits no
+/// Mac): it waits, so it's said.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TooBig {
+    pub step: String,
+    pub targets: usize,
+    pub target: String,
+    pub mem_mb: u64,
+    pub disk_mb: u64,
+    pub mac: String,
+    pub mac_mem_mb: u64,
+    pub mac_disk_mb: Option<u64>,
+}
+
 /// An ask answered (`Shared::answers`): when (unix s), the jobs it wanted and was granted, the
 /// steps it was offered (in plan order), and why it got fewer: the packing's rule
 /// (`sched::Held`), or the ask refused before any packing (the lead moving, the build paused,
@@ -2355,6 +2374,16 @@ impl Coordinator {
     /// for the status (`Status::handoffs_refused`), in step and target order.
     pub fn handoffs_refused(&self) -> Vec<HandoffRefusal> {
         self.shared.lock().unwrap().handoffs_refused.values().cloned().collect()
+    }
+
+    /// The offered targets past the whole room of every Mac heard from that runs their step
+    /// (`TooBig`, `Sched::too_big`), by their last asks.
+    pub fn too_big(&self) -> Vec<TooBig> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let macs: Vec<(&str, &Ask)> =
+            s.workers_around().filter_map(|(n, w)| Some((n.as_str(), w.ask.as_ref()?))).collect();
+        s.sched.too_big(&macs, now)
     }
 
     /// This Mac's own agent asking for work as any member does (docs/pool.md §7.2): granted by the
@@ -11853,6 +11882,33 @@ mod tests {
             why.map(|h| h.words).unwrap_or_default(),
             "nothing offered is taken: 1 held by jobs, 1 free but held back otherwise (no measure yet, the NAS budget or placement)"
         );
+    }
+
+    /// Task #1416 review: an offered target past every Mac that runs its step is said (`too_big`,
+    /// flagged too-big) with its measure and the largest Mac's room; one that fits some Mac isn't,
+    /// nor one of a step no Mac runs.
+    #[test]
+    fn a_target_past_every_mac_is_flagged() {
+        let (_d, c, w, _clock) = every((0, 0));
+        assert!(w.ask(&every_ask("m1", "pack", 12_000, 100_000)).unwrap().is_none());
+        measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000))), ("6/1/2", Some((10_000, 100, 2000)))]);
+        let big = c.too_big();
+        assert_eq!(big.len(), 1, "{big:?}");
+        let b = &big[0];
+        assert_eq!((b.step.as_str(), b.targets, b.target.as_str(), b.mem_mb), ("pack", 1, "6/1/1", 20_000));
+        assert_eq!((b.mac.as_str(), b.mac_mem_mb), ("m1", 12_000));
+        let st = crate::agent::Status { too_big: big, ..Default::default() };
+        let f = crate::agent::flags::too_big(&st);
+        assert_eq!(f.len(), 1);
+        assert!(f[0].line().starts_with("too-big: pack: target past every Mac that runs it"), "{}", f[0].line());
+        assert!(
+            f[0].said.contains("6/1/1 needs 19.5 GB of memory") && f[0].said.contains("m1, has 11.7 GB"),
+            "{}",
+            f[0].said
+        );
+        // (A step no Mac runs: nothing to weigh it against.)
+        measured_offer(&c, "lo", &[("3/1/1", Some((90_000, 100, 2000)))]);
+        assert!(c.too_big().iter().all(|b| b.step != "lo"));
     }
 
     /// Task #1367: an ask no offer reached the room rule for says so, not the room left: no offer
