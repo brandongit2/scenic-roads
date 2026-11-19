@@ -20144,11 +20144,7 @@ mod membership_tests {
         );
         let c = &rec.input.costs["terrain-deep"];
         let (old, now) = (c["10/99/0"], c["10/98/0"]);
-        assert_eq!(
-            old.basis,
-            crate::agent::forecast::Basis::Sibling,
-            "a run of an older way isn't its measure: {old:?}"
-        );
+        assert_eq!(old.basis, crate::agent::forecast::Basis::Model, "a run of an older way isn't its measure: {old:?}");
         assert_eq!(now.basis, crate::agent::forecast::Basis::Own, "{now:?}");
         // (Its step's model of the runs the way it runs now, their high percentile, as the coordinator
         // sizes it; the 10 s run's worker unsaid, so counted at twice the lead's time.)
@@ -20231,7 +20227,7 @@ mod membership_tests {
         let own = c["terrain-deep"]["10/98/0"];
         assert_eq!(own.basis, Basis::Own);
         let step = &c["terrain-deep"]["10/97/0"];
-        assert_eq!(step.basis, Basis::Sibling, "its step's needs model");
+        assert_eq!(step.basis, Basis::Model, "its step's needs model");
         // (The model's high percentile of the step's runs; the own run's worker unsaid, at twice.)
         assert_eq!((step.secs, own.secs), (100.0, 20.0), "{step:?} {own:?}");
         assert_eq!(c["slope-deep"]["10/1/0"].basis, Basis::Guess);
@@ -20246,7 +20242,7 @@ mod membership_tests {
         // (The forecast counts each step's targets by it, for the page.)
         let f = rec.forecast(plan);
         let s = f.steps.iter().find(|s| s.step == "terrain-deep").expect("its step's work left");
-        assert_eq!(s.basis, [(Basis::Partial, 1), (Basis::Own, 1), (Basis::Sibling, 1)].into_iter().collect());
+        assert_eq!(s.basis, [(Basis::Partial, 1), (Basis::Own, 1), (Basis::Model, 1)].into_iter().collect());
     }
 
     /// Task #1449: a step the lead's chains run (`available`, not shared: costed as the lead's own

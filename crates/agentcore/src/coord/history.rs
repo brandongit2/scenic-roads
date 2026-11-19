@@ -23,8 +23,9 @@ pub const DAYS: u64 = 7;
 /// process ~80 MB larger once loaded; ten times that, ~0.55 GB and ~0.75 GB. A reader holding the
 /// last copy (`History::all`: the forecast, the swarm's rates) as an event comes makes another
 /// (0.03 s, 0.3 s at ten times, under the coordinator's lock). The `data` (the catalogues', the
-/// merges', the leases' sizing) is read by publishing's times alone, crate::pubtimes, from the file
-/// and the archive, but a "planned"'s (`keeps_data`).
+/// merges', the leases' grants) is read from the file and the archive, by publishing's times
+/// (crate::pubtimes) and a job's page (its lease's grant: `data_in_file`), but what `keep` keeps
+/// in memory (a "planned"'s, a lease's `sized_s`).
 pub const KEEP_S: u64 = DAYS * 86400;
 
 /// One thing that happened.
@@ -76,8 +77,9 @@ pub struct Event {
     /// The catalogue it's about (a "catalog": the one written).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u64>,
-    /// What else it says, for publishing's times (crate::pubtimes): a "catalog"'s
-    /// crate::pubtimes::CatalogueStats, a "planned"'s units reaching each map tile.
+    /// What else it says: a "catalog"'s crate::pubtimes::CatalogueStats and a "planned"'s units
+    /// reaching each map tile, for publishing's times (crate::pubtimes); a "lease"'s grant
+    /// (crate::coord's `granted_data`), for its job's page. In memory, only what `keep` keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
     /// What a job waited on (a "start" or "lease", set by `History::add` from the forecast's
@@ -123,6 +125,10 @@ pub struct Event {
     /// taken once whatever the lead's crashes. Events before task #1160 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noted: Option<Box<super::notes::From>>,
+    /// A "lease"'s time its grant was sized to (s: its `data`'s `sized_s`), in memory alone, where
+    /// its `data` isn't kept (`keep`); None in the file, read from `data` there.
+    #[serde(skip)]
+    pub sized_s: Option<u32>,
 }
 
 /// Where a job's progress stood as it stopped (`Event::progress`): its last part (the target under
@@ -244,13 +250,22 @@ pub struct History {
 /// How long after a failed rewrite of the file the next is tried (s).
 pub const REWRITE_AGAIN_S: u64 = 600;
 
-/// Whether an event of `kind` keeps its `data` in memory: a "planned" (the map tiles' keys a
-/// restarted lead reads back from its coordinator's memory: crate::pubtimes::PlannedNotes::begin;
-/// a few hundred a week, ~0.3 MB), and a "lease" (what its grant predicted and why it went to its
-/// Mac, crate::coord's `granted_data`, which a job's page shows: 11,635 in the lead's week to 19 Nov, ~250 B each, ~3
-/// MB). Every other's `data` is read from the file alone (`since_in_file`: publishing's times).
-fn keeps_data(kind: &str) -> bool {
-    matches!(kind, "planned" | "lease")
+/// What of event `e`'s `data` memory keeps (`add`, `load`): a "planned"'s whole (the map tiles'
+/// keys a restarted lead reads back from its coordinator's memory:
+/// crate::pubtimes::PlannedNotes::begin; a few hundred a week, ~0.3 MB), and a "lease"'s
+/// `sized_s` as `Event::sized_s` (the forecast's crate::agent::forecast::needs_pace reads it). Every
+/// other's `data`, a lease's whole among them (crate::coord's `granted_data`, which a job's page
+/// shows), is read from the file alone (`since_in_file`, `data_in_file`). Measured 19 Nov (task
+/// #1413 review, a counting allocator): a lease's whole `data` as a JSON map is ~800 B of heap, its
+/// `sized_s` alone as a one-key map still ~640 B (the map's node); as the field, 8 B inline in every
+/// event (~0.5 MB for a week's 57,800) and no heap.
+fn keep(e: &mut Event) {
+    if e.kind == "lease" {
+        e.sized_s = e.data.as_ref().and_then(|d| d.get("sized_s")?.as_u64()).and_then(|s| u32::try_from(s).ok());
+    }
+    if e.kind != "planned" {
+        e.data = None;
+    }
 }
 
 /// An event's number and time, read from its line without the rest (`since_in_file`'s search, the
@@ -566,9 +581,7 @@ impl History {
                 super::notes::taken(&mut h.noted, f);
             }
             if e.t >= from {
-                if !keeps_data(&e.kind) {
-                    e.data = None;
-                }
+                keep(&mut e);
                 events.push_back(e);
             }
         }
@@ -696,10 +709,8 @@ impl History {
         if let Some(f) = &e.noted {
             super::notes::taken(&mut self.noted, f);
         }
-        // (Its `data` in the file alone but a "planned"'s, `keeps_data`.)
-        if !keeps_data(&e.kind) {
-            e.data = None;
-        }
+        // (Its `data` in the file alone but what `keep` keeps.)
+        keep(&mut e);
         let events = std::sync::Arc::make_mut(&mut self.events);
         events.push_back(e);
         let from = now.saturating_sub(KEEP_S);
@@ -824,6 +835,12 @@ pub fn since_in_file(p: &Path, seq: u64, max: usize) -> Vec<Event> {
         .filter_map(|l| serde_json::from_slice::<Event>(&l).ok())
         .take(max)
         .collect()
+}
+
+/// Event `seq`'s whole `data`, read from its file `p` (`History::path`): what memory leaves out
+/// (`keep`), a lease's grant for its job's page among it. None: no such event kept, or none.
+pub fn data_in_file(p: &Path, seq: u64) -> Option<serde_json::Value> {
+    since_in_file(p, seq.saturating_sub(1), 1).into_iter().find(|e| e.seq == seq)?.data
 }
 
 impl History {
@@ -1382,6 +1399,25 @@ mod tests {
         assert_eq!(noted(&mut h).len(), 1);
         let mut again = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!(noted(&mut again).len(), 1, "loaded again");
+    }
+
+    /// Task #1413 review: a lease keeps its grant's `sized_s` in memory as a field, its `data` in
+    /// the file alone, whole (`data_in_file`, what its job's page reads), loaded again too.
+    #[test]
+    fn a_lease_keeps_its_sizing_in_memory_and_its_grant_in_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let data = serde_json::json!({ "threads": 4, "mem_mb": 2000, "sized_s": 600, "why": "the only Mac" });
+        let seq = h.add(Event { t: now_s(), data: Some(data.clone()), ..Event::new("lease") });
+        let held = |h: &mut History| {
+            let e = h.all().iter().find(|e| e.seq == seq).cloned().unwrap();
+            (e.sized_s, e.data)
+        };
+        assert_eq!(held(&mut h), (Some(600), None));
+        assert_eq!(data_in_file(&p, seq), Some(data));
+        let mut again = History::load(crate::agent::seam::for_tests(), Some(&p));
+        assert_eq!(held(&mut again), (Some(600), None), "loaded again");
     }
 
     /// Task #1160 review: `since_in_file` finds where its page begins by halving the file (each

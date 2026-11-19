@@ -6111,12 +6111,24 @@ mod http {
         // lease holds them.)
         let shared = ctx.shared.clone();
         let routes = routes.merge(super::jobspans::router::<Ctx>(Arc::new(move |job| {
-            let (store, all, dir, live) = {
+            let (store, all, dir, live, file) = {
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                 let live = s.sched.leases.live(std::time::Instant::now()).map(Lease::job).collect();
-                (s.jobspans.clone()?, s.history.all(), s.dir.clone(), live)
+                let file = s.history.path().map(std::path::Path::to_path_buf);
+                (s.jobspans.clone()?, s.history.all(), s.dir.clone(), live, file)
             };
-            let events = all.iter().filter(|e| e.job == Some(job)).cloned().collect();
+            // (A lease's whole grant from the file: memory keeps its `sized_s` alone.)
+            let events = all
+                .iter()
+                .filter(|e| e.job == Some(job))
+                .map(|e| {
+                    let mut e = e.clone();
+                    if e.kind == "lease" {
+                        e.data = file.as_deref().and_then(|p| super::history::data_in_file(p, e.seq)).or(e.data);
+                    }
+                    e
+                })
+                .collect();
             let mut v = super::jobspans::view(Some(&store), job, events, || {
                 super::jobspans::record_in(&dir.join("timings.jsonl"), job)
             });
@@ -10516,7 +10528,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        let at = |s: &sched::Sched, step: &str, n: &str, x: &Ask| s.finish_s(step, "6/1/1", n, x);
+        let at = |s: &sched::Sched, step: &str, n: &str, x: &Ask| {
+            s.finish_s(step, "6/1/1", n, x).map(|(secs, cache)| secs / cache.unwrap_or(1.0))
+        };
         assert_eq!(at(&s, "depth", "mini #2", &holding(0)), Some(150.0), "its Mac's, its slots' alike");
         assert_eq!(at(&s, "slope-hi", "mini", &holding(0)), Some(150.0), "at every step");
         assert_eq!(at(&s, "depth", "m4 #3", &holding(0)), Some(600.0), "the lead's");

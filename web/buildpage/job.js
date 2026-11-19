@@ -81,11 +81,11 @@ function placedSec(p, fig, f, end) {
   const took = fig?.wall ?? (f.t0 != null && end != null ? end - f.t0 : null);
   const ratio = p.secs && took != null && !v.running ? ` (it took ×${(took / p.secs).toFixed(took / p.secs >= 10 ? 0 : 1)})` : "";
   return sec("Predicted and placed", kv([
-    ["time", p.secs != null ? `${dur(p.secs)}${ratio}` : "not measured", p.own === false ? "Its needs over its Mac's supply as granted: at the lead's speed, its Mac's not measured (another Mac's run counted twice)" : "Its needs over its Mac's supply as granted: each target's work at its Mac's speed over the threads it was given, plus the rest of its time, or its NAS moves at the NAS budget where longer (coord::sched batch_secs)"],
+    ["time", p.secs != null ? `${dur(p.secs)}${ratio}` : "not measured", p.own === false ? "Its needs over its Mac's supply as granted: at the lead's speed, its Mac's not measured (another Mac's run counted twice)" : "Its needs over its Mac's supply as granted: each target's work at its Mac's speed over the threads it was given, plus the rest of its time (coord::sched batch_secs)"],
     ["threads", p.threads != null ? String(p.threads) : null, "The threads it was granted (its Mac's free cores, as its ask said them)"],
     ["memory", p.memMb != null ? `${mb(p.memMb)}${fig?.peak != null ? ` (its peak ${mb(fig.peak)})` : ""}` : null, "What the lead admitted it at on its Mac: its targets' memory together on the threads it starts on (docs/pool.md §7.7, Memory admission)"],
     ["disk", p.diskMb ? mb(p.diskMb) : null, "The disk reserved for it, its shared cache's fill among it"],
-    ["why here", p.why ?? "the first Mac to ask with room for it (placement off, or a job it doesn't place)", "Placement (docs/pool.md §7.2): of the Macs asking lately that would take it now, the one its needs over each Mac's supply finish soonest"],
+    ["why here", p.why ?? (p.kept ? "the first Mac to ask with room for it (placement off, or a cold start, which it doesn't place)" : "not kept (granted before task #1413)"), "Placement (docs/pool.md §7.2): of the Macs asking lately that would take it now, the one its needs over each Mac's supply finish soonest"],
   ]));
 }
 

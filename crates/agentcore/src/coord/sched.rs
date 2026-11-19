@@ -219,12 +219,11 @@ pub struct Sched {
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
-    /// Placement by how crucial a job is (docs/pool.md §7.2:
-    /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
-    /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
-    /// targets drawn among those asking by their Macs' speeds (crate::paces), the tasks by their measured
-    /// pace at the kind, a task offered ahead given
-    /// to a slower worker its head start covers. None: as before.
+    /// Placement (docs/pool.md §7.2: crate::agent::placement), while the lead's switch has it on,
+    /// and when it was first told (the tasks' draws' windows are reckoned from then): the offers
+    /// tried by their steps' slack, each of a member's targets to the Mac asking that finishes it
+    /// soonest (`placed_start`), the tasks drawn by their measured pace at the kind, a task offered
+    /// ahead given to a slower worker its head start covers. None: off.
     pub placement: Option<(crate::agent::placement::Placement, Instant)>,
     /// The NAS budget's limits (docs/pool.md §7.7, jobrt::budget::nas): the NAS's as probed, and the
     /// downloads' cap. Read by `pick_every` (so `pack` too). None: the switch off, or no probe yet.
@@ -267,9 +266,8 @@ pub struct Sched {
     pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
     /// While `pack` packs, what it looks up of the leases (`Packing`); None otherwise.
     pub packing: Mutex<Option<Packing>>,
-    /// Why placement left each target it gave a worker to it ((worker, step, target) → why, in
-    /// words: `placed_start`), until its grant says it (`grant`); cleared at each `pack`.
-    pub placed: Mutex<BTreeMap<(String, String, String), String>>,
+    /// What placement worked out within one `pack` (`Placed`), cleared at each.
+    pub placed: Mutex<Placed>,
     /// What's worked out of each leased job (`LeaseKept`), by lease, as the measures stood (`rev`),
     /// and as offered (`set_offers` clears it).
     pub kept_leases: Mutex<(u64, FxMap<u64, Vec<LeaseKept>>)>,
@@ -286,6 +284,16 @@ pub struct Sched {
     /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
     /// `JOB_S`): `batch_len`.
     pub batch_s: u64,
+}
+
+/// What placement (`Sched::placed_start`) keeps within one `Sched::pack`: why it left each target it
+/// gave a worker to it ((worker, step, target) → why, in words), until its grant says it (`grant`);
+/// and how many targets it passed to each other member, which hold that many of its free slots
+/// for the rest of the pack's offers.
+#[derive(Debug, Default)]
+pub struct Placed {
+    why: BTreeMap<(String, String, String), String>,
+    passed: BTreeMap<String, usize>,
 }
 
 /// What one `Sched::pack` keeps of the leases while it packs, made again at each grant: the NAS
@@ -1726,7 +1734,7 @@ impl Sched {
     /// the rule and in words (`Held`; None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<Held>) {
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = Some(Packing::default());
-        self.placed.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        *self.placed.lock().unwrap_or_else(|e| e.into_inner()) = Placed::default();
         let got = self.pack_kept(a, offers, lead, clock);
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = None;
         got
@@ -2278,7 +2286,11 @@ impl Sched {
         let on = self.start_threads(&o.step, ts.iter().map(String::as_str));
         let (thread_mb, covered) = self.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, on);
         let why = ts.first().and_then(|t| {
-            self.placed.lock().unwrap_or_else(|e| e.into_inner()).remove(&(a.worker.clone(), o.step.clone(), t.clone()))
+            self.placed.lock().unwrap_or_else(|e| e.into_inner()).why.remove(&(
+                a.worker.clone(),
+                o.step.clone(),
+                t.clone(),
+            ))
         });
         Pick {
             lease,
@@ -2318,7 +2330,7 @@ impl Sched {
     /// (every job it holds ended, its disk with what its caches can free: `caches_free`), when the
     /// room left `room` doesn't fit it: the lead's own planned job whole, or the target a step's
     /// pick starts with there (`pick_run`, its waits on the NAS not noted: placement on, the
-    /// longest drawn to this Mac, not the step's first in plan order, which placement may take
+    /// longest that finishes soonest on this Mac, not the step's first in plan order, which placement may take
     /// last). None when there's none (nothing open, a cold start: `own_cold_waits`'s, or none
     /// that ever fits this Mac: the room isn't held for what can't go here), when the pick there
     /// starts with a target not measured (a cold start: the cold rules decide it, no room held),
@@ -2770,7 +2782,7 @@ impl Sched {
     /// Whether `worker`, as its last ask `x` said, is kept from more jobs by work outside the pool:
     /// it holds a job, and the cores busy outside the pool (`outside_cores`, past those its jobs
     /// count for: `need_cores`'s within their threads, their threads where no CPU time was
-    /// measured) with those cores fill its Mac's (task #440): placement draws
+    /// measured) with those cores fill its Mac's (task #440): placement passes
     /// targets among the others. Its own jobs alone filling its cores don't count.
     pub(super) fn swamped(&self, worker: &str, x: &Ask, now: Instant) -> bool {
         let mine = self.job_leases(worker, now);
@@ -2811,9 +2823,17 @@ impl Sched {
     /// The first that finishes soonest on its Mac (`finish_s`: its needs over that Mac's supply now)
     /// among the members asking lately that would take it now (`would_take_now`), each other member
     /// counted for as many targets before it as it has slots free (its ask's, less the jobs granted
-    /// it since): a target finishing sooner on another passes to it, and once that one's slots are
-    /// spoken for the rest are this one's. A cold start (none of its step measured) is taken, by its
-    /// provisional need (`cold_fits`). Why it went here is kept for its grant (`placed`).
+    /// it since, less the targets this `pack` passed to it already: `Placed::passed`): a target
+    /// finishing sooner on another passes to it, and once that one's slots are spoken for the rest
+    /// are this one's. A cold start (none of its step measured) is taken, by its provisional need
+    /// (`cold_fits`). Why it went here is kept for its grant (`placed`).
+    ///
+    /// What it doesn't foresee: another member is judged by its last ask, a target at a time
+    /// (`would_take_now`: a slot and the memory free then, not the NAS budget, nor what the targets
+    /// passed to it take together), and what this pack passed to it is forgotten at the next pack,
+    /// while its own grants show only once it asks again. So a target may pass to a Mac that, at its
+    /// next ask, has no room for it: it waits that one ask's cycle (a member asks every few seconds
+    /// while it has slots free) before it is offered again, to whoever asks.
     pub(super) fn placed_start(
         &self,
         o: &Offer,
@@ -2854,8 +2874,14 @@ impl Sched {
                 let since = self.worker_jobs(n, now).filter(|l| l.granted >= at).count();
                 Some((n.clone(), x.want.max(1).saturating_sub(since)))
             })
-            .filter(|(_, k)| *k > 0)
             .collect();
+        {
+            let placed = self.placed.lock().unwrap_or_else(|e| e.into_inner());
+            for (n, k) in slots.iter_mut() {
+                *k = k.saturating_sub(placed.passed.get(n).copied().unwrap_or(0));
+            }
+        }
+        slots.retain(|_, k| *k > 0);
         near.iter().copied().chain(rest).find(|&i| {
             if !takeable(i) {
                 return false;
@@ -2864,7 +2890,7 @@ impl Sched {
             let Some(m) = self.measured(&o.step, t) else { return true };
             // (Each other member by the rules its own ask would meet, and only one that would take
             // it now: a target passed to it is one it takes.)
-            let mut who: Vec<(String, f64)> = slots
+            let mut who: Vec<(String, f64, Option<f64>)> = slots
                 .keys()
                 .filter_map(|n| {
                     let w = self.workers.get(n)?;
@@ -2876,49 +2902,58 @@ impl Sched {
                     if !takes {
                         return None;
                     }
-                    Some((n.clone(), self.finish_s(&o.step, t, n, x)?))
+                    let (needs, cache) = self.finish_s(&o.step, t, n, x)?;
+                    Some((n.clone(), needs / cache.unwrap_or(1.0), cache))
                 })
                 .collect();
-            let Some(mine) = self.finish_s(&o.step, t, &a.worker, a) else { return true };
+            let Some((needs, cache)) = self.finish_s(&o.step, t, &a.worker, a) else { return true };
+            let mine = needs / cache.unwrap_or(1.0);
             who.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
-            if let Some((n, _)) = who.first().filter(|(_, theirs)| *theirs < mine) {
+            if let Some((n, _, _)) = who.first().filter(|w| w.1 < mine) {
                 if let Some(k) = slots.get_mut(n) {
                     *k -= 1;
                     if *k == 0 {
                         slots.remove(n);
                     }
                 }
+                *self.placed.lock().unwrap_or_else(|e| e.into_inner()).passed.entry(n.clone()).or_default() += 1;
                 return false;
             }
-            let min = |s: f64| format!("{:.1} min", s / 60.0);
+            // (Its needs' time on each Mac, and where its Mac holds the step's cache, how it was
+            // counted: the time over CACHE_PREFER is a weight, not a time.)
+            let said = |counted: f64, cache: Option<f64>| match cache {
+                Some(c) => format!("{:.1} min (holds its cache: counted ÷{c})", counted * c / 60.0),
+                None => format!("{:.1} min", counted / 60.0),
+            };
             let why = if who.is_empty() {
-                format!("the only Mac asking that would take it now ({} here)", min(mine))
+                format!("the only Mac asking that would take it now ({} here)", said(mine, cache))
             } else {
-                let others: Vec<String> = who.iter().map(|(n, s)| format!("{n} {}", min(*s))).collect();
+                let others: Vec<String> = who.iter().map(|(n, s, c)| format!("{n} {}", said(*s, *c))).collect();
                 format!(
                     "soonest done here of the Macs asking that would take it now: {} here, {}",
-                    min(mine),
+                    said(mine, cache),
                     others.join(", ")
                 )
             };
             self.placed
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
+                .why
                 .insert((a.worker.clone(), o.step.clone(), t.clone()), why);
             true
         })
     }
 
-    /// How long target `target` of `step` takes worker `n`'s Mac as its ask `x` says (s): placement's
-    /// measure of where it finishes soonest, its needs over that Mac's supply now
-    /// (crate::agent::forecast::needs_secs: its speed, the threads it would be granted alone of the
-    /// cores its ask says, the NAS budget), over `CACHE_PREFER` where its Mac holds the step's shared
-    /// cache whole (`holds_cache`: no copy, no NAS read in place). None: none of its step measured.
-    pub(super) fn finish_s(&self, step: &str, target: &str, n: &str, x: &Ask) -> Option<f64> {
+    /// How long target `target` of `step` takes worker `n`'s Mac as its ask `x` says (s), and
+    /// `CACHE_PREFER` where its Mac holds the step's shared cache whole (`holds_cache`: no copy, no
+    /// NAS read in place): placement's measure of where it finishes soonest is the time over that.
+    /// The time is its needs over that Mac's supply now (crate::agent::forecast::needs_secs: its
+    /// speed, the threads it would be granted alone of the cores its ask says, the NAS budget).
+    /// None: none of its step measured.
+    pub(super) fn finish_s(&self, step: &str, target: &str, n: &str, x: &Ask) -> Option<(f64, Option<f64>)> {
         let threads = self.sizing_threads(step, target, ask_cores(x));
         let secs = crate::agent::forecast::needs_secs(self, step, target, n, threads)?;
-        let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
-        Some(secs / cache)
+        Some((secs, self.holds_cache(step, x).then_some(crate::agent::placement::CACHE_PREFER)))
     }
 
     /// The memory (MB) a job under lease `l` takes: what the packing counts it at (`lease_need`:
@@ -3225,7 +3260,7 @@ impl Sched {
     /// running, MB) ask again at `now`, as the live ones do each loop, wanting a job a free slot
     /// (and those granted them this instant, which count since their ask), their memory less that
     /// of every job running that began before. Only a member with a slot free asks: a busy one
-    /// keeps its last ask and ages out of placement's draws (`ASKING`), as a live one's does. (The
+    /// keeps its last ask and ages out of placement's Macs asking (`ASKING`), as a live one's does. (The
     /// forecast's lanes ask only as they free, so its members would otherwise age out as simulated
     /// time passes, and one granted a job would read as full.)
     pub fn asking<'a>(&mut self, idle: impl IntoIterator<Item = (&'a str, usize, u64)>, now: Instant) {

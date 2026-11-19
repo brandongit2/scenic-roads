@@ -1584,7 +1584,7 @@ function stageCard(m, l, whole = true) {
   ]);
 }
 // Where a target's forecast time comes from (the forecast's `Basis`), in the step card's words.
-const BASIS = { partial: ["stopped run", "stopped runs"], own: ["own run", "own runs"], here: ["recent job", "recent jobs"], sibling: ["step mean", "step means"], guess: ["guess", "guesses"] };
+const BASIS = { partial: ["stopped run", "stopped runs"], own: ["own run", "own runs"], here: ["recent job", "recent jobs"], model: ["needs model", "needs models"], sibling: ["step mean", "step means"], guess: ["guess", "guesses"] };
 
 // A step's card: its targets done and left (stat tiles, a bar), what it makes, its kind and scope,
 // where it runs, its first guess of memory, its forecast (work left, done ≈, time a target); its

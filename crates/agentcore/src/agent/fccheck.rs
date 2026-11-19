@@ -364,11 +364,14 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 }
 
 /// `inputs` rerun (in time order, each read as it comes: one that doesn't read is skipped, said)
-/// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` made them
-/// (`VERSION`, or the one before it, `Input::code`): the build's pause (`forecast::paused`) and each
-/// Mac's pace at each step (crate::paces: the scheduler's, its costs and its lanes' times by it,
-/// `repace`) read from the history, each lane's job under way timed by its needs over its Mac's
-/// supply (`forecast::lease_busy`), each Mac's room
+/// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` (`VERSION`,
+/// or the one before it, `Input::code`), where this app keeps that code's way: the code before runs
+/// as `VERSION` where it has none (`forecast::BEFORE_HAS_PATH`, false since code 9), so its
+/// comparison is with an earlier app's replay. The build's pause (`forecast::paused`), each Mac's
+/// pace at each step (crate::paces: the scheduler's, its costs and its lanes' times by it,
+/// `repace`) and each step's pace against its needs (`forecast::needs_pace`) read from the history,
+/// each lane's job under way timed by its needs over its Mac's supply (`forecast::lease_busy`), each
+/// Mac's room
 /// at its sustained best (`Rooms`, from the asks the inputs before it recorded) and each Mac's slots
 /// its lanes (`unhold`: no hold of the day before). Code 7 also has the NAS's own gate open once the
 /// jobs out then end; code 6, as recorded for the whole run.
@@ -542,6 +545,9 @@ pub fn recost(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecas
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Backtest {
     pub split: u64,
+    /// The code before has no way of its own in this app (`forecast::BEFORE_HAS_PATH`): old is new's
+    /// run, not rerun.
+    pub old_is_new: bool,
     pub train: [Report; 2],
     pub test: [Report; 2],
     /// The jobs' lengths against what the scheduler sized them to (`batches`), over the whole span.
@@ -642,13 +648,16 @@ pub fn backtest(
 ) -> Backtest {
     // (One code after the other: side by side, the M1's replay of 60 inputs peaked at a 4.7 GB
     // footprint, task #988; each forecast's three runs go side by side already.)
-    let (old, new) =
-        (replay(the_plan, inputs, events, forecast::VERSION - 1), replay(the_plan, inputs, events, forecast::VERSION));
+    // (The code before with no way of its own runs as this one: old is new's run, not rerun.)
+    let new = replay(the_plan, inputs, events, forecast::VERSION);
+    let old =
+        if forecast::BEFORE_HAS_PATH { replay(the_plan, inputs, events, forecast::VERSION - 1) } else { new.clone() };
     let part =
         |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
     let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
     Backtest {
         split,
+        old_is_new: !forecast::BEFORE_HAS_PATH,
         train: [rep(&old, false), rep(&new, false)],
         test: [rep(&old, true), rep(&new, true)],
         batches: batches(the_plan, inputs, events, from, to),
@@ -666,6 +675,14 @@ pub fn backtest_text(b: &Backtest) -> String {
         forecast::VERSION - 1,
         forecast::VERSION
     );
+    if b.old_is_new {
+        let _ = writeln!(
+            o,
+            "Old equals new: code {} has no way of its own in this app, so it runs as code {}; compare with an earlier app's replay.",
+            forecast::VERSION - 1,
+            forecast::VERSION
+        );
+    }
     let _ = writeln!(o, "Error = forecast - actual, minutes; median and p90 of the absolute error.");
     let d = super::backup::format_day(std::time::UNIX_EPOCH + std::time::Duration::from_secs(b.split));
     let split = format!("{d} {:02}:{:02} UTC", b.split % 86_400 / 3600, b.split % 3600 / 60);

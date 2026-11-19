@@ -86,7 +86,7 @@ pub fn hash(key: &str) -> u64 {
     h ^ (h >> 31)
 }
 
-/// The worker drawn for `key` (a target or a task, and the draw's window) among `who` (name,
+/// The worker drawn for `key` (a task, and the draw's window) among `who` (name,
 /// weight), each with a chance of its weight's share: the same `key` and `who` (in any order), the
 /// same worker. None when no one has a weight above 0.
 pub fn draw<'a>(key: &str, who: &'a [(String, f64)]) -> Option<&'a str> {

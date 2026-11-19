@@ -357,7 +357,8 @@ PM, 30 Oct, with what was built:
      swarm's `seq`, `epoch` and `rates`), in and out of the pool: no file or NAS read on a page's
      path or on a timer feeding it. Memory holds the week's events, the week (`history::KEEP_S`)
      its one bound, each event without its `data` (but a "planned"'s, which a restarted lead reads
-     back: `history::keeps_data`): measured 13 Nov on a copy of the lead's file (task #1160
+     back, and a lease's `sized_s`, which the forecast reads, as a field: `history::keep`; a job's page
+     reads its lease's whole from the file, `history::data_in_file`): measured 13 Nov on a copy of the lead's file (task #1160
      review), the week was 57,800 events (~8,300 a day), ~55 MB in memory (~0.95 KB an event), the
      process ~80 MB larger once loaded; ten times that, ~0.55 and ~0.75 GB on the mini's 32 GB, so
      no count caps it (a count would be a limit hidden from the page), and the page has the 7 days

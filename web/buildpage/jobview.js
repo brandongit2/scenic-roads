@@ -113,14 +113,15 @@ export function supplyText(s) {
 
 /** What job view `v`'s grant predicted it needs and why it ran where it did (task #1413), from its
  * history's first "lease" event's `data` (coord's `granted_data`): {secs, own, threads, memMb, diskMb,
- * why}, each null where its grant didn't say (a grant before task #1413 keeps `sized_s` and `own`
+ * why, kept}, each null where its grant didn't say; `kept` whether its grant kept what it was
+ * granted (every grant since task #1413 says its threads; one before keeps `sized_s` and `own`
  * alone); null with no lease event or nothing said. */
 export function predicted(v) {
   const d = (v.history || []).find((e) => e.kind === "lease")?.data;
   if (!d) return null;
   const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
   const p = { secs: num(d.sized_s), own: d.own ?? null, threads: num(d.threads), memMb: num(d.mem_mb), diskMb: num(d.disk_mb), why: typeof d.why === "string" && d.why ? d.why : null };
-  return Object.values(p).some((x) => x != null) ? p : null;
+  return Object.values(p).some((x) => x != null) ? { ...p, kept: p.threads != null } : null;
 }
 
 /** The median of the numbers among `xs` (null: none). */

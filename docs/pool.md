@@ -1197,7 +1197,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   it filling each slot as it opens don't starve it. The offers are tried in plan order, a member's
   with placement on by its steps' slack. The job held for is the one the offer would be granted
   with the Mac's whole room (`Sched::room_wait`, by the step's pick: placement on, from the
-  longest target drawn to the Mac, not the step's first in plan order); none when that pick
+  longest target that finishes soonest on the Mac, not the step's first in plan order); none when that pick
   starts with a target not measured (a cold start, which the cold rules decide). While it waits, a later job still goes
   (backfilling, `Backfill`, task #973) when it fits beside it once the jobs it waits for end (the
   Mac's jobs expected to end soonest by their measured times (`Sched::batch_secs`, less what
@@ -1214,7 +1214,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   said only the room left, and the lead's status showed no hold). The forecast packs by the same
   rule, its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
-  jobs alone filling them don't count) isn't among those a target is drawn to: the others take it. Each job is as many targets as fit the batch length by their measured
+  jobs alone filling them don't count) isn't among those a target passes to: the others take it. Each job is as many targets as fit the batch length by their measured
   times on its Mac (ยง7.7, Batch length; a target of no run of its own: its step's model, ยง7.7, What a step needs), a step kept to the lead in one job. The agent starts every job granted, each in a slot of
   its own; the slots past the first two are made as jobs are granted and dropped once empty. Each
   slot has its own files in the agent's folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`,
@@ -1253,10 +1253,12 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   each timed by its needs over that Mac's supply (`Sched::finish_s`, `forecast::needs_secs`: its own
   run at the two Macs' speeds, else its step's model's work at the Mac's speed over the threads it
   would be granted of the cores its ask says, plus the rest of its time, or its NAS moves at the
-  NAS budget where longer; a Mac whose speed isn't measured at twice the lead's time), over
+  NAS budget where longer; on a Mac whose speed isn't measured, an own run from another Mac at
+  twice its time, its step's model at the lead's), over
   `CACHE_PREFER` (4) where its ask's capacity says it holds the step's shared cache
   (`needs::CACHES`: the whole copies) whole. Each other member counts for as many targets before
-  this one as it has slots free (its ask's, less the jobs granted it since): an asker passed by
+  this one as it has slots free (its ask's, less the jobs granted it since and the targets the same
+  `pack` passed to it already: `sched::Placed`): an asker passed by
   goes on down the offer, and once the sooner Macs' slots are spoken for the rest are its own (no
   Mac idles while another's slots are full). A cold start (none of its step measured) goes to the
   asker, one at a time. The memory admitted is the scheduler's own (Memory admission, ยง7.7): placement
@@ -2075,7 +2077,7 @@ among all of the step's live and among the first 64 in the forecast. They stay b
 size is the forecast's CPU: task #951 offered 256 and the live-scale test's three runs took 463 s
 of CPU against 135 at 64 (its bound 180 s), and memoizing `placed_start`'s time of each target
 (`secs_of`) didn't bring it down: the cost is the work each ask does per target offered (the
-offers made, each target's checks and placement's draws), which an incremental run would have to
+offers made, each target's checks and placement's timing of it on each Mac asking), which an incremental run would have to
 keep between asks. **Measured** (`scenic forecast-check --replay`, its
 last table, `fccheck::batches`): each job the history ended against what the scheduler of the
 forecast input recorded before its grant sizes it to (that state, each Mac's time and jobs' start
