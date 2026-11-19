@@ -2,7 +2,10 @@
 //! worldwide steps that test their own features' points and boxes against the coverage (rail,
 //! rail-feeds, timetables-todo, bld-fetch), and the z6 tiles' steps that test their own points
 //! against it (pois, unit, bldtiles; trees by its mask), rerun on a region change only where it
-//! changes an answer they read.
+//! changes an answer they read. A record carries other answers too: a lake-depth z6 tile's asks
+//! nothing of the coverage, only, as `Record::also` questions, the terrain's z12 tiles it read,
+//! each answered by its XXH3 (terrain::depth::lakes::tile_question), so it reruns on a terrain
+//! change only where a tile it read changed.
 //!
 //! The run asks through `Run::asking` (`coverage::Asking`) and, as it ends, puts a record
 //! (`logical`, a world step's; `target_logical`, a target's): what it asked (`coverage::Asked`: its

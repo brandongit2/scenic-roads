@@ -260,7 +260,7 @@ fn asked_line(
         return Some(line);
     }
     tiles
-        .memo(&format!("coverage:asked {step} {t}"), &format!("{c} {geo}"), || {
+        .memo(&format!("asked {step} {t}"), &format!("{c} {geo}"), || {
             Ok(match tiles.target_asked(c)? {
                 Some(r) => target_line(cov, &geo, Some((c, Prev::Record(&r))), reask),
                 None => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
@@ -717,22 +717,58 @@ pub fn lake_ring_geo(m: &BTreeMap<String, String>, t: (u32, u32)) -> String {
 /// recorded them (terrain::depth::lakes::tile_question, buildstore::asked), by their XXH3 in the hi
 /// packs' indexes now: its record's line while those answer the same, so a change elsewhere in
 /// its tile's and its ring's hi packs moves no key; its packs' `lake_ring_geo` while it has no
-/// record. None while one of those packs' indexes can't be read.
-pub fn lake_tiles(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+/// record. None while one of those packs' indexes can't be read. A single line, opaque: the
+/// record's (`key_lines`' `t terrain-hi tile <line>`).
+pub fn lake_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(vec![lake_line(t, x.cov, x.m, x.tiles)?])
+}
+
+/// `lake_terrain`'s line of the coverage `cov` (unread: no question of it), the records `m` names
+/// and the indexes, heads and memo of `tiles` (`warm_lakes`', on any thread).
+fn lake_line(
+    t: &str,
+    cov: &buildstore::coverage::Coverage,
+    m: &BTreeMap<String, String>,
+    tiles: &super::tiles::TerrainTiles,
+) -> Option<String> {
     use terrain::depth::lakes::{question_tile, ring, tile_answer, TERRAIN_Z};
     let u = TileId::parse(t).filter(|u| u.z == 6)?;
     // (Every pack its record's tiles can be in read, so each is answered: none taken for flipped
-    // while its index is only not read yet.)
+    // while its index is only not read yet. A pack `m` doesn't name answers none, Ok.)
     for (a, b) in ring((u.x, u.y)) {
-        if x.m.contains_key(&format!("layers/terrain/hi/6-{a}-{b}")) {
-            x.tiles.hash(x.m, TERRAIN_Z, a << (TERRAIN_Z - 6), b << (TERRAIN_Z - 6)).ok()?;
-        }
+        tiles.hash(m, TERRAIN_Z, a << (TERRAIN_Z - 6), b << (TERRAIN_Z - 6)).ok()?;
     }
     let reask = |q: &str| {
         let (a, b) = question_tile(q)?;
-        x.tiles.hash(x.m, TERRAIN_Z, a, b).ok().map(tile_answer)
+        tiles.hash(m, TERRAIN_Z, a, b).ok().map(tile_answer)
     };
-    Some(vec![target_asked("lake-depth", t, lake_ring_geo(x.m, (u.x, u.y)), x, &reask)?])
+    asked_line("lake-depth", t, lake_ring_geo(m, (u.x, u.y)), cov, m, tiles, &reask)
+}
+
+/// Works out, on rayon's threads, the line of every lake-depth z6 tile whose ring's hi packs
+/// moved under its record (`lake_line`: its record read and asked again), kept in the tiles'
+/// memo for the plan's keys to find, as `warm_asked` the coverage's: a region-wide terrain
+/// rebuild moves the packs under every record, and the plan's thread reads none of them one by
+/// one. Once per what those lines read: the hi packs and the records `m` names (the plan runs it
+/// every loop: none of them changed, nothing done). One that can't be worked out now is left to
+/// the key that reads it.
+pub fn warm_lakes(x: &KeyCtx) {
+    use rayon::prelude::*;
+    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
+    let named = |p: &'static str| m.range(p.to_string()..).take_while(move |(l, _)| l.starts_with(p));
+    let asked = "work/asked/lake-depth/";
+    let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
+    if each.is_empty() {
+        return;
+    }
+    let from: Vec<&str> =
+        named("layers/terrain/hi/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
+    let _ = tiles.memo("lake-depth:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
+        each.par_iter().for_each(|t| {
+            lake_line(t, cov, m, tiles);
+        });
+        Ok(String::new())
+    });
 }
 
 /// The mids of a z3 tile's z6 tiles near the coverage (`buildstore::coverage::coverage_tiles`) of the terrain or

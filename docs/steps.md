@@ -372,8 +372,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   - Its key: the declarations it makes (their versions pin the zips), the basemap whole (a lake
     goes on past the tile; a new basemap makes them all again, and a depth target only where a
     pack's bytes changed) and the z12 tiles of the terrain its small lakes read (§12), in the hi
-    packs of the tile and the 8 around it, which it waits for. A depth target waits for the packs it reads (its tile and ring; an assembly's z6 tiles and
-    the ring its blocks' margin reaches), its key naming them by content. Until a tile's
+    packs of the tile and the 8 around it, which it waits for. A depth target waits for the packs
+    it reads (its tile and ring; an assembly's z6 tiles and the ring its blocks' margin reaches),
+    its key naming them by content. Until a tile's
     lake-depth target is first made, GC keeps the depth hi packs of it and its ring
     (`build::depth_kept`): its packs may yet give them depth targets, as the indexes of the
     producers it replaced did.
@@ -1011,7 +1012,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **lake-depth (a z6 tile):** `depth::lakes::V`, the pins of the declarations it makes, the water
   source's pin (the latest basemap and the lake fill, whole) and the terrain's z12 tiles its small
   lakes' slope read, as its run asked them (task #1474: `work/asked/lake-depth/6-x-y`, each tile's
-  question answered by its XXH3 in its hi pack's index, buildstore::asked; `idents::lake_tiles`):
+  question answered by its XXH3 in its hi pack's index, buildstore::asked; `idents::lake_terrain`):
   the line it ran under while those answer the same, so a change elsewhere in the hi packs of the
   tile and the 8 around it moves no key; those packs by content while it has no record.
 - **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it with its

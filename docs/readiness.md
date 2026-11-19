@@ -124,7 +124,9 @@ The key is `hash16` of these lines, in this order:
 4. one line per read, sorted, each naming its identity:
    - `t <step> <target> <logical>=<content>` per output of a read target (`Grain::Outputs`); a target
      with no outputs: `t <step> <target> -`
-   - `tile <step> <target> <z>/<x>/<y> <xxh3>` per tile read (`Grain::Tiles`)
+   - `tile <step> <target> <z>/<x>/<y> <xxh3>` per tile read (`Grain::Tiles`); lake-depth's is a
+     single opaque line instead, `t terrain-hi tile <line>`: the line its run's record of the tiles
+     it read ran under, while they hash the same (`idents::lake_terrain`, §5)
    - `w <step> <target> <logical>=<content>` for a `Whole` read, every target listed (sorted)
    - `in <name> <identity>` per `Input`
 
@@ -177,7 +179,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | rail-feeds, rail, water, bld-fetch | as §12 | `Input`s, and rail: `Whole rail-feeds` | task #1130: `in coverage:asked` (rail also `in coverage:cover`) for the coverage, not its shapes |
 | bldprep | `BLDPREP_V`, release, row groups and GHSL tile | `Whole bld-fetch` (one world target), `in release` | same |
 | bldtiles | `BUILDINGS_V`, normalized files of tile + 8 neighbours, shapes | `Targets bldprep` (tile + 8), `in coverage:shapes` | changes: today `after: bldprep` waits on every bldprep; derived waits on 9 |
-| lake-depth | `depth::lakes::V`, the declarations it makes, the water, the terrain hi packs of its tile and ring | versions; `in lake-sources`, `in water-source`, `Targets terrain-hi` (its tile and the 8 around it, `Grain::Tiles`: the z12 tiles its small lakes read, as its run recorded them, `idents::lake_tiles`) | task #959: the lakes' estimates follow the coverage; task #1474: keyed on the tiles read, not the packs |
+| lake-depth | `depth::lakes::V`, the declarations it makes, the water, the terrain hi packs of its tile and ring | versions; `in lake-sources`, `in water-source`, `Targets terrain-hi` (its tile and the 8 around it, `Grain::Tiles`: the z12 tiles its small lakes read, as its run recorded them, `idents::lake_terrain`) | task #959: the lakes' estimates follow the coverage; task #1474: keyed on the tiles read, not the packs |
 | depth | versions, tile, sources in margin, water, the lake-depth packs it reads, an enclosed sea's surface | versions; `in depth-sources`, `in water:depth`, `Targets lake-depth` (its tile and ring, `Grain::Read`: their packs by content), `Built water` and `Built terrain-lo` (the lo packs holding the terrain's tiles on the sea under its ring and margin), both `Grain::Tiles` (the enclosed seas' file by content, those tiles by XXH3), only where its ring and margin meet an enclosed sea | task #959: it waits for the lake-depth packs it reads; task #982: one meeting an enclosed sea (the Caspian's) for the water step and those lo packs too, no other |
 | depth-lo | versions, sources, water, z6 hi packs, the lake-depth packs it reads, an enclosed sea's surface | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth`, `Targets lake-depth` (its z6 tiles and their ring, `Grain::Read`), `Built water` and `Built terrain-lo` (under its tile and margin) as depth's | changes: today `after: depth` waits on every depth tile; derived on its 64 |
 | depth-root | versions, every depth lo pack | `Whole depth-lo` | same (`after: depth` was redundant) |

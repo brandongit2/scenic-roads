@@ -566,7 +566,7 @@ pub trait Terrain {
 /// What a lake-depth run asks of the terrain, recorded with its packs (buildstore::asked's
 /// `Record::also`): each z12 tile its small lakes' slope read (`small_grids`' `reads`), answered by
 /// its XXH3 in its hi pack's index (`tile_answer`). Its key's terrain line is that record's line
-/// while those answers stay (pipeline's agent::idents::lake_tiles): a change elsewhere in its
+/// while those answers stay (pipeline's agent::idents::lake_terrain): a change elsewhere in its
 /// tile's and its ring's hi packs moves no key.
 pub fn tile_question(t: (u32, u32)) -> String {
     format!("terrain {TERRAIN_Z}/{}/{}", t.0, t.1)

@@ -2280,6 +2280,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m, x.inputs, x.reach, x.tiles);
     nasread::PLAN.enter("build::plan: the z6 tiles' records asked again");
     super::idents::warm_asked(x);
+    super::idents::warm_lakes(x);
     nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
@@ -3896,8 +3897,8 @@ pub struct DepthTargets {
     pub lo: Vec<(String, String)>,
     pub hi: Vec<(String, String)>,
     /// The lake-depth step's (terrain::depth::lakes): every z6 tile near the coverage while a source
-    /// it makes is declared, and under its "none" key a z6 tile with its packs and no target now
-    /// (its run drops them).
+    /// it makes is declared, and under its "none" key a z6 tile with its packs or its record of
+    /// what it asked of the terrain and no target now (its run drops them).
     pub lakes: Vec<(String, String)>,
     pub unknown: Vec<(&'static str, String)>,
 }
@@ -5039,6 +5040,80 @@ mod tests {
         // (Its record gone, as before its first run: its packs' line, so the change outside moves it.)
         m2.remove(&target_logical("lake-depth", t));
         assert_ne!(key(&m2, &tiles2), dispatched);
+    }
+
+    /// Task #1474 review: a lake-depth run's record as the run puts it (buildstore::asked::Run over
+    /// an `Out`, its answers read by terrain::depth::lakes::HiPacks from the packs' own indexes)
+    /// keys as the plan works it out after it, every time: one run per change. Its key waits while
+    /// a ring pack's index isn't read; a change to a tile it didn't read keeps the key, through the
+    /// plan's warm pass too (`warm_lakes`); one to a tile it read moves it.
+    #[test]
+    fn a_lake_depth_runs_record_keys_as_the_plan_works_out_after_it() {
+        use buildstore::asked::{target_logical, Record, Run};
+        use buildstore::out::Out;
+        use terrain::depth::lakes::{question_tile, ring, tile_answer, HiPacks};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
+        let c = Coverage::default();
+        let (u, t) = ((33u32, 22u32), "6/33/22");
+        let inputs = BTreeMap::new();
+        // (What its run reads: a tile of its own pack and one of its western neighbour's.)
+        let read: BTreeSet<(u32, u32)> = [(33 * 64 + 5, 22 * 64 + 5), (33 * 64 - 1, 22 * 64 + 3)].into();
+        // Its ring's hi packs, three z12 tiles each, put and their indexes held for the plan.
+        let put = |out: &mut Out, tiles: &mut TerrainTiles, blob: &dyn Fn(u32, u32) -> Vec<u8>| {
+            for (a, b) in ring(u) {
+                let p = d.path().join(format!("p-{a}-{b}.pack"));
+                let mut w = store::pack::PackWriter::create(&p, serde_json::json!({}), false).unwrap();
+                let mut held = Vec::new();
+                for (x, y) in [(a * 64 + 5, b * 64 + 5), (a * 64 + 63, b * 64 + 3), (a * 64 + 6, b * 64 + 5)] {
+                    let bl = blob(x, y);
+                    w.add(12, x, y, &bl, bl.len() as u32).unwrap();
+                    held.push((12, x, y, store::naming::xxh3(&bl)));
+                }
+                w.finish().unwrap();
+                let l = format!("layers/terrain/hi/6-{a}-{b}");
+                out.put_bytes(&l, "pack", &std::fs::read(&p).unwrap()).unwrap();
+                tiles.hold(out.get(&l).unwrap(), held);
+            }
+            out.save().unwrap();
+        };
+        let run = |out: &mut Out, tiles: &mut TerrainTiles| {
+            let hi = HiPacks::new(out.root(), &out.manifest);
+            let reask = |q: &str| question_tile(q).map(|(x, y)| tile_answer(hi.hash(x, y).unwrap()));
+            let geo = crate::agent::idents::lake_ring_geo(&out.manifest, u);
+            let r = Run::start_target(out, "lake-depth", t, &c, geo, &reask).unwrap();
+            r.put(out, hi.answers(&read).unwrap()).unwrap();
+            out.save().unwrap();
+            let content = out.get(&target_logical("lake-depth", t)).unwrap().to_string();
+            tiles.hold_asked(&content, Record::from_bytes(&root.join(&content).read().unwrap()).unwrap());
+        };
+        let key = |out: &Out, tiles: &TerrainTiles| {
+            let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, tiles);
+            crate::agent::idents::warm_lakes(&x);
+            crate::agent::steps::key("lake-depth", t, &x)
+        };
+        let first = |x: u32, y: u32| format!("{x} {y}").into_bytes();
+        let mut tiles = TerrainTiles::default();
+        put(&mut out, &mut tiles, &first);
+        assert_eq!(key(&out, &TerrainTiles::default()), None, "it waits while its ring's indexes aren't read");
+        let dispatched = key(&out, &tiles).unwrap();
+        run(&mut out, &mut tiles);
+        assert_eq!(key(&out, &tiles).unwrap(), dispatched, "the key it ran under is the plan's after it");
+        // A tile it didn't read changed in every ring pack: the key kept, and kept by its run again.
+        let outside = |x: u32, y: u32| if x % 64 == 6 { b"changed".to_vec() } else { first(x, y) };
+        put(&mut out, &mut tiles, &outside);
+        assert_eq!(key(&out, &tiles).unwrap(), dispatched, "a change outside what it read keeps the key");
+        run(&mut out, &mut tiles);
+        assert_eq!(key(&out, &tiles).unwrap(), dispatched);
+        // One it read changed: a new key, and its run's record keys as the plan worked it out.
+        let inside =
+            |x: u32, y: u32| if (x, y) == (33 * 64 - 1, 22 * 64 + 3) { b"changed".to_vec() } else { outside(x, y) };
+        put(&mut out, &mut tiles, &inside);
+        let moved = key(&out, &tiles).unwrap();
+        assert_ne!(moved, dispatched, "a change in a tile it read moves the key");
+        run(&mut out, &mut tiles);
+        assert_eq!(key(&out, &tiles).unwrap(), moved, "one run per change");
     }
 
     /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:
@@ -11746,6 +11821,16 @@ mod tests {
         let k = KeyCtx::new(&far, "d", &m2, &none, None, &tiles);
         let dt = depth_targets(&k).unwrap();
         assert_eq!(dt.lakes, vec![(t6.slash(), super::super::steps::none_key("lake-depth", &t6.slash()).unwrap())]);
+        // Task #1474: a tile left with only its record of what it asked of the terrain (no lake,
+        // so no pack) is a "none" target too: its run drops the record.
+        let mut m3 = m.clone();
+        m3.remove(&l);
+        let rec = buildstore::asked::target_logical("lake-depth", &t6.slash());
+        m3.insert(rec.clone(), format!("{rec}.0606060606060606.json.zst"));
+        tiles.hold_depth_in(&m3, sources.clone());
+        let dt = depth_targets(&KeyCtx::new(&far, "d", &m3, &none, None, &tiles)).unwrap();
+        assert_eq!(dt.lakes, vec![(t6.slash(), super::super::steps::none_key("lake-depth", &t6.slash()).unwrap())]);
+        assert!(super::super::steps::saves("lake-depth", &t6.slash(), &rec));
     }
 
     /// Task #982: only a depth target whose tiles meet an enclosed sea waits for the water step and

@@ -5238,7 +5238,7 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             // (What it asks of the terrain, the z12 tiles its small lakes' slope reads by their
             // XXH3, recorded with its packs: its key moves only once one of those does,
-            // pipeline::agent::idents::lake_tiles. Its line worked out as the plan did, from the
+            // pipeline::agent::idents::lake_terrain. Its line worked out as the plan did, from the
             // record before it; an index that can't be read fails the run, not taken for a change.)
             let hi = lk::HiPacks::new(out.root(), &out.manifest);
             let unread = std::cell::RefCell::new(None);

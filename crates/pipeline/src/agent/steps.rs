@@ -745,7 +745,7 @@ fn sh_deep(t: &str) -> Vec<String> {
 
 /// lake-depth 6/x/y: the terrain hi packs of it and the ring of 8 around it, which its small lakes'
 /// slope can read (up to 160 m past a lake reaching its edge); keyed on the tiles it read in them
-/// (idents::lake_tiles).
+/// (idents::lake_terrain).
 fn ld_hi(t: &str) -> Vec<String> {
     named(6, at(t, 6).into_iter().flat_map(|(x, y)| terrain::depth::lakes::ring((x, y))))
 }
@@ -1287,7 +1287,7 @@ pub const TABLE: [Step; 65] = [
         reads: &[
             In { name: "lake-sources", of: idents::lake_sources },
             In { name: "water-source", of: idents::water_source },
-            Of { step: "terrain-hi", of: ld_hi, grain: Grain::Tiles(idents::lake_tiles) },
+            Of { step: "terrain-hi", of: ld_hi, grain: Grain::Tiles(idents::lake_terrain) },
         ],
         ..step(
             "depth",
@@ -1997,9 +1997,10 @@ pub fn outside_by(e: &agentcore::pool::journal::Entry, writes: &dyn Fn(&str, boo
 /// a z3 tile's lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
 /// z3 tile's whole run: a lease of the scheme before z6 tiles); a z6 tile's normalized buildings
 /// and their side file (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid
-/// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`); and what a z6 tile of a step keyed on
-/// what each target asked asked of the coverage (`ASKED_PER_TARGET`, buildstore::asked). False for
-/// the other steps.
+/// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`); a z6 tile's lake-depth packs and its
+/// record of what it asked of the terrain (`lake-depth`, buildstore::asked); and what a z6 tile of a
+/// step keyed on what each target asked asked of the coverage (`ASKED_PER_TARGET`,
+/// buildstore::asked). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = TileId::parse(target);
@@ -2309,8 +2310,8 @@ fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
 }
 
-/// A z6 tile's lake-depth packs (terrain::depth::lakes), a source's each.
-/// A z6 tile's lake-depth packs and what it asked of the terrain.
+/// A z6 tile's lake-depth packs (terrain::depth::lakes), a source's each, and what it asked of the
+/// terrain.
 fn w_lake_depth(l: &str, _: bool) -> bool {
     terrain::depth::lakes::tile_of(l).is_some() || asked_of(l, "lake-depth")
 }

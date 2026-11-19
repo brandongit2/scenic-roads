@@ -1520,7 +1520,11 @@ the id with the clicked point. A reader takes version 8 only.
   country lists only when asked; docs/steps.md §12) and
   `work/asked/<step>/<z-x-y>.json.zst` (the same, of a z6 tile of pois, unit, trees or bldtiles,
   `version` its key's geometric line; a trees tile's one `also` question `mask <side> <x>,<y>:<hex>;…` (`side` the cells' in pixels), each
-  block's live cells as its `trees-live.bin` holds them, none where none is live); `work/rail/used.json`
+  block's live cells as its `trees-live.bin` holds them, none where none is live; a lake-depth z6
+  tile's, task #1474, what it asked of the terrain: nothing of the coverage, its `also` questions
+  `terrain 12/<x>/<y>`, a z12 tile its small lakes' slope read each, answered by its XXH3 in its hi
+  pack's index as 16 hex digits or `-` for none, `version` its tile's and its ring's hi packs by
+  content, hashed: `idents::lake_ring_geo`); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,
