@@ -1776,15 +1776,25 @@ offered by, its source's time below, and one a target):
 - **parallelism** (`model::Par`): a run that kept every thread busy while not waiting is a floor,
   at least its threads; one that didn't says what the step can use; its waits left out (Threads,
   §7.1, above).
-- **memory**: the `needs-high-pct` percentile (95) of the peaks of its step's runs of about its size
-  (half to twice it; fewer than `MIN_RUNS` so, the nearest larger, never a smaller one) and of its
-  threads or more (where `MIN_RUNS` ran so), plus its memory per thread (least squares over size and
-  threads) for each thread past those they ran on: a small or fast run can't lower it. Disk alike,
-  of the step's disk measures, by size alone.
+- **memory**: the `needs-high-pct` percentile (95) of the peaks of its step's runs at or above its
+  size (`model::above`: its size to twice it; fewer than `MIN_RUNS` so, the nearest `MIN_RUNS` at
+  its size or more; fewer still, the largest `MIN_RUNS`, each peak scaled up by the target's size
+  over its run's, so a target past every run is read as about proportional to them, not as the
+  largest one's) and of its threads or more (where `MIN_RUNS` ran so), plus its memory per thread
+  (least squares over size and threads) for each thread past those they ran on. Of every run the
+  way its step runs now, not a window of the newest, and not relearned: a small, fast or new run
+  can't lower a large target's (a step whose newest runs are all small keeps its large ones'). The
+  scheduler's grants read it at no thread count (`Sched::measures`): the peaks at whatever threads
+  the runs had; a job grown past its grant's threads reserves `Sched::per_thread_mb` a thread
+  (Threads, §7.1). Disk alike, of the step's disk measures of the way it runs now (a disk floor's
+  carries none, and counts), by size alone.
 - **NAS** (`model::Moves`): the bytes it asked of the NAS (read, whether the NAS or this Mac's page
   cache answered: task #1417, `held`; written; read back) and its creates, lists, stats and deletes
-  per unit, at the `needs-nas-pct` percentile (70). A target's NAS rate is its moves over its
-  predicted time.
+  per unit, at the `needs-nas-pct` percentile (70), what a job's moves in all are predicted as. A
+  target's NAS rate, what the scheduler holds the NAS to (`Book::nas_made`), is its runs' of about
+  its size: their moves over their time together (a mean rate, so a second's run doesn't set it, nor
+  a run's moves at one percentile over its time at another), at the lead's pace, over its Mac's time
+  for a worker; none where no run of it moved and took time.
 
 "Runs of about its size" are those of half to twice its units (`model::about`; fewer than
 `MIN_RUNS` so, the nearest `MIN_RUNS` of half its units or more): work per unit isn't one figure
@@ -1800,27 +1810,43 @@ terrain-deep took under 2 s took a median 0 s, one whose took 64–127 s a media
 correlate 0.92). Its time on `threads` on a Mac at `r` times the lead's time is its work there over
 the cores it can use, plus the rest: work × units × r / min(threads, parallelism) + rest × units. An
 update's drain waits by the `needs-high-pct` percentile instead (`Book::secs_p90`), so a long tail's
-long jobs aren't cut short. A step's model learns from its newest `needs-runs` runs (500).
-While the way a step runs now has under `needs::PRIOR_RUNS` (20) runs, its latest earlier way's
-work and rest per unit stand in where larger (the first runs to end are the quick ones), so they can
-only lengthen a prediction; a size only the earlier way's runs have is read by them for time alone
-(an earlier way's memory, disk and NAS size nothing).
+long jobs aren't cut short. A target its step's best size says nothing of (slope-deep's or
+slope-hi's whose source hasn't run the way it runs now: what it holds isn't known) is predicted by
+the mean work and rest per unit of the runs of about its size by the next size that does, not
+their low percentile, which by its runs a target is an empty one's. A step's times (work, rest,
+parallelism, the NAS rate) learn from its newest `needs-runs` runs (500, at most 5,000: the check
+below inserts each in a sorted bin, so its cost grows as the window's square). While the way a step
+runs now has under `needs::PRIOR_RUNS` (20) runs, its latest earlier way's work and rest per unit
+stand in where larger (the first runs to end are the quick ones), so they can only lengthen a
+prediction (an earlier way's memory, disk and NAS size nothing).
 
-**Prediction against what came** (`model::Off`): each run, in the order its job was granted, is
-predicted from the runs before it (by its step's best size): off by more than `needs-off` times (3)
+**Prediction against what came** (`model::Off`): each run of the `needs-runs` window, in the order
+its job was granted, is predicted from the runs before it of about its size (by its step's best
+size, the runs binned by doubling of it with the bins either side: slope-deep's empty targets and
+full ones each checked against their own) once `MIN_RUNS` of them came: off by more than `needs-off` times (3)
 on its work, or on its time by more than that times what its supply explains
 (`jobrt::timings::explain`: the cores it wanted over those its Mac had free for it, times its waits'
 share of its time stretched by the NAS's mean answer over its Mac's best), it's flagged. A run its
 supply explains (its Mac's cores all taken, the NAS slow) is not off; one off by new code, new data
 or a regression is. `needs-relearn` runs (5) in a row off on one side of their work, and the step
-learns from the first of them on, as a cost version's bump does for code. `scenic pool needs` prints
+learns its times from the first of them on, as a cost version's bump does for code (its memory and
+disk not: a run of empty targets says nothing of a full one's peak). `scenic pool needs` prints
 each step's runs, where it relearned from, its sizes best first with their work, rest, NAS and
 memory per unit, its parallelism, its memory by place, and its runs flagged.
 
 **The knobs** (`jobrt::needs::KNOBS`): every percentile and window above is a pool setting,
 `scenic pool set needs-work-pct|needs-high-pct|needs-nas-pct|needs-runs|needs-off|needs-relearn
 <number>|off` or the build page's Settings ("Needs model"), each within its range; not set, its
-default. A step whose time is the work its target finds, not the target (`needs::PER_WORK`:
+default. Every book reads them as the pool has them, with each Mac's speed and the jobs' records
+(`needs::Inputs`: the scheduler's, the forecast's and its backtest's, the plan's lanes, an update's
+drain and `scenic pool needs` alike). Fixed, as part of the model's form rather than a choice
+among its readings: "about its size" as half to twice it (a doubling either side),
+`MIN_RUNS` (10, the fewest a percentile of is read and a
+check predicts from: below it a 95th percentile is the largest run), `PRIOR_RUNS` (20, twice it:
+the runs an earlier way stands in for), parallelism as the median of the runs' busy cores (a
+middle, so neither a crowded run nor one freak sets what a step can use), and `explain`'s inputs
+(what the Mac's supply measured: the cores free for it and the NAS's answers against the Mac's
+best, nothing to tune). A step whose time is the work its target finds, not the target (`needs::PER_WORK`:
 `pyramids-fill`, by `fetched`, the tiles a z6 tile asked of GSI; task #830), counts only its runs
 that did their work in its time (five z6 tiles already stored, 17–37 s each, had made the step's
 time 30 s against a fetching one's 4,950 s), while its own target keeps its own time.
@@ -1829,8 +1855,8 @@ time 30 s against a fetching one's 4,950 s), while its own target keeps its own 
 lead's costs, history and timings log as copied on 19 Nov (52,075 cost lines; the log holds the
 last 38 h, its records' instructions since 18 Nov 17:33, the Macs' supply since 19 Nov 08:23); for
 each day from 12 Nov, a book of the runs that had ended before it predicting each target granted
-that day (7,323 on 12, 15, 17, 18 and 19 Nov) on the Mac and threads it ran with, against the cost
-book before task #1416 (its fits, priors, source bins and pace pairs) on the same days. Each
+that day (7,323 on 12, 15, 17, 18 and 19 Nov) on the Mac and threads it ran with, against the
+cost book it replaced (its fits, priors, source bins and pace pairs) on the same days. Each
 target's run is out of the book that predicts it, and a source that ran the same day is too (the
 book is a day's), for both. Time, the median |log(predicted / took)| over the targets: 1.06 before,
 0.72 now (0.69 at `needs-work-pct` 50, 0.81 at 30); memory, the targets predicted under what they
@@ -1880,9 +1906,7 @@ lead's `phase_sharer` reading it each round); a Mac not measured (or a lead not 
 lead's. The model reads every run at the lead's pace by its Mac's time and predicts for a worker at
 its Mac's (`Book::secs_for`, `nas_for`; the scheduler's `secs_of`: a job's targets counted to the
 batch length, a leased job's predicted time), in the cost book, the scheduler, the forecast's lanes
-and costs and the plan's lanes alike. (The pace pairs before it, a target run as a job of its own on
-a Mac and on the lead, were few, and none at the steps run most: a target is built once unless its
-step changes.)
+and costs and the plan's lanes alike.
 
 **Batch length** (`Sched::batch_len`, `Sched::batch_secs`, task #927): a job of a shared step takes
 its targets in plan order (its first whatever its time) while their measured time on the Mac asking
