@@ -2292,7 +2292,9 @@ record's cost table made again from its scheduler's measures as the lead makes i
 Batch length in §7.7), each step's pace against its needs read from the history
 (`forecast::needs_pace`), and each lane's job under way timed by its needs over its Mac's supply
 (`forecast::lease_busy`; both code 9, below). Old and new differ by what the code now does and the one before
-didn't (`Input::code`): the tables below ran their own code's pair. The inputs from `--split` (default a day before the last) are the test
+didn't (`Input::code`), where the app keeps the code before's way (`forecast::BEFORE_HAS_PATH`):
+code 9 keeps none, so old is new's run, not rerun, and the report says old equals new; the code
+before is then measured by an earlier app's replay. The tables below ran their own code's pair. The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
 scored on. The terms' files held a term's last input alone (81 over 24-27 Oct: a run took ~12 min
 on the M4, each input's three runs, twice, each to `forecast::BUDGET`); the archive holds 96 a
