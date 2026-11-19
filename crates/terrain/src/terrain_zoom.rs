@@ -129,9 +129,9 @@ impl Declared {
     }
 }
 
-/// The poleward latitude of a box (where a raster's pixels, in Web Mercator, are finest).
+/// The poleward edge of box `b` (w, s, e, n), signed (inputs::dem::zoom::poleward).
 pub fn poleward(b: [f64; 4]) -> f64 {
-    b[1].abs().max(b[3].abs())
+    inputs::dem::zoom::poleward(b[1], b[3])
 }
 
 /// Of `sets`, those a place in box `b` (w, s, e, n) may read, in their order: each meeting it, up
@@ -406,6 +406,58 @@ mod tests {
         let mut found_none = edge;
         found_none.presence = Some(std::sync::Arc::new(Presence::of(&[[x, y]]).with_hollow(&[[x, y]])));
         assert!(hollow(&[measured(&[[x, y]]), found_none, world], x, y), "it too found nothing there");
+    }
+
+    /// Task #1463: a box's poleward edge is signed (the south edge in the south), as a dataset's
+    /// bands are, so a southern tile reads its own hemisphere's band: not the mirrored northern
+    /// one, nor the dataset's resolution for want of a match.
+    #[test]
+    fn a_southern_tile_reads_its_own_hemispheres_band() {
+        let band = |south: f64, north: f64, cell: f64| declared::Band { south, north, cell };
+        let both = Detail::Raster { bands: vec![band(-50.0, -30.0, 2.0), band(30.0, 50.0, 40.0)], all: 30.0 };
+        let south_only = Detail::Raster { bands: vec![band(-50.0, -30.0, 2.0)], all: 30.0 };
+        let (xs, ys) = tile_at(150.0, -40.0, 12);
+        let (xn, yn) = tile_at(150.0, 40.0, 12);
+        let (bs, bn) = (roadcore::geo::tile_box(12, xs, ys), roadcore::geo::tile_box(12, xn, yn));
+        assert_eq!(poleward(bs), bs[1], "the south edge in the south");
+        assert_eq!(poleward(bn), bn[3], "the north edge in the north");
+        assert_eq!(poleward([-180.0, -10.0, 180.0, 10.0]), 10.0, "north where they're as far");
+        let fine = raster(2.0).zoom_at(bs[1]);
+        assert!(fine > raster(40.0).zoom_at(bs[1]) && fine > raster(30.0).zoom_at(bs[1]));
+        for d in [both.clone(), south_only] {
+            let sets = vec![set("a", None, d)];
+            assert_eq!(finest(&sets, 12, xs, ys), fine, "its southern band's cell");
+            assert_eq!(key_lines(&sets, 12, xs, ys), [format!("a zoom {fine}")]);
+            assert_eq!(reaching(&sets, fine, xs << (fine - 12), ys << (fine - 12)), ["a"]);
+        }
+        let sets = vec![set("a", None, both)];
+        assert_eq!(finest(&sets, 12, xn, yn), raster(40.0).zoom_at(bn[3]), "the north its own band's");
+    }
+
+    /// Task #1463: `finest_under` bounds every tile under a southern tile whose equatorward rows
+    /// are inside a band its poleward edge is past (its rows' edges signed, as `finest`'s).
+    #[test]
+    fn finest_under_bounds_a_southern_tiles_tiles() {
+        let bands = vec![declared::Band { south: -50.0, north: -30.0, cell: 2.0 }];
+        let sets = vec![set("a", None, Detail::Raster { bands, all: 30.0 })];
+        let (x8, y8) = tile_at(150.0, -50.0, 8);
+        let b = roadcore::geo::tile_box(8, x8, y8);
+        assert!(b[1] < -50.0 && b[3] > -50.0, "{b:?}: across the band's southern edge");
+        let under = finest_under(&sets, 8, x8, y8);
+        assert!(finest(&sets, 8, x8, y8) < under, "its own edge is past the band");
+        assert!(under >= raster(2.0).zoom_at(-50.0), "the band's zoom inside it: {under}");
+        let mut most = 0;
+        for z in 9..=12u8 {
+            let k = z - 8;
+            for x in x8 << k..(x8 + 1) << k {
+                for y in y8 << k..(y8 + 1) << k {
+                    let f = finest(&sets, z, x, y);
+                    assert!(f <= under, "{z}/{x}/{y}: {f} past {under}");
+                    most = most.max(f);
+                }
+            }
+        }
+        assert_eq!(most, under, "reached by a tile under it");
     }
 
     #[test]

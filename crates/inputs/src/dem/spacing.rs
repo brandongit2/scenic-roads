@@ -61,7 +61,7 @@ pub struct Fine {
 impl Fine {
     /// From the declared datasets with their coverages (`of_accepted`'s).
     fn of(ds: &[(Accepted, Cover)]) -> Fine {
-        let poleward = |y: i32| (y as f64).abs().max((y as f64 + 1.0).abs());
+        let poleward = |y: i32| crate::dem::zoom::poleward(y as f64, y as f64 + 1.0);
         let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
         let mut rows: Vec<u8> = vec![0; 180];
         for (d, c) in ds {
@@ -270,6 +270,21 @@ mod tests {
         assert_eq!(cell(e7(-0.5, -0.5)), [-1, -1]);
         // One dataset holding the world alone: no finer cell.
         assert!(Fine::of(&[ds("glo30", 30.9, Some(1), None)]).cells.is_empty());
+    }
+
+    /// Task #1463: a southern row reads its own hemisphere's band (signed, as measured), at its
+    /// poleward edge, the south one: not the mirrored northern row's.
+    #[test]
+    fn a_southern_row_reads_its_own_band() {
+        let (mut world, c) = ds("glo30", 30.9, Some(1), None);
+        let band = |south: f64, north: f64, cell: f64| crate::dem::declared::Band { south, north, cell };
+        world.measured.bands = Some(vec![band(-40.0, -30.0, 60.0), band(30.0, 40.0, 10.0)]);
+        let f = Fine::of(&[(world, c)]);
+        let z = |cell: f64, lat: f64| crate::dem::zoom::zoom_for(cell, lat);
+        assert_eq!(f.row_zoom(-35), z(60.0, -35.0), "its band's cell at its south edge");
+        assert_eq!(f.row_zoom(34), z(10.0, 35.0), "the north its own");
+        assert_eq!(f.row_zoom(-1), z(30.9, -1.0), "past every band, its resolution");
+        assert_eq!(f.row_zoom(0), z(30.9, 1.0));
     }
 
     #[test]

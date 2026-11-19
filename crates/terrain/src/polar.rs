@@ -29,11 +29,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The cap's finest zoom: the finest of the declared datasets `sets` meeting its latitudes, each on
-/// the grid's pixel (crate::terrain_zoom::Detail::polar_zoom), never coarser than a block's.
+/// the grid's pixel at the cap's edge (crate::terrain_zoom::Detail::polar_zoom; signed, as a
+/// dataset's bands are), never coarser than a block's.
 pub fn finest(sets: &[crate::terrain_zoom::Set], pole: Pole) -> u8 {
     let b = polar::lat_box(pole, 0, 0, 0);
+    let edge = match pole {
+        Pole::North => polar::CAP_LAT,
+        Pole::South => -polar::CAP_LAT,
+    };
     let s = crate::terrain_zoom::sources_in(sets, b);
-    s.iter().map(|s| s.detail.polar_zoom(polar::CAP_LAT)).max().unwrap_or(BLOCK_Z).max(BLOCK_Z)
+    s.iter().map(|s| s.detail.polar_zoom(edge)).max().unwrap_or(BLOCK_Z).max(BLOCK_Z)
 }
 
 // A block's zoom and a pole's blocks: roadcore::polar's (task #916 step 6d: the region downloads'
@@ -861,6 +866,28 @@ pub fn root_step(out: &mut buildstore::out::Out, pole: Pole, built: &[(u32, u32)
 mod tests {
     use super::*;
     use det::Det;
+
+    /// Task #1463: a cap's finest zoom reads its own hemisphere's band at the cap's edge (bands
+    /// signed, as measured), not the mirrored latitude's.
+    #[test]
+    fn a_caps_finest_zoom_reads_its_own_hemispheres_band() {
+        use crate::terrain_zoom::{polar_zoom_for, Detail, Set};
+        let band = |south: f64, north: f64| inputs::dem::declared::Band { south, north, cell: 8.0 };
+        let set = |b: inputs::dem::declared::Band| Set {
+            id: "a".into(),
+            line: "a".into(),
+            cover: inputs::dem::declared::Cover::of(None),
+            detail: Detail::Raster { bands: vec![b], all: 100.0 },
+            cut: None,
+            every_zoom: false,
+            presence: None,
+        };
+        let (fine, coarse) = (polar_zoom_for(8.0), polar_zoom_for(100.0).max(BLOCK_Z));
+        assert!(fine > coarse);
+        assert_eq!(finest(&[set(band(-90.0, -80.0))], Pole::South), fine);
+        assert_eq!(finest(&[set(band(80.0, 90.0))], Pole::South), coarse, "the north's band");
+        assert_eq!(finest(&[set(band(80.0, 90.0))], Pole::North), fine);
+    }
 
     /// Horn's method on the grid gives a plane's own slope, east and south on the grid, per ground
     /// metre.

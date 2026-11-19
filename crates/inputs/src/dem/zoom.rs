@@ -17,6 +17,17 @@ pub const CELL_FACTOR: f64 = 1.0;
 /// 1 m data stops there too).
 pub const DEEPEST: u8 = 16;
 
+/// The poleward edge of latitudes `south` to `north`, signed (the south edge in the south): where a
+/// raster's pixels, in Web Mercator, are finest, and where a place's zoom is reckoned. Signed, as a
+/// dataset's bands are (`Detail::cell_at`); north where the two are as far from the equator.
+pub fn poleward(south: f64, north: f64) -> f64 {
+    if south.abs() > north.abs() {
+        south
+    } else {
+        north
+    }
+}
+
 /// The finest zoom at latitude `lat` whose pixels are no finer than `CELL_FACTOR` × `cell` metres
 /// (Web Mercator's), at most `DEEPEST`.
 pub fn zoom_for(cell: f64, lat: f64) -> u8 {
@@ -58,7 +69,8 @@ impl Detail {
         }
     }
 
-    /// Its cell (m) at latitude `lat`: the coarsest band's holding it, else its resolution.
+    /// Its cell (m) at latitude `lat` (signed, as its bands are): the coarsest band's holding it,
+    /// else its resolution.
     pub fn cell_at(&self, lat: f64) -> Option<f64> {
         match self {
             Detail::Pyramid(_) => None,
