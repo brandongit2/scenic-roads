@@ -1162,7 +1162,7 @@ impl Planner {
             at.extend(self.inp.mem.retry.get(&spec.id).map(|(_, u)| *u));
         }
         if let Some((_, _, t)) = self.inp.floor_short {
-            at.push(ends_in(now, Duration::from_secs(600).saturating_sub(t.elapsed())));
+            at.push(ends_in(now, super::ROOM_RETRY.saturating_sub(t.elapsed())));
         }
         if let Some((_, left)) = edit_held(self.edited_at.get(), std::time::SystemTime::now()) {
             at.push(ends_in(now, left));

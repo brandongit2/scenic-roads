@@ -1244,14 +1244,10 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
                 Some(r) => {
                     if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes)))
                     {
+                        // (Its goal said only when a job held for its room set it: Freed::goal.)
                         let past = f
                             .goal
-                            .map(|g| {
-                                format!(
-                                    " (and the {} past it the jobs here and one held for its room need)",
-                                    size(g.saturating_sub(f.target.unwrap_or(0)))
-                                )
-                            })
+                            .map(|g| format!(" (and the {} free a job held for its room needs)", size(g)))
                             .unwrap_or_default();
                         println!("Freed toward it{past} {}: {}", ago(f.at), f.say());
                     }

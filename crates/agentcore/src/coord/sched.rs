@@ -459,13 +459,15 @@ impl Backfill {
     }
 
     /// The refusal of `room` and the `cores` left (`words`'s), held as `Rule::Waiting`: with the
-    /// disk the waiting job needs when its disk alone is short (`Held::disk_mb`).
+    /// disk the waiting job needs when its disk is short now and the rest fits, now (its memory and
+    /// cores) or once the jobs it waits for end (`beside`): freed now, the disk isn't what it
+    /// waits for then (`Held::disk_mb`).
     fn held(&self, room: &Ask, cores: u32, later: bool) -> Held {
         let w = &self.w;
-        let disk_alone =
-            w.mem_mb <= room.mem_mb && w.cores <= cores && room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
+        let short = room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
+        let rest = (w.mem_mb <= room.mem_mb && w.cores <= cores) || self.beside.is_some();
         Held {
-            disk_mb: disk_alone.then(|| w.disk_mb.saturating_sub(w.credit)),
+            disk_mb: (short && rest).then(|| w.disk_mb.saturating_sub(w.credit)),
             ..held_by(Rule::Waiting, self.words(room, cores, later))
         }
     }
@@ -580,11 +582,13 @@ struct Refused {
 
 impl Refused {
     /// The disk the blocked target needs (MB, the whole copies counted for it, `copies`, taken off)
-    /// when its disk alone is past the room left `room` (`Held::disk_mb`); None when its memory is
-    /// too, or none is blocked.
-    fn disk_alone(&self, room: &Ask, copies: u64) -> Option<u64> {
-        let (_, _, m) = self.blocked.as_ref()?;
-        (m.mem_mb <= room.mem_mb && room.disk_mb.is_some_and(|d| m.disk_mb > d + copies)).then(|| m.disk_mb - copies)
+    /// when its disk alone is past the room left `room` (`Held::disk_mb`), its memory and its cores
+    /// (`cores_fit`, as `Backfill::held` weighs them) fitting; None when another is short too, or
+    /// none is blocked.
+    fn disk_alone(&self, room: &Ask, copies: u64, cores_fit: impl FnOnce(&str, &str) -> bool) -> Option<u64> {
+        let (step, target, m) = self.blocked.as_ref()?;
+        (m.mem_mb <= room.mem_mb && room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && cores_fit(step, target))
+            .then(|| m.disk_mb - copies)
     }
 
     /// The room rule's refusal in words, of `a` and the room left `room` (its disk with the whole
@@ -1868,7 +1872,11 @@ impl Sched {
                     None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
-                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit) } else { None };
+                        let cores_fit = |st: &str, t: &str| {
+                            let n = self.pack_need(st, &[t.to_string()]);
+                            self.need_cores(st, &n, total).1 <= cores
+                        };
+                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit, cores_fit) } else { None };
                         let held = held_by(
                             if nas_waits == 0 { Rule::Room } else { Rule::Nas },
                             format!(

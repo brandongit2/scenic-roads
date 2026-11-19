@@ -1132,6 +1132,10 @@ pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
 
+/// The key of a member's ask answered with nothing granted, a job held back for its disk alone
+/// (`/work/ask`'s 202): the disk it needs (MB, `sched::Held::disk_mb`).
+pub const HELD_DISK: &str = "held_disk_mb";
+
 /// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
 /// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
 /// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
@@ -4601,7 +4605,16 @@ fn route(
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
             }
-            Ok((204, serde_json::Value::Null))
+            // Nothing granted. A job held back for its disk alone: the disk it needs said
+            // (`HELD_DISK`, `sched::Held::disk_mb`), for the member to free its caches toward
+            // (crate::agent's `held_room`). A 202, which an older member takes for nothing granted,
+            // as it does the 204 an older lead sends.
+            match s.refused.get(&a.worker).and_then(|(_, h)| h.disk_mb) {
+                Some(mb) => {
+                    Ok((202, serde_json::Value::Object([(HELD_DISK.to_string(), mb.into())].into_iter().collect())))
+                }
+                None => Ok((204, serde_json::Value::Null)),
+            }
         }
         "/work/beat" => {
             let mut b: Beat = serde_json::from_slice(body)?;
@@ -9601,6 +9614,20 @@ mod tests {
         // The disk it needs there: granted, none held.
         assert!(c.ask_own(&ask(30_000, need), &BTreeSet::new(), 0).is_some());
         assert_eq!(c.own_held_disk_mb(), None);
+    }
+
+    /// Task #1477 review: a member's ask answered with nothing, a job held back for its disk
+    /// alone, names the disk it needs (a 202, `HELD_DISK`); an older member's `ask` takes it for
+    /// nothing granted, as the 204 that holds none.
+    #[test]
+    fn a_members_answer_names_the_disk_a_job_held_for_it_needs() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((2000, 30_000, 60)))]);
+        let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
+        assert!(g.is_none() && held.is_some_and(|mb| mb >= 30_000), "{held:?}");
+        assert!(w.ask(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap().is_none());
+        // Short of memory too: nothing named.
+        assert!(matches!(w.ask_held(&every_ask("m1", "slope-hi", 1_000, 20_000)).unwrap(), (None, None)));
     }
 
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,

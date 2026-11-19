@@ -529,13 +529,23 @@ room it can, and gives it back, failed, kept from that Mac an hour). With no tar
 only a full disk while the freeing runs beside the job's writes, so a member's caches are counted
 only with one (task #1000: counted without its caches, the M4, 37 GB free against its 30 GB
 target and 77 GB of caches, was offered 7 GB for jobs and ran one, 11 of its 14 cores idle). The lead's caches aren't counted: it asks alone with its
-disk unbounded, and beside its jobs a job of its own needs its measured room free as it starts or
-is given back, so one granted for its caches would be granted and given back each loop. Instead a
-job its coordinator holds back for its disk alone (its memory and cores fitting: the answer's
-`disk_mb`) has the lead's caches freed toward its room, the target and reservations among it
-(`Agent::held_room`, task #1477), as has a job that waits for its room as it starts, alone or
-beside others; that room stays the freeing's goal until the next ask or start decides again (a job
-ending doesn't drop it), and once the disk has it the job is granted. There is no
+disk unbounded, and beside its jobs a job of its own needs the disk it was granted for free as it
+starts (the grant's own measure, its shared cache's fill among it), so one granted for its caches
+would be granted and given back each loop. Instead a job its coordinator holds back for its disk
+alone (`sched::Held::disk_mb`: its disk short now, its memory and cores fitting now, or, for the
+job room is held for, once the jobs it waits for end) has the caches freed toward its room, the
+target and reservations among it (`Agent::held_room`, task #1477): the lead's own ask's refusal
+says it to the lead's agent; a member's ask answered with nothing is a 202 naming the disk
+(`held_disk_mb`), which the member holds when its ask's disk left its caches out (no target; with
+one they were counted already). An older member takes the 202 for nothing granted, as it does the
+204 an older lead sends. So too a job that waits for its room as it starts, alone or beside
+others, and a member waiting out a job it gave back for the target. Of several, the largest room
+is held. Each ask and start decides it again (a job ending doesn't drop it), and one no decision
+renewed within the coordinator's freshness for an answer (`CAP_FRESH_S`, two minutes) is let go,
+whatever kept the Mac from asking (its slots full, quitting, paused, a member waiting out a
+give-back renews it each loop). Once the disk has it, the job is granted and starts. Room-making
+that fell short holds the jobs after it, and a freeing isn't tried toward as much again, for
+`ROOM_RETRY` (ten minutes) unless a job ends or the target changes first. There is no
 fixed reserve: the room target is the only floor (a Mac with 49 GB free, a 20 GB target and no
 caches offers 29 GB, less its reservations). An older agent's `reserve_mb`
 (a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,

@@ -87,9 +87,10 @@
 //! A job starts only with the target free past its own room, so nothing a job copies back crosses
 //! it; the jobs wait, saying why, until it's lowered or off (the daily backup and GC keep none).
 //! Whenever the disk is short of the target and the jobs' reservations, or of the room a job held
-//! for its room needs (alone or beside other jobs, the target set or not: one the lead's
-//! coordinator held back for its disk alone, or one short of its room as it starts; crate::agent's
-//! `held_room`, kept until the next ask or start decides again, not dropped as another job ends),
+//! for its room needs (alone or beside other jobs, the target set or not: one its coordinator held
+//! back for its disk alone, or one short of its room as it starts; crate::agent's `held_room`,
+//! decided again by each ask and start, not dropped as another job ends, let go once none has
+//! renewed it for crate::coord::CAP_FRESH_S),
 //! the agent frees its caches toward that on a thread of its own, jobs running or not,
 //! whether or not the build has work left: the cheap caches by room-making's rules and order (the
 //! canopy squares too), then a clear's others, the cheapest to fill again first (`TOWARD_ORDER`:
@@ -513,8 +514,9 @@ pub struct Freed {
     /// A freeing toward the owner's disk room target (`toward`): the target it was for (bytes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<u64>,
-    /// And the room it freed toward, when more than the target: what a job waiting for the target
-    /// needs past it (bytes).
+    /// And the free space it freed toward when a job held for its room set it (bytes: crate::agent's
+    /// `held_room`, the target and the jobs' reservations among it); None: the target and the
+    /// reservations alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<u64>,
 }

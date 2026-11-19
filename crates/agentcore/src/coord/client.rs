@@ -71,7 +71,13 @@ pub enum Handed {
 pub trait LeaseCalls {
     /// Work that fits this worker; None when there's none now; an error, `Refused`, when none goes to
     /// it as it is.
-    fn ask(&self, a: &Ask) -> Result<Option<Grant>>;
+    fn ask(&self, a: &Ask) -> Result<Option<Grant>> {
+        Ok(self.ask_held(a)?.0)
+    }
+
+    /// `ask`, and with nothing granted, the disk (MB) a job held back for its disk alone needs
+    /// (super::HELD_DISK; None: none, or a lead too old to say).
+    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)>;
 
     /// Keeps lease `lease` alive; false when the coordinator no longer holds it for this worker (the
     /// work should stop: it was offered again).
@@ -143,16 +149,17 @@ pub trait LeaseCalls {
 }
 
 impl LeaseCalls for Client {
-    fn ask(&self, a: &Ask) -> Result<Option<Grant>> {
+    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)> {
         let a = Ask { worker: self.worker.clone(), sent: Some(super::held::sent()), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
-            (200, v) => Ok(Some(serde_json::from_value(v)?)),
+            (200, v) => Ok((Some(serde_json::from_value(v)?), None)),
             (409, v) => Err(Refused {
                 why: v["error"].as_str().unwrap_or("the lead gives this Mac no work as it is").to_string(),
                 pause: serde_json::from_value(v["pause"].clone()).ok().flatten(),
             }
             .into()),
-            _ => Ok(None),
+            (202, v) => Ok((None, v[super::HELD_DISK].as_u64())),
+            _ => Ok((None, None)),
         }
     }
 
