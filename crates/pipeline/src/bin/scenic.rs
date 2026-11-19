@@ -1096,13 +1096,14 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     if let Some(name) = name {
         anyhow::ensure!(
             asks::known(name),
-            "the pool's settings: {}, {}, not {name}",
+            "the pool's settings: {}, {}, {}, not {name}",
             asks::NAMES.join(", "),
-            jobrt::budget::nas::KNOBS.map(|k| k.name).join(", ")
+            jobrt::budget::nas::KNOBS.map(|k| k.name).join(", "),
+            jobrt::needs::KNOBS.map(|k| k.name).join(", ")
         );
-        if let (Some(_), Some(v)) = (jobrt::budget::nas::knob(name), value) {
+        if let (Some(_), Some(v)) = (jobrt::settings::bound(name), value) {
             let by = format!("scenic pool set on {}", store::sys::host_name());
-            agent::settings::set_pace(home, name, v, &by)?;
+            agent::settings::set_knob(home, name, v, &by)?;
             println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
             return Ok(());
         }
@@ -1145,14 +1146,17 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
             None => println!("{n}: the default"),
         }
     }
-    let pace = s.nas_pace();
-    for k in jobrt::budget::nas::KNOBS.iter().filter(|k| name.is_none_or(|m| m == k.name)) {
-        let (now, default) = ((k.get)(&pace), (k.get)(&Default::default()));
-        match s.values.get(k.name).filter(|v| !v.value.is_null()) {
-            Some(v) => println!("{}: {now} {} ({}; set {} by {})", k.name, k.unit, k.what, ago(v.at), v.by),
-            None => println!("{}: {default} {}, the default ({}; {} to {})", k.name, k.unit, k.what, k.least, k.most),
+    fn knobs<T: Default>(s: &jobrt::settings::Settings, name: Option<&str>, ks: &[jobrt::settings::Knob<T>], now: &T) {
+        for k in ks.iter().filter(|k| name.is_none_or(|m| m == k.name)) {
+            let (now, default) = ((k.get)(now), (k.get)(&Default::default()));
+            match s.values.get(k.name).filter(|v| !v.value.is_null()) {
+                Some(v) => println!("{}: {now} {} ({}; set {} by {})", k.name, k.unit, k.what, ago(v.at), v.by),
+                None => println!("{}: {default} {}, the default ({}; {} to {})", k.name, k.unit, k.what, k.least, k.most),
+            }
         }
     }
+    knobs(&s, name, &jobrt::budget::nas::KNOBS, &s.nas_pace());
+    knobs(&s, name, &jobrt::needs::KNOBS, &s.needs());
 
     println!(
         "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",
@@ -1555,9 +1559,9 @@ fn cli_main() -> Result<()> {
                         println!("  {}", l.as_str().unwrap_or(""));
                     }
                 }
-                Some(PoolCmd::Needs { fit: _, costs }) => {
-                    // Each step's model of what its jobs need (agentcore::needs): `--fit` prints its
-                    // fits' errors on held-out runs and the steps that don't fit. Read only: the
+                Some(PoolCmd::Needs { costs }) => {
+                    // Each step's model of what its jobs need (agentcore::needs::model_table). Read
+                    // only: the
                     // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
                     // agent's), its disk floors beside them.
                     let p = costs.unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
@@ -1571,7 +1575,7 @@ fn cli_main() -> Result<()> {
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
                     print!(
                         "{}",
-                        agentcore::needs::fit_table(&agentcore::needs::Book::with(
+                        agentcore::needs::model_table(&agentcore::needs::Book::with(
                             pipeline::agent::theplan::the_plan(),
                             &costs,
                             None,

@@ -793,6 +793,7 @@ impl Shared {
     /// (`answered`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
+        self.sched.set_tuning(self.asks.settings.needs());
         let unix = self.wall_s();
         let (picks, mut why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
         // (Nothing granted for a rule that doesn't weigh the disk (memory held back, the load, …:
@@ -1959,6 +1960,8 @@ impl Coordinator {
                 packing: Default::default(),
                 provisional_at: Default::default(),
                 paces: Default::default(),
+                records: Default::default(),
+                tuning: Default::default(),
                 batch_s: 0,
             },
             pass: String::new(),
@@ -2399,6 +2402,7 @@ impl Coordinator {
         let now = s.now();
         let mut st = s.sched.state(sched::Clock { now, unix: unix_of(now) });
         st.batch_s = s.asks.settings.batch_s().unwrap_or(0);
+        st.tuning = s.asks.settings.needs();
         for w in st.workers.iter_mut().filter(|w| w.ask.worker == self.me) {
             w.ask.cap = s.own_cap.clone();
         }
@@ -2658,22 +2662,22 @@ impl Coordinator {
         out
     }
 
-    /// Each Mac's pace at each step now (crate::paces, from the build's history): what the
-    /// measures are read at; with each Mac's jobs' start at each step, from the history's jobs
-    /// `events` and the costs kept (`Paces::with_starts`, task #927).
-    pub fn set_paces(&self, p: crate::paces::Paces, events: &[history::Event], now: u64) {
+    /// Each Mac's jobs' start at each step now, from the history's jobs `events` and the costs kept
+    /// (crate::paces::Paces::with_starts, task #927); each Mac's time as `phase_sharer` last read
+    /// their speeds.
+    pub fn set_starts(&self, events: &[history::Event], now: u64) {
         let mut s = self.shared.lock().unwrap();
-        let p = p.with_starts(s.the_plan, events, &s.sched.costs, now);
+        let p = s.sched.paces.clone().with_starts(s.the_plan, events, &s.sched.costs, now);
         s.sched.set_paces(p);
     }
 
-    /// The paces the measures are read at (`set_paces`).
+    /// The paces the measures are read at (`set_starts`, `phase_sharer`).
     pub fn paces(&self) -> crate::paces::Paces {
         self.shared.lock().unwrap().sched.paces.clone()
     }
 
     /// Placement by how crucial a job is on (`Some`: the forecast's slack; its draws weigh the paces,
-    /// `set_paces`) or
+    /// `Sched::set_paces`) or
     /// off (docs/pool.md §7.2; crate::agent::placement). Its draws' windows
     /// run from when it was first turned on.
     pub fn set_placement(&self, p: Option<crate::agent::placement::Placement>) {
@@ -4000,6 +4004,15 @@ fn phase_sharer(
                     .collect()
             };
             let speeds = tail.speeds(crate::paces::mac_of, |m| pool.contains(m));
+            // (The model's inputs from the records: each Mac's time by the speeds, each job's facts.)
+            {
+                let paces = crate::paces::Paces::of(&speeds, &me);
+                let records = tail.facts().clone();
+                let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                let p = crate::paces::Paces { starts: s.sched.paces.starts.clone(), ..paces };
+                s.sched.set_paces(p);
+                s.sched.set_records(records);
+            }
             *into.speeds.lock().unwrap_or_else(|e| e.into_inner()) = Some(speeds);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             *into.times.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tail.times(now)));
@@ -4921,8 +4934,9 @@ fn route(
             // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}` set this Mac's,
             // `{"nas_room": <GB> | "off"}`,
             // `{"batch_minutes": <minutes> | "off"}`, `{"overdue_factor": <times> | "off"}`,
-            // `{"hold_catalog": "on" | "off"}`, `{"near_slope": "on" | "off"}` and the NAS pacing's
-            // bounds (`{"nas_step": <number> | "off"}`, … jobrt::budget::nas::KNOBS) the pool's (all but
+            // `{"hold_catalog": "on" | "off"}`, `{"near_slope": "on" | "off"}` and the pool's knobs
+            // (`{"nas_step": <number> | "off"}`, … jobrt::budget::nas::KNOBS; `{"needs_work_pct":
+            // <number> | "off"}`, … jobrt::needs::KNOBS) the pool's (all but
             // the reserve asked of the lead with this Mac's agent's next beat), each through
             // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
             // the NAS calls held have none). Answered with them as they stand.
@@ -4978,10 +4992,11 @@ fn route(
                     settings::set_switch(&home, name, &v, &by)?;
                 }
             }
-            // (The NAS pacing's bounds, by their names with `_`: `nas_step`, `nas_slow`, …)
-            for k in &jobrt::budget::nas::KNOBS {
-                if let Some(v) = said(&k.name.replace('-', "_"))? {
-                    settings::set_pace(&home, k.name, &v, &by)?;
+            // (The knobs, by their names with `_`: `nas_step`, `needs_work_pct`, …)
+            let names = jobrt::budget::nas::KNOBS.iter().map(|k| k.name).chain(jobrt::needs::KNOBS.iter().map(|k| k.name));
+            for name in names {
+                if let Some(v) = said(&name.replace('-', "_"))? {
+                    settings::set_knob(&home, name, &v, &by)?;
                 }
             }
             let mut v = settings::view(&home, root.as_ref());
@@ -8242,10 +8257,10 @@ mod tests {
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
         assert_eq!(c.measured("pois", "6/2/2"), None);
         // A target measured at 0 keeps its 0, not its step's prior; one outlier doesn't make the
-        // step's prior (its 90th percentile, not its most: crate::needs).
+        // step's prior (its model's high percentile, not its most: crate::needs).
         c.add_disks(&[(cost_key("peaks", "6/3/3"), 0)]);
         assert_eq!(c.measured("peaks", "6/3/3").map(|m| m.disk_mb), Some(0));
-        let many: Vec<(String, u64)> = (10..30).map(|i| (cost_key("peaks", &format!("6/{i}/1")), 1000)).collect();
+        let many: Vec<(String, u64)> = (10..50).map(|i| (cost_key("peaks", &format!("6/{i}/1")), 1000)).collect();
         c.add_disks(&many);
         c.add_disks(&[(cost_key("peaks", "6/30/1"), 50_000)]);
         assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(1000));
@@ -9304,13 +9319,19 @@ mod tests {
         (d, c, o)
     }
 
-    /// Task #927: a batch is sized by its Mac's own runs of the step: m1 took 60 s a target of
-    /// slope-deep where m2 took 20, on targets whose terrain-deep took alike, so a target neither
-    /// ran is 60 s on m1 and 20 on m2: a quarter hour is 15 of them on m1, 45 on m2 (where the
-    /// step's mean, 40 s, sized both at 22). Its jobs' start counts too.
+    /// Task #927, #1416: a batch is sized by its Mac's speed: m1 at three times m2's time (their
+    /// speeds, crate::paces) took 60 s a target of slope-deep where m2 took 20, on targets whose
+    /// terrain-deep took alike, so a target neither ran is 60 s on m1 and 20 on m2: a quarter hour
+    /// is 15 of them on m1, 45 on m2. Its jobs' start counts too.
     #[test]
     fn a_slow_mac_gets_smaller_batches() {
         let (_d, c, o) = sized_offer(&[(0..200, 100)], &[("m1", 0..20, 60), ("m2 #2", 20..40, 20)], 40..200);
+        let paces = crate::paces::Paces {
+            lead: "m2".into(),
+            macs: [("m1".to_string(), 3.0)].into(),
+            ..Default::default()
+        };
+        c.shared.lock().unwrap().sched.set_paces(paces);
         let n = |w: &str| {
             let s = c.shared.lock().unwrap();
             s.pick_every(&o, &every_ask(w, "slope-deep", 64_000, 1_000_000), s.now()).len()
@@ -9318,7 +9339,7 @@ mod tests {
         assert_eq!((n("m1"), n("m2")), (15, 45));
         let s = c.shared.lock().unwrap();
         let ts: Vec<&str> = o.targets.iter().take(15).map(|t| t.0.as_str()).collect();
-        assert_eq!(s.batch_secs("slope-deep", ts.iter().copied(), "m1", 0), Some((900, true)), "by m1's own runs");
+        assert_eq!(s.batch_secs("slope-deep", ts.iter().copied(), "m1", 0), Some((900, true)), "at m1's speed");
         drop(s);
         // (Its jobs taking 60 s past their targets' runs: a target fewer.)
         let mut s = c.shared.lock().unwrap();
@@ -9330,9 +9351,10 @@ mod tests {
     }
 
     /// Task #927: a target expected to be full counts more than one expected empty: what its
-    /// terrain-deep took says which (its bin of the step's runs on the Mac). m1 took 90 s on the
-    /// targets whose terrain-deep took 100 s and 1 s on those whose took 1: of the ones it hasn't
-    /// run, a quarter hour is 10 full ones, or every empty one offered.
+    /// terrain-deep took says which (its source's size, crate::needs::SOURCE: the step's runs of
+    /// about its size). m1 took 90 s on the targets whose terrain-deep took 100 s and 1 s on those
+    /// whose took 1: of the ones it hasn't run, a quarter hour is 10 full ones, or every empty one
+    /// offered.
     #[test]
     fn full_targets_count_more_than_empty_ones() {
         let (_d, c, o) = sized_offer(
@@ -9347,10 +9369,11 @@ mod tests {
         let empty = Offer { targets: o.targets[20..].to_vec(), ..o.clone() };
         assert_eq!(s.pick_every(&full, &a, now).len(), 10);
         assert_eq!(s.pick_every(&empty, &a, now).len(), 40);
-        // (A target of no source run: the step's model, its mean, 46 s: 19 of them.)
+        // (A target of no source run, its area past its step's runs': by its step's runs a target,
+        // their low percentile, an empty one's second: every one offered.)
         let none =
             Offer { targets: (200..240).map(|i| (format!("10/0/{i}"), String::new(), 0)).collect(), ..o.clone() };
-        assert_eq!(s.pick_every(&none, &a, now).len(), 19);
+        assert_eq!(s.pick_every(&none, &a, now).len(), 40);
     }
 
     /// Task #927: a Mac with no runs of the step is sized as before, and says so: a target's own
@@ -10377,8 +10400,8 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "the first ended: the second goes");
     }
 
-    /// Task #552, #934: placement's draw weighs a worker by its Mac's speed at the target's step,
-    /// the inverse of its pace (crate::paces: at the step, else over its steps, else the lead's),
+    /// Task #552, #934, #1416: placement's draw weighs a worker by its Mac's speed, the inverse of
+    /// its time against the lead's (crate::paces: a Mac not measured, the lead's),
     /// `CACHE_PREFER` times where its Mac holds the step's shared cache whole by its ask (its fill
     /// measured); short of it, or a step reading none, no more.
     #[test]
@@ -10394,8 +10417,7 @@ mod tests {
         s.fills.insert(cache.to_string(), 20_000);
         s.set_paces(crate::paces::Paces {
             lead: "m4".into(),
-            steps: [("mini".to_string(), [("depth".to_string(), 0.25)].into())].into(),
-            macs: [("m1".to_string(), 2.0), ("mini".to_string(), 1.0)].into(),
+            macs: [("m1".to_string(), 2.0), ("mini".to_string(), 0.25)].into(),
             ..Default::default()
         });
         let holding = |mb: u64| Ask {
@@ -10405,10 +10427,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(s.draw_weight("depth", "mini #2", &holding(0)), 4.0, "its pace at the step, its slots' alike");
-        assert_eq!(s.draw_weight("slope-hi", "mini", &holding(0)), 1.0, "a step without a pair: over its steps");
+        assert_eq!(s.draw_weight("depth", "mini #2", &holding(0)), 4.0, "its Mac's, its slots' alike");
+        assert_eq!(s.draw_weight("slope-hi", "mini", &holding(0)), 4.0, "at every step");
         assert_eq!(s.draw_weight("depth", "m4 #3", &holding(0)), 1.0, "the lead's");
-        assert_eq!(s.draw_weight("depth", "ipad", &holding(0)), 1.0, "no pair of it: the lead's");
+        assert_eq!(s.draw_weight("depth", "ipad", &holding(0)), 1.0, "not measured: the lead's");
         assert_eq!(s.draw_weight("depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
         assert_eq!(s.draw_weight("depth", "m1", &holding(19_000)), 0.5, "short of it");
         assert_eq!(s.draw_weight("slope-hi", "m1", &holding(20_000)), 0.5, "a step reading none");
@@ -12902,10 +12924,10 @@ mod tests {
         // Off: both may take every one.
         assert!(picks(&c).iter().all(|&(x, y)| x && y));
         c.set_placement(Some(placement(&[])));
-        // (m2 at three times m1's time a target: m1 at the lead's pace, unpaired.)
+        // (m2 at three times m1's time a target: m1 at the lead's, not measured.)
         let paces =
             crate::paces::Paces { lead: "mini".into(), macs: [("m2".to_string(), 3.0)].into(), ..Default::default() };
-        c.set_paces(paces, &[], 0);
+        c.shared.lock().unwrap().sched.set_paces(paces);
         let first = picks(&c);
         assert!(first.iter().all(|&(x, y)| x != y), "each to exactly one");
         let share = first.iter().filter(|p| p.0).count() as f64 / ts.len() as f64;

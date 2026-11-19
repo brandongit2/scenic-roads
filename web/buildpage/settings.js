@@ -1,9 +1,9 @@
 // The owner's settings on the build page (the Machines tab; docs/coordinator.md §7): this page's Mac's
 // in-use share, memory floor, disk room target, dev sweep margin and NAS calls held, a block per Mac, each set on
 // that Mac, and the pool's NAS reserve, batch length, overdue factor, publishing's switches
-// (holding publishing for review, slope near regions) and the NAS pacing's bounds. Read and set through `/api/settings`, which
-// sets each through the same function as its `scenic` command (`scenic in-use`, `memory`, `room`,
-// `nas-room`, `pool set batch-minutes|overdue-factor|hold-catalog|near-slope|<a pacing bound>`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// (holding publishing for review, slope near regions), the NAS pacing's bounds and the needs model's knobs. Read and set
+// through `/api/settings`, which sets each through the same function as its `scenic` command (`scenic in-use`, `memory`, `room`,
+// `nas-room`, `pool set batch-minutes|overdue-factor|hold-catalog|near-slope|<a knob>`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 import { h } from "./dom.js";
 
@@ -109,7 +109,7 @@ export function settingsSection(call, macs, done, onError) {
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
     : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "no Mac shown here has answered yet"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length, overdue factor, the map updates' switches and the NAS pacing, pool-wide")), blocks, pool);
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length, overdue factor, the map updates' switches, the NAS pacing and the needs model, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -215,13 +215,14 @@ export function poolRows(s) {
     })),
     switchRow(s, "hold_catalog", "Hold map updates", "the map update step keeps the map it would append on the lead's disk for review, and the map isn't updated"),
     switchRow(s, "near_slope", "Slope near regions", "a done region's slope and tree cover are the z6 tiles near it, their assemblies made with the low zooms"),
-    ...(s.nas_pace || []).map(paceRow(s)),
+    ...(s.nas_pace || []).map(knobRow(s, "NAS pacing")),
+    ...(s.needs || []).map(knobRow(s, "Needs model")),
   ];
 }
 
-// One of the NAS pacing's bounds (`nas_pace`'s, jobrt::budget::nas::KNOBS): a number in its range,
-// its default until set; the lead takes it at its next reading.
-const paceRow = (s) => (p) => guarded(p.key, `NAS pacing: ${p.name}`, () => ({
+// One of the pool's knobs (`nas_pace`'s, jobrt::budget::nas::KNOBS; `needs`', jobrt::needs::KNOBS):
+// a number in its range, its default until set; the lead takes it at its next reading.
+const knobRow = (s, family) => (p) => guarded(p.key, `${family}: ${p.name}`, () => ({
   now: `${p.value} ${p.unit}`,
   note: `${p.what}${p.set ? by(p) : ` (the default, ${p.default} ${p.unit})`}${p.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
   input: { min: p.least, max: p.most, step: "any", placeholder: p.unit, offTitle: `Back to the default (${p.default} ${p.unit})` },

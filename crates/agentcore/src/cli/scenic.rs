@@ -359,10 +359,13 @@ pub enum PoolCmd {
     /// NAS pacing's bounds, each `<number>|off` (jobrt::budget::nas::KNOBS: `nas-step`,
     /// `nas-small`, `nas-decrease`, `nas-floor-hours`, `nas-slow`, `nas-near`, `nas-grow-seconds`,
     /// `nas-read-seconds`, `nas-span-seconds`, `nas-restore-minutes`, `nas-lone-minutes`,
-    /// `nas-lone-most-minutes`, `nas-young-spans`; the lead takes each at its next reading)
+    /// `nas-lone-most-minutes`, `nas-young-spans`), and the needs model's percentiles and windows,
+    /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
+    /// `needs-nas-pct`, `needs-runs`, `needs-off`, `needs-relearn`); the lead takes each at its next
+    /// reading
     Set {
         /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,
-        /// hold-catalog, near-slope, or one of the NAS pacing's bounds
+        /// hold-catalog, near-slope, one of the NAS pacing's bounds or one of the needs model's knobs
         name: Option<String>,
         /// Its value; off: its default (placement, hold-catalog and near-slope off)
         value: Option<String>,
@@ -394,12 +397,10 @@ pub enum PoolCmd {
         #[arg(long, value_name = "FOLDER")]
         dir: Option<PathBuf>,
     },
-    /// Each step's model of what its jobs need (agentcore::needs): its fits' errors on held-out runs
-    /// (memory, time, disk) and the steps that don't fit. Reads only
+    /// Each step's model of what its jobs need (agentcore::needs::model): its sizes' work, waits,
+    /// NAS bytes and memory per unit, its parallelism, its memory by place and its runs flagged off
+    /// their predictions. Reads only
     Needs {
-        /// The fits (the one view so far)
-        #[arg(long, required = true)]
-        fit: bool,
         /// The costs (costs.json or costs.jsonl; default: this Mac's coordinator's)
         #[arg(long, value_name = "FILE")]
         costs: Option<PathBuf>,

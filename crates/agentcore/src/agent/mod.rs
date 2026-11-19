@@ -1698,9 +1698,9 @@ pub struct Agent {
     dsm_watch: dsm::Watch,
     /// Who this agent is ("<host> <pid>").
     me: String,
-    /// What the coordinator's paces (crate::paces) are worked out from: the history's last event
-    /// read, the ten minutes they were last worked out for, and the runs they read
-    /// (crate::paces::reads) of their window.
+    /// What the coordinator's jobs' starts (crate::paces::Paces::with_starts) are worked out from:
+    /// the history's last event read, the ten minutes they were last worked out for, and the jobs
+    /// they read (crate::paces::job) of their window.
     paces_from: std::cell::RefCell<(u64, u64, Vec<crate::coord::history::Event>)>,
     /// The lead's coordinator (crate::coord), and when its contact was last kept here
     /// (coordwire::lead::save).
@@ -9019,9 +9019,9 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
-            // (Each Mac's pace at each step, from the history's runs it reads (kept here, the new
-            // events alone taken each loop, read in the shared history: no copy of it, #930): when
-            // one came, or ten minutes on, its window moved.)
+            // (Each Mac's jobs' start at each step, from the history's jobs it reads (kept here, the
+            // new events alone taken each loop, read in the shared history: no copy of it, #930):
+            // when one came, or ten minutes on, its window moved.)
             let now = now_s();
             let mut kept = self.paces_from.borrow_mut();
             let (seq, at, runs) = &mut *kept;
@@ -9031,13 +9031,13 @@ impl Agent {
             *seq = all.last().map_or(*seq, |e| e.seq.max(*seq));
             // (A run come and one gone in the same loop leave the count as it was: each is a change.)
             let had = runs.len();
-            runs.retain(|e| e.t + crate::paces::PACE_S > now);
+            runs.retain(|e| e.t + crate::paces::STARTS_S > now);
             let gone = runs.len() != had;
             let had = runs.len();
             runs.extend(new.filter(|e| crate::paces::job(e)).cloned());
             if gone || runs.len() != had || *at != now / 600 {
                 *at = now / 600;
-                c.set_paces(crate::paces::Paces::of(runs, &self.host, now), runs, now);
+                c.set_starts(runs, now);
             }
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as

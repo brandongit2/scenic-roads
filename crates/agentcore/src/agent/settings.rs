@@ -3,10 +3,10 @@
 //! NAS reserve (buildstore::room::NAS_RESERVE), batch length and overdue factor (the lead's
 //! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), the dev sweep's margin
 //! (`SWEEP_MARGIN`), and the NAS calls a process of this Mac holds past their deadline
-//! (store::deadline's cap, `set_nas_held`), and the NAS pacing's bounds (`set_pace`,
-//! jobrt::budget::nas::KNOBS). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
-//! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor|<a pacing bound>`, and the
-//! build page's
+//! (store::deadline's cap, `set_nas_held`), and the pool's knobs (`set_knob`: the NAS pacing's
+//! bounds, jobrt::budget::nas::KNOBS, and the needs model's, jobrt::needs::KNOBS). Each is set
+//! through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic room`,
+//! `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor|<a knob>`, and the build page's
 //! POST /api/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
 //! build page alone). The map server's mirror reads the room target through buildstore::room's
 //! `RoomTarget` (its reserve is the larger of the two).
@@ -245,12 +245,13 @@ fn overdue_view(home: &Path) -> serde_json::Value {
     })
 }
 
-/// Asks one of the NAS pacing's bounds (`name`, jobrt::budget::nas::KNOBS) of this Mac's agent in
+/// Asks one of the pool's knobs (`name`, jobrt::settings::bound: the NAS pacing's bounds,
+/// jobrt::budget::nas::KNOBS, or the needs model's, jobrt::needs::KNOBS) of this Mac's agent in
 /// `home`, which sends it to the lead with its next beat (as `scenic pool set <name>`): `what` a
-/// number within the bound's range, or "off" (its default again). The lead takes it at its next
+/// number within the knob's range, or "off" (its default again). The lead takes it at its next
 /// reading.
-pub fn set_pace(home: &Path, name: &str, what: &str, by: &str) -> Result<()> {
-    let k = jobrt::budget::nas::knob(name).with_context(|| format!("{name}: not one of the NAS pacing's bounds"))?;
+pub fn set_knob(home: &Path, name: &str, what: &str, by: &str) -> Result<()> {
+    let k = jobrt::settings::bound(name).with_context(|| format!("{name}: not one of the pool's knobs"))?;
     let value = match what.trim() {
         "off" => serde_json::Value::Null,
         v => v
@@ -267,13 +268,15 @@ pub fn set_pace(home: &Path, name: &str, what: &str, by: &str) -> Result<()> {
     jobrt::control::request_setting(home, &ask)
 }
 
-/// The NAS pacing's bounds as this Mac's agent last had the pool's settings from the lead (in
-/// `home`): each one's name (its key on the page: `-` as `_`), what it is, its unit, its value, its
-/// default, its range, and who set it when.
-fn pace_view(home: &Path) -> serde_json::Value {
-    let s = jobrt::control::read_pool_settings(home);
-    let now = s.as_ref().map(|s| s.nas_pace()).unwrap_or_default();
-    let all: Vec<serde_json::Value> = jobrt::budget::nas::KNOBS
+/// A family of knobs (`knobs`, its numbers now `now` of the settings `s`) as this Mac's agent
+/// last had the pool's settings from the lead: each one's name (its key on the page: `-` as `_`),
+/// what it is, its unit, its value, its default, its range, and who set it when.
+fn knob_view<T: Default>(
+    knobs: &[jobrt::settings::Knob<T>],
+    now: &T,
+    s: Option<&jobrt::settings::Settings>,
+) -> serde_json::Value {
+    let all: Vec<serde_json::Value> = knobs
         .iter()
         .map(|k| {
             let v = s.as_ref().and_then(|s| s.values.get(k.name)).filter(|v| !v.value.is_null());
@@ -282,7 +285,7 @@ fn pace_view(home: &Path) -> serde_json::Value {
                 "key": k.name.replace('-', "_"),
                 "what": k.what,
                 "unit": k.unit,
-                "value": (k.get)(&now),
+                "value": (k.get)(now),
                 "default": (k.get)(&Default::default()),
                 "least": k.least,
                 "most": k.most,
@@ -333,7 +336,8 @@ fn switch_view(home: &Path, name: &str) -> serde_json::Value {
 
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`), the
 /// pool's NAS reserve (under `root`; null while the NAS is away), and its batch length and overdue
-/// factor (as this Mac's agent last had them from the lead). Sizes in bytes, memory in MB.
+/// factor, the NAS pacing's bounds and the needs model's knobs (as this Mac's agent last had them
+/// from the lead). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
     let total_mb = jobrt::sys::memsize().map_or(0, |b| b >> 20);
     let mem = memfloor::read(home);
@@ -344,6 +348,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .filter(|_| store::deadline::cap_in(home).is_some());
+    let pool = jobrt::control::read_pool_settings(home);
     serde_json::json!({
         "in_use": {
             "cores": share::cores(sh.as_ref(), cores),
@@ -385,7 +390,8 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         "overdue": overdue_view(home),
         "hold_catalog": switch_view(home, crate::coord::asks::HOLD_CATALOG),
         "near_slope": switch_view(home, crate::coord::asks::NEAR_SLOPE),
-        "nas_pace": pace_view(home),
+        "nas_pace": knob_view(&jobrt::budget::nas::KNOBS, &pool.as_ref().map(|s| s.nas_pace()).unwrap_or_default(), pool.as_ref()),
+        "needs": knob_view(&jobrt::needs::KNOBS, &pool.as_ref().map(|s| s.needs()).unwrap_or_default(), pool.as_ref()),
     })
 }
 

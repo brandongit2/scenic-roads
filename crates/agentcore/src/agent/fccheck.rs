@@ -401,9 +401,9 @@ pub fn replay(
         repace(the_plan, inp, events);
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
         let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
-        let speed = |w: &str, step: &str| {
+        let speed = |w: &str| {
             if paces.known() {
-                1.0 / paces.get(w, step)
+                1.0 / paces.get(w)
             } else {
                 speeds.get(w).copied().unwrap_or(1.0)
             }
@@ -501,13 +501,12 @@ impl Rooms {
     }
 }
 
-/// Record input `inp` as code 4 makes it (task #926): each Mac's pace at each step from `events`
-/// to its time (crate::paces, against its first lane's Mac, the lead), the scheduler's; and its
-/// shared steps' costs made again by it (`recost`).
+/// Record input `inp` as code 4 makes it (task #926): its scheduler's Macs' times as recorded,
+/// each Mac's jobs' start at each step from `events` to its time (crate::paces::Paces::with_starts);
+/// and its shared steps' costs made again by it (`recost`).
 fn repace(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecast::Input, events: &[Event]) {
-    let Some(lead) = inp.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())) else { return };
     let Some(st) = inp.sched.as_mut() else { return };
-    st.paces = crate::paces::Paces::of(events, &lead, inp.now).with_starts(the_plan, events, &st.costs, inp.now);
+    st.paces = st.paces.clone().with_starts(the_plan, events, &st.costs, inp.now);
     recost(the_plan, inp);
 }
 
@@ -523,7 +522,7 @@ pub fn recost(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecas
     let Some(st) = inp.sched.as_ref() else { return };
     let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
     let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
-    let at = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &st.paces, &speed);
+    let at = |c: &crate::coord::Cost, _: &str| forecast::at_lead(c, &st.paces, &speed);
     let sums = forecast::step_sums(the_plan, &st.costs, &at);
     let book = crate::needs::Book::new(the_plan, &st.costs);
     let held: std::collections::BTreeSet<&str> =
@@ -617,12 +616,7 @@ pub fn batches(
         }
         let Ok(r) = i.record() else { continue };
         let Some(mut st) = r.input.sched.clone() else { continue };
-        let lead = if st.lead_name.is_empty() {
-            r.input.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).unwrap_or_default()
-        } else {
-            st.lead_name.clone()
-        };
-        st.paces = crate::paces::Paces::of(events, &lead, i.at).with_starts(the_plan, events, &st.costs, i.at);
+        st.paces = st.paces.clone().with_starts(the_plan, events, &st.costs, i.at);
         let s = Sched::from_state(
             the_plan,
             &st,

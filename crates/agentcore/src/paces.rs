@@ -1,41 +1,20 @@
-//! Each Mac's pace at each step (task #926; docs/pool.md §7.7, Each Mac's pace): how long a target
-//! of the step takes it against the lead, from the build's history. The cost book
-//! (crate::needs::Book) puts every run's time and NAS rate at the lead's pace by it before a step's
-//! model is made of them, and a prediction for a Mac is the model at that Mac's pace; the forecast
-//! (crate::agent::forecast, code 4) puts its costs at the lead's pace and runs each lane at its
-//! Mac's pace at each step the same way.
+//! Each Mac's time against the lead's (docs/pool.md §7.7, Each Mac's speed): from their speeds
+//! (jobrt::timings::Speeds, task #1418: the instructions each Mac's performance cores retire a
+//! second of their CPU, measured on the pool's clean runs), so a run's CPU on one Mac is the lead's
+//! CPU seconds by the two Macs' speeds, and a prediction for a Mac is its needs at its speed
+//! (crate::needs, task #1416). The cost book reads every run's CPU at the lead's speed by it, the
+//! forecast (crate::agent::forecast) runs each lane at its Mac's time, and placement draws a Mac by
+//! its speed. A Mac whose speed isn't measured is at the lead's.
 //!
-//! Measured on the same targets: a pair is a target of a step done well as a job of its own on a
-//! Mac and on the lead, the way the step ran the same (`Event::v`) and both in the last `PACE_S`;
-//! its log ratio the Mac's time over the lead's (the lead's run nearest in time). A Mac's pace at a
-//! step is the median of its pairs' ratios, drawn toward its pace over its steps (the median of its
-//! steps' medians, drawn toward the lead's) by `PRIOR_PAIRS` pairs' weight: `(n·median + K·prior)
-//! / (n + K)`. A Mac with no pair is the lead's pace (1), everywhere.
-//!
-//! Why so: the same target on both takes the target's work and the job's size out (a job of one
-//! target each side), so what the scheduler gave a Mac (its heavier tiles, its smaller jobs, which
-//! a pace scaling its jobs' sizes would feed back into) can't move its pace. Per-target means over
-//! all of a Mac's jobs did: the M4's terrain-deep read 4.49 times the mini's over a day, 1.26 over
-//! a week, where its same targets took 1.39 day after day. Load from outside the pool still shows
-//! (a pair's runs are what they were); the forecast's hold on each Mac (`held_back`) and its steps of
-//! late (`took`) carry what held a Mac back lately.
-//!
-//! `PACE_S` and `PRIOR_PAIRS` were picked by a held-out test (docs/pool.md §7.7): over the
-//! history of 8 Oct to 4 Nov (1,973 pairs), each day's pairs scored against the paces of the window
-//! before it, the windows the lead's history holds (1 to 7 days) and weights 0 to 30: 5 days and
-//! 10 pairs erred least (mean |log error| 0.834 against 0.932 with no pace; per-target means of
-//! every job instead, 0.920 against 1.000).
+//! Beside it, each Mac's jobs' start at each step (`with_starts`, task #927): the time a job takes
+//! besides its targets, from the build's history.
 
 use crate::coord::history::Event;
-use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The history a pace is read from (s).
-pub const PACE_S: u64 = 5 * 86_400;
-/// How many pairs' weight a Mac's pace over its steps has against its pairs at a step (and against
-/// the lead's pace, for its pace over its steps, by its steps).
-pub const PRIOR_PAIRS: f64 = 10.0;
+/// The history a Mac's jobs' start is read from (s): the week the lead's history keeps.
+pub const STARTS_S: u64 = crate::coord::history::KEEP_S;
 
 /// The Mac a worker is on: a slot's worker (`<Mac> #k`) and an old second slot's
 /// (`<Mac> (second job)`) its Mac's.
@@ -44,38 +23,32 @@ pub fn mac_of(worker: &str) -> &str {
     w.strip_suffix(" (second job)").unwrap_or(w)
 }
 
-/// Each Mac's pace against the lead's (`of`): its time a target over the lead's (2: half its speed).
+/// Each Mac's time against the lead's (`of`): its time for the same work over the lead's (2: half
+/// its speed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Paces {
-    /// The lead's Mac: 1 at every step. Empty: no paces worked out (`known`).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// The lead's Mac: 1. Empty: none worked out (`known`).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub lead: String,
-    /// Mac → step → its pace at the step.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub steps: BTreeMap<String, BTreeMap<String, f64>>,
-    /// Mac → its pace over its steps.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// The lead's speed (billions of instructions a second of a performance core's CPU; 0: not
+    /// measured): what a run's instructions are in the lead's CPU seconds by.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub lead_ginsn_s: f64,
+    /// Mac → its time against the lead's, the lead's speed over its own.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub macs: BTreeMap<String, f64>,
     /// Mac → step → its jobs' time past their targets' (s; `with_starts`, task #927).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub starts: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
-/// A run of a target, as a job of its own done well: when, its Mac, its time, its step's way.
-struct Run<'a> {
-    t: u64,
-    mac: &'a str,
-    secs: f64,
-    v: Option<u32>,
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
-/// Whether event `e` is a run a pace reads: a job of one target done well (its end or done).
-pub fn reads(e: &Event) -> bool {
-    job(e) && e.targets.len() == 1
-}
-
-/// Whether event `e` is a job done well, its worker, step, targets and time said: what a pace
-/// (`reads`) and a job's start (`Paces::with_starts`) are read from.
+/// Whether event `e` is a job done well, its worker, step, targets and time said: what a job's
+/// start (`Paces::with_starts`) is read from.
 pub fn job(e: &Event) -> bool {
     matches!(e.kind.as_str(), "done" | "end")
         && e.ok == Some(true)
@@ -86,51 +59,26 @@ pub fn job(e: &Event) -> bool {
 }
 
 impl Paces {
-    /// The paces at `now` of every Mac against `lead`'s (a worker of it, or its Mac), from `events`.
-    pub fn of(events: &[Event], lead: &str, now: u64) -> Paces {
+    /// Each Mac's time against `lead`'s (a worker of it, or its Mac) by their speeds `speeds`: on
+    /// their performance cores, where most of a job's work runs (a Mac measured on its efficiency
+    /// cores alone, by those). A Mac not measured, or a lead not measured, at the lead's.
+    pub fn of(speeds: &jobrt::timings::Speeds, lead: &str) -> Paces {
         let lead = mac_of(lead);
-        let from = now.saturating_sub(PACE_S);
-        // ((step, target) → its runs.)
-        let mut runs: BTreeMap<(&str, &str), Vec<Run>> = BTreeMap::new();
-        for e in events.iter().filter(|e| e.t > from && e.t <= now && reads(e)) {
-            let (Some(w), Some(step), Some(secs), [target]) =
-                (e.worker.as_deref(), e.step.as_deref(), e.secs, &e.targets[..])
-            else {
-                continue;
-            };
-            runs.entry((step, target)).or_default().push(Run { t: e.t, mac: mac_of(w), secs: secs.max(1.0), v: e.v });
-        }
-        // ((Mac, step) → its pairs' log ratios.)
-        let mut pairs: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
-        for ((step, _), rs) in &runs {
-            for r in rs.iter().filter(|r| r.mac != lead) {
-                let l = rs.iter().filter(|l| l.mac == lead && l.v == r.v).min_by_key(|l| l.t.abs_diff(r.t));
-                if let Some(l) = l {
-                    pairs.entry((r.mac, step)).or_default().push((r.secs / l.secs).dln());
+        let speed = |m: &jobrt::timings::MacSpeed| m.p.as_ref().or(m.e.as_ref()).map(|k| k.ginsn_s).filter(|&s| s > 0.0);
+        let at = speeds.macs.get(lead).and_then(speed);
+        let mut out = Paces { lead: lead.to_string(), lead_ginsn_s: at.unwrap_or(0.0), ..Default::default() };
+        if let Some(l) = at {
+            for (m, s) in &speeds.macs {
+                if let Some(s) = speed(s).filter(|_| m != lead) {
+                    out.macs.insert(m.clone(), round(l / s));
                 }
             }
-        }
-        let mut out = Paces { lead: lead.to_string(), ..Default::default() };
-        let medians: Vec<((&str, &str), f64, usize)> =
-            pairs.into_iter().map(|(k, mut v)| (k, median(&mut v), v.len())).collect();
-        let mut macs: Vec<&str> = medians.iter().map(|m| m.0 .0).collect();
-        macs.dedup();
-        for mac in macs {
-            let mut steps: Vec<f64> = medians.iter().filter(|m| m.0 .0 == mac).map(|m| m.1).collect();
-            let k = steps.len() as f64;
-            let prior = median(&mut steps) * k / (k + PRIOR_PAIRS);
-            out.macs.insert(mac.to_string(), round(prior.dexp()));
-            let each = medians.iter().filter(|m| m.0 .0 == mac).map(|&((_, step), m, n)| {
-                let n = n as f64;
-                (step.to_string(), round(((n * m + PRIOR_PAIRS * prior) / (n + PRIOR_PAIRS)).dexp()))
-            });
-            out.steps.insert(mac.to_string(), each.collect());
         }
         out
     }
 
     /// With each Mac's jobs' start at each step (task #927): the median, over its jobs of the step
-    /// done well in the last `PACE_S` at `now` (`job`), of a job's time past its targets' times summed,
+    /// done well in the last `STARTS_S` at `now` (`job`), of a job's time past its targets' times summed,
     /// each target's as its cost record `costs` says (crate::coord::Cost: its run's own time) where
     /// that run was on the job's Mac, the way the job ran (`Event::v`), and that the step runs now
     /// (crate::coord::cost_version), a job one of whose targets' record isn't so, or that doesn't say
@@ -146,7 +94,7 @@ impl Paces {
         costs: &BTreeMap<String, crate::coord::Cost>,
         now: u64,
     ) -> Paces {
-        let from = now.saturating_sub(PACE_S);
+        let from = now.saturating_sub(STARTS_S);
         let mut by: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
         for e in events.iter().filter(|e| e.t > from && e.t <= now && job(e)) {
             let (Some(w), Some(step), Some(secs)) = (e.worker.as_deref(), e.step.as_deref(), e.secs) else { continue };
@@ -182,14 +130,21 @@ impl Paces {
         !self.lead.is_empty()
     }
 
-    /// `worker`'s Mac's pace at `step`: 1 on the lead, its pace at the step, else over its steps,
-    /// else (no pair of it) the lead's, 1.
-    pub fn get(&self, worker: &str, step: &str) -> f64 {
+    /// Whether `worker`'s Mac's time is measured: the lead's, or a Mac whose speed and the lead's
+    /// are.
+    pub fn knows(&self, worker: &str) -> bool {
         let mac = mac_of(worker);
-        if mac == self.lead {
-            return 1.0;
-        }
-        self.steps.get(mac).and_then(|s| s.get(step)).or_else(|| self.macs.get(mac)).copied().unwrap_or(1.0)
+        (self.known() && mac == self.lead) || self.macs.contains_key(mac)
+    }
+
+    /// `worker`'s Mac's time against the lead's: 1 on the lead or a Mac not measured.
+    pub fn get(&self, worker: &str) -> f64 {
+        self.macs.get(mac_of(worker)).copied().unwrap_or(1.0)
+    }
+
+    /// The lead's speed, where measured.
+    pub fn lead_ginsn_s(&self) -> Option<f64> {
+        (self.lead_ginsn_s > 0.0).then_some(self.lead_ginsn_s)
     }
 }
 
@@ -236,59 +191,27 @@ mod tests {
         assert_eq!(mac_of("m4"), "m4");
     }
 
-    /// Each Mac's pace at a step from the same targets run on it and on the lead (its slots its
-    /// own), drawn toward its pace over its steps; a target run on one side alone, or a job of
-    /// many, says nothing; a Mac with no pair is the lead's pace.
+    /// Each Mac's time against the lead's is the lead's speed over its own, on their performance
+    /// cores; a Mac not measured, or with the lead not measured, at the lead's.
     #[test]
-    fn each_macs_pace_from_the_same_targets() {
-        let mut ev = Vec::new();
-        for k in 0..30 {
-            let t = format!("10/{k}/0");
-            ev.push(job(1000 + k, "mini #2", "terrain-deep", &t, 100.0 + k as f64));
-            ev.push(job(
-                2000 + k,
-                if k % 2 == 0 { "m4" } else { "m4 #2" },
-                "terrain-deep",
-                &t,
-                2.0 * (100.0 + k as f64),
-            ));
-        }
-        // (One pack pair at four times; a heavy pack the m4 alone ran; a job of two targets.)
-        ev.push(job(1100, "mini", "pack", "6/1/1", 10.0));
-        ev.push(job(1200, "m4", "pack", "6/1/1", 40.0));
-        ev.push(job(1300, "m4", "pack", "6/9/9", 4000.0));
-        ev.push(Event { targets: vec!["6/2/2".into(), "6/3/3".into()], ..job(1400, "m4", "pack", "", 4000.0) });
-        ev.push(Event { targets: vec!["6/2/2".into(), "6/3/3".into()], ..job(1500, "mini", "pack", "", 10.0) });
-        let p = Paces::of(&ev, "mini", 5000);
-        assert_eq!(p.get("mini #4", "pack"), 1.0, "the lead's slots: the lead's");
-        // (Its prior: the median of its steps' medians (ln 2, ln 4), drawn to 0 by its 2 steps.)
-        let prior = ((2f64.dln() + 4f64.dln()) / 2.0 * 2.0 / 12.0).dexp();
-        assert!((p.macs["m4"] - prior).abs() < 1e-3, "{} against {prior}", p.macs["m4"]);
-        let td = p.get("m4", "terrain-deep");
-        let want = ((30.0 * 2f64.dln() + 10.0 * prior.dln()) / 40.0).dexp();
-        assert!((td - want).abs() < 1e-3, "{td} against {want}");
-        let pack = p.get("m4 #2", "pack");
-        let want = ((4f64.dln() + 10.0 * prior.dln()) / 11.0).dexp();
-        assert!((pack - want).abs() < 1e-3, "one pair: near its prior, {pack} against {want}");
-        assert_eq!(p.get("m4", "unit"), p.macs["m4"], "a step without a pair: its pace over its steps");
-        assert_eq!(p.get("m1", "pack"), 1.0, "no pair: the lead's");
-        assert!(p.known() && !Paces::default().known());
-        // (Out of the window: nothing.)
-        let late = Paces::of(&ev, "mini", 1000 + PACE_S + 2000);
-        assert!(late.macs.is_empty() && late.get("m4", "pack") == 1.0);
-    }
-
-    /// Two runs compare only when their step ran the same way (`Event::v`): a run of before a
-    /// change to the step pairs with none of after it.
-    #[test]
-    fn runs_of_another_way_of_the_step_dont_pair() {
-        let ev = vec![
-            job(10, "mini", "depth", "8/1/1", 10.0),
-            Event { v: Some(2), ..job(20, "m4", "depth", "8/1/1", 100.0) },
-        ];
-        assert!(Paces::of(&ev, "mini", 100).macs.is_empty());
-        let ev = vec![job(10, "mini", "depth", "8/1/1", 10.0), job(20, "m4", "depth", "8/1/1", 30.0)];
-        assert!(Paces::of(&ev, "mini", 100).get("m4", "depth") > 1.0);
+    fn each_macs_time_is_the_leads_speed_over_its_own() {
+        let k = |g: f64| Some(jobrt::timings::KindSpeed { ginsn_s: g, steps: vec![], runs: 1, with: vec![] });
+        let m = |p: Option<f64>, e: Option<f64>| jobrt::timings::MacSpeed { p: p.and_then(k), e: e.and_then(k) };
+        let speeds = jobrt::timings::Speeds {
+            macs: [
+                ("mini".to_string(), m(Some(15.0), Some(5.0))),
+                ("m1".to_string(), m(Some(7.5), Some(3.0))),
+                ("m9".to_string(), m(None, Some(5.0))),
+            ]
+            .into(),
+        };
+        let p = Paces::of(&speeds, "mini #2");
+        assert_eq!((p.get("mini #3"), p.get("m1 #2"), p.get("m9"), p.get("m4")), (1.0, 2.0, 3.0, 1.0));
+        assert!(p.knows("mini") && p.knows("m1") && !p.knows("m4"));
+        assert_eq!(p.lead_ginsn_s(), Some(15.0));
+        let none = Paces::of(&jobrt::timings::Speeds::default(), "mini");
+        assert!(none.known() && none.macs.is_empty() && none.lead_ginsn_s().is_none() && !none.knows("m1"));
+        assert!(!Paces::default().known());
     }
 
     /// Task #927: a Mac's jobs' start at a step is the median of its jobs' time past their
@@ -334,7 +257,7 @@ mod tests {
         assert_eq!(p.start("m1", "pack"), 0.0);
         assert!(
             Paces::default()
-                .with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100 + PACE_S + 100)
+                .with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100 + STARTS_S + 100)
                 .starts
                 .is_empty(),
             "out of the window"

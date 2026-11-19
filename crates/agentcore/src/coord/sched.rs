@@ -219,7 +219,7 @@ pub struct Sched {
     /// Placement by how crucial a job is (docs/pool.md §7.2:
     /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
     /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
-    /// targets drawn among those asking by their paces (crate::paces), the tasks by their measured
+    /// targets drawn among those asking by their Macs' speeds (crate::paces), the tasks by their measured
     /// pace at the kind, a task offered ahead given
     /// to a slower worker its head start covers. None: as before.
     pub placement: Option<(crate::agent::placement::Placement, Instant)>,
@@ -265,10 +265,16 @@ pub struct Sched {
     /// What's worked out of each leased job (`LeaseKept`), by lease, as the measures stood (`rev`),
     /// and as offered (`set_offers` clears it).
     pub kept_leases: Mutex<(u64, FxMap<u64, Vec<LeaseKept>>)>,
-    /// Each Mac's pace at each step against the lead's (crate::paces, task #926; set through
-    /// `set_paces`, which moves `needs_rev`): the measures' times and NAS rates are read at the
+    /// Each Mac's time against the lead's, by their speeds (crate::paces; set through `set_paces`,
+    /// which moves `needs_rev`), and each Mac's jobs' start at each step: the measures' CPU is read
     /// lead's pace by it, and a worker's at its own. Empty: as measured.
     pub paces: crate::paces::Paces,
+    /// What the lead's timings records say of each job run (crate::needs::Records: the model learns
+    /// only from runs whose record, where kept, is clean; set through `set_records`), and the needs
+    /// model's percentiles and windows as the pool's settings say (`set_tuning`): each moves
+    /// `needs_rev`.
+    pub records: crate::needs::Records,
+    pub tuning: jobrt::needs::Tuning,
     /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
     /// `JOB_S`): `batch_len`.
     pub batch_s: u64,
@@ -298,7 +304,7 @@ pub struct LeaseKept {
 pub type Measures = FxMap<String, FxMap<String, (u64, Option<Measured>)>>;
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
-/// steps' 90th percentiles kept with its models: crate::needs::Book::nas_prior).
+/// steps' NAS bytes per unit kept with its models: crate::needs::model).
 pub(crate) struct NasWeigher<'a> {
     pub(super) limits: jobrt::budget::nas::Limits,
     book: crate::needs::Book<'a>,
@@ -894,6 +900,7 @@ impl Sched {
     pub(super) fn book(&self) -> crate::needs::Book<'_> {
         crate::needs::Book::kept(self.the_plan, &self.costs, &self.floors, &self.disks, &self.needs, self.rev())
             .paced(&self.paces)
+            .learned(&self.records, self.tuning)
     }
 
     /// Where the measures stand: it moves with each cost, floor or disk floor taken or cleared
@@ -1009,10 +1016,27 @@ impl Sched {
         (mem_mb, m)
     }
 
-    /// Each Mac's pace at each step now (`paces`): the models made again when they changed.
+    /// Each Mac's time and jobs' start now (`paces`): the models made again when they changed.
     pub fn set_paces(&mut self, p: crate::paces::Paces) {
         if p != self.paces {
             self.paces = p;
+            self.needs_rev += 1;
+        }
+    }
+
+    /// The jobs' records now (`records`): the models made again when they changed.
+    pub fn set_records(&mut self, r: crate::needs::Records) {
+        if r != self.records {
+            self.records = r;
+            self.needs_rev += 1;
+        }
+    }
+
+    /// The needs model's percentiles and windows now (`tuning`): the models made again when they
+    /// changed.
+    pub fn set_tuning(&mut self, t: jobrt::needs::Tuning) {
+        if t != self.tuning {
+            self.tuning = t;
             self.needs_rev += 1;
         }
     }
@@ -2737,12 +2761,12 @@ impl Sched {
     }
 
     /// Worker `n`'s weight in placement's draw for a target of `step`, as its last ask `x` says:
-    /// its Mac's speed at the step, the inverse of its pace there (`paces`, crate::paces::Paces::get:
-    /// at the step, else over its steps, else the lead's), `CACHE_PREFER` times that where its Mac
+    /// its Mac's speed against the lead's, the inverse of its time (`paces`, crate::paces::Paces::get;
+    /// not measured, the lead's), `CACHE_PREFER` times that where its Mac
     /// holds the step's shared cache whole (`holds_cache`).
     pub(super) fn draw_weight(&self, step: &str, n: &str, x: &Ask) -> f64 {
         let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
-        cache / self.paces.get(n, step)
+        cache / self.paces.get(n)
     }
 
     /// Whether the Mac asking `a` holds the shared cache a job of `step` reads whole (its ask's
@@ -2787,8 +2811,12 @@ pub struct State {
     pub quiet_since: Vec<(String, u64)>,
     /// (worker, step, its last target).
     pub last: Vec<(String, String, String)>,
-    /// Each Mac's pace at each step (`Sched::paces`; code 4 on: a record before it has none).
+    /// Each Mac's time and jobs' start (`Sched::paces`; a record before them has none), the jobs'
+    /// records and the needs model's tuning (`Sched::records`, `Sched::tuning`; task #1416: a
+    /// record before them has none, and the defaults).
     pub paces: crate::paces::Paces,
+    pub records: crate::needs::Records,
+    pub tuning: jobrt::needs::Tuning,
     /// The batch length set (`Sched::batch_s`, task #927: 0, not set or a record before it).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub batch_s: u64,
@@ -2920,6 +2948,8 @@ impl Sched {
                 .collect(),
             last: self.last.iter().map(|((w, s), t)| (w.clone(), s.clone(), t.clone())).collect(),
             paces: self.paces.clone(),
+            records: self.records.clone(),
+            tuning: self.tuning,
             batch_s: self.batch_s,
         }
     }
@@ -3007,6 +3037,8 @@ impl Sched {
             packing: Default::default(),
             provisional_at: Default::default(),
             paces: s.paces.clone(),
+            records: s.records.clone(),
+            tuning: s.tuning,
             batch_s: s.batch_s,
         };
         sched.set_offers(s.offers.clone());

@@ -344,7 +344,7 @@ pub fn step_pace(
     events: &[crate::coord::history::Event],
     now: u64,
     noted: &Noted,
-    speed: &dyn Fn(&str, &str) -> f64,
+    speed: &dyn Fn(&str) -> f64,
 ) -> BTreeMap<String, f64> {
     let from = now.saturating_sub(STEP_PACE_S);
     let mut sums: BTreeMap<&str, (f64, f64, usize)> = BTreeMap::new();
@@ -358,7 +358,7 @@ pub fn step_pace(
             continue;
         }
         let s = sums.entry(step).or_default();
-        (s.0, s.1, s.2) = (s.0 + secs * speed(w, step), s.1 + cost, s.2 + 1);
+        (s.0, s.1, s.2) = (s.0 + secs * speed(w), s.1 + cost, s.2 + 1);
     }
     sums.into_iter()
         .filter(|(_, s)| s.2 >= STEP_PACE_JOBS)
@@ -559,20 +559,19 @@ pub fn busy_s(eta: f64, left: f64) -> f64 {
     eta.max(left).max(60.0)
 }
 
-/// A measured cost `c` of `step` at the lead's pace (s): its time over its worker's Mac's pace at
-/// the step (crate::paces, code 4: a Mac without one the lead's; a cost of no worker as it is);
+/// A measured cost `c` at the lead's pace (s): its time over its worker's Mac's time against the
+/// lead's (crate::paces: a Mac not measured the lead's; a cost of no worker as it is);
 /// with no paces worked out (no coordinator, a record before code 4), times its worker's `speed`
 /// (the forecast's, against the lead's: `speeds`).
 pub fn at_lead(
     c: &crate::coord::Cost,
-    step: &str,
     paces: &crate::paces::Paces,
     speed: &dyn Fn(Option<&str>) -> f64,
 ) -> f64 {
     if !paces.known() {
         return c.secs as f64 * speed(c.worker.as_deref());
     }
-    c.secs as f64 / c.worker.as_deref().map_or(1.0, |w| paces.get(w, step))
+    c.secs as f64 / c.worker.as_deref().map_or(1.0, |w| paces.get(w))
 }
 
 /// Each step's measured costs at the lead's pace (`at`), weighed and summed, and their weights
@@ -788,12 +787,12 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
 }
 
 impl Input<'_> {
-    /// The time (s) an item of `step` taking `secs` at the lead's pace takes lane `m`: at its
-    /// Mac's pace at the step (code 4: the scheduler's, `State::paces`; a Mac without one the
-    /// lead's); with no paces worked out (no scheduler, a record before code 4), at its speed.
-    pub fn lane_secs(&self, m: &Machine, step: &str, secs: f64) -> f64 {
+    /// The time (s) an item taking `secs` at the lead's pace takes lane `m`: at its Mac's time
+    /// against the lead's (the scheduler's, `State::paces`, by the Macs' speeds; a Mac not measured
+    /// the lead's); with no paces worked out (no scheduler, a record before them), at its speed.
+    pub fn lane_secs(&self, m: &Machine, secs: f64) -> f64 {
         match self.sched.as_ref().filter(|s| s.paces.known()) {
-            Some(s) => secs * s.paces.get(&mac_of(m), step),
+            Some(s) => secs * s.paces.get(&mac_of(m)),
             None => secs / m.speed.max(0.01),
         }
     }
@@ -2080,7 +2079,7 @@ fn run_on(
             let mut start = t;
             for &i in &ids {
                 let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
-                let end = start + inp.lane_secs(mac, &items[i].step, items[i].cost.secs) + extra;
+                let end = start + inp.lane_secs(mac, items[i].cost.secs) + extra;
                 (items[i].by, items[i].from, items[i].end, items[i].job) = (Some(k), start, end, jobs);
                 start = end;
                 inflight.push(i);
@@ -3787,29 +3786,27 @@ mod tests {
         Machine { lead_steps: false, ..mac(name, 1.0) }
     }
 
-    /// Task #926 (code 4): a lane takes an item at its Mac's pace at the item's step (the
-    /// scheduler's paces), its slots alike; a Mac the paces don't know, at the lead's; with no
-    /// paces worked out, at its speed.
+    /// A lane takes an item at its Mac's time against the lead's (the scheduler's paces, by the
+    /// Macs' speeds), its slots alike; a Mac the paces don't know, at the lead's; with no paces
+    /// worked out, at its speed.
     #[test]
-    fn a_lane_runs_at_its_macs_pace_at_the_step() {
+    fn a_lane_runs_at_its_macs_time() {
         let regions = [region("a", &[], &["u1"], &[])];
         let m1 = Machine { mac: Some("m1".into()), ..mac("m1 #2", 0.5) };
         let m2 = mac("m2", 0.25);
         let mut inp = input(&regions, vec![mac("m4", 1.0), m1.clone(), m2.clone()], &cost);
-        assert_eq!(inp.lane_secs(&m1, "unit", 100.0), 200.0, "no paces: its speed");
+        assert_eq!(inp.lane_secs(&m1, 100.0), 200.0, "no paces: its speed");
         inp.sched = Some(State {
             paces: crate::paces::Paces {
                 lead: "m4".into(),
-                steps: [("m1".to_string(), [("unit".to_string(), 3.0)].into())].into(),
                 macs: [("m1".to_string(), 1.5)].into(),
                 ..Default::default()
             },
             ..Default::default()
         });
-        assert_eq!(inp.lane_secs(&m1, "unit", 100.0), 300.0, "its Mac's pace at the step");
-        assert_eq!(inp.lane_secs(&m1, "pack", 100.0), 150.0, "over its steps");
-        assert_eq!(inp.lane_secs(&inp.machines[0].clone(), "unit", 100.0), 100.0, "the lead's");
-        assert_eq!(inp.lane_secs(&m2, "unit", 100.0), 100.0, "no pace of it: the lead's, as everywhere");
+        assert_eq!(inp.lane_secs(&m1, 100.0), 150.0, "its Mac's time");
+        assert_eq!(inp.lane_secs(&inp.machines[0].clone(), 100.0), 100.0, "the lead's");
+        assert_eq!(inp.lane_secs(&m2, 100.0), 100.0, "not measured: the lead's, as everywhere");
     }
 
     #[test]
@@ -4343,7 +4340,7 @@ mod tests {
             job("m4", now - 50, "terrain-hi", &["6/7/7"], 6000.0),
             job("m4", now - 50, "unit", &["6/9/9"], 30.0),
         ];
-        let speed = |w: &str, _: &str| if w == "m1" { 0.5 } else { 1.0 };
+        let speed = |w: &str| if w == "m1" { 0.5 } else { 1.0 };
         let p = step_pace(&events, now, &noted, &speed);
         assert_eq!(p, [("terrain-hi".to_string(), 0.5)].into());
         // The run takes it: the terrain at 300 s a target.

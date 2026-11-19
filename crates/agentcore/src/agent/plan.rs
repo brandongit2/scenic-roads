@@ -2374,17 +2374,17 @@ impl Planner {
         speeds.extend(forecast::speeds(self.o.the_plan, &events, &self.host, &own_names, 0.8));
         // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&str>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
-        // (Each Mac's pace at each step, the coordinator's (crate::paces, task #926): a time put at
-        // the lead's pace by its Mac's pace at its step; a Mac it doesn't know, by its speed.)
+        // (Each Mac's time against the lead's, the coordinator's (crate::paces, by the Macs' speeds): a
+        // time put at the lead's pace by it; a Mac it doesn't know, by its speed.)
         let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
-        let at_lead = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &paces, &pace);
+        let at_lead = |c: &crate::coord::Cost| forecast::at_lead(c, &paces, &pace);
         // Each shared step's mean of the targets measured (a z6 tile's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
         // (Each measured the way its step runs now: crate::coord::cost_version. A z3 tile's tree
         // cover isn't a z6 tile's.)
         // (A step whose time is the work its target finds, crate::needs::PER_WORK, weighed by it: a
         // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
-        let sums = forecast::step_sums(self.o.the_plan, &costs, &at_lead);
+        let sums = forecast::step_sums(self.o.the_plan, &costs, &|c, _| at_lead(c));
         // (Its time and where it comes from, `forecast::Basis`: the mean of its targets measured, else
         // its jobs' here, else the guess.)
         let per = |step: &str| -> (f64, forecast::Basis) {
@@ -2397,15 +2397,12 @@ impl Planner {
             }
         };
         // (What is left of each target whose run stopped short, at the pace it ran at.)
-        let stopped = forecast::partials(self.o.the_plan, &events, &|secs, worker, step| {
-            at_lead(
-                &crate::coord::Cost {
-                    secs: secs.round() as u64,
-                    worker: worker.map(str::to_string),
-                    ..Default::default()
-                },
-                step,
-            )
+        let stopped = forecast::partials(self.o.the_plan, &events, &|secs, worker, _| {
+            at_lead(&crate::coord::Cost {
+                secs: secs.round() as u64,
+                worker: worker.map(str::to_string),
+                ..Default::default()
+            })
         });
         let partial = |step: &str, t: &str| stopped.get(&(step.to_string(), t.to_string())).copied();
         // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
@@ -2413,7 +2410,7 @@ impl Planner {
         let book = crate::needs::Book::new(self.o.the_plan, &costs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost =
-            |step: &str, t: &str| forecast::target_cost(&book, step, t, &at_lead, &partial, &per, need_mb(step, t));
+            |step: &str, t: &str| forecast::target_cost(&book, step, t, &|c, _| at_lead(c), &partial, &per, need_mb(step, t));
         // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
         // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
         let drop_cost = |step: &str, t: &str| -> Cost {
@@ -2610,11 +2607,11 @@ impl Planner {
                 let name = slot_worker(&h.host, k);
                 let (speed, measured) =
                     speeds.get(&name).or_else(|| speeds.get(&h.host)).copied().unwrap_or((0.5, false));
-                // (A time at the lead's pace at its Mac's at the step (crate::paces: a Mac without
-                // one the lead's), else at its speed.)
-                let at_its = |step: &str, secs: f64| {
+                // (A time at the lead's pace at its Mac's (crate::paces: a Mac not measured the
+                // lead's), else at its speed.)
+                let at_its = |secs: f64| {
                     if paces.known() {
-                        secs * paces.get(&name, step)
+                        secs * paces.get(&name)
                     } else {
                         secs / speed.max(0.1)
                     }
@@ -2625,7 +2622,7 @@ impl Planner {
                     .iter()
                     .filter(|l| l.0 == name)
                     .map(|(_, step, ts, age, _)| {
-                        at_its(step, ts.iter().map(|t| cost(step, t).secs).sum::<f64>()) - *age as f64
+                        at_its(ts.iter().map(|t| cost(step, t).secs).sum::<f64>()) - *age as f64
                     })
                     .fold(0.0, f64::max);
                 let job = jobs.iter().find(|j| j.slot == Some(k));
@@ -2634,7 +2631,7 @@ impl Planner {
                     j.progress
                         .as_ref()
                         .and_then(|p| p.eta_s)
-                        .map_or_else(|| at_its(&step_of(&j.id), per(&step_of(&j.id)).0), |e| e as f64)
+                        .map_or_else(|| at_its(per(&step_of(&j.id)).0), |e| e as f64)
                 });
                 let busy_s = eta.map_or(0.0, |e| forecast::busy_s(e, lease_left));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
@@ -2721,9 +2718,9 @@ impl Planner {
         // targets, at the lead's pace by their worker's speed.)
         let mut noted = self.noted.borrow_mut();
         noted.note(self.o.the_plan, &inp);
-        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w, step| {
+        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w| {
             if paces.known() {
-                1.0 / paces.get(w, step)
+                1.0 / paces.get(w)
             } else {
                 pace(Some(w))
             }
