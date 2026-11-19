@@ -1168,14 +1168,13 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   until their TTL runs out. The room left is never more than what the Mac's jobs hold now leaves
   (the ask's memory less `Capacity::held_mb`, its memory guard's last sample): a cold start holding
   past its provisional need counts at what it holds. **Room held for a big job** (`Sched::pack`,
-  task #965): the first offer in plan order refused for its room alone (memory, disk or cores),
-  one that would fit the Mac once its jobs end, has that room held, so small jobs later in the
-  plan filling each slot as it opens don't starve it. The job held for is the one the offer would
-  be granted with the Mac's whole room (`Sched::room_wait`): a step's pick there, placement on
-  the longest target drawn to the Mac (task #1479: by plan order the mini held room for
-  terrain-deep's shortest target, 1.8 GB, which placement takes last, while its 4.8 GB long pole
-  waited 2.4 hours behind the step's smaller targets); the step's smaller targets that fit the
-  room left go only as a later job would. While it waits, a later job still goes
+  task #965): the first offer tried refused for its room alone (memory, disk or cores), one that
+  would fit the Mac once its jobs end, has that room held, so small jobs of the offers tried after
+  it filling each slot as it opens don't starve it. The offers are tried in plan order, a member's
+  with placement on by its steps' slack. The job held for is the one the offer would be granted
+  with the Mac's whole room (`Sched::room_wait`, by the step's pick: placement on, from the
+  longest target drawn to the Mac, not the step's first in plan order); none when that pick
+  starts with a target not measured (a cold start, which the cold rules decide). While it waits, a later job still goes
   (backfilling, `Backfill`, task #973) when it fits beside it once the jobs it waits for end (the
   Mac's jobs expected to end soonest by their measured times (`Sched::batch_secs`, less what
   they've run), as few as free its room, any past its time or not measured first; every other job
@@ -1185,17 +1184,11 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores idle, while room
   was held for timetables-todo), never waits for a long job while a shorter one frees its room,
   and the big job waits only for jobs expected to end no later than those it first waited for,
-  until one overruns: never starved. A hold is bounded by those jobs (`sched::Hold`, kept from
-  one ask to the next): the jobs it first waited for and those granted while it held. Once all
-  of them have ended and its job still can't go (its room went to an offer before it in plan
-  order, or to a job grown past its measure), it lapses: nothing is held for that job, the
-  others go as if it weren't there, until an ask no longer holds room for it (it's granted, fits
-  the room left, or isn't offered). A job whose room the Mac's jobs ending don't free (its disk,
-  freed from the caches meanwhile) isn't bounded by them. The refusal
+  until one overruns: never starved. The refusal
   names the target it waits for (its step and tile), the jobs it waits for and when they're
   expected to end, also when nothing offered after it was held back (task #1170: that case had
   said only the room left, and the lead's status showed no hold). The forecast packs by the same
-  rule, its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`), its holds as the lead kept them (`State::holds`). With placement on, a member holding a job whose cores, as its last ask
+  rule, its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target is drawn to: the others take it. Each job is as many targets as fit the batch length by their measured
   times on its Mac (ยง7.7, Batch length; a target of no run of its own nor source: its step's mean, the latest earlier way's when larger while the way it
