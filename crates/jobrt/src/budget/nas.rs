@@ -250,7 +250,7 @@ impl Pace {
             if self.cut {
                 self.window += STEP as f64 * dt / 60.0;
             } else {
-                self.window *= (dt / 60.0).exp2();
+                self.window *= det::Det::dexp2(dt / 60.0);
             }
             Verdict::Grew
         } else {
