@@ -429,17 +429,8 @@ impl Default for Tuning {
     }
 }
 
-/// One of the pacing's bounds as a pool setting: its name, what it is, its unit, the least and the
-/// most the lead takes, and its value in a `Tuning` (in its unit).
-pub struct Knob {
-    pub name: &'static str,
-    pub what: &'static str,
-    pub unit: &'static str,
-    pub least: f64,
-    pub most: f64,
-    pub get: fn(&Tuning) -> f64,
-    pub set: fn(&mut Tuning, f64),
-}
+/// One of the pacing's bounds as a pool setting (crate::settings::Knob).
+pub type Knob = crate::settings::Knob<Tuning>;
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.

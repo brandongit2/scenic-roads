@@ -2359,6 +2359,55 @@ pub struct LogTail {
     /// Each worker's (its record's `host`) clean runs' work at each step, its newest `SPEED_RUNS`
     /// (`Speeds`).
     work: std::collections::BTreeMap<(String, String), std::collections::VecDeque<(u64, Work)>>,
+    /// Each run's `JobFacts`, by its job's id (its record's `job`), and each host's least NAS
+    /// answer time over a run (ms; `JobFacts::explain`).
+    facts: std::collections::BTreeMap<String, JobFacts>,
+    nas_least: std::collections::BTreeMap<String, f64>,
+}
+
+/// What a run's record says for the needs model (agentcore::needs, task #1416), by its job's id
+/// (`LogTail::facts`): whether it's learned from (`learnable`), the instructions its processes
+/// retired over the CPU they counted, and how much slower than its needs its supply explains it ran
+/// (`explain`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobFacts {
+    pub clean: bool,
+    /// Billions of instructions (`Work::insn`), over `cpu_s` of CPU (`Work::cpu_s`); 0: not counted.
+    pub ginsn: f64,
+    pub cpu_s: f64,
+    /// At least 1: the cores it wanted over those its Mac had for it, times its waits' share of
+    /// its time stretched by the NAS's answers over their best (`explain`).
+    pub explain: f64,
+}
+
+/// How much slower than its needs run `r` ran by what its Mac supplied (`Supply`), 1 at least: the
+/// cores it kept busy over those free for it (the Mac's not busy outside the build, less the
+/// build's other jobs'), times one plus its waits' share of its time times how far the NAS's mean
+/// answer over the run was past `nas_least` (its Mac's least, ms). 1 without its supply.
+pub fn explain(r: &RunRec, nas_least: Option<f64>) -> f64 {
+    let Some(u) = r.supply.as_ref() else { return 1.0 };
+    let wall = r.wall_s.max(CHECK_S);
+    let busy = r.cpu_s.unwrap_or(0.0) / wall;
+    let cores = match (u.free_p, u.free_e) {
+        (None, None) => None,
+        (p, e) => Some(p.unwrap_or(0.0) + e.unwrap_or(0.0) - (u.build.unwrap_or(busy) - busy).max(0.0)),
+    };
+    let want = busy.min(f64::from(r.threads_most.or(r.threads).unwrap_or(1).max(1)));
+    let by_cores = cores.map_or(1.0, |c| (want / c.max(0.5)).max(1.0));
+    let waits: f64 = r
+        .phases
+        .iter()
+        .filter(|p| !p.background)
+        .filter_map(|p| p.waits.as_ref())
+        .map(|w| w.nas_s + w.net_s + w.disk_s + w.other_s)
+        .sum();
+    let share = (waits / wall).clamp(0.0, 1.0);
+    let by_nas = match (u.nas_ms, nas_least) {
+        (Some(m), Some(l)) if l > 0.0 => 1.0 + share * (m / l - 1.0).max(0.0),
+        _ => 1.0,
+    };
+    by_cores * by_nas
 }
 
 #[cfg(unix)]
@@ -2395,6 +2444,20 @@ impl LogTail {
                 continue;
             }
             self.recent.push_back(RunSum::of(&r));
+            if let Some(m) = r.supply.as_ref().and_then(|u| u.nas_ms).filter(|&m| m > 0.0) {
+                let l = self.nas_least.entry(r.host.clone()).or_insert(m);
+                *l = l.min(m);
+            }
+            if let Some(j) = r.job {
+                let w = r.work.filter(|w| w.insn > 0 && w.cpu_s >= CHECK_S);
+                let f = JobFacts {
+                    clean: learnable(&r),
+                    ginsn: w.map_or(0.0, |w| w.insn as f64 / 1e9),
+                    cpu_s: w.map_or(0.0, |w| w.cpu_s),
+                    explain: explain(&r, self.nas_least.get(&r.host).copied()),
+                };
+                self.facts.insert(j.to_string(), f);
+            }
             if !learnable(&r) {
                 continue;
             }
@@ -2412,6 +2475,11 @@ impl LogTail {
             }
         }
         true
+    }
+
+    /// Each run's facts read, by its job's id (`JobFacts`).
+    pub fn facts(&self) -> &std::collections::BTreeMap<String, JobFacts> {
+        &self.facts
     }
 
     /// Each step's phase shares over the runs kept.

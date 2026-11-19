@@ -15,8 +15,9 @@ use std::collections::BTreeMap;
 /// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
 /// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`); and two of publishing's
 /// switches, booleans read by the lead's plan (agentcore's agent::plan): `HOLD_CATALOG` and
-/// `NEAR_SLOPE`; and the NAS pacing's bounds (crate::budget::nas::KNOBS, numbers within their
-/// ranges: `Settings::nas_pace`).
+/// `NEAR_SLOPE`; and two families of numbers within their ranges (`Knob`): the NAS pacing's bounds
+/// (crate::budget::nas::KNOBS, `Settings::nas_pace`) and the needs model's percentiles and windows
+/// (crate::needs::KNOBS, `Settings::needs`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
@@ -34,9 +35,43 @@ pub const HOLD_CATALOG: &str = "hold-catalog";
 /// Publishing::near). Off while not set.
 pub const NEAR_SLOPE: &str = "near-slope";
 pub const NAMES: [&str; 7] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE, HOLD_CATALOG, NEAR_SLOPE];
-/// Whether the lead keeps a setting named `name`: one of `NAMES`, or a NAS pacing bound.
+/// Whether the lead keeps a setting named `name`: one of `NAMES`, or a knob's (`bound`).
 pub fn known(name: &str) -> bool {
-    NAMES.contains(&name) || crate::budget::nas::knob(name).is_some()
+    NAMES.contains(&name) || bound(name).is_some()
+}
+
+/// One of a family's numbers as a pool setting (the NAS pacing's, crate::budget::nas::KNOBS; the
+/// needs model's, crate::needs::KNOBS): its name, what it is, its unit, the least and the most the
+/// lead takes, and its value in its family's `T` (in its unit).
+pub struct Knob<T: 'static> {
+    pub name: &'static str,
+    pub what: &'static str,
+    pub unit: &'static str,
+    pub least: f64,
+    pub most: f64,
+    pub get: fn(&T) -> f64,
+    pub set: fn(&mut T, f64),
+}
+
+/// A knob's name, what it is, its unit and range, whichever family it is of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bound {
+    pub name: &'static str,
+    pub what: &'static str,
+    pub unit: &'static str,
+    pub least: f64,
+    pub most: f64,
+}
+
+impl<T> Knob<T> {
+    pub fn bound(&self) -> Bound {
+        Bound { name: self.name, what: self.what, unit: self.unit, least: self.least, most: self.most }
+    }
+}
+
+/// The knob named `name`, of either family.
+pub fn bound(name: &str) -> Option<Bound> {
+    crate::budget::nas::knob(name).map(Knob::bound).or_else(|| crate::needs::knob(name).map(Knob::bound))
 }
 
 /// The settings that are on or off (a boolean; not set: off).
@@ -105,6 +140,12 @@ impl Settings {
         crate::budget::nas::Tuning::of(|n| self.get(n).and_then(Value::as_f64))
     }
 
+    /// The needs model's percentiles and windows, each as set (its default where not, or out of its
+    /// range).
+    pub fn needs(&self) -> crate::needs::Tuning {
+        crate::needs::Tuning::of(|n| self.get(n).and_then(Value::as_f64))
+    }
+
     /// The batch length, as set (s).
     pub fn batch_s(&self) -> Option<u64> {
         self.get(BATCH).and_then(Value::as_u64).map(|m| m * 60)
@@ -151,9 +192,7 @@ impl SettingAsk {
             }
             (BATCH, Value::Number(n)) => n.as_u64().is_some_and(|m| BATCH_RANGE.contains(&m)),
             (OVERDUE, Value::Number(n)) => n.as_f64().is_some_and(|f| OVERDUE_RANGE.contains(&f)),
-            (k, Value::Number(n)) => {
-                crate::budget::nas::knob(k).zip(n.as_f64()).is_some_and(|(k, v)| (k.least..=k.most).contains(&v))
-            }
+            (k, Value::Number(n)) => bound(k).zip(n.as_f64()).is_some_and(|(k, v)| (k.least..=k.most).contains(&v)),
             _ => false,
         };
         ensure!(ok, "{}: not a setting the lead takes, or not of its kind ({})", self.name, self.value);

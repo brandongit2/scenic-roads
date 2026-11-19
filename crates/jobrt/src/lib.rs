@@ -10,6 +10,7 @@ pub mod control;
 pub mod jobid;
 pub mod jobs;
 pub mod keys;
+pub mod needs;
 pub mod phase_names;
 pub mod pyenv;
 pub mod resume_log;
