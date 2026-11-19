@@ -684,17 +684,18 @@ mod tests {
         assert_eq!(Model::of(runs, &[], &[], &t).off.len(), 1);
     }
 
-    /// A target's work per unit is its runs' of about its size: small targets here take ten times
-    /// a large one's work per unit, and neither sets the other's; past every run's size, its size
+    /// A target's work per unit is its runs' of about its size: small targets here take twice
+    /// a large one's work per unit (within what the check flags), and neither sets the other's; past every run's size, its size
     /// says nothing, and the target's own count does.
     #[test]
     fn work_per_unit_is_read_of_runs_of_about_its_size() {
         let t = Tuning::default();
         let mut runs: Vec<Obs> = (0..20).map(|i| obs(i, 1.0, 1.0, 1, 100)).collect();
-        runs.extend((20..40).map(|i| obs(i, 100.0, 10.0, 1, 100)));
+        runs.extend((20..40).map(|i| obs(i, 100.0, 50.0, 1, 100)));
         let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.by[0].size, "km2");
         let at = |u: f64| m.work(&[(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into()).unwrap();
-        assert!((at(1.0) - 1.0).abs() < 1e-9 && (at(100.0) - 10.0).abs() < 1e-9, "{} {}", at(1.0), at(100.0));
+        assert!((at(1.0) - 1.0).abs() < 1e-9 && (at(100.0) - 50.0).abs() < 1e-9, "{} {}", at(1.0), at(100.0));
         assert_eq!(m.unit(&[(TARGET.to_string(), 1.0), ("km2".to_string(), 1e6)].into()).unwrap().0.size, TARGET);
     }
 
