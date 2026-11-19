@@ -20583,19 +20583,16 @@ mod membership_tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         a.start(0, spec, &cond, None).unwrap();
         let log = scratch.join("6_9_9.resume");
-        let until = Instant::now() + Duration::from_secs(20);
-        while std::fs::metadata(&log).map_or(0, |m| m.len()) == 0 && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let root_arg = jobs::root_arg(&nas);
+        store::testkit::eventually("the job's log written", || {
+            std::fs::read_to_string(&log).is_ok_and(|s| s.len() == root_arg.len())
+        });
         assert_eq!(std::fs::read_to_string(&log).unwrap(), jobs::root_arg(&nas), "told where carried logs wait");
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.stopped(0, "stopped: the test's give-back");
         a.slots[0].running = None;
         let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles");
-        let until = Instant::now() + Duration::from_secs(20);
-        while !copy.join("6_9_9.resume").exists() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        store::testkit::eventually("the log carried", || copy.join("6_9_9.resume").exists());
         assert_eq!(std::fs::read(copy.join("6_9_9.resume")).unwrap(), std::fs::read(&log).unwrap());
         assert!(!copy.join("6_1_1.resume").exists() && older.exists());
     }
