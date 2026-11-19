@@ -469,6 +469,13 @@ fn planet_room_short(root: &NasRoot, date: &str, have: Option<&str>) -> Option<S
     ))
 }
 
+/// Where the plan stopped short of the regions' work (`Planner::plan_regions`): the jobs made by
+/// then and why nothing more is planned, which the forecast says (`forecast_stopped`).
+struct Stopped {
+    jobs: Vec<JobSpec>,
+    why: String,
+}
+
 /// The plan's state, owned by its thread (or the round, in line).
 pub(super) struct Planner {
     pub(super) o: Options,
@@ -559,6 +566,9 @@ pub(super) struct Planner {
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status.
     pub(super) forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// What the forecast's plan was (`forecast_of`): the regions' work, or where the plan stopped
+    /// short of it and its jobs (`Stopped`).
+    pub(super) forecast_shape: std::cell::RefCell<Option<String>>,
     /// When each (Mac, step) last had its grants' departure from the forecast, or its many grants of
     /// a step the forecast doesn't model, logged (`forecast_record`): once an hour at most.
     pub(super) departed: std::cell::RefCell<BTreeMap<(String, String), u64>>,
@@ -661,6 +671,7 @@ impl Planner {
             last_catalogue: Default::default(),
             ready: Default::default(),
             forecast: Default::default(),
+            forecast_shape: Default::default(),
             departed: Default::default(),
             curves: Default::default(),
             regions_view: Default::default(),
@@ -1624,6 +1635,11 @@ impl Planner {
     /// `region_work`'s jobs before the holds: `held.lakefill` set when the pass's lake fill holds
     /// the jobs that read it (`hold_for_lakefill`), `held.sources` while no version of the source
     /// declarations is accepted (`hold_for_sources`).
+    ///
+    /// The one way out of the planner, so the forecast always matches what it returns:
+    /// `plan_regions` either plans the regions' work (and makes the forecast of it) or stops short
+    /// with its jobs and why (`Stopped`), and a stop is forecast here, as only those jobs with the
+    /// reason as its `why` (`forecast_stopped`). A forecast of another shape is never kept.
     pub(super) fn region_jobs(
         &self,
         root: &store::nasfs::NasRoot,
@@ -1632,6 +1648,60 @@ impl Planner {
         waiting: &mut Vec<Waiting>,
         held: &mut Holds,
     ) -> Vec<JobSpec> {
+        match self.plan_regions(root, pass, newer, waiting, held) {
+            Ok(jobs) => jobs,
+            Err(Stopped { jobs, why }) => {
+                self.forecast_stopped(&jobs, &why);
+                jobs
+            }
+        }
+    }
+
+    /// What the forecast made next is of, when it differs from the last plan's: its in-flight run
+    /// is let go (its answer never taken in) and the forecast held is cleared, so a forecast of
+    /// another plan is never shown. The first plan's, with nothing before it, changes nothing.
+    fn forecast_of(&self, shape: String) {
+        self.take_forecast();
+        let was = self.forecast_shape.replace(Some(shape.clone()));
+        if was.is_some_and(|w| w != shape) {
+            self.forecasting.borrow_mut().take();
+            *self.forecast.borrow_mut() = None;
+        }
+    }
+
+    /// The forecast of a plan that stopped short of the regions' work (`Stopped`): its jobs placed,
+    /// no region's work, and `why` as the forecast's own (the build page says it, no finish shown).
+    /// Made again at most each `forecast::EVERY`, or at once when what stopped it or its jobs changed.
+    fn forecast_stopped(&self, jobs: &[JobSpec], why: &str) {
+        let ids: Vec<&str> = jobs.iter().map(|j| j.id.as_str()).collect();
+        self.forecast_of(format!("stopped: {why}; jobs {}", ids.join(",")));
+        let stale =
+            self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
+        if stale && self.forecasting.borrow().is_none() {
+            let record = self.forecast_record(
+                jobs,
+                &[],
+                &[],
+                &[],
+                Default::default(),
+                &[],
+                Some(why.to_string()),
+                &seam::Left::default(),
+                &|_, _| 0,
+            );
+            self.start_forecast(record);
+        }
+    }
+
+    /// `region_jobs`' plan: the jobs, or where it stopped short of the regions' work.
+    fn plan_regions(
+        &self,
+        root: &store::nasfs::NasRoot,
+        pass: Option<&str>,
+        newer: Option<&str>,
+        waiting: &mut Vec<Waiting>,
+        held: &mut Holds,
+    ) -> Result<Vec<JobSpec>, Stopped> {
         // (The depth's targets for GC, and the regions' checklist: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
         self.carry_keep.borrow_mut().take();
@@ -1646,12 +1716,9 @@ impl Planner {
         {
             Ok(r) => r,
             Err(e) => {
-                waiting.push(Waiting {
-                    step: None,
-                    what: "Building".into(),
-                    why: format!("the build's records can't be read now: {e:#}"),
-                });
-                return Vec::new();
+                let why = format!("the build's records can't be read now: {e:#}");
+                waiting.push(Waiting { step: None, what: "Building".into(), why: why.clone() });
+                return Err(Stopped { jobs: Vec::new(), why });
             }
         };
         // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
@@ -1665,12 +1732,9 @@ impl Planner {
             c.set_min_app(min.clone());
         }
         if let Err(why) = inputs::inputs::regions::read::may_lead(&self.app, &regions_app) {
-            waiting.push(Waiting {
-                step: None,
-                what: "All building".into(),
-                why: format!("this Mac can't build now: {why}"),
-            });
-            return Vec::new();
+            let why = format!("this Mac can't build now: {why}");
+            waiting.push(Waiting { step: None, what: "All building".into(), why: why.clone() });
+            return Err(Stopped { jobs: Vec::new(), why });
         }
         // (The regions from the same records as the coverage.)
         let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) =
@@ -1736,7 +1800,8 @@ impl Planner {
         waiting.append(&mut pw.waits);
         jobs.extend(std::mem::take(&mut pw.jobs).into_iter().map(|j| job(j.id, j.step, j.args, j.work)));
         if pw.outlines_hold {
-            return jobs;
+            let why = "the pass's outlines are being assembled; the regions' work is known once they are";
+            return Err(Stopped { jobs, why: why.into() });
         }
         if pw.buildings_made {
             if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
@@ -1747,21 +1812,22 @@ impl Planner {
             }
         }
         if recipes.is_empty() {
-            return jobs;
+            let why = match unread.first() {
+                Some((_, why)) => format!("the regions can't be read now: {why}"),
+                None => "no region is declared".into(),
+            };
+            return Err(Stopped { jobs, why });
         }
         let Some(date) = pass else {
-            waiting.push(Waiting {
-                step: None,
-                what: "Building the regions".into(),
-                why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into(),
-            });
-            return jobs;
+            let why = "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".to_string();
+            waiting.push(Waiting { step: None, what: "Building the regions".into(), why: why.clone() });
+            return Err(Stopped { jobs, why: format!("{why} comes first; the regions' work is known once it's done") });
         };
         let covs = match self.coverage(root, &manifest, unread.is_empty()) {
             Ok(c) => c,
             Err(why) => {
-                waiting.push(Waiting { step: None, what: "Building the regions".into(), why });
-                return jobs;
+                waiting.push(Waiting { step: None, what: "Building the regions".into(), why: why.clone() });
+                return Err(Stopped { jobs, why });
             }
         };
         let cov = &covs.all;
@@ -2167,8 +2233,8 @@ impl Planner {
         // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
         // again at most each `forecast::EVERY`: idle, the plan's made each loop).
         // (Run on a thread of its own, `start_forecast`: the loop reads the last one done and never
-        // waits on it, task #544.)
-        self.take_forecast();
+        // waits on it, task #544.) (One kept from a plan that stopped short is let go: `forecast_of`.)
+        self.forecast_of("the regions' work".into());
         let stale =
             self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
         if stale && self.forecasting.borrow().is_none() {
@@ -2320,7 +2386,7 @@ impl Planner {
             j.what = what;
             jobs.push(j);
         }
-        jobs
+        Ok(jobs)
     }
 
     /// Publishing as it stands (`Published`): the map's last batch, whether it went out with the low

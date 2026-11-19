@@ -15977,6 +15977,112 @@ mod tests {
         assert!(w.iter().any(|x| x.why.contains("can't be read now")), "{w:?}");
     }
 
+    /// The forecast after a plan, as the planner leaves it: a forecast of the regions' work held
+    /// from before (seeded) is gone at once, and the one made for this plan is taken in once done.
+    fn forecast_after(
+        a: &mut Agent,
+        root: &store::nasfs::NasRoot,
+        pass: Option<&str>,
+    ) -> (Vec<JobSpec>, forecast::Forecast) {
+        let p = a.planner();
+        *p.forecast.borrow_mut() =
+            Some(forecast::Forecast { at: now_s(), why: Some("STALE".into()), ..Default::default() });
+        *p.forecast_shape.borrow_mut() = Some("the regions' work".into());
+        let (mut w, mut held) = (Vec::new(), Holds::default());
+        let jobs = p.region_jobs(root, pass, None, &mut w, &mut held);
+        assert!(p.forecast.borrow().is_none(), "the forecast of another plan is not kept");
+        let t = std::time::Instant::now();
+        loop {
+            p.take_forecast();
+            if let Some(f) = p.forecast.borrow().clone() {
+                return (jobs, f);
+            }
+            assert!(t.elapsed() < Duration::from_secs(60), "no forecast made");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Task #1444: each way the planner stops short of the regions' work (the records unread, an app
+    /// too old, no regions, no pass yet, the pass's outlines under way, no coverage) leaves a
+    /// forecast of the jobs it returned (its `why` the reason, no finish) and never an earlier one.
+    #[test]
+    fn every_stop_short_of_the_regions_work_is_forecast_with_its_reason() {
+        let date = "20260101";
+        let one = vec![recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }];
+        // (Each case: its name, the regions declared (None: none accepted), whether the manifest is
+        // unreadable, an app too old, the pass, the outlines job's failures, and the reason said.)
+        struct Case {
+            name: &'static str,
+            recipes: Option<Vec<recipes::Recipe>>,
+            garbled: bool,
+            old_app: bool,
+            pass: Option<&'static str>,
+            outlines_made: bool,
+            failures: u32,
+            reason: &'static str,
+        }
+        let base = |name, reason| Case {
+            name,
+            recipes: Some(one.clone()),
+            garbled: false,
+            old_app: false,
+            pass: None,
+            outlines_made: false,
+            failures: 0,
+            reason,
+        };
+        let cases = [
+            Case { garbled: true, ..base("unread", "the build's records can't be read now") },
+            Case { old_app: true, ..base("old app", "this Mac can't build now") },
+            Case { recipes: Some(Vec::new()), ..base("no regions", "no region is declared") },
+            base("no pass", "the first OpenStreetMap pass"),
+            Case {
+                pass: Some(date),
+                outlines_made: true,
+                ..base("outlines", "the pass's outlines are being assembled")
+            },
+            Case { pass: Some(date), outlines_made: true, failures: 3, ..base("coverage", "") },
+        ];
+        for c in cases {
+            let d = tempfile::tempdir().unwrap();
+            let (root, home) = (d.path().join("nas"), d.path().join("home"));
+            std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
+            let nas = store::nasfs::NasRoot::local_for_test(&root);
+            let mut m = BTreeMap::new();
+            if let Some(r) = &c.recipes {
+                inputs::inputs::regions::accept_fixture(&nas, (&root).into(), r, &mut m);
+            }
+            if c.old_app {
+                let sw = inputs::inputs::switched_logical(inputs::inputs::regions::UNIT);
+                let name = format!("{sw}.1111111111111111.json");
+                put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
+                m.insert(sw, name);
+            }
+            // (A pass whose sets are all made: its outlines are the job left.)
+            if c.pass.is_some() {
+                for st in inputs::osmpass::SETS {
+                    let l = inputs::osmpass::set_name(date, st.0);
+                    m.insert(l.clone(), format!("{l}.1111111111111111.osm.pbf"));
+                }
+            }
+            if c.outlines_made {
+                m.insert(format!("sources/osm/{date}/outlines"), "outlines.1111111111111111.bin".into());
+            }
+            let manifest = if c.garbled { b"{ not json".to_vec() } else { serde_json::to_vec(&m).unwrap() };
+            put(&root.join("state/build/manifest.json"), &manifest);
+            let mut a = agent(&nas, &home);
+            a.planner().inp.mem.retry.insert(format!("outlines {date}"), (c.failures, 0));
+            let (jobs, f) = forecast_after(&mut a, &nas, c.pass);
+            let why = f.why.clone().unwrap_or_default();
+            assert!(why.contains(c.reason) && !why.is_empty(), "{}: {why}", c.name);
+            assert!(!why.contains("STALE") && f.done_at.is_none(), "{}: {f:?}", c.name);
+            // (The jobs the plan returned are the forecast's: no more placed than they are.)
+            let steps: BTreeSet<&str> =
+                jobs.iter().filter_map(|j| j.record.as_ref()).map(|w| w.step.as_str()).collect();
+            assert!(f.placed.iter().all(|p| steps.contains(p.step.as_str())), "{}: {:?}", c.name, f.placed);
+        }
+    }
+
     #[test]
     fn plans_daily_jobs_and_writes_a_heartbeat() {
         let d = tempfile::tempdir().unwrap();
