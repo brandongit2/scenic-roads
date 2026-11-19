@@ -275,7 +275,7 @@ impl Reading {
     }
 }
 
-/// A Mac's NAS answers as the lead reads them: its NAS answer time (ms, its mean over its span)
+/// A Mac's NAS answers as the lead reads them: its NAS answer time (ms, `answer_of` its span)
 /// and its floor (ms, its own: the least such mean over `Tuning::floor_s` on its link), whether it
 /// is at home (the floor's link: a Mac moved to Tailscale is another), whether its NAS calls
 /// missed their deadline lately, and whether the reading is fresh (no older than its span and a
@@ -378,8 +378,11 @@ pub struct Tuning {
     pub grow_s: u64,
     /// How often the lead reads (s).
     pub read_s: u64,
-    /// The span a Mac's NAS answer time is its mean over (s): its listings every 5 s.
+    /// The span a Mac's NAS answer time is read over (s, `answer_of`): its listings every 5 s.
     pub span_s: u64,
+    /// A listing quicker than this (ms) was answered by the Mac's SMB cache, not the NAS
+    /// (`answer_of`); 0: every listing counts.
+    pub cached_ms: f64,
     /// The longest a kept state is taken up by a restarted lead (s).
     pub restore_s: u64,
     /// How long a reading past the knee holds a lone job back (s; `Pace::lone`), and the longest
@@ -402,9 +405,29 @@ pub const STEP: u32 = 50;
 pub const DECREASE: f64 = 0.5;
 /// The growth's cadence, by default (s).
 pub const GROW_S: u64 = 60;
-/// The span a Mac's NAS answer time is averaged over, by default (s): its listings every 5 s, six
-/// of them, so one slow answer isn't the NAS loaded.
+/// The span a Mac's NAS answer time is read over, by default (s): its listings every 5 s, six of
+/// them (`answer_of`).
 pub const SPAN_S: u64 = 30;
+/// A listing quicker than this was the SMB cache's, by default (ms): on 19 Nov the mini (wired)
+/// and the M4 listed the project's folder from their caches in 0.05 to 0.2 ms, from the NAS in
+/// 0.9 ms and more.
+pub const CACHED_MS: f64 = 0.5;
+
+/// A Mac's NAS answer time from its listings over a span (ms; `samples`): the lower quartile (the
+/// ⌈n/4⌉-th least) of those not quicker than `cached_ms` (the SMB cache's); None with none left.
+/// A listing queued behind the Mac's own jobs' reads on its SMB session is slow now and then (on
+/// 19 Nov the mini beside its job: 1 to 2 ms, with 41 ms or 450 ms between), which the quartile
+/// passes over as long as a quarter of the span's listings aren't; a NAS answering most of them
+/// slowly raises it, however quick a few. A Mac's floor is the least of these over its floor's
+/// span (agentcore::agent::live), the same reading of the same listings.
+pub fn answer_of(samples: impl IntoIterator<Item = f64>, cached_ms: f64) -> Option<f64> {
+    let mut v: Vec<f64> = samples.into_iter().filter(|x| x.is_finite() && *x >= cached_ms).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    Some(v[v.len().div_ceil(4) - 1])
+}
 /// The longest a kept state is taken up, by default (s).
 pub const RESTORE_S: u64 = 30 * 60;
 /// How long a reading past the knee holds a lone job back, by default (s): as long as a job waits
@@ -428,6 +451,7 @@ impl Default for Tuning {
             grow_s: GROW_S,
             read_s: READ_EVERY_S,
             span_s: SPAN_S,
+            cached_ms: CACHED_MS,
             restore_s: RESTORE_S,
             lone_s: LONE_S,
             lone_most_s: LONE_MOST_S,
@@ -441,7 +465,7 @@ pub type Knob = crate::settings::Knob<Tuning>;
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.
-pub const KNOBS: [Knob; 13] = [
+pub const KNOBS: [Knob; 14] = [
     Knob {
         name: "nas-step",
         what: "the window's step a growth cadence, and its least",
@@ -516,12 +540,21 @@ pub const KNOBS: [Knob; 13] = [
     },
     Knob {
         name: "nas-span-seconds",
-        what: "a Mac's NAS answer time: its mean over this span",
+        what: "a Mac's NAS answer time: the lower quartile of its listings over this span",
         unit: "s",
         least: 10.0,
         most: 300.0,
         get: |k| k.span_s as f64,
         set: |k, v| k.span_s = v as u64,
+    },
+    Knob {
+        name: "nas-cached-ms",
+        what: "a listing quicker than this was the Mac's SMB cache's, not the NAS's (0: all count)",
+        unit: "ms",
+        least: 0.0,
+        most: 10.0,
+        get: |k| k.cached_ms,
+        set: |k, v| k.cached_ms = v,
     },
     Knob {
         name: "nas-restore-minutes",
@@ -1721,13 +1754,17 @@ mod tests {
     /// A simulated burst: `n` jobs asked at once, each weighed `w` but loading the NAS `real`
     /// (thousandths of what it can take: its weight a measure of other runs, a warm cache's or a
     /// quicker Mac's), each running `secs`, beside an outside load `outside(t)` (thousandths), on
-    /// `macs` (jobs dealt in turn); each Mac's answers its own mean over its span of listings
-    /// every 5 s (its best, plus the NAS's added delay, `NAS_BEST_MS` times its ratio less one, all
-    /// by its own link and a 20 % noise of its own; `scaled`: its best times the NAS's ratio, the
-    /// first version's model), past the deadline (20 s, its calls missed) at the cliff, against its
-    /// own floor over `floor_s`, sent with each beat (every 10 s), or with `asks_only` only with its
-    /// asks (every 120 s while it holds jobs: an older agent's); the lead restarted at each reading
-    /// `restart` says (its state kept).
+    /// `macs` (jobs dealt in turn). Each Mac lists the NAS every 5 s: its best, plus the NAS's
+    /// added delay (`NAS_BEST_MS` times its ratio less one; `scaled`: its best times the NAS's
+    /// ratio, the first version's model), by its own link and a 10 % noise of its own; a share
+    /// `slip` of them answered at its best whatever the NAS's load (a listing the NAS serves from
+    /// its memory while the rest queue); past the deadline (20 s, its calls missed) at the cliff;
+    /// and, of its own, the SMB cache's answer now and then (`CACHE_HIT`), and its listings queued
+    /// behind its own jobs' reads (`STALL`, `SPIKE`: as the mini's on 19 Nov). Its answer is the
+    /// production's (`answer_of` its span's listings), against its own floor (the least such over
+    /// `floor_s`), sent with each beat (every 10 s), or with `asks_only` only with its asks (every
+    /// 120 s while it holds jobs: an older agent's); the lead restarted at each reading `restart`
+    /// says (its state kept).
     struct Burst {
         n: usize,
         w: u32,
@@ -1738,7 +1775,21 @@ mod tests {
         asks_only: bool,
         scaled: bool,
         restart: fn(u64) -> bool,
+        slip: f64,
         k: Tuning,
+    }
+
+    /// A Mac's listing answered by its SMB cache (0.125 ms): its share of them.
+    const CACHE_HIT: f64 = 0.07;
+    /// A Mac's listing queued behind its own jobs' reads while it holds one: its share, and the
+    /// time added (ms); and a long one's (`SPIKE`). Idle, a twentieth as many.
+    const STALL: (f64, f64) = (0.35, 41.0);
+    const SPIKE: (f64, f64) = (0.02, 450.0);
+
+    /// The simulation's next uniform draw in [0, 1) from `seed`.
+    fn draw(seed: &mut u64) -> f64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*seed >> 33) as f64 / (1u64 << 31) as f64
     }
 
     /// What a burst came to: the seconds past the knee and at the cliff, when its last job ended,
@@ -1771,6 +1822,7 @@ mod tests {
                 asks_only: false,
                 scaled: false,
                 restart: |_| false,
+                slip: 0.0,
                 k: Tuning::default(),
             }
         }
@@ -1781,7 +1833,7 @@ mod tests {
             let k = &self.k;
             let mut p = Pace::default();
             let mut queue = self.n;
-            // (Each job's end and Mac; each Mac's listings (t, ms, missed), its means (t, ms) and
+            // (Each job's end and Mac; each Mac's listings (t, ms, missed), its answers (t, ms) and
             // the answer the lead has of it, and when it was sent.)
             let mut running: Vec<(u64, usize)> = Vec::new();
             let mut probes: Vec<std::collections::VecDeque<(u64, f64, bool)>> =
@@ -1806,13 +1858,22 @@ mod tests {
                     run.cliff_s += TICK;
                 }
                 for (i, m) in self.macs.iter().enumerate() {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    let noise = 0.8 + 0.4 * ((seed >> 33) as f64 / (1u64 << 31) as f64);
+                    let noise = 0.9 + 0.2 * draw(&mut seed);
                     let missed = r >= CLIFF;
+                    let r = if draw(&mut seed) < self.slip { 1.0 } else { r };
                     let ms = match (missed, self.scaled) {
                         (true, _) => 20_000.0,
                         (false, true) => m.best * (m.link)(t) * r * noise,
                         (false, false) => (m.best + NAS_BEST_MS * (r - 1.0)) * (m.link)(t) * noise,
+                    };
+                    let busy = if running.iter().any(|j| j.1 == i) { 1.0 } else { 0.05 };
+                    let (c, x) = (draw(&mut seed), draw(&mut seed));
+                    let ms = match () {
+                        _ if missed => ms,
+                        _ if c < CACHE_HIT => 0.125,
+                        _ if x < SPIKE.0 * busy => ms + SPIKE.1,
+                        _ if x < (SPIKE.0 + STALL.0) * busy => ms + STALL.1,
+                        _ => ms,
                     };
                     probes[i].push_back((t, ms, missed));
                     while probes[i].front().is_some_and(|x| x.0 + k.span_s <= t) {
@@ -1822,8 +1883,8 @@ mod tests {
                 if t % 10 == 0 {
                     for (i, m) in self.macs.iter().enumerate() {
                         let pr = &probes[i];
-                        let mean = pr.iter().map(|x| x.1).sum::<f64>() / pr.len() as f64;
-                        means[i].push_back((t, mean));
+                        let Some(ms) = answer_of(pr.iter().map(|x| x.1), k.cached_ms) else { continue };
+                        means[i].push_back((t, ms));
                         while means[i].front().is_some_and(|x| x.0 + k.floor_s <= t) {
                             means[i].pop_front();
                         }
@@ -1832,14 +1893,8 @@ mod tests {
                         let sends = !self.asks_only || !holds || said[i].as_ref().is_none_or(|s| s.0 + 120 <= t);
                         if sends {
                             let missed = pr.iter().any(|x| x.2);
-                            let a = Answer {
-                                mac: m.name.into(),
-                                home: m.home,
-                                ms: mean,
-                                floor_ms: floor,
-                                missed,
-                                fresh: true,
-                            };
+                            let a =
+                                Answer { mac: m.name.into(), home: m.home, ms, floor_ms: floor, missed, fresh: true };
                             said[i] = Some((t, a));
                         }
                     }
@@ -1906,7 +1961,9 @@ mod tests {
     /// job done. Then one case for each way the review of 19 Nov drove it over (H1-H5): an outside
     /// load pushing it over the cliff (its listings past their deadline); Macs whose answers come
     /// only with their asks; hour-long jobs (the floor's drift); a restart every 15 minutes; and one
-    /// Mac slow on its own link. Each case's time past the knee and at the cliff is printed.
+    /// Mac slow on its own link; and (Q1) the NAS queueing most listings, a quick one slipping
+    /// through now and then. Each Mac's listings carry its own cache's answers and its own jobs'
+    /// queueing throughout (`Burst`). Each case's time past the knee and at the cliff is printed.
     #[test]
     fn a_burst_of_nas_heavy_jobs_settles_below_the_knee() {
         let say = |case: &str, r: &Run| eprintln!("{case}: {r:?}");
@@ -1982,7 +2039,10 @@ mod tests {
         let r = b.run(true);
         say("H5 one Mac slow on its own link", &r);
         assert_eq!(r.cliff_s, 0);
-        assert!(r.end <= paced.end + 600, "not throttled by one Mac's link: {} s against {} s", r.end, paced.end);
+        // (While m6's link counts it out, m1's answers alone count: its own jobs' queueing, read
+        // past the knee in a span now and then, cuts the window a few times; a quarter of an hour
+        // more at most.)
+        assert!(r.end <= paced.end + 900, "not throttled by one Mac's link: {} s against {} s", r.end, paced.end);
         // (R2: the NAS's load adds its delay to each Mac's answers, not times each one's floor: m1
         // at home at 5 ms and m6 away at 40 ms, an outside load rising to 70 % from 30 to 60
         // minutes in, held to 80 minutes; ranked by excess over the least floor, the slowdown
@@ -1997,6 +2057,13 @@ mod tests {
         say("R2 added delay, one home and one away", &r);
         assert_eq!(r.cliff_s, 0);
         assert!(r.cuts >= 1);
+        // (Q1: the NAS queueing most listings under R2's outside load, a quick one slipping
+        // through now and then (one in ten, its root folder in its memory): its answers read most
+        // of them, and the window is cut, at the cliff half a minute at most.)
+        let q1 = Burst { outside: ramp, slip: 0.1, ..Burst::of(40, 150, 250, 300) }.run(true);
+        say("Q1 most listings queued, a quick one now and then", &q1);
+        assert!(q1.cuts >= 1 && q1.cliff_s <= 30, "{q1:?}");
+        assert!(q1.past_knee_s <= 3 * r.past_knee_s.max(300), "{q1:?} against R2's {r:?}");
         let scaled = Burst { scaled: true, ..Burst::of(30, 150, 250, 300) }.run(true);
         say("R2 floors scaled (the first model)", &scaled);
         assert_eq!(scaled.cliff_s, 0);

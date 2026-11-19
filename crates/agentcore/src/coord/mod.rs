@@ -1326,9 +1326,10 @@ pub struct Capacity {
     /// of calls held): the lead sums the members' into its live store (task #634). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_calls: Option<[f64; 3]>,
-    /// The NAS's answer time as it measures it (ms: crate::agent::live::NAS_MS, its mean over the
-    /// pacing's span) and its floor (ms: the least such mean over the pacing's floor span on its
-    /// link, crate::agent::live::Store::nas_answers), as of `nas_at` (unix s, its clock): the lead
+    /// The NAS's answer time as it measures it (ms: crate::agent::live::NAS_MS, the lower quartile
+    /// of its listings over the pacing's span, jobrt::budget::nas::answer_of) and its floor (ms:
+    /// the least such answer over the pacing's floor span on its link,
+    /// crate::agent::live::Store::nas_answers), as of `nas_at` (unix s, its clock): the lead
     /// paces the pool's NAS work by every Mac's against its own best (jobrt::budget::nas::Pace),
     /// the floor young (`nas_young`) while its link has too little history (it may cut, never
     /// grow). Set as each beat goes (crate::agent::beat), so a Mac too busy to ask still answers

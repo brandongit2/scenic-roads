@@ -358,7 +358,7 @@ pub enum PoolCmd {
     /// `near-slope on|off` (a done region's slope and tree cover by the z6 tiles near it), and the
     /// NAS pacing's bounds, each `<number>|off` (jobrt::budget::nas::KNOBS: `nas-step`,
     /// `nas-small`, `nas-decrease`, `nas-floor-hours`, `nas-slow`, `nas-near`, `nas-grow-seconds`,
-    /// `nas-read-seconds`, `nas-span-seconds`, `nas-restore-minutes`, `nas-lone-minutes`,
+    /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`, `nas-lone-minutes`,
     /// `nas-lone-most-minutes`, `nas-young-spans`), and the needs model's percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
     /// `needs-runs`, `needs-off`, `needs-relearn`); the lead takes each at its next

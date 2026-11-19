@@ -26,11 +26,12 @@
 //!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder under nasread's deadline (crate::agent::nasread::probe;
-//!   a stat would be answered from the SMB client's cache, and so is a listing now and then: one
-//!   quicker than `NAS_CACHED` isn't kept), never two at once; one that fails or passes its
-//!   deadline counts as the deadline, one still stuck as its age. Its least over the pacing's span
-//!   and its floor for the lead's pacing (`Store::nas_answers`): the floor the least over the
-//!   pacing's floor span on the 10-s ring, over that link's own stints (`Store::set_link`: at
+//!   a stat would be answered from the SMB client's cache, and so is a listing now and then),
+//!   never two at once; one that fails or passes its deadline counts as the deadline, one still
+//!   stuck as its age. Its answer over the pacing's span and its floor for the lead's pacing
+//!   (`Store::nas_answers`, jobrt::budget::nas::answer_of: the span's lower quartile, the cache's
+//!   answers left out): the floor the least such answer over the pacing's floor span on the 10-s
+//!   ring, over that link's own stints (`Store::set_link`: at
 //!   home or not, the mount; kept in `LINK_FILE` beside the store's file), so a return to a link
 //!   takes its floor up again; a link with fewer of its spans measured than the pool's
 //!   `nas-young-spans` says its floor is young.
@@ -73,6 +74,22 @@ use std::time::Duration;
 /// the minute, seven days by 5 minutes.
 pub const TIERS: [(u64, usize); 4] = [(1, 3600), (10, 8640), (60, 4320), (300, 2016)];
 
+/// The samples a bucket holds, as far as it keeps them: one, itself; two, its least and its most;
+/// more, those and the rest at their mean (the NAS's listings, one every 5 s, are two a bucket of
+/// the 10-s ring: kept exactly).
+fn samples_of(b: &Bucket) -> Vec<f64> {
+    let (lo, hi) = (f64::from(b.lo), f64::from(b.hi));
+    match b.n {
+        0 => Vec::new(),
+        1 => vec![b.sum],
+        2 => vec![lo, hi],
+        n => {
+            let rest = (b.sum - lo - hi) / f64::from(n - 2);
+            [lo, hi].into_iter().chain(std::iter::repeat_n(rest, (n - 2) as usize)).collect()
+        }
+    }
+}
+
 /// The NAS folder of the live store's days (`Store::archive`), a folder per Mac.
 pub const ARCHIVE: &str = "state/live-archive";
 
@@ -91,12 +108,6 @@ pub const SAVE_EVERY: Duration = Duration::from_secs(300);
 
 /// How often the NAS's latency is measured while a build runs.
 pub const NAS_EVERY: Duration = Duration::from_secs(5);
-
-/// A NAS listing answered quicker than this was answered by the SMB client's cache on this Mac,
-/// never by the NAS: not a NAS answer (`NAS_MS`). On 19 Nov the mini (wired) and the M4 listed the
-/// project's folder from their caches in 0.05 to 0.2 ms, from the NAS in 0.9 ms and more; a cached
-/// answer counted would make a floor the NAS never gives.
-pub const NAS_CACHED: Duration = Duration::from_micros(500);
 
 /// The file's first bytes (its format's version: 02, four rings).
 const MAGIC: &[u8; 8] = b"SCLIVE02";
@@ -457,19 +468,16 @@ impl Store {
     }
 
     /// This Mac's NAS answers for its lead at `now`, by the pacing's bounds `k`
-    /// (jobrt::budget::nas::Answer): its answer time, the least of `NAS_MS` over `k.span_s` (the
-    /// NAS's own answer, rising only when the NAS answers every listing slowly: a listing queued
-    /// behind this Mac's own jobs' reads on its SMB session is slow now and then, never all span
-    /// long); its floor, the least over `k.floor_s` on the 10-s ring within its link's own stints
+    /// (jobrt::budget::nas::Answer): its answer time, `answer_of` its listings over `k.span_s`; its
+    /// floor, the least such answer over every span of `k.floor_s` (each span's buckets of the 10-s
+    /// ring, its listings as they hold them: `samples_of`) within its link's own stints
     /// (`set_link`; none kept: the whole span), never under store::aimd::NAS_LEAST; and whether
     /// that floor is young (under `k.young_spans` of spans measured on the link within
     /// `k.floor_s`: its answers may then cut the pool's window, never grow it, as a floor taken on
-    /// a new link under load would read the load as its best). None: not measured over the span.
+    /// a new link under load would read the load as its best). None: no listing over the span but
+    /// the cache's.
     pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
-        let ms = {
-            let p = self.series.lock().ok()?.get(NAS_MS)?.points(0, 1, now.saturating_sub(k.span_s), now);
-            p.iter().map(|x| x[1]).reduce(f64::min)?
-        };
+        use jobrt::budget::nas::answer_of;
         let from = now.saturating_sub(k.floor_s);
         let spans: Vec<(u64, u64)> = {
             let g = self.root.lock().ok()?;
@@ -485,13 +493,22 @@ impl Store {
             }
         };
         let (step, _) = TIERS[1];
-        let (mut least, mut measured) = (ms, 0u64);
+        let m = (k.span_s / step).max(1) as usize;
         let s = self.series.lock().ok()?;
         let series = s.get(NAS_MS)?;
+        let ms = answer_of(
+            series.buckets(1, now.saturating_sub(k.span_s), now + 1).iter().flat_map(samples_of),
+            k.cached_ms,
+        )?;
+        let (mut least, mut measured) = (ms, 0u64);
         for (a, b) in spans {
             let b = series.buckets(1, a, b);
             measured += b.len() as u64;
-            least = b.iter().map(|x| f64::from(x.lo)).fold(least, f64::min);
+            least = b
+                .windows(m)
+                .filter(|w| w[m - 1].slot - w[0].slot == m as u64 - 1)
+                .filter_map(|w| answer_of(w.iter().flat_map(samples_of), k.cached_ms))
+                .fold(least, f64::min);
         }
         let young = measured * step < k.young_spans * k.span_s;
         Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0), young))
@@ -995,12 +1012,9 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
             let mut looked: Option<std::time::Instant> = None;
             loop {
                 let root = store.nas.lock().ok().and_then(|n| n.clone());
-                // (An answer quicker than `NAS_CACHED` never left this Mac: the SMB client's cache's.)
                 if let Some(r) = root {
-                    let (t, d) = (now_s(), super::nasread::probe(&r.path()));
-                    if d >= NAS_CACHED {
-                        store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
-                    }
+                    let t = now_s();
+                    store.record(NAS_MS, t, super::nasread::probe(&r.path()).as_secs_f64() * 1000.0);
                 }
                 // (The days archived, an hour apart: tried again an hour on when the NAS failed.)
                 let root = store.root.lock().ok().and_then(|n| n.root.clone());
@@ -1646,22 +1660,29 @@ mod tests {
         assert_eq!(Store::new(None, "m1").nas_answers(now, &k), None, "nothing measured");
     }
 
-    /// A Mac's NAS answer is the least of its span's listings: one queued now and then behind its
-    /// own jobs' reads on its SMB session (19 Nov, the mini beside its job: 1 to 2 ms, and 41 ms or
-    /// 450 ms between) isn't the NAS answering slowly; every listing slow is.
+    /// A Mac's NAS answer is the lower quartile of its span's listings, the SMB cache's left out
+    /// (jobrt::budget::nas::answer_of): one queued now and then behind its own jobs' reads on its
+    /// SMB session (19 Nov, the mini beside its job: 1 to 2 ms, and 41 ms or 450 ms between) isn't
+    /// the NAS answering slowly; most of them slow is, a quick one slipping through or not; and
+    /// its floor is the least such answer, never a cached one's.
     #[test]
-    fn a_macs_nas_answer_is_its_spans_least() {
+    fn a_macs_nas_answer_is_its_spans_lower_quartile() {
         let k = jobrt::budget::nas::Tuning::default();
         let s = Store::new(None, "m1");
         let t0 = 1_700_000_000;
-        for (i, ms) in [1.5, 41.0, 1.8, 443.5, 41.0, 1.6].into_iter().enumerate() {
-            s.record(NAS_MS, t0 + 5 * i as u64, ms);
-        }
-        assert_eq!(s.nas_answers(t0 + 29, &k).map(|a| (a.0, a.1)), Some((1.5, 2.0)), "its floor never under 2 ms");
-        for (i, ms) in [80.0, 41.0, 95.0, 443.5, 41.0, 60.0].into_iter().enumerate() {
-            s.record(NAS_MS, t0 + 30 + 5 * i as u64, ms);
-        }
-        assert_eq!(s.nas_answers(t0 + 59, &k).map(|a| (a.0, a.1)), Some((41.0, 2.0)), "slow all span long");
+        let span = |at: u64, ms: [f64; 6]| {
+            for (i, ms) in ms.into_iter().enumerate() {
+                s.record(NAS_MS, at + 5 * i as u64, ms);
+            }
+            s.nas_answers(at + 29, &k).map(|a| (a.0, a.1))
+        };
+        // (Its listings from the cache, an eighth of a ms, left out: the floor the NAS's own.)
+        assert_eq!(span(t0, [0.125, 3.0, 0.125, 3.25, 3.5, 3.0]), Some((3.0, 3.0)));
+        assert_eq!(span(t0 + 30, [3.25, 41.0, 3.5, 443.5, 41.0, 3.0]), Some((3.25, 3.0)), "queued now and then");
+        assert_eq!(span(t0 + 60, [41.0, 3.0, 60.0, 80.0, 95.0, 41.0]), Some((41.0, 3.0)), "most queued");
+        assert_eq!(span(t0 + 90, [0.125; 6]), None, "the cache's alone: no answer");
+        let all = jobrt::budget::nas::Tuning { cached_ms: 0.0, ..k };
+        assert_eq!(s.nas_answers(t0 + 119, &all).map(|a| a.0), Some(0.125), "nas-cached-ms 0: every listing counts");
     }
 
     #[test]
