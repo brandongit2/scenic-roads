@@ -1439,7 +1439,9 @@ fn remainders(
             None => {
                 let make = || {
                     let mut more = BTreeSet::new();
-                    let v = remainder_pieces(dir, path, rem, &members, folder, ctx, data, made, others, out, held, &mut more);
+                    let v = remainder_pieces(
+                        dir, path, rem, &members, folder, ctx, data, made, others, out, held, &mut more,
+                    );
                     (v, more.into_iter().collect::<Vec<Id>>())
                 };
                 let (v, more) = match ctx.kept {
@@ -1591,7 +1593,7 @@ pub const SPECK_M2: f64 = 1.0;
 /// Area `a` without its specks (`SPECK_M2`): its polygons under it, and its holes under it filled.
 fn without_specks(a: Area) -> Area {
     let m2 = |r: &geom::Ring| {
-        let lat = (r[0][1] as f64 * 1e-7).to_radians().cos();
+        let lat = (r[0][1] as f64 * 1e-7).to_radians().dcos();
         (geom::area2(r) as f64 * 0.5).abs() * (1e-7 * roadcore::geo::M_PER_DEG).powi(2) * lat
     };
     Area {
@@ -1640,7 +1642,9 @@ fn remainder_pieces(
                 dir,
                 path,
                 vec![h.clone()],
-                format!("{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"),
+                format!(
+                    "{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"
+                ),
             )]);
         }
     }
