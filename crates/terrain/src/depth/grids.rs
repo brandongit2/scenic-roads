@@ -295,7 +295,7 @@ pub fn with_estimates(
 
 /// What a plan's depth sources (`with_estimates`) hold of the lake-depth step's packs, as a digest:
 /// they're made again when it changes.
-pub fn estimates_key(manifest: &std::collections::BTreeMap<String, String>) -> String {
+pub fn estimates_key<'a>(manifest: impl buildstore::reads::Manifest<'a>) -> String {
     // (A line a pack, "<id> <tile> <content>", hashed as written: a plan asks for this with every
     // key that reads the depth's sources.)
     let n = store::naming::xxh3_text(|w| {

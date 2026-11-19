@@ -973,11 +973,11 @@ fn end_part() {
 
 /// The newest pass before `date`'s with outlines in `manifest`: its date and their content name.
 pub fn previous_outlines<'a>(
-    manifest: &'a std::collections::BTreeMap<String, String>,
+    manifest: impl buildstore::reads::Manifest<'a>,
     date: &str,
 ) -> Option<(&'a str, &'a str)> {
     manifest
-        .iter()
+        .under("sources/osm/")
         .filter_map(|(k, v)| match k.split('/').collect::<Vec<_>>()[..] {
             ["sources", "osm", d, "outlines"] if d < date => Some((d, v.as_str())),
             _ => None,

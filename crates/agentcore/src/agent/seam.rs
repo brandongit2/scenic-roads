@@ -382,6 +382,18 @@ pub struct PassAsk<'a> {
 /// Each region's steps, by region and step: its targets done of all (`PlanHeld::region_counts`).
 pub type RegionCounts = BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>;
 
+/// What the last plan's diff would have kept of the round before's keys, by what each read
+/// (docs/incremental-planning.md step 3, in shadow: the plan is made whole all the same), against
+/// how they came out (`PlanHeld::shadow`). `said`: the line the agent's log has of it. The keys the
+/// diff would have kept that came out changed (a read the recording missed), and those it moved that
+/// came out the same (a read that changed under a key it didn't move), "<step> <target>" each.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shadow {
+    pub said: String,
+    pub kept_changed: Vec<String>,
+    pub moved_unchanged: Vec<String>,
+}
+
 /// What the planner carries for the plan, opaque to it (docs/crates.md §6.3, 6f2), for its life:
 /// the terrain packs' indexes, the pass's reaches, the last plan with its keys. A plan is answered
 /// here, and so is what shares its keys, so the runtime holds no key's context.
@@ -406,6 +418,9 @@ pub trait PlanHeld: Send {
     /// The plan of this round, with the depth's targets for GC. `refilter`: the kept plan again,
     /// while its keys' context reads the same, instead of planning.
     fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<super::gc::DepthKeep>);
+    /// What the last plan's diff would have kept of the keys before it (`Shadow`); None before a
+    /// second plan, or after a filtering again (no keys derived).
+    fn shadow(&self) -> Option<Shadow>;
     /// Why the regions' z6 tiles wait for the heritage registers.
     fn heritage_waits(&self, r: &Round) -> Option<String>;
     /// The timetables' to-do list's work.

@@ -235,7 +235,7 @@ impl RawSource for Fills<'_> {
 /// (inputs::lakefill::current, filled_pin); None
 /// without a basemap. What the depth's keys name the water by (agent::build: its digests,
 /// codecs::terrain_water::WaterIdx).
-pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
+pub fn water_source_pin<'a>(m: impl buildstore::reads::Manifest<'a>) -> Option<String> {
     let (_, c) = water_pin(m)?;
     Some(inputs::lakefill::filled_pin(c, inputs::lakefill::current(m).map(|(_, f)| f)))
 }

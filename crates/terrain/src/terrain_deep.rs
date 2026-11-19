@@ -21,7 +21,7 @@
 
 use anyhow::Result;
 use buildstore::out::Out;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // The zoom of a deep pack's tile (a job's target): inputs::dem::zoom's, kept at this path.
@@ -289,10 +289,10 @@ pub fn pack_tile(l: &str) -> Option<(u32, u32)> {
 
 /// The deep packs the manifest names under tile `z/x/y` (z at most `PACK_Z`), and the retired
 /// ones there (`RETIRED`).
-pub fn named_under(m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Vec<String> {
+pub fn named_under<'a>(m: impl buildstore::reads::Manifest<'a>, z: u8, x: u32, y: u32) -> Vec<String> {
     [PREFIX, RETIRED]
         .into_iter()
-        .flat_map(|p| m.range(p.to_string()..).take_while(move |(l, _)| l.starts_with(p)))
+        .flat_map(|p| m.under(p))
         .filter(|(l, _)| pack_tile(l).is_some_and(|f| (f.0 >> (PACK_Z - z), f.1 >> (PACK_Z - z)) == (x, y)))
         .map(|(l, _)| l.clone())
         .collect()
@@ -313,15 +313,15 @@ pub fn mid_tile(l: &str) -> Option<(u32, u32)> {
 }
 
 /// The deep mids the manifest names under z6 tile `t`, by z10 tile.
-pub fn mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
+pub fn mids_under<'a>(m: impl buildstore::reads::Manifest<'a>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
     named_z10_under(m, t, mid_logical)
 }
 
 /// The z10 tiles under z6 tile `t` whose file `logical` names (`logical(x, y)`) the manifest
 /// holds, with its content, in the manifest's order: each of the z6 tile's 256 looked up, never
 /// every such name of the manifest read (task #1457: every z6 tile's key read them all).
-pub fn named_z10_under(
-    m: &BTreeMap<String, String>,
+pub fn named_z10_under<'a>(
+    m: impl buildstore::reads::Manifest<'a>,
     t: (u32, u32),
     logical: impl Fn(u32, u32) -> String,
 ) -> Vec<((u32, u32), String)> {

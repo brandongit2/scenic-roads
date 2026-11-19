@@ -47,6 +47,7 @@ use agentcore::agent::every::{self, Place};
 use agentcore::agent::forecast::ReadTarget;
 use agentcore::agent::seam::{Along, Left};
 pub use agentcore::pool::records::current;
+use buildstore::reads::Manifest;
 use codecs::tile::TileId;
 use serde::{Deserialize, Serialize};
 
@@ -556,7 +557,7 @@ pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<St
             Read::Mids { step: s, named, .. } => reads.extend(named(t, x)?.into_iter().map(|l| format!("mid {s} {l}"))),
             Read::Whole { step: s, grain } => match grain {
                 Grain::Outputs => {
-                    let all: Vec<String> = whole_outputs(s, x.m).collect();
+                    let all = whole_outputs(s, x.m);
                     if all.is_empty() {
                         reads.push(format!("w {s} -"));
                     }
@@ -598,7 +599,7 @@ pub fn unknown_reads(step: &str, t: &str, x: &super::build::KeyCtx) -> Vec<Strin
 
 /// Target `u` of `step`'s outputs as a key names them: `<logical>=<content>` per one in the
 /// manifest `m` (`output_names`), `-` with none.
-fn outputs_of(step: &str, u: &str, m: &std::collections::BTreeMap<String, String>) -> impl Iterator<Item = String> {
+fn outputs_of<'a>(step: &str, u: &str, m: impl Manifest<'a>) -> impl Iterator<Item = String> {
     let mut v: Vec<String> = output_names(step, u)
         .or_else(|| work_names(step, u))
         .unwrap_or_else(|| panic!("{step}'s outputs are named (output_names): a read of its targets keys on them"))
@@ -619,12 +620,9 @@ fn work_names(step: &str, u: &str) -> Option<Vec<String>> {
 }
 
 /// Every output of `step` in the manifest `m` (its write-set's names: `writes`), `<logical>=<content>`.
-fn whole_outputs<'a>(
-    step: &'a str,
-    m: &'a std::collections::BTreeMap<String, String>,
-) -> impl Iterator<Item = String> + 'a {
-    let w = row(step).map(|r| r.writes);
-    m.iter().filter(move |(l, _)| w.is_some_and(|w| w(l, false))).map(|(l, c)| format!("{l}={c}"))
+fn whole_outputs<'a>(step: &str, m: impl Manifest<'a>) -> Vec<String> {
+    let Some(w) = row(step).map(|r| r.writes) else { return Vec::new() };
+    m.matching(w).map(|(l, c)| format!("{l}={c}")).collect()
 }
 
 /// The steps a target of `step` reads whole (`Read::Whole`), in declared order.

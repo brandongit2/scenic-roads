@@ -1508,7 +1508,7 @@ pub fn outlines_of(manifest: &BTreeMap<String, String>) -> Option<&String> {
 }
 
 /// Whether the records say the build reads the declared datasets (`@switched`).
-pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
+pub fn switched<'a>(manifest: impl buildstore::reads::Manifest<'a>) -> bool {
     manifest.contains_key(&super::switched_logical(UNIT))
 }
 

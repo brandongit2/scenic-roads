@@ -1277,7 +1277,7 @@ pub fn deep_mid_tile(l: &str) -> Option<(u32, u32)> {
 }
 
 /// The deep mids the manifest names under z6 tile `t`, by z10 tile.
-pub fn deep_mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
+pub fn deep_mids_under<'a>(m: impl buildstore::reads::Manifest<'a>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
     crate::terrain_deep::named_z10_under(m, t, deep_mid_logical)
 }
 

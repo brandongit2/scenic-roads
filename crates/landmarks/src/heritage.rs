@@ -332,9 +332,8 @@ pub fn parts_logical(date: &str, x: u32, y: u32) -> String {
     format!("work/heritage/{date}/parts/6-{x}-{y}")
 }
 /// The newest pass with heritage slices in manifest `m`.
-pub fn latest_date(m: &BTreeMap<String, String>) -> Option<String> {
-    m.range("work/heritage/".to_string()..)
-        .take_while(|(l, _)| l.starts_with("work/heritage/"))
+pub fn latest_date<'a>(m: impl buildstore::reads::Manifest<'a>) -> Option<String> {
+    m.under("work/heritage/")
         .filter(|(l, _)| l.contains("/pos/"))
         .filter_map(|(l, _)| l.split('/').nth(2).map(str::to_string))
         .max()

@@ -7,6 +7,7 @@
 //! named on 4 Nov have 700 MB of indexes kept, 260 MB held, read over SMB a few at a time. A kept
 //! index whose pack the manifest no longer names goes once it's been untouched for `KEEP_GONE`.
 
+use buildstore::reads::{Manifest, Reads};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -176,9 +177,29 @@ impl TerrainTiles {
         h.finish()
     }
 
+    /// A digest of what of it the manifest's entries don't show: what it can't read now (the packs'
+    /// indexes and water digests, the declarations, the enclosed seas, the coverage records). What
+    /// it holds is by content name, which the keys read in the manifest; a key that met something it
+    /// can't read recorded so (`Manifest::met_load`), and is moved when this changes
+    /// (buildstore::reads::Diff::load).
+    pub fn load_state(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.unread.hash(&mut h);
+        self.geoid.as_ref().filter(|(_, g)| g.is_none()).map(|(c, _)| c).hash(&mut h);
+        self.buildings.as_ref().filter(|(_, b)| b.is_none()).map(|(c, _)| c).hash(&mut h);
+        self.depth.as_ref().filter(|(_, d)| d.is_none()).map(|(c, _)| c).hash(&mut h);
+        self.enclosed.as_ref().filter(|(_, e)| e.is_none()).map(|(c, _)| c).hash(&mut h);
+        self.sets.as_ref().filter(|(_, s)| s.is_none()).map(|(c, _)| c).hash(&mut h);
+        let mut a: Vec<&String> = self.asked.iter().filter(|(_, r)| r.is_none()).map(|(c, _)| c).collect();
+        a.sort_unstable();
+        a.hash(&mut h);
+        h.finish()
+    }
+
     /// The terrain packs `m` names: (logical, content name).
     pub fn packs(m: &BTreeMap<String, String>) -> impl Iterator<Item = (&String, &String)> {
-        m.range("layers/terrain/".to_string()..).take_while(|(l, _)| l.starts_with("layers/terrain/"))
+        m.under("layers/terrain/")
     }
 
     /// Holds the index of every terrain pack `m` names, and only those: each read from where it's
@@ -297,7 +318,7 @@ impl TerrainTiles {
 
     /// The declared geoid sources of the accepted sources `m` names (inputs::inputs::sources::geoid):
     /// none accepted, none; None while they can't be read now (the terrain's keys naming them wait).
-    pub fn geoid(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<inputs::inputs::sources::Source>>> {
+    pub fn geoid<'a>(&self, m: impl Manifest<'a>) -> Option<std::sync::Arc<Vec<inputs::inputs::sources::Source>>> {
         let Some(want) = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT)) else {
             return Some(Default::default());
         };
@@ -306,7 +327,10 @@ impl TerrainTiles {
             // (Tests holding none: none declared.)
             #[cfg(test)]
             None => Some(Default::default()),
-            _ => None,
+            _ => {
+                m.met_load();
+                None
+            }
         }
     }
 
@@ -386,7 +410,7 @@ impl TerrainTiles {
     fn load_asked(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         use rayon::prelude::*;
         self.root = Some(root.clone());
-        let all = || m.range("work/asked/".to_string()..).take_while(|(l, _)| l.starts_with("work/asked/"));
+        let all = || m.under("work/asked/");
         // (The targets' records: their heads.)
         let heads: BTreeSet<&String> = all().filter(|(l, _)| !buildstore::asked::is_world(l)).map(|(_, c)| c).collect();
         self.asked_heads.retain(|c, _| heads.contains(c));
@@ -484,8 +508,8 @@ impl TerrainTiles {
     /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`
     /// no longer names them (their pass gone: its answer is `inputs::rail::GONE`), None while they
     /// can't be read now.
-    pub fn outlines(&self, m: &BTreeMap<String, String>, c: &str) -> Option<Option<buildstore::outlines::Outlines>> {
-        if !m.values().any(|v| v == c) {
+    pub fn outlines<'a>(&self, m: impl Manifest<'a>, c: &str) -> Option<Option<buildstore::outlines::Outlines>> {
+        if !m.holds(c) {
             return Some(None);
         }
         let root = self.root.as_ref()?;
@@ -505,11 +529,14 @@ impl TerrainTiles {
 
     /// The seas closed off from the world ocean `m` names (Some(None): none written); None while
     /// they can't be read now.
-    pub fn enclosed(&self, m: &BTreeMap<String, String>) -> Option<Option<std::sync::Arc<inputs::water::Enclosed>>> {
+    pub fn enclosed<'a>(&self, m: impl Manifest<'a>) -> Option<Option<std::sync::Arc<inputs::water::Enclosed>>> {
         let Some(c) = m.get(inputs::water::ENCLOSED) else { return Some(None) };
         match &self.enclosed {
             Some((k, Some(e))) if k == c => Some(Some(e.clone())),
-            _ => None,
+            _ => {
+                m.met_load();
+                None
+            }
         }
     }
 
@@ -521,14 +548,14 @@ impl TerrainTiles {
 
     /// What the depth sources are held by (`depth`): the accepted sources' index content name and the
     /// lake-depth packs' digest; None with no sources accepted.
-    fn depth_key(m: &BTreeMap<String, String>) -> Option<String> {
+    fn depth_key<'a>(m: impl Manifest<'a>) -> Option<String> {
         let want = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT))?;
         Some(format!("{want} {}", terrain::depth::grids::estimates_key(m)))
     }
 
     /// What the declared sets are read from: the accepted elevation index `m` names and the geoid
     /// sources (`geoid`; another source's declaration changed, they're as they were).
-    fn sets_from(&self, m: &BTreeMap<String, String>) -> Option<String> {
+    fn sets_from<'a>(&self, m: impl Manifest<'a>) -> Option<String> {
         let e = m.get(&inputs::inputs::logical(inputs::inputs::elevation::UNIT))?;
         let g = self.geoid(m).map_or_else(
             || "geoid unread".to_string(),
@@ -554,7 +581,7 @@ impl TerrainTiles {
 
     /// The declared elevation datasets (terrain::terrain_zoom: each place's finest zoom), of the
     /// accepted versions `m` names: none accepted, an empty list; None while they can't be read now.
-    pub fn zoom_sets(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<terrain::terrain_zoom::Set>>> {
+    pub fn zoom_sets<'a>(&self, m: impl Manifest<'a>) -> Option<std::sync::Arc<Vec<terrain::terrain_zoom::Set>>> {
         let Some(want) = self.sets_from(m) else {
             #[cfg(test)]
             return Some(std::sync::Arc::new(terrain::terrain_zoom::test_world(12)));
@@ -566,16 +593,19 @@ impl TerrainTiles {
             // (Tests hold none: one dataset holding the world, every place's finest zoom z12.)
             #[cfg(test)]
             None => Some(std::sync::Arc::new(terrain::terrain_zoom::test_world(12))),
-            _ => None,
+            _ => {
+                m.met_load();
+                None
+            }
         }
     }
 
     /// The terrain-deep targets and their levels' digests of coverage `cov` and the declared sets
     /// of the versions `m` names (`zoom_sets`), kept by both: worked out once for every plan and
     /// key that asks while neither changes; None while the sets can't be read now.
-    pub fn deep<'a>(
+    pub fn deep<'a, 'm>(
         &self,
-        m: &BTreeMap<String, String>,
+        m: impl Manifest<'m>,
         cov: &'a buildstore::coverage::Coverage,
     ) -> Option<terrain::terrain_deep::Deep<'a>> {
         Some(self.deep.get(cov, self.zoom_sets(m)?))
@@ -589,16 +619,16 @@ impl TerrainTiles {
 
     /// The declared depth sources of the accepted sources `m` names: none declared, an empty list;
     /// None while they can't be read now (the depth's work waits).
-    pub fn depth(
-        &self,
-        m: &BTreeMap<String, String>,
-    ) -> Option<std::sync::Arc<Vec<terrain::depth::grids::DepthSource>>> {
+    pub fn depth<'a>(&self, m: impl Manifest<'a>) -> Option<std::sync::Arc<Vec<terrain::depth::grids::DepthSource>>> {
         let Some(key) = Self::depth_key(m) else { return Some(Default::default()) };
         match &self.depth {
             Some((c, Some(d))) if *c == key => Some(d.clone()),
             #[cfg(test)]
             None => Some(Default::default()),
-            _ => None,
+            _ => {
+                m.met_load();
+                None
+            }
         }
     }
 
@@ -620,14 +650,14 @@ impl TerrainTiles {
 
     /// The declared buildings source's release, of the accepted sources `m` names; None while
     /// there's none, or it can't be read now (the z6 tiles' keys wait).
-    pub fn buildings_release(&self, m: &BTreeMap<String, String>) -> Option<&str> {
+    pub fn buildings_release<'a>(&self, m: impl Manifest<'a>) -> Option<&str> {
         self.keyed(m).map(|k| k.release.as_str())
     }
 
     /// What the keys name of the declared sources, of the accepted sources `m` names; None while
     /// there's none, or they can't be read now (the z6 tiles' and tree cover's keys wait). Tests holding
     /// none: the staged declarations' (nothing beside the release).
-    pub fn keyed(&self, m: &BTreeMap<String, String>) -> Option<&KeyedSources> {
+    pub fn keyed<'a>(&self, m: impl Manifest<'a>) -> Option<&KeyedSources> {
         #[cfg(test)]
         if self.buildings.is_none() {
             static TEST: std::sync::OnceLock<KeyedSources> = std::sync::OnceLock::new();
@@ -640,7 +670,10 @@ impl TerrainTiles {
         let want = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT))?;
         match &self.buildings {
             Some((c, Some(k))) if c == want => Some(k),
-            _ => None,
+            _ => {
+                m.met_load();
+                None
+            }
         }
     }
 
@@ -653,7 +686,7 @@ impl TerrainTiles {
     /// What a terrain target's key names of the elevation pool over box `b` (west, south, east,
     /// north): the held datasets meeting it (inputs::dem::declared::meeting), as the roads' keys
     /// name them; None while they can't be told (the terrain's keys wait).
-    pub fn terrain_datasets(&self, m: &BTreeMap<String, String>, b: [f64; 4]) -> Option<String> {
+    pub fn terrain_datasets<'a>(&self, m: impl Manifest<'a>, b: [f64; 4]) -> Option<String> {
         // (Tests holding none: `TEST_SOURCES`.)
         #[cfg(test)]
         if self.elevation.is_none() {
@@ -665,7 +698,7 @@ impl TerrainTiles {
 
     /// The declared elevation datasets the z6 tiles' keys name: None before the build reads them; an
     /// error while their accepted version can't be read.
-    pub fn elevation(&self, m: &BTreeMap<String, String>) -> Result<Option<std::sync::Arc<Elevation>>, Unread> {
+    pub fn elevation<'a>(&self, m: impl Manifest<'a>) -> Result<Option<std::sync::Arc<Elevation>>, Unread> {
         use inputs::inputs::elevation;
         if !elevation::switched(m) {
             return Ok(None);
@@ -675,17 +708,20 @@ impl TerrainTiles {
         })?;
         match &self.elevation {
             Some((c, e, _)) if c == want => Ok(Some(e.clone())),
-            _ => Err(Unread(format!(
-                "the elevation datasets' index {want} isn't read{}",
-                self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()
-            ))),
+            _ => {
+                m.met_load();
+                Err(Unread(format!(
+                    "the elevation datasets' index {want} isn't read{}",
+                    self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()
+                )))
+            }
         }
     }
 
     /// Where the declared elevation datasets `m` names are fine (inputs::dem::spacing): none before
     /// the build reads them or while they can't be read (every way at the coarse spacing; the z6
     /// tiles wait).
-    pub fn spacing(&self, m: &BTreeMap<String, String>) -> std::sync::Arc<inputs::dem::spacing::Fine> {
+    pub fn spacing<'a>(&self, m: impl Manifest<'a>) -> std::sync::Arc<inputs::dem::spacing::Fine> {
         match (self.elevation(m), &self.elevation) {
             (Ok(Some(_)), Some((_, _, fine))) => fine.clone(),
             _ => Default::default(),
@@ -695,9 +731,7 @@ impl TerrainTiles {
     /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
     /// with the next load, its targets' keys unknown meanwhile).
     fn load_water(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let want: BTreeSet<&str> = m
-            .range(codecs::terrain_water::IDX_PREFIX.to_string()..)
-            .take_while(|(l, _)| l.starts_with(codecs::terrain_water::IDX_PREFIX))
+        let want: BTreeSet<&str> = m.under(codecs::terrain_water::IDX_PREFIX)
             .map(|(_, c)| c.as_str())
             .collect();
         self.water.retain(|c, _| want.contains(c.as_str()));
@@ -741,7 +775,7 @@ impl TerrainTiles {
     }
 
     /// The water digests `m` names for the water source pinned `pin` (None: none, or not read now).
-    pub fn water_idx(&self, m: &BTreeMap<String, String>, pin: &str) -> Option<&codecs::terrain_water::WaterIdx> {
+    pub fn water_idx<'a>(&self, m: impl Manifest<'a>, pin: &str) -> Option<&codecs::terrain_water::WaterIdx> {
         self.water.get(m.get(&codecs::terrain_water::idx_logical(pin))?).filter(|w| w.pin == pin)
     }
 
@@ -771,9 +805,7 @@ impl TerrainTiles {
         let named: Vec<(&str, BTreeSet<&str>)> = KEPT
             .iter()
             .map(|&(ext, p)| {
-                let hs = m
-                    .range(p.to_string()..)
-                    .take_while(|(l, _)| l.starts_with(p))
+                let hs = m.under(&p)
                     .filter_map(|(_, c)| store::naming::parse_content_name(c))
                     .map(|c| c.hash16)
                     .collect();
@@ -795,19 +827,19 @@ impl TerrainTiles {
     }
 
     /// Lookups in the packs `m` names.
-    pub fn reader<'a>(&'a self, m: &'a BTreeMap<String, String>) -> Reader<'a> {
-        Reader { tiles: self, m, packs: HashMap::new() }
+    pub fn reader<'a, 'm: 'a>(&'a self, m: impl Manifest<'m>) -> Reader<'a> {
+        Reader { tiles: self, m: m.view(), packs: HashMap::new() }
     }
 
     /// Tile (z, x, y)'s XXH3 as the packs `m` names hold it (None: there's no such tile).
-    pub fn hash(&self, m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Result<Option<u64>, Unread> {
+    pub fn hash<'m>(&self, m: impl Manifest<'m>, z: u8, x: u32, y: u32) -> Result<Option<u64>, Unread> {
         self.reader(m).hash(z, x, y)
     }
 
     /// The tile read for (z, x, y) where a missing tile is its nearest ancestor's, down to
     /// slope_pack::fallback_floor's zoom (slope_pack::Terrain::tile): the tile itself if there is
     /// one, else that ancestor.
-    pub fn resolve(&self, m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Result<Option<Tile>, Unread> {
+    pub fn resolve<'m>(&self, m: impl Manifest<'m>, z: u8, x: u32, y: u32) -> Result<Option<Tile>, Unread> {
         self.reader(m).resolve(z, x, y)
     }
 
@@ -960,7 +992,7 @@ fn read(dir: Option<&Path>, root: &store::nasfs::NasRoot, content: &str) -> Resu
 /// tiles from a few packs).
 pub struct Reader<'a> {
     tiles: &'a TerrainTiles,
-    m: &'a BTreeMap<String, String>,
+    m: Reads<'a>,
     /// By pack (its root tile: zoom 0, 3 or 6, x, y).
     packs: HashMap<(u8, u32, u32), Found<'a>>,
 }
@@ -981,10 +1013,13 @@ impl<'a> Reader<'a> {
                 let Some(c) = m.get(&format!("layers/terrain/{scope}/{pz}-{px}-{py}")) else { return Ok(None) };
                 match tiles.held.get(c) {
                     Some(t) => Ok(Some(&t[..])),
-                    None => Err(Unread(format!(
-                        "{c}: {}",
-                        tiles.unread.get(c).map_or("its index isn't read yet", String::as_str)
-                    ))),
+                    None => {
+                        m.met_load();
+                        Err(Unread(format!(
+                            "{c}: {}",
+                            tiles.unread.get(c).map_or("its index isn't read yet", String::as_str)
+                        )))
+                    }
                 }
             })
             .clone()

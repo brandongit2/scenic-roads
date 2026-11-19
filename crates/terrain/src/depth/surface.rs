@@ -160,7 +160,7 @@ pub fn lo_packs(e: &Enclosed, t: (u8, u32, u32)) -> Vec<(u32, u32)> {
 /// lines of the records `m`: the enclosed seas' file, and the terrain's lo packs holding the tiles
 /// it may read (`lo_packs`) that `m` names; none where its windows meet no enclosed sea (`e`, those
 /// `m` names: None, none written).
-pub fn reads(m: &BTreeMap<String, String>, e: Option<&Enclosed>, t: (u8, u32, u32)) -> Reads {
+pub fn reads<'a>(m: impl buildstore::reads::Manifest<'a>, e: Option<&Enclosed>, t: (u8, u32, u32)) -> Reads {
     let (Some(e), Some(c)) = (e, m.get(inputs::water::ENCLOSED)) else { return Reads::default() };
     if !meets(e, t) {
         return Reads::default();

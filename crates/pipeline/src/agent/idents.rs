@@ -4,6 +4,7 @@
 //! differently. None while it can't be worked out now: the target's key is unknown and it waits.
 
 use super::build::KeyCtx;
+use buildstore::reads::Manifest;
 use codecs::tile::TileId;
 use std::collections::BTreeMap;
 
@@ -55,7 +56,7 @@ fn required(x: &KeyCtx, logicals: impl IntoIterator<Item = String>) -> Option<Ve
 pub fn pieces(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let p = format!("sources/osm/{}/pieces/", x.date);
     let v: Vec<String> =
-        x.m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(_, c)| c.clone()).collect();
+        x.m.under(&p).map(|(_, c)| c.clone()).collect();
     (!v.is_empty()).then_some(v)
 }
 
@@ -96,8 +97,7 @@ pub fn inland_water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let prefix = format!("layers/{}/", inputs::water::LAYER);
     x.m.get(&format!("{prefix}root/0-0-0"))?;
     Some(
-        x.m.range(prefix.clone()..)
-            .take_while(|(l, _)| l.starts_with(&prefix))
+        x.m.under(&prefix)
             .map(|(l, c)| format!("{l}={c}"))
             .collect(),
     )
@@ -115,7 +115,7 @@ pub fn overture_work(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(
         [bld::bld::WORK, bld::bld::SIDE]
             .into_iter()
-            .flat_map(|prefix| x.m.range(prefix.to_string()..).take_while(move |(l, _)| l.starts_with(prefix)))
+            .flat_map(|prefix| x.m.under(&prefix))
             .map(|(l, c)| format!("{l}={c}"))
             .collect(),
     )
@@ -204,7 +204,7 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .also
         .iter()
         .filter_map(|(q, _)| inputs::rail::parse_countries_question(q))
-        .map(|(o, _)| x.m.values().any(|v| *v == o))
+        .map(|(o, _)| x.m.holds(&o))
         .collect();
     let l = x.tiles.memo(&format!("coverage:asked {t}"), &format!("{v} {c} {named:?}"), || {
         line(x.cov, Some((c, Prev::Record(&r))), &reask).ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
@@ -242,12 +242,12 @@ fn target_asked(
 
 /// `target_asked` of the coverage `cov`, the records `m` names and the heads and memo of `tiles`
 /// (`warm_asked`'s, on any thread).
-fn asked_line(
+fn asked_line<'m>(
     step: &str,
     t: &str,
     geo: String,
     cov: &buildstore::coverage::Coverage,
-    m: &BTreeMap<String, String>,
+    m: impl Manifest<'m>,
     tiles: &super::tiles::TerrainTiles,
     reask: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
@@ -285,7 +285,7 @@ pub fn warm_asked(x: &KeyCtx) {
     let mut each: Vec<(&str, String)> = Vec::new();
     for step in super::steps::ASKED_PER_TARGET {
         let p = format!("work/asked/{step}/");
-        for (l, _) in m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)) {
+        for (l, _) in m.under(&p) {
             each.push((step, l[p.len()..].replace('-', "/")));
         }
     }
@@ -307,7 +307,8 @@ pub fn warm_asked(x: &KeyCtx) {
 /// `warm_asked`'s work: each of `each` (step, target) asked again where its geometry moved.
 fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) {
     use rayon::prelude::*;
-    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
+    // (A cache filled, on other threads: each key finds its line by what it reads itself.)
+    let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
     let bld: BTreeMap<(u32, u32), Option<String>> = if each.iter().any(|(s, _)| *s == "bldtiles") {
         super::build::bld_tiles(cov).iter().map(|(a, b, g)| ((*a, *b), g.clone())).collect()
     } else {
@@ -450,7 +451,7 @@ pub fn heritage_areas(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The built z6 tiles (`base/`), by name: where the overlays' hi tiles are.
 pub fn base_tiles(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(x.m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.clone()).collect())
+    Some(x.m.under("base/").map(|(l, _)| l.clone()).collect())
 }
 
 /// The 3D buildings' declared release (`inputs` "bld-key": bld::bld::sources::declared), "-"
@@ -702,7 +703,7 @@ pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// What a lake-depth z6 tile's key reads of the terrain by its packs, its cheap test
 /// (buildstore::asked's `geo`): the hi packs of it and its ring (terrain::depth::lakes::ring), by
 /// content, hashed. The same packs, the same answers to what its run asked of them.
-pub fn lake_ring_geo(m: &BTreeMap<String, String>, t: (u32, u32)) -> String {
+pub fn lake_ring_geo<'m>(m: impl Manifest<'m>, t: (u32, u32)) -> String {
     let lines: Vec<String> = terrain::depth::lakes::ring(t)
         .into_iter()
         .map(|(a, b)| {
@@ -725,10 +726,10 @@ pub fn lake_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// `lake_terrain`'s line of the coverage `cov` (unread: no question of it), the records `m` names
 /// and the indexes, heads and memo of `tiles` (`warm_lakes`', on any thread).
-fn lake_line(
+fn lake_line<'m>(
     t: &str,
     cov: &buildstore::coverage::Coverage,
-    m: &BTreeMap<String, String>,
+    m: impl Manifest<'m>,
     tiles: &super::tiles::TerrainTiles,
 ) -> Option<String> {
     use terrain::depth::lakes::{question_tile, ring, tile_answer, TERRAIN_Z};
@@ -754,8 +755,9 @@ fn lake_line(
 /// the key that reads it.
 pub fn warm_lakes(x: &KeyCtx) {
     use rayon::prelude::*;
-    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
-    let named = |p: &'static str| m.range(p.to_string()..).take_while(move |(l, _)| l.starts_with(p));
+    // (A cache filled, on other threads: each key finds its line by what it reads itself.)
+    let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
+    let named = |p: &'static str| m.under(p);
     let asked = "work/asked/lake-depth/";
     let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
     if each.is_empty() {
@@ -988,7 +990,7 @@ pub fn polar_blocks(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 fn polar_packs(kind: &str, t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let pole = roadcore::polar::Pole::of_letter(t)?;
     let pre = format!("layers/{}/polar/", terrain::polar::layer(kind, pole));
-    Some(x.m.range(pre.clone()..).take_while(|(l, _)| l.starts_with(&pre)).map(|(l, c)| format!("{l}={c}")).collect())
+    Some(x.m.under(&pre).map(|(l, c)| format!("{l}={c}")).collect())
 }
 
 /// A pole's terrain packs (`polar_packs`).
@@ -1101,7 +1103,7 @@ pub fn road_ids(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// before any.
 pub fn built_tiles(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let v: Vec<String> = landmarks::ovconv::cover_of(
-        x.m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l),
+        x.m.under("base/").map(|(l, _)| l),
     )
     .iter()
     .map(|(a, b)| format!("6/{a}/{b}"))

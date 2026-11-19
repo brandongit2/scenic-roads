@@ -9,7 +9,7 @@ use agentcore::agent::jobs::Work;
 use agentcore::agent::nasread;
 use agentcore::agent::progress::{Item, Line};
 use agentcore::agent::seam::{
-    Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round,
+    Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round, Shadow,
 };
 use agentcore::pool::records::Keys;
 use roads::reach::Reaches;
@@ -197,6 +197,7 @@ impl Plan for ThePlan {
             reach_now: RefCell::default(),
             kept: RefCell::default(),
             memo: RefCell::default(),
+            read_sets: RefCell::default(),
         })
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -342,7 +343,133 @@ struct Held {
     /// The plan's keys, handed on to what derives keys of the same context this round, and kept with
     /// the plan. It's taken again only while its context reads the same (`KeyMemo::serves`): a pass
     /// newly on the NAS, or an index read that couldn't be before, and `build::plan` is made again.
+    /// Recording what each key reads (`KeyMemo::recording`), for `read_sets`.
     memo: RefCell<Option<KeyMemo>>,
+    /// The read sets, in shadow (docs/incremental-planning.md step 3).
+    read_sets: RefCell<ReadSetsHeld>,
+}
+
+/// What a plan's keys read their context as, for the next plan's diff: the manifest and the
+/// planner's inputs as its round read them, the rest of its context as one digest (`rest`: the
+/// coverage's version, the pass, the reaches' content name: what changing moves every key) and what
+/// of the terrain's state the entries don't show (`TerrainTiles::load_state`).
+struct Context {
+    manifest: BTreeMap<String, String>,
+    inputs: BTreeMap<String, String>,
+    rest: u64,
+    load: u64,
+}
+
+impl Context {
+    fn of(r: &Round, reach: Option<&str>, load: u64) -> Context {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (r.cov.version(), r.date, reach).hash(&mut h);
+        Context { manifest: r.manifest.clone(), inputs: r.inputs.clone(), rest: h.finish(), load }
+    }
+}
+
+/// The read sets in shadow (docs/incremental-planning.md step 3): the context of the last plan made
+/// (`round`, while its keys serve its round); once the next starts, its round's keys and what each
+/// read (`last`, `KeyMemo::read_sets`: the reverse index built), until that plan's diff tells which
+/// it would have kept (`said`); then let go.
+#[derive(Default)]
+struct ReadSetsHeld {
+    round: Option<Context>,
+    last: Option<(Context, build::ReadSets, std::time::Duration)>,
+    said: Option<Shadow>,
+}
+
+/// How many of the keys `say` names it lists by name.
+const SAID_KEYS: usize = 5;
+
+impl ReadSetsHeld {
+    /// The round's keys (`memo`) let go: what they read kept, with its reverse index.
+    fn let_go(&mut self, memo: Option<KeyMemo>) {
+        self.last = None;
+        let (Some(memo), Some(at)) = (memo, self.round.take()) else { return };
+        let t = std::time::Instant::now();
+        self.last = memo.read_sets().map(|s| (at, s, t.elapsed()));
+    }
+
+    /// A plan of context `now` made with `memo`: of the round before's keys, those its diff would
+    /// have kept, against what came out (`Shadow`), logged; `now` kept for the next.
+    fn planned(&mut self, now: Context, memo: &KeyMemo) {
+        self.said = self.last.take().map(|(at, sets, built)| compare(&at, &sets, built, &now, memo));
+        if let Some(s) = &self.said {
+            eprintln!("agent: {}", s.said);
+        }
+        self.round = Some(now);
+    }
+}
+
+/// Of the keys `sets` read in context `at`, those the diff to `now` would have kept, against how
+/// `memo` (the plan of `now`) has them. The rest of the context changed (`Context::rest`), none
+/// would be.
+fn compare(
+    at: &Context,
+    sets: &build::ReadSets,
+    built: std::time::Duration,
+    now: &Context,
+    memo: &KeyMemo,
+) -> Shadow {
+    use buildstore::reads::{Changes, Diff};
+    let t = std::time::Instant::now();
+    let d = Diff {
+        manifest: Changes::of(&at.manifest, &now.manifest),
+        inputs: Changes::of(&at.inputs, &now.inputs),
+        load: at.load != now.load,
+    };
+    let all = at.rest != now.rest;
+    let moved = sets.graph.moved(&d);
+    let diffed = t.elapsed();
+    let (mut keep, mut asked, mut same) = (0, 0, 0);
+    let (mut kept_changed, mut moved_unchanged) = (Vec::new(), Vec::new());
+    for ((step, target), (k, node)) in &sets.keys {
+        let kept = !all && !moved[*node as usize] && k.is_some();
+        keep += usize::from(kept);
+        let Some(again) = memo.derived(step, target) else { continue };
+        asked += 1;
+        let unchanged = k.is_some() && *k == again;
+        same += usize::from(unchanged);
+        match (kept, unchanged) {
+            (true, false) => kept_changed.push(format!("{step} {target}")),
+            (false, true) => moved_unchanged.push(format!("{step} {target}")),
+            _ => {}
+        }
+    }
+    kept_changed.sort_unstable();
+    moved_unchanged.sort_unstable();
+    let size = sets.graph.size();
+    let by_step = |v: &[String]| -> String {
+        let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+        for k in v {
+            *n.entry(k.split(' ').next().unwrap_or_default()).or_default() += 1;
+        }
+        let steps: Vec<String> = n.iter().map(|(s, c)| format!("{s} {c}")).collect();
+        let named: Vec<&str> = v.iter().take(SAID_KEYS).map(String::as_str).collect();
+        format!("{} ({}: {})", v.len(), steps.join(", "), named.join(", "))
+    };
+    let said = format!(
+        "read sets (shadow): the round before's {} keys read {} names, {} reads, {} kids (the reverse index likewise),          {:.1} MB, made in {} ms; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; of the {} derived again,          {} unchanged; kept but changed {}; moved but unchanged {}",
+        size.nodes,
+        size.names,
+        size.reads,
+        size.edges,
+        size.bytes as f64 / 1e6,
+        built.as_millis(),
+        d.manifest.names.len(),
+        d.inputs.names.len(),
+        if d.load { ", the load" } else { "" },
+        if all { ", the coverage, pass or reaches: all moved" } else { "" },
+        diffed.as_millis(),
+        keep,
+        asked,
+        same,
+        by_step(&kept_changed),
+        by_step(&moved_unchanged),
+    );
+    Shadow { said, kept_changed, moved_unchanged }
 }
 
 impl Held {
@@ -406,7 +533,8 @@ impl Held {
 impl PlanHeld for Held {
     fn let_go(&self) {
         self.kept.borrow_mut().take();
-        self.memo.borrow_mut().take();
+        let memo = self.memo.borrow_mut().take();
+        self.read_sets.borrow_mut().let_go(memo);
     }
     fn has_kept(&self) -> bool {
         self.kept.borrow().is_some()
@@ -450,7 +578,7 @@ impl PlanHeld for Held {
         let (planned, memo) = match reused {
             Some(k) => k,
             None => {
-                let memo = KeyMemo::default();
+                let memo = KeyMemo::recording();
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
                 let p = build::plan_with(
@@ -464,6 +592,9 @@ impl PlanHeld for Held {
                     &tiles,
                     publish,
                 );
+                nasread::PLAN.enter("the read sets");
+                let at = self.reach.borrow().as_ref().map(|(c, _)| c.clone());
+                self.read_sets.borrow_mut().planned(Context::of(r, at.as_deref(), tiles.load_state()), &memo);
                 drop(tiles);
                 (p, memo)
             }
@@ -471,6 +602,9 @@ impl PlanHeld for Held {
         *self.kept.borrow_mut() = Some(planned.clone());
         *self.memo.borrow_mut() = Some(memo);
         (planned, depth)
+    }
+    fn shadow(&self) -> Option<Shadow> {
+        self.read_sets.borrow().said.clone()
     }
     fn heritage_waits(&self, r: &Round) -> Option<String> {
         self.with_keys(r, build::heritage_awaits_acceptance)

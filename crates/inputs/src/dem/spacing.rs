@@ -194,7 +194,7 @@ pub fn digest_read(root: &store::nasfs::NasRoot, m: &std::collections::BTreeMap<
 
 /// The spacing's line for a key, from the planner's inputs (`INPUT`): None while it isn't known
 /// (the step waits).
-pub fn key_line(inputs: &std::collections::BTreeMap<String, String>) -> Option<String> {
+pub fn key_line<'a>(inputs: impl buildstore::reads::Manifest<'a>) -> Option<String> {
     inputs.get(INPUT).filter(|d| d.as_str() != "?").map(|d| format!("spacing {d}"))
 }
 
