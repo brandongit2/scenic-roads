@@ -78,7 +78,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
     ("crates/agentcore/src/agent/mod.rs", "is_paced", "Some(\"inputs\" | \"trees\")", "the `inputs` step's name"),
     ("crates/agentcore/src/agent/plan.rs", "plan_unchecked","w.step == \"inputs\"", "the `inputs` step's name"),
-    ("crates/agentcore/src/agent/plan.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/keys.env (not inputs, §2)"),
+    ("crates/agentcore/src/agent/plan.rs", "plan_regions", "\"inputs/keys.env can't be read now\"", "inputs/keys.env (not inputs, §2)"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "strip_prefix(\"inputs/\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
