@@ -24,7 +24,8 @@
 //!   going to its waters region). Only regions with water take one.
 //! - With `cover = "earth"` in `_rules.toml`, the cover check, which moves nothing (`Fit`): each
 //!   pair's area both have past `HAIR_KM2` is `rg-cover` (`overlap`); what no region covers, joined
-//!   across the cells' edges, past it is too (`gap`), but the open sea, which the `rest` region
+//!   across the cells' edges, past it, or with land past `LAND_MIN_KM2`, is too (`gap`), but the
+//!   open sea, which the `rest` region
 //!   takes (its part inside a 200-nmi zone an error, `rest-in-zone`); and a region's sea (its
 //!   water but the big lakes) touching none of its land (`stray`). Each at a point inside, naming the regions round it.
 //!   Regions without water are never changed.
@@ -2441,8 +2442,19 @@ pub struct Fit {
 /// were fixed (task #1427), the largest such residue, between Chilean waters and Magallanes (one
 /// takes the other away by name), was 0.0093 km² summed over the cells, and the largest piece
 /// 0.0015 km² (Malaysia and Singapore's split by nearest coast on a 100 m grid), under a tenth of
-/// this. A real disagreement smaller than it passes too.
+/// this. A real disagreement smaller than it passes too. Land in no region is not a hair
+/// (`LAND_MIN_KM2`): the hair hid 59 islands of 0.01-0.1 km² in task #1427's run 12.
 pub const HAIR_KM2: f64 = 0.1;
+
+/// The least land in no region the cover check reports (km²), whatever the stretch's whole size:
+/// what the coastline can tell from nothing, a square of the side its rings are simplified within
+/// (`data::SIMPLIFY_M`: land smaller than that is within the coastline's own error). Measured on
+/// the whole input (task #1451, before any piece was given a region): 9 622 stretches with land in
+/// no region, 9 380 of them at most this (0.05 km² of land together: the outlines' snapping
+/// leaves land a few metres wide, cut to the coastline's land alike), 242 over it (islets and
+/// rocks the outlines leave out, and slivers on borders where two sources' lines differ), the
+/// largest 0.098 km².
+pub const LAND_MIN_KM2: f64 = super::data::SIMPLIFY_M * super::data::SIMPLIFY_M * 1e-6;
 
 #[derive(Debug, Default)]
 pub struct OverlapFit {
@@ -2460,6 +2472,8 @@ pub struct GapFit {
     pub zone_km2: f64,
     /// Its land (read where it comes within 100 m of land).
     pub land_km2: f64,
+    /// The box round its land (E7: west, south, east, north), to say where a declaration is wanted.
+    pub land_box: Option<[i64; 4]>,
     /// Within 100 m of land.
     pub touches: bool,
     /// A point inside it: in its largest piece of land, else its largest piece touching land, else
@@ -2744,6 +2758,7 @@ struct Gap {
     /// Its land, where it comes within 100 m of land, and a point inside its largest piece of it.
     land_km2: f64,
     land_at: Option<(f64, Pt)>,
+    land_box: Option<[i64; 4]>,
     /// A point inside it.
     at: Pt,
     /// Within 100 m of land.
@@ -2858,11 +2873,11 @@ fn cover_check(
                 Some(z) => (geom::area_km2(&z), largest(&z)),
                 None => (0.0, None),
             };
-            let (land_km2, land_at) = match touches.then(|| part(&land)).flatten() {
-                Some(on) => (geom::area_km2(&on), largest(&on)),
-                None => (0.0, None),
+            let (land_km2, land_at, land_box) = match touches.then(|| part(&land)).flatten() {
+                Some(on) => (geom::area_km2(&on), largest(&on), geom::bbox_of(on.polys.iter().flatten().flatten())),
+                None => (0.0, None, None),
             };
-            out.push(Gap { c, sides, km2, zone_km2, zone_at, land_km2, land_at, at, touches, len, area: g });
+            out.push(Gap { c, sides, km2, zone_km2, zone_at, land_km2, land_at, land_box, at, touches, len, area: g });
         }
         (pairs, out)
     });
@@ -2911,6 +2926,10 @@ fn cover_check(
         let km2: f64 = idx.iter().map(|&i| gaps[i].km2).sum();
         let land_km2: f64 = idx.iter().map(|&i| gaps[i].land_km2).sum();
         let touches = idx.iter().any(|&i| gaps[i].touches);
+        let land_box = idx
+            .iter()
+            .filter_map(|&i| gaps[i].land_box)
+            .reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]);
         let mut len: BTreeMap<&String, f64> = BTreeMap::new();
         for &i in idx {
             for (id, l) in &gaps[i].len {
@@ -2934,17 +2953,18 @@ fn cover_check(
             idx.iter().any(|&i| far_from_land(data, gaps[i].c))
                 || !idx.iter().any(|&i| land_within(data, gaps[i].at, NEAR_LAND_M))
         };
-        let to_rest = rest && !touches && land_km2 <= HAIR_KM2 && open();
+        let to_rest = rest && !touches && open();
         let fit = GapFit {
             km2,
             zone_km2: idx.iter().map(|&i| gaps[i].zone_km2).sum(),
             land_km2,
+            land_box,
             touches,
             at,
             rest: to_rest,
             edges: by_edge(len),
         };
-        (km2 > HAIR_KM2, fit)
+        (km2 > HAIR_KM2 || land_km2 > LAND_MIN_KM2, fit)
     });
     let mut rest_t: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
     for (idx, (over, g)) in groups.iter().zip(judged) {
@@ -2997,7 +3017,17 @@ fn cover_check(
                 rest_t.entry(gaps[i].c).or_default().push(std::mem::take(&mut gaps[i].area));
             }
         } else if over {
-            let land = if g.land_km2 > 0.0 { format!(", {:.2} km² of it land", g.land_km2) } else { String::new() };
+            let land = match g.land_box.filter(|_| g.land_km2 > 0.0) {
+                Some(b) => format!(
+                    " ({:.4} km² of it land, within {:.5}° to {:.5}° east, {:.5}° to {:.5}° north)",
+                    g.land_km2,
+                    b[0] as f64 * 1e-7,
+                    b[2] as f64 * 1e-7,
+                    b[1] as f64 * 1e-7,
+                    b[3] as f64 * 1e-7
+                ),
+                None => String::new(),
+            };
             problems.push(Problem {
                 warning: false,
                 check: "rg-cover",

@@ -187,15 +187,16 @@ impl Got {
 /// 12: #1127: with cover, a stretch in no region over sliver_km2 that is some country's (touching
 /// land, or inside a 200-nmi zone) goes to the regions with water it borders, never the rest.
 /// 13: #1427: the cover check moves nothing: no fills, no slivers, a hand-out's shared stretch
-/// stays the handing region's.)
-pub const RESOLUTION: u32 = 13;
+/// stays the handing region's. 14: #1451: land in no region is a `gap` past `LAND_MIN_KM2`, not
+/// the hair, and says the box round its land.)
+pub const RESOLUTION: u32 = 14;
 
 /// The digest of the code `RESOLUTION` covers, as it was when `RESOLUTION` was last set
 /// (build/checks_code.rs `resolution_code`: the resolution's modules, what of this file shapes a
 /// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "c350b4802f71640de2c80013de61f218";
+pub const RESOLUTION_CODE: &str = "4ab3208eb1326724af4b000c22f866e1";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.

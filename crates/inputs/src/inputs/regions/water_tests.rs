@@ -551,6 +551,37 @@ fn land_in_no_region_across_a_cells_edge_is_sized_whole() {
     assert!(gaps[0].message.starts_with("19."), "{}", gaps[0].message);
 }
 
+/// Land in no region is reported at any size above the coastline's own precision, not under the
+/// hair: an island of about 0.012 km² (0.001° a side) in no region is a gap, one of about 0.00012 km²
+/// (under a square of the simplification's side) is not (task #1451).
+#[test]
+fn a_small_island_in_no_region_is_an_error_a_speck_is_not() {
+    // (A sea region round it, as an island has: the island itself is what's in no region.)
+    let sea = |e: f64| {
+        format!(
+            "id = \"s\"\nname = \"S\"\nwater = [{{ buffer = \"box:30.0,20.0,{},{}\", by = \"10 km\" }}]\n",
+            30.0 + e,
+            20.0 + e
+        )
+    };
+    let (big, small) = (sea(0.001), sea(0.0001));
+    let w = world_more(1.0, vec![bx(30.0, 20.0, 30.001, 20.001)]);
+    let mut files = all();
+    files.push(("s.toml", &big));
+    let out = run(&w, &files);
+    let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", out.problems);
+    let km2 = out.fit.gaps.iter().map(|g| g.land_km2).fold(0.0, f64::max);
+    assert!(km2 < tiles::HAIR_KM2 && km2 > tiles::LAND_MIN_KM2, "{km2}");
+    let at = at_of(&gaps[0].message);
+    assert!((30.0..30.001).contains(&at[0]) && (20.0..20.001).contains(&at[1]), "{}", gaps[0].message);
+    let w = world_more(1.0, vec![bx(30.0, 20.0, 30.0001, 20.0001)]);
+    let mut files = all();
+    files.push(("s.toml", &small));
+    let out = run(&w, &files);
+    assert!(out.problems.iter().all(|p| p.found != vec!["gap"]), "{:?}", out.problems);
+}
+
 /// Task #1427: a county missing from a divided place is a gap at a point inside it, naming the
 /// counties round it, and none of them takes it; two counties both having a strip is an overlap
 /// naming them, each keeping it.
