@@ -738,10 +738,7 @@ mod tests {
         assert_eq!(ans(&smaller, &dead), ans(&was_c, &dead));
         assert_ne!(ans(&smaller, &full), ans(&was_c, &full));
         // Only the cell at the circle's centre: far from where the two part.
-        let (xf, yf) = {
-            let (lon, lat) = (-21.9f64, 64.13f64.to_radians());
-            ((lon + 180.0) / 360.0 * 256.0, (1.0 - lat.tan().asinh() / std::f64::consts::PI) / 2.0 * 256.0)
-        };
+        let (xf, yf) = (roadcore::geo::merc_x(-21.9) * 256.0, roadcore::geo::merc_y(64.13) * 256.0);
         let at = (xf as u32, yf as u32);
         let (px, py) = (((xf - at.0 as f64) * BS as f64) as usize, ((yf - at.1 as f64) * BS as f64) as usize);
         let k = py / LIVE_CELL * LIVE_N + px / LIVE_CELL;

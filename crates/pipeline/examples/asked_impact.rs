@@ -415,7 +415,7 @@ fn mask_diff(old: &Coverage, new: &Coverage, u: TileId) -> Result<String> {
 /// the trees program (`scenic-build tool trees` beside this program, this tree's) run in
 /// `scratch` as its job runs it, reading the NAS's canopy and leaf-type squares where they lie.
 /// Refused unless every square it reads is there already (the program would download or make it
-/// on the NAS) and the leaf-type squares are none it makes. Beside them, whether the mid it made is
+/// on the NAS) and its leaf-type squares are made. Beside them, whether the mid it made is
 /// the one the build has.
 fn trees_live(
     root: &NasRoot,
@@ -439,7 +439,7 @@ fn trees_live(
         .collect();
     sqs.sort_unstable();
     sqs.dedup();
-    let store = root.join("sources/canopy").unchecked_path();
+    let store = root.join("sources/canopy");
     let meets = |b: [f64; 4], (top, left): (i32, i32)| {
         (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1]
     };
@@ -448,9 +448,13 @@ fn trees_live(
             let f = store.join(chm_name(sq.0, sq.1, kind));
             anyhow::ensure!(f.exists(), "{}: {} isn't on the NAS (the run would download it)", u.slash(), f.display());
         }
+        let leaf = trees::treepacks::leaf_dir(root).join(trees::trees::leaf_name(sq.0, sq.1)).unchecked_path();
         anyhow::ensure!(
-            !meets(sources.leaf.europe_box, sq) && !meets(sources.leaf.north_america_box, sq),
-            "{}: square {sq:?} has leaf types (the run might make them on the NAS)",
+            // (Made only for a square with canopy, `squares::leaf_types`.)
+            !(meets(sources.leaf.europe_box, sq) || meets(sources.leaf.north_america_box, sq))
+                || store.join(chm_name(sq.0, sq.1, "cover5m")).metadata()?.len() == 0
+                || trees::trees::squares::complete(&leaf),
+            "{}: square {sq:?}'s leaf types aren't made (the run would make them on the NAS)",
             u.slash()
         );
     }
@@ -458,7 +462,7 @@ fn trees_live(
     let mut c = store::spawn::command(&bin);
     c.args(["tool", "trees", "--tile", &u.slash()]);
     c.arg("--coverage").arg(dir.join("coverage.json")).arg("--sources").arg(dir.join("sources.json"));
-    c.arg("--chm").arg(dir.join("chm")).arg("--chm-store").arg(&store);
+    c.arg("--chm").arg(dir.join("chm")).arg("--chm-store").arg(store.unchecked_path());
     c.arg("--leaf").arg(trees::treepacks::leaf_dir(root).unchecked_path()).arg("--out").arg(&dir);
     c.args(["--workers", "4"]);
     c.env_remove("SCENIC_CACHE");
