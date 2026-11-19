@@ -981,7 +981,8 @@ other process).
   member's, from their asks. A Mac held back is granted nothing, a cold start to an empty Mac
   among it, the refusal saying `memory: <why>`. Terrain-deep starts near 2 GB and grows past 7:
   its growth is reserved before the next job starts. A job's expected peak is the one figure the
-  lead packed it at, carried by its grant (`Grant::peak_mb`: its targets' measure, `pack_need`; a
+  lead packed it at, carried by its grant (`Grant::peak_mb`: its targets' memory on the threads
+  it starts on, `pack_need`, §7.7, Memory admission; a
   cold start's provisional need; a task's predicted memory), which its agent counts it at in its
   capacity (`Agent::need_mb`, `Capacity::mem_reserved_mb`) and its cool-down; no agent has a
   figure of its own (task #970). A grant saying no figure (`peak_mb` 0): its job counts at what it
@@ -1924,8 +1925,10 @@ each thread past them costs. Memory is the cautious limit, and the memory guard 
   (`room_wait`), what a Mac's last ask is weighed by (`would_take_now`), and what flags it too big
   for every Mac (`too_big`). A target with its own run: that run's peak (never below its floor),
   plus its step's memory per thread for each thread past those it ran on (`needs::own_threads`:
-  its threads, or the fewest a paced run was cut to); one without: its step's runs at or above its
-  size, each grown to those threads (§7.7, What a step needs: memory). A job resumed on the Mac
+  its threads, or the fewest a paced run was cut to); one without: its memory by place where that
+  is judged good (its nearest measured targets', `needs::Near`, as they ran), else its step's runs
+  at or above its size, each grown to those threads (What a step needs: memory, above); a grow past
+  them is counted either way (below). A job resumed on the Mac
   holding its progress is granted the whole Mac and admitted on those threads.
 - **Grown** (`Sched::thread_mb`, `Sched::grown_mb`): its grant says what each thread past those
   its memory covers adds (`Grant::thread_mb`: its step's memory per thread, fitted at its upper
