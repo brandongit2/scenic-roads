@@ -10,7 +10,7 @@
 //! ([`Diff`]) tell which keys the change can't have moved ([`Graph::moved`]).
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The build manifest (logical → content), or the planner's inputs (name → digest).
 pub type Map = BTreeMap<String, String>;
@@ -185,14 +185,24 @@ enum Kind {
     Load = 6,
 }
 
-const KIND_SHIFT: u32 = 28;
-const INPUTS: u32 = 8;
-const ID: u32 = (1 << KIND_SHIFT) - 1;
+const KIND_SHIFT: u32 = 60;
+const INPUTS: u64 = 8;
+const ID: u64 = (1 << KIND_SHIFT) - 1;
 
 impl Kind {
-    fn of(self, space: Space) -> u32 {
-        (self as u32 + if space == Space::Inputs { INPUTS } else { 0 }) << KIND_SHIFT
+    fn of(self, space: Space) -> u64 {
+        (self as u64 + if space == Space::Inputs { INPUTS } else { 0 }) << KIND_SHIFT
     }
+}
+
+/// A name as a read holds it: its hash, in a read's low bits (`ID`). Names aren't kept: the first
+/// plan after a start reads 1.7 M of them (absent ones among them: each z6 tile's 256 deep mids
+/// looked up), 226 MB as text; two names of one hash (one in 2^60) only move a key needlessly.
+fn hashed(name: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut h);
+    h.finish() & ID
 }
 
 /// The reads of the keys derived with one memo (pipeline's `KeyMemo`): one node per key, its own
@@ -203,45 +213,26 @@ pub struct Recorder(RefCell<Rec>);
 
 #[derive(Default)]
 struct Rec {
-    /// Every name read, once (`ids`), and its id: its index in `names`.
-    names: Vec<Box<str>>,
-    ids: HashMap<Box<str>, u32>,
-    /// The write sets read whole, by id (`Kind::Matching`).
+    /// The write sets read whole, by index (`Kind::Matching`).
     preds: Vec<fn(&str, bool) -> bool>,
     /// The derivations under way, innermost last.
     stack: Vec<Node>,
     nodes: Vec<Node>,
 }
 
-/// A key's reads: read ids (`Kind` on top, then the name's id), and the nodes of the keys read
+/// A key's reads (`Kind` on top, then the name's hash: `hashed`), and the nodes of the keys read
 /// inside it.
 #[derive(Default, Clone)]
 struct Node {
-    reads: Vec<u32>,
+    reads: Vec<u64>,
     kids: Vec<u32>,
 }
 
-impl Rec {
-    fn id(&mut self, name: &str) -> u32 {
-        if let Some(&i) = self.ids.get(name) {
-            return i;
-        }
-        let i = self.names.len() as u32;
-        assert!(i <= ID, "more names read than a read id holds");
-        self.names.push(name.into());
-        self.ids.insert(name.into(), i);
-        i
-    }
-}
-
 impl Recorder {
-    fn note(&self, kind: u32, name: &str) {
-        let mut r = self.0.borrow_mut();
-        if r.stack.is_empty() {
-            return;
+    fn note(&self, kind: u64, name: &str) {
+        if let Some(n) = self.0.borrow_mut().stack.last_mut() {
+            n.reads.push(kind | hashed(name));
         }
-        let id = r.id(name);
-        r.stack.last_mut().unwrap().reads.push(kind | id);
     }
 
     fn note_matching(&self, space: Space, f: fn(&str, bool) -> bool) {
@@ -255,7 +246,7 @@ impl Recorder {
                 r.preds.push(f);
                 r.preds.len() - 1
             }
-        } as u32;
+        } as u64;
         r.stack.last_mut().unwrap().reads.push(Kind::Matching.of(space) | i);
     }
 
@@ -290,22 +281,19 @@ impl Recorder {
 
     /// The reads recorded, with their reverse index.
     pub fn graph(self) -> Graph {
-        let r = self.0.into_inner();
-        Graph::of(r)
+        Graph::of(self.0.into_inner())
     }
 }
 
-/// What each key of a plan read (`Recorder::graph`): its nodes' reads and kids, the names read and
-/// the reverse index (read → nodes, kid → parents).
+/// What each key of a plan read (`Recorder::graph`): its nodes' reads and the reverse index
+/// (read → nodes, kid → readers).
 pub struct Graph {
-    names: Vec<Box<str>>,
-    ids: HashMap<Box<str>, u32>,
     preds: Vec<fn(&str, bool) -> bool>,
     /// Node `i`'s reads: `reads[at[i]..at[i + 1]]`.
     at: Vec<u32>,
-    reads: Vec<u32>,
-    /// The reverse index: (read, node) by read; (kid, parent) by kid.
-    by_read: Vec<(u32, u32)>,
+    reads: Vec<u64>,
+    /// The reverse index: (read, node) by read; (kid, reader) by kid.
+    by_read: Vec<(u64, u32)>,
     parents: Vec<(u32, u32)>,
 }
 
@@ -313,10 +301,11 @@ pub struct Graph {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Size {
     pub nodes: usize,
-    pub names: usize,
+    /// The reads told apart (a name read by many keys, once).
+    pub distinct: usize,
     pub reads: usize,
     pub edges: usize,
-    /// The bytes held: the names, the reads and edges, the reverse index.
+    /// The bytes held: the reads and edges, the reverse index.
     pub bytes: usize,
 }
 
@@ -335,48 +324,34 @@ impl Graph {
         by_read.sort_unstable();
         parents.sort_unstable();
         parents.shrink_to_fit();
-        let mut names = r.names;
-        names.shrink_to_fit();
-        Graph { names, ids: r.ids, preds: r.preds, at, reads, by_read, parents }
+        Graph { preds: r.preds, at, reads, by_read, parents }
     }
 
     /// Its size and the bytes it holds.
     pub fn size(&self) -> Size {
-        let names: usize = self.names.iter().map(|n| n.len()).sum();
-        let u32s = self.at.capacity() + self.reads.capacity();
-        let pairs = self.by_read.capacity() + self.parents.capacity();
+        let distinct = self.by_read.chunk_by(|a, b| a.0 == b.0).count();
         Size {
             nodes: self.at.len() - 1,
-            names: self.names.len(),
+            distinct,
             reads: self.reads.len(),
             edges: self.parents.len(),
-            // (A name twice, in `names` and as `ids`' key, each with its box; `ids`' slot.)
-            bytes: 2 * (names + 16 * self.names.len()) + self.ids.capacity() * 24 + 4 * u32s + 8 * pairs,
+            bytes: 4 * self.at.capacity()
+                + 8 * self.reads.capacity()
+                + 16 * self.by_read.capacity()
+                + 8 * self.parents.capacity(),
         }
     }
 
-    /// The nodes whose reads a read id is among (the reverse index).
-    fn readers(&self, read: u32) -> impl Iterator<Item = u32> + '_ {
+    /// The nodes whose reads a read is among (the reverse index).
+    fn readers(&self, read: u64) -> impl Iterator<Item = u32> + '_ {
         let i = self.by_read.partition_point(|&(r, _)| r < read);
         self.by_read[i..].iter().take_while(move |&&(r, _)| r == read).map(|&(_, n)| n)
     }
 
-    /// Node `n`'s reads, as (`kind` name, name) for a log or a test.
+    /// Node `n`'s reads, as `<kind> <hash>` (`read`), for a log or a test.
     pub fn reads_of(&self, n: u32) -> Vec<String> {
         let (a, b) = (self.at[n as usize] as usize, self.at[n as usize + 1] as usize);
-        self.reads[a..b].iter().map(|&r| self.said(r)).collect()
-    }
-
-    fn said(&self, r: u32) -> String {
-        let (k, id) = (r >> KIND_SHIFT, r & ID);
-        let space = if k >= INPUTS { "in " } else { "" };
-        let kind = ["entry", "has", "under", "holds", "matching", "all", "load"][(k % INPUTS) as usize];
-        let name = if k % INPUTS == Kind::Matching as u32 {
-            format!("write set {id}")
-        } else {
-            self.names.get(id as usize).map_or_else(String::new, |n| n.to_string())
-        };
-        format!("{space}{kind} {name}").trim_end().to_string()
+        self.reads[a..b].iter().map(|&r| said(r)).collect()
     }
 
     /// Which nodes `d` moves: those that read something it changed, and those that read a node it
@@ -385,7 +360,7 @@ impl Graph {
         let n = self.at.len() - 1;
         let mut moved = vec![false; n];
         let mut todo: Vec<u32> = Vec::new();
-        let hit = |read: u32, moved: &mut Vec<bool>, todo: &mut Vec<u32>| {
+        let hit = |read: u64, moved: &mut Vec<bool>, todo: &mut Vec<u32>| {
             for i in self.readers(read) {
                 if !moved[i as usize] {
                     moved[i as usize] = true;
@@ -399,45 +374,39 @@ impl Graph {
             self.by_read.get(i).is_some_and(|&(r, _)| r & !ID == b)
         };
         // (The map whole and the load are read under the empty name.)
-        let blank = self.ids.get("").copied();
+        let blank = hashed("");
         for (space, changes) in [(Space::Manifest, &d.manifest), (Space::Inputs, &d.inputs)] {
             if changes.names.is_empty() {
                 continue;
             }
-            if let Some(b) = blank {
-                hit(Kind::All.of(space) | b, &mut moved, &mut todo);
-            }
+            hit(Kind::All.of(space) | blank, &mut moved, &mut todo);
+            let under = any(Kind::Under, space);
             for (name, presence) in &changes.names {
-                if let Some(&id) = self.ids.get(name.as_str()) {
-                    hit(Kind::Entry.of(space) | id, &mut moved, &mut todo);
-                    if *presence {
-                        hit(Kind::Has.of(space) | id, &mut moved, &mut todo);
-                    }
+                let h = hashed(name);
+                hit(Kind::Entry.of(space) | h, &mut moved, &mut todo);
+                if *presence {
+                    hit(Kind::Has.of(space) | h, &mut moved, &mut todo);
                 }
-                if any(Kind::Under, space) {
+                if under {
                     for (i, _) in name.char_indices().chain(std::iter::once((name.len(), ' '))) {
-                        if let Some(&id) = self.ids.get(&name[..i]) {
-                            hit(Kind::Under.of(space) | id, &mut moved, &mut todo);
-                        }
+                        hit(Kind::Under.of(space) | hashed(&name[..i]), &mut moved, &mut todo);
                     }
                 }
                 for (p, f) in self.preds.iter().enumerate() {
                     if f(name, false) {
-                        hit(Kind::Matching.of(space) | p as u32, &mut moved, &mut todo);
+                        hit(Kind::Matching.of(space) | p as u64, &mut moved, &mut todo);
                     }
                 }
             }
             if any(Kind::Holds, space) {
                 for c in &changes.contents {
-                    if let Some(&id) = self.ids.get(c.as_str()) {
-                        hit(Kind::Holds.of(space) | id, &mut moved, &mut todo);
-                    }
+                    hit(Kind::Holds.of(space) | hashed(c), &mut moved, &mut todo);
                 }
             }
         }
-        if let Some(b) = blank.filter(|_| d.load) {
+        if d.load {
             for s in [Space::Manifest, Space::Inputs] {
-                hit(Kind::Load.of(s) | b, &mut moved, &mut todo);
+                hit(Kind::Load.of(s) | blank, &mut moved, &mut todo);
             }
         }
         // (Up the kids' edges: a node reading a moved one moves.)
@@ -452,6 +421,22 @@ impl Graph {
         }
         moved
     }
+}
+
+/// The kinds of read as `reads_of` names them, in `Kind`'s order.
+const KINDS: [&str; 7] = ["entry", "has", "under", "holds", "matching", "all", "load"];
+
+/// Read `r` as `<kind> <hash>` (`in ` before the inputs').
+fn said(r: u64) -> String {
+    let (k, id) = (r >> KIND_SHIFT, r & ID);
+    let space = if k >= INPUTS { "in " } else { "" };
+    format!("{space}{} {id:015x}", KINDS[(k % INPUTS) as usize])
+}
+
+/// A manifest read of `name` of kind `kind` (`KINDS`'), as `Graph::reads_of` says it.
+pub fn read(kind: &str, name: &str) -> String {
+    let k = KINDS.iter().position(|&x| x == kind).expect("a kind of read") as u64;
+    said((k << KIND_SHIFT) | hashed(name))
 }
 
 /// What changed in one map between two plans (`Diff::of`): each name added, removed or whose
@@ -558,7 +543,7 @@ mod tests {
         // (Nothing read outside a derivation.)
         v.get("c");
         let g = rec.graph();
-        assert_eq!(g.reads_of(entry), ["entry a/1"]);
+        assert_eq!(g.reads_of(entry), [read("entry", "a/1")]);
         assert!(g.reads_of(none).is_empty());
         let moved = |new: &Map| {
             let d = Diff { manifest: Changes::of(&m, new), ..Default::default() };
@@ -593,7 +578,7 @@ mod tests {
         iv.get("k");
         let n = rec.end() as usize;
         let g = rec.graph();
-        assert_eq!(g.reads_of(n as u32), ["in entry k"]);
+        assert_eq!(g.reads_of(n as u32), [format!("in {}", read("entry", "k"))]);
         let changed = map(&[("k", "2")]);
         let d = Diff { manifest: Changes::of(&m, &changed), ..Default::default() };
         assert!(!g.moved(&d)[n]);

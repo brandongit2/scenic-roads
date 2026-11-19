@@ -386,12 +386,15 @@ pub type RegionCounts = BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>;
 /// (docs/incremental-planning.md step 3, in shadow: the plan is made whole all the same), against
 /// how they came out (`PlanHeld::shadow`). `said`: the line the agent's log has of it. The keys the
 /// diff would have kept that came out changed (a read the recording missed), and those it moved that
-/// came out the same (a read that changed under a key it didn't move), "<step> <target>" each.
+/// came out the same (a read that changed under a key it didn't move), "<step> <target>" each;
+/// apart from these, those moved by their own coverage record put (`own_record`: a target's first
+/// run records what it asked, buildstore::asked, which its key reads: the same key, read again).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shadow {
     pub said: String,
     pub kept_changed: Vec<String>,
     pub moved_unchanged: Vec<String>,
+    pub own_record: Vec<String>,
 }
 
 /// What the planner carries for the plan, opaque to it (docs/crates.md §6.3, 6f2), for its life:

@@ -427,7 +427,9 @@ fn compare(
     let moved = sets.graph.moved(&d);
     let diffed = t.elapsed();
     let (mut keep, mut asked, mut same) = (0, 0, 0);
-    let (mut kept_changed, mut moved_unchanged) = (Vec::new(), Vec::new());
+    let (mut kept_changed, mut moved_unchanged, mut own_record) = (Vec::new(), Vec::new(), Vec::new());
+    // (The records added or changed: a target's own, its run's, moves its key, which reads it.)
+    let changed: std::collections::HashSet<&str> = d.manifest.names.iter().map(|(l, _)| l.as_str()).collect();
     for ((step, target), (k, node)) in &sets.keys {
         let kept = !all && !moved[*node as usize] && k.is_some();
         keep += usize::from(kept);
@@ -437,12 +439,16 @@ fn compare(
         same += usize::from(unchanged);
         match (kept, unchanged) {
             (true, false) => kept_changed.push(format!("{step} {target}")),
+            (false, true) if changed.contains(buildstore::asked::target_logical(step, target).as_str()) => {
+                own_record.push(format!("{step} {target}"))
+            }
             (false, true) => moved_unchanged.push(format!("{step} {target}")),
             _ => {}
         }
     }
     kept_changed.sort_unstable();
     moved_unchanged.sort_unstable();
+    own_record.sort_unstable();
     let size = sets.graph.size();
     let by_step = |v: &[String]| -> String {
         let mut n: BTreeMap<&str, usize> = BTreeMap::new();
@@ -454,10 +460,15 @@ fn compare(
         format!("{} ({}: {})", v.len(), steps.join(", "), named.join(", "))
     };
     let said = format!(
-        "read sets (shadow): the round before's {} keys read {} names, {} reads, {} kids (the reverse index likewise),          {:.1} MB, made in {} ms; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; of the {} derived again,          {} unchanged; kept but changed {}; moved but unchanged {}",
+        concat!(
+            "read sets (shadow): the round before's {} keys made {} reads ({} told apart, {} kids; the reverse ",
+            "index likewise), {:.1} MB, in {} ms; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; ",
+            "of the {} derived again, {} unchanged; kept but changed {}; moved but unchanged {}, and by their ",
+            "own coverage record put {}"
+        ),
         size.nodes,
-        size.names,
         size.reads,
+        size.distinct,
         size.edges,
         size.bytes as f64 / 1e6,
         built.as_millis(),
@@ -471,8 +482,9 @@ fn compare(
         same,
         by_step(&kept_changed),
         by_step(&moved_unchanged),
+        by_step(&own_record),
     );
-    Shadow { said, kept_changed, moved_unchanged }
+    Shadow { said, kept_changed, moved_unchanged, own_record }
 }
 
 impl Held {

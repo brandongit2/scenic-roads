@@ -4228,7 +4228,9 @@ mod tests {
     /// not recorded, and again recorded: what recording costs, in time and in bytes asked for and
     /// held (`allocs`); and once more, its diff from the same state keeping every key. The shadow's
     /// lines, the times and each key kept but changed (`kept-changed`) or moved but unchanged
-    /// (`moved-unchanged`) to `SCENIC_FROZEN_OUT`; any of the latter two fails it.
+    /// (`moved-unchanged`; moved by its own coverage record put, `own record put`: the same key
+    /// read again, as designed) to `SCENIC_FROZEN_OUT`; any kept but changed or moved but unchanged
+    /// fails it.
     #[test]
     #[ignore]
     fn frozen_read_sets_keep_the_unchanged_keys() {
@@ -4308,6 +4310,7 @@ mod tests {
         say(s.said.clone());
         let mut bad: Vec<String> = s.kept_changed.iter().map(|k| format!("kept-changed {k}")).collect();
         bad.extend(s.moved_unchanged.iter().map(|k| format!("moved-unchanged {k}")));
+        bad.extend(s.own_record.iter().map(|k| format!("own record put {k}")));
         p.held_plan.record_for_test(false);
         say(format!("the second again, not recording: {}", plan(&p, &root_b)));
         p.held_plan.record_for_test(true);
