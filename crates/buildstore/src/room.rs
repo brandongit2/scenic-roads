@@ -119,6 +119,9 @@ pub fn disk_free(path: &Path) -> std::io::Result<u64> {
     // decides nothing. 1 TB unless the test says. A crate's unit tests, `out::testing`: as
     // `cfg(test)` decided it while this was pipeline's.)
     if crate::out::testing() {
+        if let Some((dir, size)) = test_disk::TEST_DISK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Ok(size.saturating_sub(test_disk::bytes_under(&dir)));
+        }
         return Ok(TEST_FREE.with(|c| c.get()).unwrap_or(1 << 40));
     }
     jobrt::room::free_bytes(path).ok_or_else(std::io::Error::last_os_error)
@@ -132,12 +135,30 @@ mod test_disk {
         /// in a crate's unit tests, `disk_free`).
         pub static TEST_FREE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     }
+
+    /// A test's disk that follows its files, for every thread of its process (a freeing's on a
+    /// thread of its own): a folder and the disk's size, its free space that less what the
+    /// folder's files hold (their lengths). Before `TEST_FREE`.
+    pub static TEST_DISK: std::sync::Mutex<Option<(std::path::PathBuf, u64)>> = std::sync::Mutex::new(None);
+
+    pub(super) fn bytes_under(dir: &std::path::Path) -> u64 {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| match e.file_type() {
+                Ok(t) if t.is_dir() => bytes_under(&e.path()),
+                Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+                _ => 0,
+            })
+            .sum()
+    }
 }
 
 /// A test's disk (`TEST_FREE`), for other crates' unit tests (pipeline's agent).
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
-    pub use super::test_disk::TEST_FREE;
+    pub use super::test_disk::{TEST_DISK, TEST_FREE};
 }
 
 #[cfg(test)]

@@ -760,8 +760,21 @@ impl Shared {
         // `sched::Rule::decides_disk`): the job its last answer held back for its disk is held for
         // still, its caches freed toward it through the wait (task #1477 review: the mini under
         // memory pressure ended its hold each answer, and the freeing for it midway).)
+        // (Only while that job waits: its target offered still, not done nor leased.)
         if let Some(w) = why.as_mut().filter(|w| picks.is_empty() && !w.rule.decides_disk() && w.disk_mb.is_none()) {
-            w.disk_mb = self.refused.get(&a.worker).and_then(|(_, h)| h.disk_mb);
+            let last = self.refused.get(&a.worker).map(|(_, h)| h).filter(|h| {
+                h.held_for.as_ref().is_some_and(|(step, t)| {
+                    let offered = offers.iter().any(|o| {
+                        o.step == *step
+                            && o.targets.iter().any(|(ot, k, _)| ot == t && self.sched.done.get(&(step.clone(), t.clone())) != Some(k))
+                    });
+                    let leased = self.sched.leases.live(now).any(|l| {
+                        matches!(&l.work, lease::Work::Job { step: s, targets } if s == step && targets.iter().any(|x| x.0 == *t))
+                    });
+                    offered && !leased
+                })
+            });
+            (w.disk_mb, w.held_for) = (last.and_then(|h| h.disk_mb), last.and_then(|h| h.held_for.clone()));
         }
         let mut offered: Vec<String> = Vec::new();
         for o in offers {
@@ -4581,13 +4594,21 @@ fn route(
                     let answer =
                         Answer { at, want: a.want.max(1), got: 1, offered: vec![o.step], held: None, refused: None };
                     s.answered(&a.worker, answer);
+                    // (Granted with nothing held back: no earlier answer's refusal, nor its hold,
+                    // stands with it.)
+                    s.refused.remove(&a.worker);
                     return Ok((200, s.granted(&a.worker, &g)?));
                 }
             }
             if s.pass.is_empty() {
                 // (No pass: nothing offered, the refusal said so, never an earlier one's.)
                 let at = s.wall_s();
-                let held = sched::Held { rule: sched::Rule::Empty, words: sched::EMPTY.to_string(), disk_mb: None };
+                let held = sched::Held {
+                    rule: sched::Rule::Empty,
+                    words: sched::EMPTY.to_string(),
+                    disk_mb: None,
+                    held_for: None,
+                };
                 s.refused.insert(a.worker.clone(), (at, held.clone()));
                 let answer =
                     Answer { at, want: a.want.max(1), got: 0, offered: Vec::new(), held: Some(held), refused: None };
@@ -9640,9 +9661,17 @@ mod tests {
         // Its memory held back (task #1477 third review: the mini under pressure): no answer that
         // weighs the disk, so the hold stands; one that weighs it decides again.
         let pressed = Capacity { mem_held_back: Some("memory pressure at warning".into()), ..cap.clone() };
-        assert!(c.ask_own(&Ask { cap: Some(pressed), ..ask(0, 0) }, &BTreeSet::new(), 0).is_none());
+        assert!(c.ask_own(&Ask { cap: Some(pressed.clone()), ..ask(0, 0) }, &BTreeSet::new(), 0).is_none());
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
         assert!(why.contains("memory"), "{why}");
+        assert_eq!(c.own_held_disk_mb(), Some(need));
+        // Kept only while that job waits: offered no more (or done, or leased), the next such
+        // answer drops it (task #1477 fourth review).
+        measured_offer(&c, "slope-hi", &[("6/1/2", Some((4000, 1_000, 60)))]);
+        assert!(c.ask_own(&Ask { cap: Some(pressed.clone()), ..ask(0, 0) }, &BTreeSet::new(), 0).is_none());
+        assert_eq!(c.own_held_disk_mb(), None);
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((4000, 7_000, 60)))]);
+        assert!(c.ask_own(&ask(30_000, 0), &BTreeSet::new(), 0).is_none());
         assert_eq!(c.own_held_disk_mb(), Some(need));
         // Within what its caches can free past its disk: named; past it, none freed for it, and
         // said.

@@ -72,6 +72,9 @@ pub struct Held {
     /// (`Rule::decides_disk`) names none, and the coordinator keeps the worker's last through it
     /// (`Shared::pack`).
     pub disk_mb: Option<u64>,
+    /// That job's step and target (with `disk_mb`): a hold kept through answers that don't weigh
+    /// the disk ends once it's leased, done or offered no more (`Shared::pack`).
+    pub held_for: Option<(String, String)>,
 }
 
 /// The grant rule that held an ask back (`Held`).
@@ -107,11 +110,12 @@ pub enum Rule {
 
 impl Rule {
     /// Whether an answer held back by it decides the disk hold (`Held::disk_mb`): the room rules
-    /// weigh the disk, and work for other Macs or none at all holds nothing for this one. The
-    /// others (memory held back, a cold start, the load, the cores, the NAS budget) hold back
-    /// before or past the disk: the worker's last hold stands through them.
+    /// and the NAS budget's (its answer is the room rule's, the NAS's waits said first) weigh the
+    /// disk, and work for other Macs or none at all holds nothing for this one. The others (memory
+    /// held back, a cold start, the load, the cores) hold back before the disk is weighed: the
+    /// worker's last hold stands through them while its job waits (`Shared::pack`).
     pub fn decides_disk(self) -> bool {
-        matches!(self, Rule::Room | Rule::Waiting | Rule::Away | Rule::Empty)
+        matches!(self, Rule::Room | Rule::Waiting | Rule::Away | Rule::Empty | Rule::Nas)
     }
 
     /// The rule in a few words.
@@ -149,7 +153,7 @@ impl Rule {
 pub const EMPTY: &str = "no job is offered";
 
 fn held_by(rule: Rule, words: String) -> Held {
-    Held { rule, words, disk_mb: None }
+    Held { rule, words, disk_mb: None, held_for: None }
 }
 
 /// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
@@ -479,7 +483,12 @@ impl Backfill {
         let need = w.disk_mb.saturating_sub(w.credit);
         let short = room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
         let rest = w.mem_mb <= whole.0 && w.cores <= whole.1 && need <= reach;
-        Held { disk_mb: (short && rest).then_some(need), ..held_by(Rule::Waiting, self.words(room, cores, later)) }
+        let named = short && rest;
+        Held {
+            disk_mb: named.then_some(need),
+            held_for: named.then(|| (w.step.clone(), w.target.clone())),
+            ..held_by(Rule::Waiting, self.words(room, cores, later))
+        }
     }
 
     /// The refusal in words, of `room` and the `cores` left; `later`: an offer after it was held
@@ -1957,7 +1966,9 @@ impl Sched {
                                 r.words(a, &disk_with(&room, 0, credit), credit)
                             ),
                         );
-                        Held { disk_mb, ..held }
+                        let held_for =
+                            r.blocked.as_ref().filter(|_| disk_mb.is_some()).map(|b| (b.0.clone(), b.1.clone()));
+                        Held { disk_mb, held_for, ..held }
                     }
                 });
                 break;

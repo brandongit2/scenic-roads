@@ -861,7 +861,7 @@ fn write_target(p: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>
 // reserve) and the file a target is kept in: buildstore's (task #916 step 6e, docs/crates.md), as
 // is reading this Mac's target (step 7a: the map server reads it), kept at these paths.
 #[cfg(test)]
-pub use buildstore::room::testkit::TEST_FREE;
+pub use buildstore::room::testkit::{TEST_DISK, TEST_FREE};
 pub use buildstore::room::{disk_free, nas_free, nas_reserve, nas_room, set_nas_reserve, target, Target, TARGET};
 
 // A job's room target and the free space past it: the runtime crate's (task #916 step 3,
@@ -1191,12 +1191,13 @@ impl Hints {
     }
 }
 
-/// What this Mac's caches hold (`sizes`): what room-making can free, and what a clear would, by
-/// cache (`kind`).
+/// What this Mac's caches hold (`sizes`): what room-making can free, what a clear would, by cache
+/// (`kind`), and what a freeing toward the target or a held room can do with them (`free`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sizes {
     pub cheap: u64,
     pub clear: BTreeMap<String, u64>,
+    pub free: Freeable,
 }
 
 impl Sizes {
@@ -1204,18 +1205,32 @@ impl Sizes {
     pub fn clearable(&self, level: Level) -> u64 {
         self.clear.iter().filter(|(k, _)| level == Level::Deep || !deep(k)).map(|(_, b)| b).sum()
     }
+}
 
-    /// What a freeing toward the target or a held room (`toward`) can free (bytes): every cache it
-    /// empties, the cheap ones and `TOWARD_ORDER`'s (not the heritage answers, which only a deep
-    /// clear takes). Files a job holds now among them: an upper bound.
-    pub fn towardable(&self) -> u64 {
-        self.clear.iter().filter(|(k, _)| *k != "answers").map(|(_, b)| b).sum()
-    }
+/// What a freeing (`toward`) does with the files of the caches it empties (the cheap ones and
+/// `TOWARD_ORDER`'s), as `sizes` counted them (bytes), by what store::cachefile and the NAS say of
+/// each: the one measure of what the caches can free (crate::coord::Capacity::freeable_mb, the
+/// freeing's retries). Not the whole copies of the shared cache (buildstore::localread::is_shared):
+/// the lead counts those for a job itself (crate::coord::sched's `Copies`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Freeable {
+    /// Deleted by a freeing now.
+    pub now: u64,
+    /// Held by a running job (store::cachefile): deleted once that job ends.
+    pub held: u64,
+    /// Never deleted as things are: a pageview index the NAS lacks, a heritage clip that can't be
+    /// made again (or the NAS not asked, either).
+    pub kept: u64,
+}
 
-    /// Of those, what `TOWARD_ORDER`'s caches hold (bytes): what a freeing empties past the cheap
-    /// ones (room-making's).
-    pub fn past_cheap(&self) -> u64 {
-        TOWARD_ORDER.iter().filter_map(|k| self.clear.get(*k)).sum()
+impl Freeable {
+    /// File `p` of `len` bytes, which a freeing deletes unless a job holds it.
+    fn add(&mut self, p: &Path, len: u64) {
+        if store::cachefile::in_use(p) {
+            self.held += len;
+        } else {
+            self.now += len;
+        }
     }
 }
 
@@ -1223,29 +1238,61 @@ impl Sizes {
 /// member's, `member_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`
 /// ones, as far as the NAS can be asked: the heritage clip while it can be made again, the answers
-/// the NAS has all of, only when `root` is given). Nothing through a link, nor in the NAS's project
-/// folder `root` (`ours`).
+/// the NAS has all of, only when `root` is given); and what a freeing can do with them
+/// (`Freeable`). Nothing through a link, nor in the NAS's project folder `root` (`ours`).
 pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
+    let mut free = Freeable::default();
     let tiles = if member { "aws-terrarium/packs" } else { "aws-terrarium" };
     for (d, k) in [("chm10", "canopy"), (tiles, "terrain"), ("blobs", "blobs")] {
         let mut files = Vec::new();
         walk_cheap(cache, d, root, &mut files);
         clear.insert(k.to_string(), files.iter().map(|f| f.1).sum());
+        // (The canopy squares the NAS lacks are copied there and go; the lead's loose raw tiles are
+        // packed onto it and go: free_cheap.)
+        for f in files.iter().filter(|f| f.1 > 0 && !buildstore::localread::is_shared(cache, &f.2)) {
+            free.add(&f.2, f.1);
+        }
     }
     // (The pageview months the NAS has at their size, when the NAS can be asked: the others stay.)
     if let Some(r) = root {
-        clear.insert("months".to_string(), months_bytes(cache, &r.join("sources")));
+        let sources = r.join("sources");
+        let n = months_bytes(cache, &sources);
+        clear.insert("months".to_string(), n);
+        let mut files = Vec::new();
+        walk_cheap(cache, MONTHS, Some(r), &mut files);
+        let all: u64 = files.iter().map(|f| f.1).sum();
+        // (An index the NAS lacks stays, for landmarks::pageviews to put there.)
+        (free.now, free.kept) = (free.now + n, free.kept + all.saturating_sub(n));
     }
     let cheap_now = clear.values().sum();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
         if let Some(k) =
             kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k) && *k != "answers" && ours(&e.path(), root))
         {
-            if k == "heritage" && root.is_some() && !heritage_remade(root, &e.path()) {
+            let remade = root.is_some() && heritage_remade(root, &e.path());
+            if k == "heritage" && root.is_some() && !remade {
+                free.kept += bytes_under(&e.path());
                 continue;
             }
-            *clear.entry(k.to_string()).or_default() += bytes_under(&e.path());
+            let mut files = Vec::new();
+            match std::fs::symlink_metadata(e.path()) {
+                Ok(m) if m.is_dir() => walk(&e.path(), &mut files),
+                Ok(m) => files.push((m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), e.path())),
+                Err(_) => {}
+            }
+            *clear.entry(k.to_string()).or_default() += files.iter().map(|f| f.1).sum::<u64>();
+            if !TOWARD_ORDER.contains(&k) {
+                continue;
+            }
+            // (A heritage clip the NAS wasn't asked about: kept, as no freeing is sure to take it.)
+            if k == "heritage" && !remade {
+                free.kept += files.iter().map(|f| f.1).sum::<u64>();
+                continue;
+            }
+            for f in &files {
+                free.add(&f.2, f.1);
+            }
         }
     }
     if let Some(r) = root {
@@ -1253,7 +1300,7 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
         clear.insert("answers".to_string(), n);
     }
     clear.retain(|_, b| *b > 0);
-    Sizes { cheap: cheap_now, clear }
+    Sizes { cheap: cheap_now, clear, free }
 }
 
 /// The bytes the cheap caches at `cache` hold in files (not empty markers) `spare` doesn't keep and

@@ -4465,7 +4465,7 @@ mod tests {
             want,
             got,
             offered: offered.iter().map(|s| s.to_string()).collect(),
-            held: held.map(|(rule, w)| Held { rule, words: w.into(), disk_mb: None }),
+            held: held.map(|(rule, w)| Held { rule, words: w.into(), disk_mb: None, held_for: None }),
             refused: None,
         };
         let line = |answers: Vec<Answer>| {
