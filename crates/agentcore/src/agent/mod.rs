@@ -11885,8 +11885,12 @@ mod tests {
         // The status says why it's short, of the target the owner set.
         let short = a.room_short(true).unwrap();
         assert!(short.contains("nothing more to free"), "{short}");
-        // A job ended since: tried again.
+        // A job ended since: tried again once a count shows the caches can do more than the
+        // freeing left (task #1478).
         a.mem.worked_at = now_s() + 1;
+        assert_eq!(a.toward_due(), None, "the caches as the freeing left them");
+        put(&home.join("cache/blobs/sources/x/y.bin"), &[0; 1000]);
+        a.counted(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert_eq!(a.toward_due(), Some(target));
     }
 
@@ -15015,6 +15019,9 @@ mod tests {
                 && c.join("unit-stages.json").exists()
         );
         assert!(!asked(&home));
+        // (Counted again on the counting thread, as the loop's status starts it: task #1478.)
+        assert_eq!(a.cache_size.borrow().0, None, "a count asked for");
+        a.counted(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert_eq!(a.cache_size.borrow().1, Some(room::Sizes::default()), "counted again: nothing left to clear");
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
