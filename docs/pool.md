@@ -956,8 +956,10 @@ other process).
     floor's room freezing and giving back) stands behind it.
 - **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
   what's available and what compressing frees among it, what the jobs hold, the floor, the swap
-  grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), the
-  kernel's pressure level, and a give-back's cool-down. The jobs' **room**, what they may hold
+  grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), what
+  the Mac's other processes took more over the same window (`others_grown_mb`: the memory in use
+  and the swap, less what the jobs hold, now less the least), the kernel's pressure level, and a
+  give-back's cool-down. The jobs' **room**, what they may hold
   before the Mac is below its floor, is what they hold and what's available, less the swap grown
   and the floor (`Reading::room_mb`); the Mac is below its floor when what's available, the swap
   grown off, is under it, or the brake acts.
@@ -1392,12 +1394,25 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   frozen at once (SIGSTOP; the largest too once it alone passes the room, the sampler's thread
   freezing it first), then the next while the rest still pass the room. Freezing is the last
   resort: it stops a job's growth and lets macOS compress it while its work is kept. A frozen job
-  goes on once the Mac is back (the brake off, available at or above the floor), and is
-  stopped (given back) after a minute frozen with the brake still acting (`PRESSURE_HOLD`: twelve of
-  the sampler's 5 s readings, enough for a freeze that stopped the fall to show in them, short
-  beside the five minutes the swap grown counts over), or after the 15 minutes a drain gets with
-  the Mac between the two (the brake no longer acting, not yet back): that band is the freeze's
-  hysteresis, so a job isn't let go and frozen again on each sample.
+  goes on once the Mac is back (the brake off, available at or above the floor). After a minute
+  frozen with the brake still acting (`PRESSURE_HOLD`: twelve of the sampler's 5 s readings,
+  enough for a freeze that stopped the fall to show in them, short beside the five minutes the
+  swap grown counts over), or after the 15 minutes a drain gets with the Mac between the two (the
+  brake no longer acting, not yet back: that band is the freeze's hysteresis, so a job isn't let go
+  and frozen again on each sample), it's stopped (given back) only if that relieves the Mac
+  (`memguard::worth_stopping`, task #1485): the Mac short of its floor (`Reading::short_mb`), not
+  by what its other processes took lately (their growth in the window at least what it's short:
+  had they not grown, it wouldn't be), and the frozen jobs, largest first, holding what it's short:
+  those that cover it are stopped. At critical pressure any memory freed counts, whoever made the
+  shortfall. A frozen job no longer grows, so one not worth stopping (a job holding next to
+  nothing, or a shortfall the rest of the Mac made) stays frozen while the brake acts, holding no
+  more back than the brake does (no new job starts under it), and goes on once the Mac is back;
+  past the 15 minutes with the brake no longer acting it goes on, and the floor gives it back at
+  its next safe point if the Mac is still short. Replayed on the M1's stops of 18-19 Nov (its 1.0
+  GB floor held short by the Claude app and agents' builds; 15 stops in the 9 h from 23:00Z, jobs
+  of 0.0-0.4 GB, 2141 s of job time against 5002 s done), the rule stops one (a 0.4 GB job, 0.1 GB
+  short): 9 would free nothing near what the Mac was short, 4 were the other processes' growth, 1
+  not short by the numbers.
   A freeze outlives its agent's restart (docs/building.md §2, Restarts: a frozen job), held by the
   next agent under the same rule, the disk guard's too (task #1137).
   This holds on every Mac's slots. A drain that finds no safe point in 15 minutes is stopped. A

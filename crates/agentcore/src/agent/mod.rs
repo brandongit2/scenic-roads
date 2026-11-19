@@ -458,6 +458,9 @@ struct Slot {
     /// The memory guard froze its job, the Mac short of memory with the jobs together past the
     /// limit (`Agent::pressure`): when, that job's id, and the largest job's it made room for.
     pressure_frozen: Option<(Instant, String, String)>,
+    /// That job's hold passed and it was kept frozen, not stopped (memguard::worth_stopping), said
+    /// once.
+    pressure_kept: bool,
     /// The threads its lead granted the job given it (crate::coord::Grant::threads), for its start.
     granted: Option<u32>,
     /// The memory its lead packed the job given it at (MB: crate::coord::Grant::peak_mb, its measured
@@ -479,11 +482,12 @@ struct Slot {
 }
 
 /// How long the memory guard keeps a job frozen under the brake before it gives it back, the brake
-/// still acting (`Agent::pressure`; docs/pool.md §7.2): a minute, twelve of the sampler's readings
+/// still acting and the stop worth it (`Agent::pressure`, memguard::worth_stopping; docs/pool.md
+/// §7.2): a minute, twelve of the sampler's readings
 /// (memguard::EVERY), enough for a freeze that stopped the fall to show in them, and short beside
 /// the window the swap grown counts in (memguard::SWAP_WINDOW). Past it with the brake no longer
 /// acting but the Mac not back above its floor, the job stays frozen up to the time a pause gives a
-/// safe point (`Agent::grace`).
+/// safe point (`Agent::grace`), then is given back or, not worth stopping, goes on.
 const PRESSURE_HOLD: Duration = Duration::from_secs(memguard::EVERY.as_secs() * 12);
 
 /// An agent's slots (`Agent::slots`): `SLOTS` of them fresh, more as a member's packed jobs take
@@ -6027,6 +6031,9 @@ impl Agent {
                     held_mb,
                     floor_mb,
                     pressure: if self.sampler.in_trouble() { 2 } else { 1 },
+                    // (The sampler's, which reads a test's Mac as set: what its idle lost is the
+                    // other processes'.)
+                    others_grown_mb: self.sampler.reading().map_or(0, |r| r.others_grown_mb),
                     cool_mb,
                     cool_until,
                     ..Default::default()
@@ -6111,7 +6118,8 @@ impl Agent {
     /// the least progressed, one at a time: memguard::decide_by, `guard_ranks`; and nothing starts
     /// beside the largest until it ends); while the brake acts (`Reading::acts`) one is frozen at once
     /// instead (`pressure`; the largest too once it alone passes the room), then the next while
-    /// what's left still passes, each given back if the Mac isn't back within `PRESSURE_HOLD`; the
+    /// what's left still passes, each given back if the Mac isn't back within `PRESSURE_HOLD` and
+    /// the stop relieves it (memguard::worth_stopping); the
     /// largest, past the room alone with the brake off, stops at its next safe point; a job
     /// drained that reached no safe point in the time a pause gives one stops at once. One it stops is given back, not failed, kept from this Mac
     /// for an hour (a member's lease ended as failed, so its lead keeps it from this Mac as long),
@@ -6223,11 +6231,14 @@ impl Agent {
     /// it while its work is kept. Only while the brake acts (`Reading::acts`: the pressure critical,
     /// or the brake on with the Mac below its floor by the numbers): the pressure at warning alone
     /// holds new work and freezes nothing. A frozen job goes on once the Mac is back (the brake off
-    /// and its memory, the swap grown off, at or above the floor);
-    /// it's stopped (given back, as the guard stops one) once frozen `PRESSURE_HOLD` with the brake
-    /// still acting, else (between the two) once frozen the time a pause gives a safe point; then
-    /// the next, if what's left still passes. None: nothing for it to do (the brake not acting and
-    /// nothing frozen); else whether it stopped a job.
+    /// and its memory, the swap grown off, at or above the floor). Once frozen `PRESSURE_HOLD` with
+    /// the brake still acting, or the time a pause gives a safe point with the Mac between the two,
+    /// it's stopped (given back, as the guard stops one) only if that relieves the Mac
+    /// (memguard::worth_stopping: the frozen jobs it's among hold what the Mac is short, and the
+    /// Mac's other processes didn't take that much lately); else it's kept frozen while the brake
+    /// acts, and goes on past that time with the brake no longer acting (the floor then gives it
+    /// back at its next safe point). None: nothing for it to do (the brake not acting and nothing
+    /// frozen); else whether it stopped a job.
     fn pressure(&mut self, held: &[Option<u64>], r: &memguard::Reading) -> Option<bool> {
         let trouble = r.acts();
         let back = !trouble && r.brake().is_none() && r.usable_mb() >= r.floor_mb;
@@ -6238,16 +6249,24 @@ impl Agent {
             if self.slots[k].pressure_frozen.is_none() && self.sampler.frozen(k) {
                 if let Some(id) = id_of(self, k) {
                     self.slots[k].pressure_frozen = Some((Instant::now(), id.clone(), id));
+                    self.slots[k].pressure_kept = false;
                 }
             }
         }
+        for k in 0..self.slots.len() {
+            let Some((_, mine, _)) = self.slots[k].pressure_frozen.as_ref() else { continue };
+            if id_of(self, k).as_deref() != Some(mine.as_str()) {
+                self.slots[k].pressure_frozen = None;
+            }
+        }
+        // (Which frozen jobs a stop would relieve the Mac by: memguard::worth_stopping.)
+        let frozen_held: Vec<Option<u64>> = (0..self.slots.len())
+            .map(|k| self.slots[k].pressure_frozen.as_ref().map(|_| held.get(k).copied().flatten().unwrap_or(0)))
+            .collect();
+        let worth = memguard::worth_stopping(r, &frozen_held);
         let mut any = false;
         for k in 0..self.slots.len() {
             let Some((at, mine, big)) = self.slots[k].pressure_frozen.clone() else { continue };
-            if id_of(self, k).as_deref() != Some(mine.as_str()) {
-                self.slots[k].pressure_frozen = None;
-                continue;
-            }
             any = true;
             if back {
                 // (Paused meanwhile, the build's pause or a drain past its grace: it stays so.)
@@ -6262,15 +6281,44 @@ impl Agent {
                 self.guard_last = Some((now_s(), format!("{mine} goes on: {why}")));
                 continue;
             }
-            if (trouble && at.elapsed() >= PRESSURE_HOLD) || at.elapsed() >= self.grace {
-                let why = format!(
-                    "stopped by the memory guard: it held {:.1} GB, frozen {} s{}, the Mac not back above its floor: {}",
-                    held.get(k).copied().flatten().unwrap_or(0) as f64 / 1024.0,
-                    at.elapsed().as_secs(),
-                    if big == mine { String::new() } else { format!(" for {big}") },
-                    r.short_words()
-                );
-                return Some(self.guard_stop(k, "memory guard", &why));
+            if !((trouble && at.elapsed() >= PRESSURE_HOLD) || at.elapsed() >= self.grace) {
+                continue;
+            }
+            match &worth {
+                Ok(stop) if stop.contains(&k) => {
+                    let why = format!(
+                        "stopped by the memory guard: it held {:.1} GB, frozen {} s{}, the Mac not back above its floor: {}; stopping it frees what the Mac is short ({:.1} GB)",
+                        held.get(k).copied().flatten().unwrap_or(0) as f64 / 1024.0,
+                        at.elapsed().as_secs(),
+                        if big == mine { String::new() } else { format!(" for {big}") },
+                        r.short_words(),
+                        r.short_mb().max(1) as f64 / 1024.0
+                    );
+                    return Some(self.guard_stop(k, "memory guard", &why));
+                }
+                // (Not worth stopping, the brake no longer acting: past the drain's grace it goes
+                // on, and the floor gives it back at its next safe point if the Mac is still short.)
+                _ if !trouble => {
+                    self.slots[k].pressure_frozen = None;
+                    self.sampler.thaw(k);
+                    let why = format!(
+                        "the brake no longer acting and stopping it not worth it ({})",
+                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str())
+                    );
+                    eprintln!("agent: memory guard: {mine} goes on: {why}");
+                    self.guard_last = Some((now_s(), format!("{mine} goes on: {why}")));
+                }
+                // (Kept frozen under the brake: said once.)
+                _ if !self.slots[k].pressure_kept => {
+                    self.slots[k].pressure_kept = true;
+                    let why = format!(
+                        "kept frozen, not stopped: {}; it goes on once the Mac is back above its floor",
+                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str())
+                    );
+                    eprintln!("agent: memory guard: {mine} {why}");
+                    self.guard_last = Some((now_s(), format!("{mine} {why}")));
+                }
+                _ => {}
             }
         }
         if !trouble {
@@ -6301,11 +6349,12 @@ impl Agent {
         self.sampler.freeze(k);
         let total: u64 = held.iter().flatten().sum();
         let whom = big.as_deref().map_or(String::new(), |b| format!(" for {b}"));
-        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then, going on once the Mac is back above its floor", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
+        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then and that relieves the Mac, going on once the Mac is back above its floor", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
         eprintln!("agent: memory guard: {mine} {why}");
         self.guard_last = Some((now_s(), format!("{mine} {why}")));
         let big = big.unwrap_or_else(|| mine.clone());
         self.slots[k].pressure_frozen = Some((Instant::now(), mine, big));
+        self.slots[k].pressure_kept = false;
         Some(false)
     }
 
@@ -14374,6 +14423,108 @@ mod tests {
         }
         a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+    }
+
+    /// Task #1485 (the M1, 19 Nov: 39 of its last 40 failures jobs of 0.0-0.4 GB stopped by the
+    /// brake, the load beside the pool holding its 1.0 GB floor short): a frozen job is stopped
+    /// only when that relieves the Mac (memguard::worth_stopping). One holding next to nothing
+    /// while the Mac's other processes take its memory is kept frozen past the hold and the drain's
+    /// grace, never stopped, and goes on once the Mac is back; one whose own growth makes the
+    /// shortfall is stopped; of two frozen, the one that grew is stopped and the one holding
+    /// nothing beside it kept, then let go on.
+    #[test]
+    fn a_frozen_job_is_stopped_only_when_that_relieves_the_mac() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        a.free_set = Some(40 << 30);
+        // (16 GB, its default floor 2 GB; 14 GB available with no job.)
+        a.mem_set = Some((16 << 10, 14 << 10));
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        let job = |id: &str| {
+            let (step, t) = id.split_once(' ').unwrap();
+            JobSpec {
+                id: id.into(),
+                what: id.into(),
+                cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+                needs: Needs { nas: false },
+                restart_after_sleep: false,
+                record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+            }
+        };
+        // (A sample of the Mac as set, then the agent's loop.)
+        let tick = |a: &mut Agent, held: Vec<Option<u64>>, trouble: bool| {
+            a.sampler.set_test(Some(held), Some(trouble));
+            a.sampler.set_test_idle(a.test_idle_mb());
+            a.sampler.tick();
+            for k in 0..SLOTS {
+                a.tend(k, &cond, Some(&nas), 0).unwrap();
+            }
+            a.guard()
+        };
+        let held_past = |a: &mut Agent, k: usize| {
+            a.slots[k].pressure_frozen.as_mut().unwrap().0 = Instant::now().checked_sub(PRESSURE_HOLD).unwrap();
+        };
+        let last = |a: &Agent| a.guard_view().last.map(|(_, w)| w).unwrap_or_default();
+        assert!(a.try_start(0, job("bldtiles 6/2/2"), &cond, Some(&nas), &mut Vec::new()));
+        // (Twice: the sampler reads the Mac once the loop has told it its memory.)
+        assert!(!tick(&mut a, vec![Some(100)], false) && !tick(&mut a, vec![Some(100)], false));
+        // The other processes take the Mac's memory (1.5 GB left, the floor 2 GB), the pressure at
+        // warning: the job holding 0.1 GB frozen; past the hold and the drain's grace with the brake
+        // still acting, kept frozen, said why once; the Mac back, it goes on.
+        a.mem_set = Some((16 << 10, 1536));
+        assert!(!tick(&mut a, vec![Some(100)], true));
+        assert!(a.sampler.frozen(0) && a.slots[0].pressure_frozen.is_some());
+        held_past(&mut a, 0);
+        a.grace = Duration::ZERO;
+        for _ in 0..3 {
+            assert!(!tick(&mut a, vec![Some(100)], true));
+            assert!(a.sampler.frozen(0) && a.slots[0].running.is_some(), "kept frozen, never stopped");
+        }
+        let w = last(&a);
+        assert!(w.contains("kept frozen, not stopped") && w.contains("other processes took"), "{w}");
+        a.grace = DRAIN_GRACE;
+        a.mem_set = Some((16 << 10, 14 << 10));
+        assert!(!tick(&mut a, vec![Some(100)], false));
+        assert!(!a.sampler.frozen(0) && a.slots[0].pressure_frozen.is_none() && a.slots[0].running.is_some());
+        // Its own growth makes the shortfall (13 GB, 1 GB left), the other processes steady: frozen,
+        // then stopped once frozen the hold.
+        assert!(!tick(&mut a, vec![Some(13 << 10)], true));
+        assert!(a.sampler.frozen(0));
+        held_past(&mut a, 0);
+        assert!(tick(&mut a, vec![Some(13 << 10)], true));
+        assert!(a.slots[0].running.is_none());
+        assert!(last(&a).contains("stopping it frees what the Mac is short"), "{}", last(&a));
+        // Mixed: one frozen holding 0.1 GB (frozen before) and one grown to 13 GB beside it, frozen
+        // too: the one that grew is stopped, the other kept, and goes on once the Mac is back.
+        a.mem_cool = None;
+        assert!(a.try_start(0, job("terrain-hi 6/1/2"), &cond, Some(&nas), &mut Vec::new()));
+        assert!(a.try_start(1, job("bldtiles 6/2/3"), &cond, Some(&nas), &mut Vec::new()));
+        assert!(!tick(&mut a, vec![Some(1 << 10), Some(100)], false));
+        assert!(a.sampler.freeze(1));
+        assert!(!tick(&mut a, vec![Some(13 << 10), Some(100)], true));
+        assert!(a.sampler.frozen(0) && a.sampler.frozen(1));
+        held_past(&mut a, 0);
+        held_past(&mut a, 1);
+        assert!(tick(&mut a, vec![Some(13 << 10), Some(100)], true));
+        assert!(a.slots[0].running.is_none() && a.slots[1].running.is_some());
+        assert!(!tick(&mut a, vec![None, Some(100)], true));
+        assert!(a.sampler.frozen(1) && a.slots[1].running.is_some(), "holding nothing: not stopped");
+        assert!(!tick(&mut a, vec![None, Some(100)], false));
+        assert!(!a.sampler.frozen(1) && a.slots[1].running.is_some());
+        a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
     }
 
     #[test]
