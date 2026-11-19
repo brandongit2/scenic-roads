@@ -330,7 +330,7 @@ impl Pyramid<'_> {
     /// parallel and each one's subtree on one thread; their quadrants, in turn. Each top is a piece
     /// of `pieces` (task #1414: its subtree's tiles and its quadrant, kept once made, a safe point;
     /// one an earlier run kept taken, its tiles stored as made). A keep that stops the run (a
-    /// pause) is returned once the tops under way are kept too.
+    /// pause) is returned once the tops under way are kept too, no other begun.
     pub fn tops(
         &self,
         z: u8,
@@ -340,25 +340,35 @@ impl Pyramid<'_> {
         let pieces = Mutex::new(pieces);
         // (Kept on the pool's threads, under the caller's count: a test's stop.)
         let carry = jobrt::resume_log::StopCarry::here();
-        let top = |&(x, y): &(u32, u32)| -> Result<Option<Vec<Px>>> {
+        // (The first keep that stops the run: no top begun after it.)
+        let stop: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        let top = |&(x, y): &(u32, u32)| -> Option<Vec<Px>> {
+            if stop.lock().unwrap().is_some() {
+                return None;
+            }
             let b = (z, x, y);
             if let Some((made, q)) = pieces.lock().unwrap().take(b).and_then(|p| top_of(&p).ok()) {
                 made.iter().for_each(|_| (self.tick)());
                 self.out.lock().unwrap().extend(made);
-                return Ok(q);
+                return q;
             }
             let mine = Mutex::new(Vec::new());
             let q = Pyramid { out: &mine, ..*self }.node(z, x, y, z);
             let made = mine.into_inner().unwrap();
-            let kept = carry.on(|| pieces.lock().unwrap().keep(b, &put_top(&made, &q)));
+            if let Err(e) = carry.on(|| pieces.lock().unwrap().keep(b, &put_top(&made, &q))) {
+                stop.lock().unwrap().get_or_insert(e);
+            }
             self.out.lock().unwrap().extend(made);
-            kept.map(|()| q)
+            q
         };
         // (Each top a task of its own: split into a chunk a thread, the chunks of uneven tops left
         // threads idle at the end.)
         let qs = on_pool(|| tops.par_iter().with_max_len(1).map(top).collect::<Vec<_>>());
         carry.back();
-        qs.into_iter().collect()
+        match stop.into_inner().unwrap() {
+            Some(e) => Err(e),
+            None => Ok(qs),
+        }
     }
 
     /// `tile`: its children in parallel above zoom `par_until`, one after another from it.
