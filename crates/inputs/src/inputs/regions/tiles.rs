@@ -1481,9 +1481,7 @@ fn remainders(
             None => {
                 let make = || {
                     let mut more = BTreeSet::new();
-                    let v = remainder_pieces(
-                        dir, path, rem, &members, folder, ctx, data, made, others, out, held, &mut more,
-                    );
+                    let v = remainder_pieces(dir, path, rem, &members, folder, ctx, made, others, out, held, &mut more);
                     (v, more.into_iter().collect::<Vec<Id>>())
                 };
                 let (v, more) = match ctx.kept {
@@ -1640,7 +1638,6 @@ fn remainder_pieces(
     members: &[String],
     folder: &Folder,
     ctx: &super::resolve::Context,
-    data: &super::data::Datasets,
     made: &BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
@@ -1679,16 +1676,16 @@ fn remainder_pieces(
         if of.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        let (land, lakes) = land_and_lakes(data, c);
         // (What the regions take, as their outlines draw it before the cut to the land: what's
-        // free meets each on its outline's own line, never on a second cut of it.)
+        // free meets each on its outline's own line, never on a second cut of it; and it meets the
+        // coastline only in its region's one cut to the land, as an outline does.)
         let taken: Vec<&Area> = made
             .values()
             .map(|m| m.outline.cells.get(&c))
             .chain(others.values().map(|t| t.cells.get(&c)))
             .flatten()
             .collect();
-        let free = of.minus(&geom::union_all_of(&taken)).intersect(&land.union(&lakes));
+        let free = of.minus(&geom::union_all_of(&taken));
         if free.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }

@@ -633,9 +633,9 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 
 An unknown field is `rg-toml`; a bad part, `by` id or step `rg-part`. After every region's land is made
 and before any water, the folders' remainders are taken in turn, the deepest folder first (an outer
-place's then holds nothing an inner one gave), cell by cell: the land and big lakes of `of` that no
-region takes (every region's outline, every region without water as stored) go to the folder's regions
-with land (every region under the folder but its waters regions): to each region in `by` the pieces
+place's then holds nothing an inner one gave), cell by cell: what of `of` no region takes
+(every region's outline, every region without water as stored) goes to the folder's regions with land
+(every region under the folder but its waters regions): to each region in `by` the pieces
 inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over the remainder,
 hold the folder naming both, `rg-ref`; under it the piece is the first's in id order); the rest to the
 nearest region (its land and lakes), split at the median line as a `nearest` is on a grid of `step`.
