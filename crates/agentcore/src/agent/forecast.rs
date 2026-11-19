@@ -1102,9 +1102,10 @@ pub const VERSION: u32 = 10;
 /// Whether the code before `VERSION` has a way of its own in this app (`Input::code`), so that a
 /// backtest's old run (crate::agent::fccheck::backtest) differs from its new. False since code 9,
 /// which replaced code 2's paces and caps with each job's needs over its Mac's supply rather than
-/// keeping them beside it, and code 10 (task #1505: a lease past its measured time timed by its
-/// step's slower runs where the room held for a waiting job weighs it, crate::coord::sched's
-/// `run_end`) kept no way before either: a record rerun as code 9 runs as code 10, and the backtest
+/// keeping them beside it, and code 10 (task #1505: a lease with no measured time left timed by
+/// its discounted progress, else its slowest target's high percentile, where the room held for a
+/// waiting job weighs it, crate::coord::sched's `run_end`; the record's `Leased::left_s` and
+/// `State::lefts`) kept no way before either: a record rerun as code 9 runs as code 10, and the backtest
 /// says so. Set it with the first change that keeps the code before's way behind `Input::code`.
 pub const BEFORE_HAS_PATH: bool = false;
 
@@ -3609,6 +3610,7 @@ mod tests {
             threads: 1,
             granted_at: 1_000_000 - 7200,
             busy_tenths: None,
+            left_s: None,
         }];
         let cap = Capacity { mem_mb: 16_000, build_mb: 16_000, cores: 8, cores_free: 8, ..Default::default() };
         st.workers = vec![Asked {
@@ -3946,6 +3948,7 @@ mod tests {
             threads: 1,
             granted_at: 1_000_000 - ran,
             busy_tenths: None,
+            left_s: None,
         };
         st.leases = vec![
             leased("m1", "terrain-hi", &["6/1/1", "6/1/2"], 300),
@@ -3996,6 +3999,7 @@ mod tests {
             threads: 1,
             granted_at: 1_000_000 - ran,
             busy_tenths: None,
+            left_s: None,
         };
         st.leases = vec![leased("m1 #2", "6/9/1", 300), leased("m1", "6/9/2", 600)];
         let lane = |name: &str| Machine {
@@ -4766,6 +4770,7 @@ mod tests {
             threads: 2,
             granted_at: 0,
             busy_tenths: None,
+            left_s: None,
         };
         let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
         let st = State {

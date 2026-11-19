@@ -120,6 +120,12 @@ pub struct Event {
     /// (the lead's own) or "fail" that said its progress and didn't reach its total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// The times left its job's beats said by its progress against what was left in fact, its
+    /// job ending then (s, [said, actual]: crate::coord::lease::Lease::left_pairs), on an "end" or
+    /// "done" of a leased job: what a progress end is discounted by (`History::left_ratios`, task
+    /// #1505 review). Events before it have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<[u64; 2]>,
     /// The member's note it was (crate::coord::notes), on an event a member noted to the lead: its
     /// line in the file is the lead's word that it took that note (`History::noted`), so a note is
     /// taken once whatever the lead's crashes. Events before task #1160 have none.
@@ -659,6 +665,20 @@ impl History {
             }
         }
         by.into_iter().filter_map(|(step, v)| Some((step, crate::needs::p90(v)?))).collect()
+    }
+
+    /// How each step's progress estimates ended: what was left in fact over what its beats said, of
+    /// each pair kept on a job's "end" or "done" that ended well (`Event::left`), by step
+    /// (crate::coord::sched::Sched::set_lefts).
+    pub fn left_ratios(&self) -> BTreeMap<String, Vec<f64>> {
+        let mut by: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for e in self.events.iter().filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true)) {
+            let Some(step) = &e.step else { continue };
+            for &[said, actual] in e.left.iter().filter(|p| p[0] > 0) {
+                by.entry(step.clone()).or_default().push(actual as f64 / said as f64);
+            }
+        }
+        by
     }
 
     /// What a running job's pace is held to (crate::agent::flags' slow): the runs kept that ended

@@ -622,6 +622,19 @@ pub struct Shared {
 pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 
 impl Shared {
+    /// `e` in the history (`history::History::add`); its number. A job's end that held its progress
+    /// estimates to its end (`history::Event::left`) moves how the scheduler discounts them
+    /// (`sched::Sched::set_lefts`, task #1505 review), from the week of ends the history keeps.
+    fn note(&mut self, e: history::Event) -> u64 {
+        let lefts = !e.left.is_empty();
+        let n = self.history.add(e);
+        if lefts {
+            let by = self.history.left_ratios();
+            self.sched.set_lefts(by);
+        }
+        n
+    }
+
     /// Each member's fresh capacity (`Coordinator::capacities`): `me`'s own first.
     fn capacities(&self, me: &str) -> Vec<(String, Capacity)> {
         let now = self.now();
@@ -2014,6 +2027,7 @@ impl Coordinator {
                 records: Default::default(),
                 tuning: Default::default(),
                 batch_s: 0,
+                lefts: sched::Lefts::of(history.left_ratios()),
             },
             pass: String::new(),
             plan: 0,
@@ -3031,7 +3045,7 @@ impl Coordinator {
 
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions; its number.
     pub fn note(&self, e: history::Event) -> u64 {
-        self.shared.lock().unwrap().history.add(e)
+        self.shared.lock().unwrap().note(e)
     }
 
     /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
@@ -5452,7 +5466,7 @@ fn route(
                         ok: Some(!d.failed),
                         ..history::Event::new("done")
                     };
-                    s.history.add(l.noted(e, now));
+                    s.note(l.noted(e, now));
                 }
                 Work::Task { id } => {
                     let kind = s.tasks.kind_of(*id);
@@ -9906,12 +9920,16 @@ mod tests {
     /// regions inputs check, not measured, its status saying "about 159 min left" by its
     /// progress, 5 to 8 of its 12 cores idle): a job the room held for a big job (terrain-deep, 6
     /// GB, on a member of 4 GB more than slope-hi's) waits for (slope-hi, about 4 GB) with no
-    /// measured time left is timed by the time left its beats say by its progress, so small jobs
-    /// (bldtiles, 1 GB, a minute) go, round after round, to end before it, never one that would
-    /// end after it, and the hold says which end it took. Not measured, past its measured time,
-    /// or past its step's slower runs too, with no progress said, only those fitting beside the
-    /// big job go; past its measured time but within its step's slower runs (a target never run
-    /// itself), by those. Once it ends, the big job starts as soon as the small ones free its room.
+    /// measured time left is timed by the time left its beats say by its progress, discounted by
+    /// how such estimates ended (task #1505 review: its step's, else the pool's, at the needs
+    /// model's low percentile), so small jobs (bldtiles, 1 GB, a minute) go, round after round, to
+    /// end before it, never one that would end after it, and the hold says which end it took.
+    /// With no estimate ended yet its progress gives no end. Not measured, past its measured time,
+    /// or past its step's slower runs too, with no end by its progress, only those fitting beside
+    /// the big job go; past its measured time but within its step's slower runs (a target never
+    /// run itself), by those. Once it ends, the big job starts as soon as the small ones free its
+    /// room. A record of the scheduler carries the lease's time left and the discounts, for the
+    /// forecast's (code 10).
     #[test]
     fn a_held_big_job_times_a_job_it_waits_for_by_its_progress_past_its_measured_time() {
         let offer = |step: &str, ts: &[String]| Offer {
@@ -10017,30 +10035,60 @@ mod tests {
             // once slope-hi ends go, but within its step's slower runs: ending before them, 4.
             match kind {
                 "unmeasured" => {
-                    fill(&c, &w, 2, "the job it waits for running with no measured time and no progress said")
+                    fill(&c, &w, 2, "the job it waits for running with no measured time and no end by its progress")
                 }
                 "own run" => fill(
                     &c,
                     &w,
                     2,
-                    "the job it waits for running past its measured time and its step's slower runs, no progress said",
+                    "the job it waits for running past its measured time and its step's slower runs, and no end by its progress",
                 ),
                 _ => fill(&c, &w, 4, "past its measured time, by its step's slower runs"),
             }
-            // Its progress says 10 hours left: 4 go, round after round, to end before it.
+            // Its progress says 10 hours left, but no estimate has ended yet to hold it to: as with
+            // none said.
             let said = |left: u64| crate::agent::jobs::Live { left_s: Some(left), targets: 1, ..Default::default() };
             assert!(w.beat_told(lease, Some("1/10 tiles"), Some(said(36_000)), None).unwrap().0);
-            for _ in 0..2 {
-                fill(&c, &w, 4, "expected to end in 600 min, the last of them by its progress");
+            let n = if kind == "step's runs" { 4 } else { 2 };
+            let g = grants(&w, &a(8));
+            assert_eq!(steps(&g), vec!["bldtiles"; n], "{kind}: {}", why(&c));
+            for (l, _) in g {
+                w.give_back(l, "the test").unwrap();
             }
-            // Two minutes left by it: none that would end after it, only the 2 beside.
+            // Twenty estimates ended (its own step's, or another's, the pool's), the earliest at half
+            // what was said: at the 5th percentile (the needs model's high one 95), 5 hours of the
+            // 10 said. 4 go, round after round, to end before then.
+            let (of, whose) =
+                if kind == "unmeasured" { ("slope-hi", "its step's") } else { ("terrain-lo", "the pool's") };
+            let mut left = vec![[1000, 500]];
+            left.extend(std::iter::repeat_n([1000, 1000], 19));
+            c.note(history::Event { step: Some(of.into()), ok: Some(true), left, ..history::Event::new("done") });
+            for _ in 0..2 {
+                let said = format!("expected to end in 300 min, the last of them by its progress, as {whose} estimates ended at their 5th percentile");
+                fill(&c, &w, 4, &said);
+            }
+            // (A record of it as the forecast takes it: the time left and the discounts, kept
+            // through a scheduler made from it.)
+            {
+                let s = c.shared.lock().unwrap();
+                let clock = sched::Clock { now: s.now(), unix: s.wall_s() };
+                let st = s.sched.state(clock);
+                let again = sched::Sched::from_state(s.the_plan, &st, clock, TTL).state(clock);
+                for st in [&st, &again] {
+                    let l = st.leases.iter().find(|l| l.step == "slope-hi").unwrap();
+                    assert_eq!(l.left_s, Some(36_000), "{kind}");
+                    assert_eq!(st.lefts.get(""), Some(&0.5), "{kind}: the pool's");
+                    assert_eq!(st.lefts.get(of), Some(&0.5), "{kind}: its step's");
+                }
+            }
+            // Two minutes left by it, one by its discount: none that would end after it, only the 2
+            // beside.
             assert!(w.beat_told(lease, Some("9/10 tiles"), Some(said(120)), None).unwrap().0);
-            fill(&c, &w, 2, "expected to end in 2 min, by its progress");
+            fill(&c, &w, 2, "expected to end in 1 min, by its progress");
             // Its time said passed, nothing said since: as with none said.
             clock.advance(Duration::from_secs(150));
             assert!(w.beat(lease, None).unwrap());
             let g = grants(&w, &a(8));
-            let n = if kind == "step's runs" { 4 } else { 2 };
             assert_eq!(steps(&g), vec!["bldtiles"; n], "{kind}: {}", why(&c));
             // slope-hi ends: beside 2 small ones 6 GB is left and terrain-deep goes at once; beside
             // 4, nothing goes until two end.
@@ -10051,6 +10099,33 @@ mod tests {
             }
             assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{kind}: {}", why(&c));
         }
+    }
+
+    /// Task #1505 review: a batch past its measured time is timed by one target running long, its
+    /// slowest target's excess at its step's high percentile over its measured time, the rest as
+    /// measured: not every target's high percentile summed (what a job admitted beside a hold is
+    /// held to, `batch_p90`); for one target the two are the same.
+    #[test]
+    fn a_batch_past_its_time_is_timed_by_one_target_running_long() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        let v = cost_version("slope-hi");
+        for i in 0..10 {
+            let cost =
+                Cost { peak_mb: 1000, secs: if i < 8 { 100 } else { 30_000 }, worker: None, v, ..Default::default() };
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/9/{i}")), cost)], "m1");
+        }
+        let s = &c.shared.lock().unwrap().sched;
+        let ts = ["6/3/1", "6/3/2", "6/3/3"];
+        let measured = s.batch_secs("slope-hi", ts, "m1", 0).unwrap().0;
+        let one = s.batch_secs("slope-hi", ["6/3/1"], "m1", 0).unwrap().0;
+        let p90 = s.batch_p90("slope-hi", ["6/3/1"], "m1").unwrap();
+        assert!(p90 > one, "a target's high percentile past its time: {one} s, {p90} s");
+        assert_eq!(s.batch_slow("slope-hi", ["6/3/1"], "m1"), Some(p90), "one target: its high percentile");
+        let excess =
+            |t: &str| s.batch_p90("slope-hi", [t], "m1").unwrap() - s.batch_secs("slope-hi", [t], "m1", 0).unwrap().0;
+        let most = ts.iter().map(|t| excess(t)).max().unwrap();
+        assert_eq!(s.batch_slow("slope-hi", ts, "m1"), Some(measured + most));
+        assert!(s.batch_slow("slope-hi", ts, "m1").unwrap() < s.batch_p90("slope-hi", ts, "m1").unwrap());
     }
 
     /// Task #973 review: the room held for a big job (terrain-deep, 5 GB) waits for the jobs that

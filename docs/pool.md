@@ -1206,25 +1206,37 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   kind while one of them has no end said. A job's end (`Sched::run_end`, task #1505) is its measured
   time (`Sched::batch_secs`) less what it has run; not measured, or past it, the time left its
   progress's pace says, as its status shows it ("about 159 min left": its agent's estimate, sent
-  with each beat as `Live::left_s`, less the time since the beat, `Lease::left_by_progress`); else,
-  measured and past it, its step's runs' high percentile for its targets (`Sched::batch_p90`, the
-  margin a job going beside the hold is held to) less what it has run, while it's within it; else
-  none (it may end any moment). A job not measured has no model either (its step's model stands in
-  for a target's own run, §7.7), so with no progress said it has no end. So a hold never idles a Mac
-  for as long as its running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores
-  idle, while room was held for timetables-todo; on 19 Nov it ran 2 jobs for over two hours, room
-  held for the catalogue behind the regions inputs check, not measured, at "33 %, about 159 min
-  left" by its progress), never waits for a long job while a shorter one frees its room, and the
-  big job waits only for jobs expected to end no later than those it first waited for, until one
-  overruns its end: never starved. The refusal names the target it waits for (its step and tile),
-  the jobs it waits for, when they're expected to end and which end the hold took (the last of them
-  to end's: "by its measured time", "by its progress", "past its measured time, by its step's
-  slower runs"; or the one with none: "running with no measured time and no progress said",
-  "running past its measured time and its step's slower runs, no progress said"), on the build
-  page's flags too, also when nothing offered after it was held back (task #1170: that case had said
-  only the room left, and the lead's status showed no hold). The forecast packs by the same
-  rule (its leases saying no progress: each ends by its measured time or its step's slower runs,
-  code 10, §7.9), its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
+  with each beat as `Live::left_s`, less the time since the beat, `Lease::left_by_progress`),
+  discounted by how such estimates have ended (`Sched::left_discount`): each lease keeps the times
+  left its beats said, and its "end" or "done" holds them to what was left in fact
+  (`history::Event::left`: from its last beat back, a pair each time that doubled, so a long job's
+  thousand beats weigh as a dozen); the ratio of the two (left in fact over said) of the week's jobs
+  that ended well (`History::left_ratios`), its step's, else every step's, at the percentile as far
+  below the middle as `needs-high-pct` is above it (5 by default), times the time left said; with no
+  estimate ended yet, or a discount to nothing, none from it. Else, measured and past it, its
+  measured time and its slowest target's excess at its step's runs' high percentile
+  (`Sched::batch_slow`: one target running long, the rest as measured) less what it has run, while
+  it's within it; else none (it may end any moment). A job not measured has no model either (its
+  step's model stands in for a target's own run, §7.7), so with no end by its progress it has none.
+  So a hold never idles a Mac for as long as its running jobs last (on 5 Nov the mini ran one
+  terrain-hi job, 7 of its 12 cores idle, while room was held for timetables-todo; on 19 Nov it ran
+  2 jobs for over two hours, room held for the catalogue behind the regions inputs check, not
+  measured, at "33 %, about 159 min left" by its progress, which ended 24 minutes later), and never
+  waits for a long job while a shorter one frees its room. A measured end only comes nearer; a
+  progress end may move later (its job slowing, its estimate said again each beat), so jobs
+  admitted beside the hold may end after those first waited for. Either way, when the jobs it waits
+  for end before their end said, the big job waits past them at most for the longest job admitted
+  beside it (its own high percentile, as admitted): never starved. The refusal names the target it
+  waits for (its step and tile), the jobs it waits for, when they're expected to end and which end
+  the hold took (the last of them to end's: "by its measured time", "by its progress, as its step's
+  estimates ended at their 5th percentile" (or "the pool's"), "past its measured time, by its step's
+  slower runs"; or the one with none: "running with no measured time and no end by its progress",
+  "running past its measured time and its step's slower runs, and no end by its progress"; none of
+  the pool's running: "no job of the pool's running for it to wait for"), on the build page's flags
+  too, also when nothing offered after it was held back (task #1170: that case had said only the
+  room left, and the lead's status showed no hold). The forecast packs by the same
+  rule (code 10, §7.9: each lease's time left by its progress as the lead had it, `Leased::left_s`,
+  and the discounts it took, `State::lefts`, in the record), its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target passes to: the others take it. Each job is as many targets as fit the batch length by their measured
   times on its Mac (§7.7, Batch length; a target of no run of its own: its step's model, §7.7, What a step needs), a step kept to the lead in one job. The agent starts every job granted, each in a slot of
@@ -2305,7 +2317,7 @@ Batch length in §7.7), each step's pace against its needs read from the history
 (`forecast::needs_pace`), and each lane's job under way timed by its needs over its Mac's supply
 (`forecast::lease_busy`; both code 9, below). Old and new differ by what the code now does and the one before
 didn't (`Input::code`), where the app keeps the code before's way (`forecast::BEFORE_HAS_PATH`):
-code 9 keeps none, so old is new's run, not rerun, and the report says old equals new; the code
+codes 9 and 10 keep none, so old is new's run, not rerun, and the report says old equals new; the code
 before is then measured by an earlier app's replay. The tables below ran their own code's pair. The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
 scored on. The terms' files held a term's last input alone (81 over 24-27 Oct: a run took ~12 min
@@ -2805,10 +2817,13 @@ before) had their end at +101, 148 / 764. The far horizons stay late in both: th
 in a day was placed later than it ran.
 
 **What changed (code 10, task #1505).** The room held for a waiting job (§7.2, Room held for a big
-job) times a job it waits for that is past its measured time by its step's slower runs while it's
-within them, as the live scheduler does: a leased job of the record past its time no longer stops
-the jobs that would end before it. The run's leases say no progress, so that end alone is new in the
-forecast. No way of code 9's is kept (`forecast::BEFORE_HAS_PATH`): old equals new in a backtest.
+job) times a job it waits for with no measured time left as the live scheduler does: by its time
+left by its progress, discounted by how such estimates ended, else, past its measured time, by its
+slowest target's high percentile while it's within it. The record carries what that reads: each
+lease's time left by its progress as the lead had it (`Leased::left_s`) and the discounts the lead
+took (`State::lefts`, each step's and the pool's under ""); a record before code 10 has neither, so
+its leases end by their measured times and slower runs alone. No way of code 9's is kept
+(`forecast::BEFORE_HAS_PATH`): old equals new in a backtest.
 
 ## 8. Tasks
 

@@ -284,6 +284,43 @@ pub struct Sched {
     /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
     /// `JOB_S`): `batch_len`.
     pub batch_s: u64,
+    /// How the progress estimates of each step's jobs ended (`Lefts`; set through `set_lefts`).
+    pub lefts: Lefts,
+}
+
+/// How jobs' progress estimates ended (task #1505 review): what was left in fact over what their
+/// beats said (crate::coord::history::History::left_ratios), by step, sorted, and every step's
+/// together (the pool's, under ""); or, in a scheduler made from a record (`Sched::from_state`),
+/// the discounts its lead took from them then (`State::lefts`). A progress end is the time left
+/// its beats say times its step's ratio at the low percentile the needs model's high one mirrors
+/// (`Sched::left_discount`): an estimate that grows as its job slows, or ends early, is held to
+/// how such estimates have ended.
+#[derive(Clone, Debug, Default)]
+pub struct Lefts {
+    by: BTreeMap<String, Vec<f64>>,
+    taken: BTreeMap<String, f64>,
+}
+
+impl Lefts {
+    /// Of what was left in fact over what the beats said, by step (crate::coord::history::History::left_ratios):
+    /// each step's sorted, and every step's together under "".
+    pub fn of(by: BTreeMap<String, Vec<f64>>) -> Lefts {
+        let mut by: BTreeMap<String, Vec<f64>> = by
+            .into_iter()
+            .map(|(k, mut v)| {
+                v.retain(|r| r.is_finite());
+                v.sort_by(f64::total_cmp);
+                (k, v)
+            })
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        let mut all: Vec<f64> = by.values().flatten().copied().collect();
+        all.sort_by(f64::total_cmp);
+        if !all.is_empty() {
+            by.insert(String::new(), all);
+        }
+        Lefts { by, taken: BTreeMap::new() }
+    }
 }
 
 /// What placement (`Sched::placed_start`) keeps within one `Sched::pack`: why it left each target it
@@ -453,15 +490,17 @@ impl Run {
 enum End {
     /// Its measured time (`Sched::batch_secs`) less what it has run.
     Measured,
-    /// Its progress's pace, as its worker's last beat said it (`Lease::left_by_progress`): a job
-    /// not measured or past its measured time.
-    Progress,
-    /// Past its measured time with no progress said: its step's runs' 90th percentile for its
-    /// targets (`Sched::batch_p90`) less what it has run, while it's within them.
+    /// Its progress's pace, as its worker's last beat said it (`Lease::left_by_progress`), times
+    /// its step's estimates' ratio at percentile `pct` (`Sched::left_discount`; `pool`: every
+    /// step's, its own having none): a job not measured or past its measured time.
+    Progress { pct: u32, pool: bool },
+    /// Past its measured time with no end by its progress: its measured time and its slowest target's
+    /// excess at its step's runs' 90th percentile (`Sched::batch_slow`) less what it has run, while
+    /// it's within it.
     Slow,
-    /// No end: past its measured time and its step's slower runs, no progress said.
+    /// No end: past its measured time and its step's slower runs, and none by its progress.
     Overdue,
-    /// No end: not measured, no progress said.
+    /// No end: not measured, and none by its progress (none said, or no estimate ended yet).
     Unmeasured,
 }
 
@@ -470,10 +509,22 @@ impl End {
     fn words(self, its: &str) -> String {
         match self {
             End::Measured => format!("by {its} measured time"),
-            End::Progress => format!("by {its} progress"),
+            End::Progress { pct, pool } => {
+                let whose = if pool { "the pool's".to_string() } else { format!("{its} step's") };
+                let th = match (pct % 100 / 10, pct % 10) {
+                    (1, _) => "th",
+                    (_, 1) => "st",
+                    (_, 2) => "nd",
+                    (_, 3) => "rd",
+                    _ => "th",
+                };
+                format!("by {its} progress, as {whose} estimates ended at their {pct}{th} percentile")
+            }
             End::Slow => format!("past {its} measured time, by {its} step's slower runs"),
-            End::Overdue => format!("past {its} measured time and {its} step's slower runs, no progress said"),
-            End::Unmeasured => "with no measured time and no progress said".to_string(),
+            End::Overdue => {
+                format!("past {its} measured time and {its} step's slower runs, and no end by {its} progress")
+            }
+            End::Unmeasured => format!("with no measured time and no end by {its} progress"),
         }
     }
 }
@@ -483,14 +534,17 @@ impl End {
 /// last). The jobs it waits for (`waits_on`) are those of its Mac expected to end soonest, as few
 /// as free its room once they end, any with no end said first (it may end any moment); `shadow`
 /// is when they're expected to have ended (s from now, by each one's `Run::ends`: its measured
-/// time, else its progress, else its step's slower runs, task #1505; 0 where one has none) and
-/// `by` what the last of them to end (or the one with none) is timed by. A later job goes when it
-/// fits beside the waiting one once those end, every other job still running (`beside`), or, its
-/// time measured, ends before `shadow` by its runs' 90th percentile. A job of the second kind ends
-/// before the jobs waited for, so it's among them next time without putting off when they end;
-/// once one of them has no end said, no more of that kind goes. So the waiting job waits only for
-/// a finite set of jobs, ending no later than those it first waited for while each ends when
-/// expected, and never for a long job while a shorter one frees its room.
+/// time, else its discounted progress, else its step's slower runs, task #1505; 0 where one has
+/// none) and `by` what the last of them to end (or the one with none) is timed by. A later job goes
+/// when it fits beside the waiting one once those end, every other job still running (`beside`),
+/// or, its time measured, ends before `shadow` by its runs' 90th percentile. A job of the second
+/// kind ends before the jobs waited for, so it's among them next time without putting off when
+/// they end; once one of them has no end said, no more of that kind goes. A measured end only
+/// comes nearer; a progress end may move later (its job slowing, its estimate said again each
+/// beat), so the jobs of the second kind admitted meanwhile may end later than those first waited
+/// for. Either way, when the jobs waited for end before their end said, the waiting job waits past
+/// them at most for the longest job admitted beside it (its own 90th percentile, as admitted), and
+/// it never waits for a long job while a shorter one frees its room.
 struct Backfill {
     w: RoomWait,
     waits_on: usize,
@@ -575,6 +629,9 @@ impl Backfill {
         // (Which end the hold took, task #1505: of several, the last to end's, or the one with none.)
         let by = self.by.words("its");
         let when = match (self.waits_on, self.shadow) {
+            // (Short of its room with no job of the pool's running: the load outside the pool or the
+            // disk holds it.)
+            (0, _) => "no job of the pool's running for it to wait for".to_string(),
             (1, 0) => format!("the job it waits for running {by}"),
             (1, t) => format!("the job it waits for expected to end in {} min, {by}", t.div_ceil(60)),
             (n, 0) => format!("the {n} jobs it waits for running, one {by}"),
@@ -2547,10 +2604,11 @@ impl Sched {
     /// When held job `l` of `step` over `targets` is expected to end, at `now` (s from now; None:
     /// it may end any moment), and by what (task #1505): within its measured time (`lease_need`'s,
     /// `batch_secs`), by it; else by its progress's pace where its worker's beats say it
-    /// (`Lease::left_by_progress`: the time left its status shows); else, measured and past it, by
-    /// its step's runs' 90th percentile for its targets (`batch_p90`, the margin a job granted
-    /// beside the room held is held to) while it's within them; else none. A job not measured
-    /// has no model either (`secs_on`: its step's model stands in for a target's own run).
+    /// (`Lease::left_by_progress`: the time left its status shows) times how such estimates have
+    /// ended (`left_discount`; none ended yet, or a discount to nothing, none from it); else,
+    /// measured and past it, by its slowest target's high percentile (`batch_slow`) while it's
+    /// within it; else none. A job not measured has no model either (`secs_on`: its step's model
+    /// stands in for a target's own run).
     fn run_end(&self, l: &Lease, step: &str, targets: &[(String, String)], now: Instant) -> (Option<u64>, End) {
         let ran = l.ran(now).as_secs();
         let secs = self.lease_need(l, step, targets).1;
@@ -2558,16 +2616,72 @@ impl Sched {
         if let Some(x) = secs.and_then(left) {
             return (Some(x), End::Measured);
         }
-        if let Some(x) = l.left_by_progress(now) {
-            return (Some(x), End::Progress);
+        if let (Some(said), Some((ratio, pool))) = (l.left_by_progress(now), self.left_discount(step)) {
+            let x = (said as f64 * ratio).floor() as u64;
+            if x > 0 {
+                return (Some(x), End::Progress { pct: self.left_pct().round() as u32, pool });
+            }
         }
         if secs.is_none() {
             return (None, End::Unmeasured);
         }
-        match self.batch_p90(step, targets.iter().map(|t| t.0.as_str()), &l.worker).and_then(left) {
+        match self.batch_slow(step, targets.iter().map(|t| t.0.as_str()), &l.worker).and_then(left) {
             Some(x) => (Some(x), End::Slow),
             None => (None, End::Overdue),
         }
+    }
+
+    /// A job of `step` over `targets` on `worker` past its measured time, as the room held for a
+    /// waiting job times it (`run_end`): its measured time (`batch_secs`) and its slowest target's
+    /// excess at its step's runs' high percentile over its own time (crate::needs::Book::secs_p90):
+    /// one target running long, the rest as measured. None when a target has no time.
+    pub(super) fn batch_slow<'t>(
+        &self,
+        step: &str,
+        targets: impl IntoIterator<Item = &'t str>,
+        worker: &str,
+    ) -> Option<u64> {
+        let b = self.book();
+        let start = self.paces.start(worker, step).round() as u64;
+        let (sum, most) = targets.into_iter().try_fold((start, 0), |(sum, most), t| {
+            let s = self.secs_on(step, t, worker, 0)?.0;
+            let p = b.secs_p90(step, t, 0, Some(worker))?;
+            Some((sum + s, most.max(p.saturating_sub(s))))
+        })?;
+        Some(sum + most)
+    }
+
+    /// The percentile a progress end is discounted at: the needs model's low one, as far below the
+    /// middle as its high one (`Tuning::high_pct`, the pool's `needs-high-pct`) is above it.
+    fn left_pct(&self) -> f64 {
+        100.0 - self.tuning.high_pct
+    }
+
+    /// What a progress end of a job of `step` is discounted by (`Lefts`): what was left in fact
+    /// over what its step's jobs' beats said, at `left_pct` (nearest rank), and whether every step's
+    /// (its own having none). None while no estimate has ended.
+    fn left_discount(&self, step: &str) -> Option<(f64, bool)> {
+        let at = |v: &Vec<f64>| v[((v.len() as f64 * self.left_pct() / 100.0).ceil() as usize).clamp(1, v.len()) - 1];
+        let l = &self.lefts;
+        match (l.by.get(step), l.by.get(""), l.taken.get(step), l.taken.get("")) {
+            (Some(v), _, _, _) => Some((at(v), false)),
+            (None, Some(v), _, _) => Some((at(v), true)),
+            (None, None, Some(&r), _) => Some((r, false)),
+            (None, None, None, Some(&r)) => Some((r, true)),
+            _ => None,
+        }
+    }
+
+    /// How each step's jobs' progress estimates ended (crate::coord::history::History::left_ratios).
+    pub fn set_lefts(&mut self, by: BTreeMap<String, Vec<f64>>) {
+        self.lefts = Lefts::of(by);
+    }
+
+    /// The discounts `left_discount` takes now, each step's that has its own and the pool's under ""
+    /// (`State::lefts`).
+    fn lefts_taken(&self) -> BTreeMap<String, f64> {
+        let keys: Vec<String> = self.lefts.by.keys().chain(self.lefts.taken.keys()).cloned().collect();
+        keys.into_iter().filter_map(|k| Some((k.clone(), self.left_discount(&k)?.0))).collect()
     }
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
@@ -3098,6 +3212,10 @@ pub struct State {
     /// The batch length set (`Sched::batch_s`, task #927: 0, not set or a record before it).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub batch_s: u64,
+    /// What a progress end of each step's jobs was discounted by (`Sched::left_discount`; the
+    /// pool's under ""; task #1505 review: a record before it has none, and no progress end).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lefts: BTreeMap<String, f64>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -3156,6 +3274,11 @@ pub struct Leased {
     /// its measure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy_tenths: Option<u32>,
+    /// Its job's time left by its progress as its last beat said it, less the time since
+    /// (`Lease::left_by_progress`, s; task #1505 review, forecast code 10): a record's scheduler
+    /// times it by it as the lead's does. None: not said, or a record before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_s: Option<u64>,
 }
 
 /// A worker's last ask (`State::workers`): the ask, and the ages of its last request and ask.
@@ -3188,6 +3311,7 @@ impl Sched {
                         Work::Job { step, targets } => Some(Leased {
                             granted_at,
                             busy_tenths: self.held_need(&l, step, targets, now).busy_now,
+                            left_s: l.left_by_progress(now),
                             worker: l.worker.clone(),
                             step: step.clone(),
                             targets: targets.clone(),
@@ -3234,6 +3358,7 @@ impl Sched {
             records: self.records.clone(),
             tuning: self.tuning,
             batch_s: self.batch_s,
+            lefts: self.lefts_taken(),
         }
     }
 
@@ -3256,6 +3381,9 @@ impl Sched {
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
             leases.from_record(id, at, l.busy_tenths, clock.unix, now);
             leases.set_threads(id, l.threads);
+            if let Some(left) = l.left_s {
+                leases.said_left(id, left, now);
+            }
         }
         let workers = s
             .workers
@@ -3324,6 +3452,7 @@ impl Sched {
             records: s.records.clone(),
             tuning: s.tuning,
             batch_s: s.batch_s,
+            lefts: Lefts { by: BTreeMap::new(), taken: s.lefts.clone() },
         };
         sched.set_offers(s.offers.clone());
         sched
