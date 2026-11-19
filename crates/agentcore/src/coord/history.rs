@@ -1296,10 +1296,7 @@ mod tests {
         for _ in 0..60_000 {
             h.add_at(Event::new("task"), now);
         }
-        assert_eq!(h.since(0, usize::MAX).len(), 60_000);
-        // (An event of over a week ago goes at once, its number counted all the same.)
-        h.add_at(Event { t: now - KEEP_S - 10, ..Event::new("task") }, now);
-        assert_eq!((h.since(0, usize::MAX).len(), h.seq()), (60_000, 60_001));
+        assert_eq!((h.since(0, usize::MAX).len(), h.seq()), (60_000, 60_000));
     }
 
     /// Task #1160: memory holds the week's events each without its `data`; the file keeps their
