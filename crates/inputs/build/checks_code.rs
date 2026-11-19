@@ -1465,7 +1465,7 @@ pub fn codes(w: &World) -> Result<Vec<(String, String)>, String> {
     }
     if let Some(((_, m, _), by)) = named.iter().find(|(f, _)| w.in_child(f)) {
         return Err(format!(
-            "src/inputs/mod.rs: {} names {}, a child module's, and only the registry may ({}; build/checks_code.rs)",
+            "the gate's mod.rs: {} names {}, a child module's, and only the registry may ({}; build/checks_code.rs)",
             by.as_deref().map_or("a `use`".to_string(), |n| format!("`{n}`")),
             m.join("::"),
             REGISTRY.join(", ")
