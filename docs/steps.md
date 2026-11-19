@@ -115,8 +115,10 @@ makes the same bytes on every Mac.
       A tile's finest zoom, taken at its poleward edge, can be past its parent's (finer
       equatorward, and past a band's edge), so a tile of the band needn't be under one: every
       tile is asked where its sources' finest at any of its z16 rows' poleward edges reaches it
-      (`terrain_zoom::finest_under`), a level can be empty (its z13 tiles' quarters then sampled
-      by its z6 tile's run), and a z10 tile is a target wherever one of its tiles is one.
+      (`terrain_zoom::finest_under`), a level can be empty (the next coarser level's tiles then
+      sampled there, with no child to take means of: a z14–16 level's by this run, an empty z13
+      level's z12 quarters by its z6 tile's run), and a z10 tile is a target wherever one of its
+      tiles is one.
       A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each (its
       progress its tiles made, said every 5 s). A tile
       of the band is kept only where some of its pixels came from a dataset reaching its zoom

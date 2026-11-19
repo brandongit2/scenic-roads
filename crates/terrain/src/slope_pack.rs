@@ -1782,6 +1782,68 @@ mod tests {
         assert!(out.get(&deep_mid_logical(448, 256)).is_none());
     }
 
+    /// Task #1463: slope-deep over a terrain deep pack with an empty level (crate::terrain_deep's
+    /// levels can be: none at z13, its z14 tiles alone; or none at z14 between z13 and z15 tiles):
+    /// it stores each terrain deep tile's shading and the tiles over them to z13 (`deep_tiles`),
+    /// those of the empty level from the finer ones' quadrants, hands its z13 tiles' quadrants on
+    /// in its deep mid, and its z6 tile's slope-hi takes them in: every level from z9 the bytes one
+    /// run of the whole pyramid makes.
+    #[test]
+    fn slope_deep_over_a_terrain_deep_pack_with_an_empty_level() {
+        let cases: [(&str, Vec<(u8, u32, u32)>); 2] = [
+            ("no z13", vec![(14, 7168, 4096), (14, 7169, 4096), (14, 7168, 4097)]),
+            ("no z14", vec![(13, 3584, 2048), (13, 3585, 2048), (15, 14336, 8192), (15, 14337, 8193)]),
+        ];
+        for (name, deep) in cases {
+            let d = tempfile::tempdir().unwrap();
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                    .unwrap();
+            let tile = |&(z, x, y): &(u8, u32, u32)| {
+                let b = hill(z, x, y);
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            };
+            let hi: Vec<_> = (1792..1796).flat_map(|x| (1024..1028).map(move |y| (12, x, y))).collect();
+            let mut it = hi.iter().map(tile);
+            crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, 28, 16), &mut it).unwrap();
+            let mut it = deep.iter().map(tile);
+            crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "deep", (10, 448, 256), &mut it)
+                .unwrap();
+            out.save().unwrap();
+            let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
+            out.save().unwrap();
+            build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+            out.save().unwrap();
+            let want = with_ancestors(deep.iter().copied(), FIRST_Z);
+            assert!(want.len() > deep.len(), "{name}: its empty level's tiles over the finer ones");
+            assert_eq!((r.deep_packs, r.deep_tiles), (1, want.len()), "{name}: {r:?}");
+            let s = ManifestTiles::new(&out, "slope");
+            for &(z, x, y) in &want {
+                assert!(s.get(z, x, y).unwrap().is_some(), "{name}: {z}/{x}/{y} stored");
+            }
+            let (_, mid) = read_deep_mid(&out.path(out.get(&deep_mid_logical(448, 256)).unwrap())).unwrap();
+            let mut tops: Vec<(u32, u32)> = want.iter().filter(|t| t.0 == FIRST_Z).map(|t| (t.1, t.2)).collect();
+            tops.sort_unstable();
+            assert_eq!(mid.quadrants.keys().copied().collect::<Vec<_>>(), tops, "{name}: its z13 tiles' quadrants");
+            assert!(mid.quadrants.values().all(Option::is_some), "{name}");
+            // (As one run of the whole pyramid makes them.)
+            let terr = ManifestTiles::new(&out, "terrain");
+            let (get, has) = terrain_reads(&terr);
+            let terrain = Terrain::new(&get, &has);
+            let mut tiles = tiles_under(&has, (28, 16));
+            tiles.extend(with_ancestors(deep_terrain(&terr, (448, 256)).unwrap(), 6));
+            let own = |z: u8, x: u32, y: u32| shade_tile(&terrain, z, x, y);
+            let mine = Mutex::new(Vec::new());
+            Pyramid { own: &own, tiles: &tiles, out: &mine, tick: &|| {}, done: &none_done }.tile(6, 28, 16);
+            let whole = mine.into_inner().unwrap();
+            assert!(whole.iter().any(|m| m.0 == FIRST_Z) && whole.iter().any(|m| m.0 == 12), "{name}");
+            for (z, x, y, b) in whole.iter().filter(|m| m.0 >= 9) {
+                assert_eq!(s.get(*z, *x, *y).unwrap().as_ref(), Some(b), "{name}: {z}/{x}/{y} as one run makes it");
+            }
+        }
+    }
+
     /// Task #928: a batch's targets (`Batch::deep`) come out as each made alone (`build_deep`); the
     /// next target's terrain deep pack is copied ahead while one is made, read there by that target
     /// (copied once), and kept for it alone: let go once it's made, though a neighbour after reads its

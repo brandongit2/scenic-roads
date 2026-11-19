@@ -100,7 +100,6 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/examples/pool_memory.rs", "main"),
     ("crates/pipeline/examples/hollow_drops.rs", "main"),
     ("crates/pipeline/examples/hollow_edges.rs", "main"),
-    ("crates/pipeline/examples/terrain_impact.rs", "main"),
 ];
 
 /// Items naming a NAS location literally (outside store::nas): (file, item, why).

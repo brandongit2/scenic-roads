@@ -455,8 +455,10 @@ mod tests {
         }
     }
 
-    /// A z10 tile's band holds the tiles near the coverage no finer than their place's finest zoom,
-    /// each under the coarser level's; a z10 tile no finer dataset meets has none and is no target.
+    /// A z10 tile's band holds the tiles near the coverage no finer than their place's finest zoom;
+    /// a z10 tile no finer dataset meets has none and is no target. (That each is also under a tile
+    /// of the coarser level is this fixture's, with no band's edge or zoom threshold in it, not a
+    /// rule: crate::terrain_zoom::finest_under.)
     #[test]
     fn a_targets_levels_follow_each_places_finest_zoom() {
         let d = tempfile::tempdir().unwrap();
@@ -644,6 +646,85 @@ mod tests {
         let (made, mid) = crate::terrain_pack::make_piece(&Flat, &src, lv.clone()).unwrap();
         assert_eq!(made.len(), lv.iter().map(|l| l.1.len()).sum::<usize>());
         assert!(mid.quads.is_empty(), "no z13 tile: nothing for its z12 tiles' quarters");
+    }
+
+    /// Task #1463: a target with an empty level between two that aren't (a band's edge in its
+    /// southernmost z14 row: z13 tiles, none at z14, z15–16 tiles south of the edge), so its z13
+    /// tiles are sampled, not made from z14 means; stopped at its safe points (a block kept, a
+    /// level's end: the first, the empty level's end and the one after it, midway, the last) and
+    /// resumed from its log (crate::terrain_resume::HiLog), each run makes the same tiles and mid as
+    /// one never stopped. Each tile its own height, so a z13 tile from means would differ.
+    #[test]
+    fn a_target_with_an_empty_level_resumes_to_the_same_tiles() {
+        use jobrt::resume_log::STOP_AFTER;
+        let d = tempfile::tempdir().unwrap();
+        let t = crate::terrain_zoom::tile_at(10.5, 45.5, PACK_Z);
+        let b = roadcore::geo::tile_box(PACK_Z, t.0, t.1);
+        let y14 = (t.1 << 4) + 15;
+        let n14 = roadcore::geo::tile_box(14, t.0 << 4, y14)[3];
+        let mid = roadcore::geo::tile_box(15, t.0 << 5, 2 * y14 + 1)[3];
+        let edge = mid + (n14 - mid) * 0.25;
+        let sets = vec![
+            banded("fine", Some(vec![[10.0, 45.0, 11.0, 46.0]]), edge, 1.0, px(FIRST_Z, b[3])),
+            set("world", None, 30.0),
+        ];
+        let c = centre(PACK_Z, t.0, t.1);
+        let cov = place(d.path(), c.0, c.1, 40.0);
+        let lv = levels(&cov, &sets, t);
+        assert_eq!(as_sets(&lv), every(&cov, &sets, t));
+        assert_eq!(lv.iter().map(|l| l.0).collect::<Vec<_>>(), [16, 15, 14, 13]);
+        assert!(lv[2].1.is_empty() && !lv[1].1.is_empty() && !lv[3].1.is_empty(), "z14 alone empty");
+        struct Varied;
+        impl crate::terrain_pack::RawSource for Varied {
+            fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
+                let h = ((x * 7 + y * 13 + z as u32 * 3) % 97) as f32;
+                Ok((Some(roadcore::grid::encode_terrain_png(&vec![h; 65536], 256, 256)?), false))
+            }
+            fn prefetch_each(
+                &self,
+                _: u8,
+                tiles: &[(u32, u32)],
+                _: &crate::terrain_pack::Turns,
+                ready: crate::terrain_pack::Ready,
+            ) -> Result<usize> {
+                ready(tiles);
+                Ok(0)
+            }
+        }
+        let src = crate::terrain_pack::Sources { native: None, sets: &sets };
+        let fresh = crate::terrain_pack::make_piece(&Varied, &src, lv.clone()).unwrap();
+        assert_eq!(fresh.0.len(), lv.iter().map(|l| l.1.len()).sum::<usize>());
+        // (A run with its log in `name`, stopped after `stop` safe points or not; with the safe
+        // points it passed.)
+        let run = |name: &str, stop: Option<usize>| {
+            let mut log = crate::terrain_resume::HiLog::open(&d.path().join(name), (PACK_Z, t.0, t.1), "id");
+            assert!(log.is_some());
+            STOP_AFTER.set(Some(stop.unwrap_or(usize::MAX)));
+            let r = crate::terrain_pack::make_piece_logged(&Varied, &src, lv.clone(), log.as_mut(), &|_, _, _| {});
+            let passed = usize::MAX - STOP_AFTER.take().unwrap_or(usize::MAX);
+            match r {
+                Ok(m) => Some((m, passed)),
+                Err(e) => {
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
+                    None
+                }
+            }
+        };
+        let (whole, kept) = run("whole", None).unwrap();
+        assert!(whole == fresh, "a logged run's tiles a plain one's");
+        // (Its safe points in order: z16's blocks and end, z15's, z14's end alone, z13's; a block
+        // the tiles under one tile 4 levels up, crate::terrain_pack's `blocks`.)
+        let blocks = |z: u8| {
+            let ts = &lv.iter().find(|l| l.0 == z).unwrap().1;
+            ts.iter().map(|&(x, y)| (x >> 4, y >> 4)).collect::<std::collections::HashSet<_>>().len()
+        };
+        let empty_end = blocks(16) + 1 + blocks(15) + 1 + 1;
+        assert_eq!(kept, empty_end + blocks(13) + 1, "every block and level's end");
+        for stop in std::collections::BTreeSet::from([1, empty_end - 1, empty_end, empty_end + 1, kept / 2, kept]) {
+            let name = format!("stop-{stop}");
+            assert!(run(&name, Some(stop)).is_none(), "stopped after {stop}");
+            assert!(run(&name, None).unwrap().0 == fresh, "stopped after {stop}, then resumed");
+        }
     }
 
     /// Task #1461: a z6 tile whose z9 tiles' places all stop short of z9 at their poleward edges,
