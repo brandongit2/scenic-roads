@@ -1078,8 +1078,8 @@ pub fn cap_threads(c: &mut std::process::Command) {
 }
 
 /// The fewest threads this process's work has been allowed so far (`allowed`); None: none said. A
-/// target's memory, measured over a run whose threads changed, is spread over no more threads
-/// than these (buildstore::costin's `threads_least`, agentcore's `per_thread_mb`).
+/// target's memory, measured over a run whose threads changed, is read as on no more threads than
+/// these (buildstore::costin's `threads_least`, agentcore's `needs::own_threads`).
 pub fn fewest_allowed() -> Option<usize> {
     Some(FEWEST.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }

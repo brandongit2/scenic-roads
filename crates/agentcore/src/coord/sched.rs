@@ -45,7 +45,7 @@ pub struct Pick {
     pub threads: u32,
     pub mem_mb: u64,
     /// What a thread of it past `thread_covers` adds to its memory (MB), and the threads `mem_mb`
-    /// covers (`Sched::per_thread_mb`; crate::coord::Grant::thread_mb).
+    /// covers (`Sched::thread_mb`; crate::coord::Grant::thread_mb).
     pub thread_mb: u64,
     pub thread_covers: u32,
     pub disk_mb: u64,
@@ -301,9 +301,10 @@ pub struct LeaseKept {
     need: Option<(Need, Option<u64>)>,
 }
 
-/// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
-/// (Looked in for every target an ask weighs, never walked: roadcore::fx.)
-pub type Measures = FxMap<String, FxMap<String, (u64, Option<Measured>)>>;
+/// `Sched::measured_of`'s targets' measures: step → target → each threads asked (None: its own
+/// start's) and `Sched::measures`. (Looked in for every target an ask weighs, never walked:
+/// roadcore::fx.)
+pub type Measures = FxMap<String, FxMap<String, Vec<(Option<u32>, (u64, Option<Measured>))>>>;
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
 /// steps' NAS bytes per unit kept with its models: crate::needs::model).
@@ -986,38 +987,58 @@ impl Sched {
     /// offered with); None while nothing of its step was measured. Floors of an older way of the
     /// step count for nothing (crate::needs).
     pub(super) fn measured(&self, step: &str, target: &str) -> Option<Measured> {
-        self.measures(step, target).1
+        self.measures(step, target, None).1
+    }
+
+    /// The threads a job of `step` over `targets` starts on as its memory is read (`measures`):
+    /// the most of its targets' grants by the cost book (crate::needs::Book::cores: the cores its
+    /// runs keep busy and a thread more), whatever cores its Mac has, so a target's memory is the
+    /// same for every Mac (`too_big`'s too); a records-only step's one; 0 (as its runs ran) where
+    /// none says.
+    pub(super) fn start_threads<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>) -> u32 {
+        if self.the_plan.records_only(step) {
+            return 1;
+        }
+        let b = self.book();
+        targets.into_iter().filter_map(|t| b.cores(step, t)).map(|c| c.grant).max().unwrap_or(0)
     }
 
     /// `target` of `step`'s memory by the book (a step never measured: its offered guess, `lease_mem`)
-    /// and `measured`; kept while the measures stand (`measured_of`). At no thread count (the
-    /// model's peaks of its runs at whatever threads they had, no memory per thread added): it
-    /// is a target's, whichever job takes it; a job grown past the threads its grant covers
-    /// reserves `per_thread_mb` for each (`Grant::thread_mb`, docs/pool.md §7.1).
-    fn measures(&self, step: &str, target: &str) -> (u64, Option<Measured>) {
+    /// and `measured`, on `threads` (None: its own `start_threads`): the memory a job of it is
+    /// admitted and packed at (crate::needs::Book::mem: its step's runs' `needs-mem-pct` percentile
+    /// at those threads), whichever Mac asks; kept while the measures stand (`measured_of`). A job
+    /// grown past the threads it was read at reserves `thread_mb` for each (`Grant::thread_mb`,
+    /// docs/pool.md §7.1).
+    fn measures(&self, step: &str, target: &str, threads: Option<u32>) -> (u64, Option<Measured>) {
         let rev = self.rev();
-        let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
-        if g.0 != rev {
-            *g = (rev, Measures::default());
-        }
-        if let Some(&m) = g.1.get(step).and_then(|t| t.get(target)) {
-            return m;
+        {
+            let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != rev {
+                *g = (rev, Measures::default());
+            }
+            if let Some(&(_, m)) =
+                g.1.get(step).and_then(|t| t.get(target)).and_then(|v| v.iter().find(|e| e.0 == threads))
+            {
+                return m;
+            }
         }
         let b = self.book();
         // (A drop not run yet: its step's drops', `drop_of`.)
-        if let Some((_, mem_mb)) = self.drop_of(&b, step, target) {
-            let m = Measured { mem_mb, disk_mb: 0, own: false };
-            g.1.entry(step.to_string()).or_default().insert(target.to_string(), (mem_mb, Some(m)));
-            return (mem_mb, Some(m));
-        }
-        let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
-        let m = (from != crate::needs::From::Table).then(|| Measured {
-            mem_mb,
-            disk_mb: b.disk(step, target).unwrap_or(0),
-            own: from == crate::needs::From::Measured,
-        });
-        g.1.entry(step.to_string()).or_default().insert(target.to_string(), (mem_mb, m));
-        (mem_mb, m)
+        let got = if let Some((_, mem_mb)) = self.drop_of(&b, step, target) {
+            (mem_mb, Some(Measured { mem_mb, disk_mb: 0, own: false }))
+        } else {
+            let on = threads.unwrap_or_else(|| self.start_threads(step, [target]));
+            let (mem_mb, from) = b.mem(step, target, on, self.offered_guess(step, target));
+            let m = (from != crate::needs::From::Table).then(|| Measured {
+                mem_mb,
+                disk_mb: b.disk(step, target).unwrap_or(0),
+                own: from == crate::needs::From::Measured,
+            });
+            (mem_mb, m)
+        };
+        let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
+        g.1.entry(step.to_string()).or_default().entry(target.to_string()).or_default().push((threads, got));
+        got
     }
 
     /// Each Mac's time and jobs' start now (`paces`): the models made again when they changed.
@@ -1462,10 +1483,21 @@ impl Sched {
     }
 
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
-    /// the most of their memory, their disks summed or the most a job of the step took); None when
-    /// any is a cold start.
+    /// the most of their memory, each on the threads the job starts on (`start_threads`: a target
+    /// runs on its job's threads), their disks summed or the most a job of the step took); None
+    /// when any is a cold start.
     pub(super) fn job_need(&self, step: &str, targets: &[String]) -> Option<Measured> {
-        let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
+        self.job_need_on(step, targets, None)
+    }
+
+    /// `job_need` on `threads` (None: those it starts on, `start_threads`).
+    pub(super) fn job_need_on(&self, step: &str, targets: &[String], threads: Option<u32>) -> Option<Measured> {
+        let on = match (threads, targets) {
+            (Some(t), _) => Some(t),
+            (None, [_]) => None,
+            (None, _) => Some(self.start_threads(step, targets.iter().map(String::as_str))),
+        };
+        let each: Vec<Measured> = targets.iter().map(|t| self.measures(step, t, on).1).collect::<Option<_>>()?;
         let job = self.job_floor(step);
         Some(Measured {
             mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
@@ -2074,59 +2106,54 @@ impl Sched {
         (grants, why)
     }
 
-    /// What a thread of a job of `step` over `targets` adds to its memory at most (MB), and the
-    /// threads its measure covers: its measured peak `peak_mb` over the threads the runs that measured
-    /// it had (its targets' cost records' `threads`, or the fewest a run's agent cut it to under way,
-    /// `threads_least`: the fewest among them), their memory in the peak;
-    /// the whole peak a thread, and one covered, where a target's aren't said (one more thread of a
-    /// regions check once needed about a region's worth, docs/inputs.md §4.3); none (0) where it has
-    /// no peak yet, a cold start's, which its agent grows past no thread its grant doesn't cover
-    /// (crate::agent::threads::decide). Never the peak over
-    /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
-    /// than any thread of it is.
-    pub(super) fn per_thread_mb<'t>(
+    /// What each thread a job of `step` over `targets`, admitted at `mem_mb` on `on` threads (its
+    /// `start_threads`, or those it was granted where more), adds to its memory past them (MB), and
+    /// the threads its memory covers: its targets' most (crate::needs::Book::thread_mb: its step's
+    /// memory per thread, fitted over its runs' sizes and threads, else its runs' peaks over their
+    /// threads, else its own run's); the threads, `on`, or its own runs' where every target ran on
+    /// more (`needs::own_threads`: its peak came on them). Where a target's isn't said, the whole
+    /// figure a thread and one covered (one more thread of a regions check once needed about a
+    /// region's worth, docs/inputs.md §4.3); none (0) where it has no figure, a cold start's,
+    /// which its agent grows past no thread its grant doesn't cover (crate::agent::threads::decide).
+    pub(super) fn thread_mb<'t>(
         &self,
         step: &str,
-        targets: impl IntoIterator<Item = &'t str>,
-        peak_mb: u64,
+        targets: impl IntoIterator<Item = &'t str> + Clone,
+        mem_mb: u64,
+        on: u32,
     ) -> (u64, u32) {
         let b = self.book();
-        let measured = targets
+        let per = targets.clone().into_iter().map(|t| b.thread_mb(step, t)).collect::<Option<Vec<u64>>>();
+        let Some(per) = per.map(|v| v.into_iter().max().unwrap_or(0)) else { return (mem_mb, 1) };
+        let ran = targets
             .into_iter()
-            .map(|t| {
-                let c = b.own(step, t)?;
-                let least = c.sizes.get("threads_least").copied();
-                c.sizes.get("threads").map(|&n| least.map_or(n, |l| l.min(n)) as u32).filter(|&n| n > 0)
-            })
+            .map(|t| b.own(step, t).and_then(crate::needs::own_threads))
             .collect::<Option<Vec<u32>>>()
-            .and_then(|n| n.into_iter().min());
-        // (No figure, a cold start's: none a thread either, so its agent grows it past no threads
-        // its grant doesn't cover, crate::agent::threads::decide.)
-        match measured {
-            Some(n) => (peak_mb.div_ceil(u64::from(n)), n),
-            None => (peak_mb, 1),
-        }
+            .and_then(|v| v.into_iter().min())
+            .unwrap_or(0);
+        (per, on.max(ran).max(1))
     }
 
-    /// The memory (MB) lease `l`'s job of `step` over `targets`, measured at `peak_mb`, may hold past
-    /// its measure: its threads grown by its agent (docs/pool.md §7.1, Threads controlled live) past
-    /// those the memory it was admitted with covers (the threads it started on,
-    /// `Lease::start_threads`, and those its measure was taken at), each `per_thread_mb`. Its Mac's
-    /// agent counts it at its measure alone in its capacity (crate::agent's `capacity`; it reserves
-    /// the same for its own grows, crate::agent::threads), so the lead adds this (`pack`).
+    /// The memory (MB) lease `l`'s job of `step` over `targets`, admitted at `mem_mb` (`pack_need`:
+    /// on the threads it starts on), may hold past it: its threads grown by its agent (docs/pool.md
+    /// §7.1, Threads controlled live) past those its memory covers (the threads it started on,
+    /// `Lease::start_threads`, and those it was read at), each its `thread_mb`. Its Mac's agent
+    /// counts it at its admission alone in its capacity (crate::agent's `capacity`; it reserves the
+    /// same for its own grows, crate::agent::threads), so the lead adds this (`pack`).
     pub(super) fn grown_mb<'t>(
         &self,
         l: &Lease,
         step: &str,
-        targets: impl IntoIterator<Item = &'t str>,
-        peak_mb: u64,
+        targets: impl IntoIterator<Item = &'t str> + Clone,
+        mem_mb: u64,
     ) -> u64 {
         let start = if l.start_threads > 0 { l.start_threads } else { l.threads };
-        // (Not grown past its start: nothing, whatever its measure covers.)
+        // (Not grown past its start: nothing, whatever its memory covers.)
         if l.threads <= start {
             return 0;
         }
-        let (per, covered) = self.per_thread_mb(step, targets, peak_mb);
+        let on = self.start_threads(step, targets.clone());
+        let (per, covered) = self.thread_mb(step, targets, mem_mb, on);
         per * u64::from(l.threads.saturating_sub(start.max(covered)))
     }
 
@@ -2212,7 +2239,8 @@ impl Sched {
             let at = self.sizing_threads(&o.step, first, ask_cores(a));
             self.batch_secs(&o.step, ts.iter().map(String::as_str), &a.worker, at)
         });
-        let (thread_mb, covered) = self.per_thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb);
+        let on = self.start_threads(&o.step, ts.iter().map(String::as_str));
+        let (thread_mb, covered) = self.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, on);
         Pick {
             lease,
             step: o.step.clone(),
@@ -2797,7 +2825,7 @@ impl Sched {
     /// (a step never measured: the guess it was offered with, else 0).
     pub(super) fn lease_mem(&self, l: &Lease) -> u64 {
         let Work::Job { step, targets } = &l.work else { return 0 };
-        targets.iter().map(|t| self.measures(step, &t.0).0).max().unwrap_or(0)
+        targets.iter().map(|t| self.measures(step, &t.0, None).0).max().unwrap_or(0)
     }
 
     /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`

@@ -216,7 +216,7 @@ pub fn take() -> BTreeMap<String, u64> {
     let threads = if s.threads > 0 { s.threads } else { threads() };
     m.insert("threads".into(), threads as u64);
     // (Fewer allowed meanwhile, its agent cutting a paced job's threads under its one target: the
-    // fewest, which its memory is spread over no more than: agentcore's `per_thread_mb`.)
+    // fewest, which its peak may have come on: agentcore's `needs::own_threads`.)
     if let Some(f) = jobrt::control::fewest_allowed().filter(|&f| f < threads) {
         m.insert("threads_least".into(), f as u64);
     }

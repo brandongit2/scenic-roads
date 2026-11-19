@@ -361,7 +361,7 @@ pub enum PoolCmd {
     /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`, `nas-lone-minutes`,
     /// `nas-lone-most-minutes`, `nas-young-spans`), and the needs model's percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
-    /// `needs-runs`, `needs-off`, `needs-relearn`); the lead takes each at its next
+    /// `needs-mem-pct`, `needs-runs`, `needs-off`, `needs-relearn`); the lead takes each at its next
     /// reading
     Set {
         /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,

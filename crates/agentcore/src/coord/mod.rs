@@ -1581,9 +1581,9 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
-    /// `sched::Sched::per_thread_mb` of its measure; 0: no figure, a cold start's, so its job grows
-    /// past none of them), and the threads the memory it was packed at covers (its threads and
-    /// those its measure was taken at, the more): its agent reserves that a thread for each one it
+    /// `sched::Sched::thread_mb`, its step's memory per thread by the needs model; 0: no figure, a
+    /// cold start's, so its job grows past none of them), and the threads the memory it was packed
+    /// at covers (its threads and those its memory was read at, the more): its agent reserves that a thread for each one it
     /// grows the job past them (crate::agent::threads), as the lead counts it
     /// (`sched::Sched::grown_mb`). A task's: none of either, so it grows past none.
     #[serde(default, skip_serializing_if = "is_zero64")]
@@ -4765,17 +4765,20 @@ fn route(
                         ..history::Event::new("lease")
                     });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
-                    let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
-                    // (Its memory a thread and the threads that covers, as a packed job's: its
-                    // threads the lease's, set above.)
+                    let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+                    let n = s.pack_need(&o.step, &ts);
+                    // (Its memory on the threads it's granted, the whole Mac's, a thread past them
+                    // and the threads that covers, as a packed job's: its threads the lease's, set
+                    // above.)
                     let started = s.leases.of(lease).map_or(1, |l| l.threads);
-                    let (thread_mb, covered) = s.per_thread_mb(&o.step, pick.iter().map(|t| t.0.as_str()), n.m.mem_mb);
+                    let mem_mb = s.job_need_on(&o.step, &ts, Some(started)).map_or(n.m.mem_mb, |m| m.mem_mb);
+                    let (thread_mb, covered) = s.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, started);
                     let g = Grant {
                         lease,
                         epoch: s.leases.epoch,
                         ttl_s: TTL.as_secs(),
                         threads: ask_cores(&a),
-                        peak_mb: n.m.mem_mb,
+                        peak_mb: mem_mb,
                         thread_mb,
                         thread_covers: started.max(covered),
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
@@ -11164,39 +11167,42 @@ mod tests {
         assert_eq!(counted(&c, l), 3);
     }
 
-    /// Task #1420: a grant says the memory each thread past those its memory covers adds, as the
-    /// lead counts a grow (`Sched::grown_mb`): its peak over the threads it was measured at (13),
-    /// else its whole peak a thread past its own threads. The lead's packing counts what its agent
-    /// grew it by.
+    /// Task #1420, #1415: a grant says the memory each thread past those its memory covers adds,
+    /// as the lead counts a grow (`Sched::grown_mb`): its step's memory per thread by the needs
+    /// model (two runs on 13 threads at 2 GB, too few to fit: their peak over their threads), its
+    /// memory read on the 13 threads it starts on. The lead's packing counts what its agent grew it
+    /// by.
     #[test]
     fn a_grant_says_its_memory_a_thread_and_a_grow_is_counted_by_it() {
         let (_d, c, w, _clock) = every((0, 0));
         controllable(&c);
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!((g.thread_mb, g.thread_covers), (g.peak_mb.div_ceil(13), 13));
-        // Begun on 13 and cut to 4 under way: its peak spread over 4 at most.
-        for t in ["6/1/1", "6/1/2"] {
-            let mut book = c.shared.lock().unwrap();
-            let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
-            cost.sizes.insert("threads_least".into(), 4);
-        }
+        assert_eq!((g.peak_mb, g.thread_mb, g.thread_covers), (2000, 2000u64.div_ceil(13), 13));
+        // Begun on 13 and cut to 4 under way: its peak may have come on 4, so on the 13 it starts
+        // on, 9 threads more.
         let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
-        let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
-        assert_eq!(
-            c.shared.lock().unwrap().sched.per_thread_mb("slope-hi", ["6/1/1", "6/1/2"], peak),
-            (peak.div_ceil(4), 4)
-        );
-        // Measured at 1 thread instead: each thread past its 3 its whole peak.
-        for t in ["6/1/1", "6/1/2"] {
+        let set = |k: &str, n: u64| {
             let mut book = c.shared.lock().unwrap();
-            let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
-            cost.sizes.insert("threads".into(), 1);
-        }
+            for t in &ts {
+                book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap().sizes.insert(k.into(), n);
+            }
+            book.sched.needs_rev += 1;
+        };
+        set("threads_least", 4);
+        let s = c.shared.lock().unwrap();
+        let mem = s.sched.job_need("slope-hi", &ts).unwrap().mem_mb;
+        assert_eq!(mem, 2000 + 9 * 2000u64.div_ceil(13));
+        assert_eq!(s.sched.thread_mb("slope-hi", ts.iter().map(String::as_str), mem, 13), (2000u64.div_ceil(13), 13));
+        drop(s);
+        // Measured at 1 thread instead: each thread past it its whole peak; grown from its 3 to 4,
+        // past the 2 its memory covers (its start, a thread past its busy core), one more.
+        set("threads", 1);
         m1_beat(&c, Some(m1_cap(14, false, Some((g.lease, 4, 4)))));
         let s = c.shared.lock().unwrap();
         let lease = s.leases.of(g.lease).unwrap().clone();
-        assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), peak), peak);
+        assert_eq!(s.sched.start_threads("slope-hi", ts.iter().map(String::as_str)), 2);
+        assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), 4000), 2000);
     }
 
     /// slope-hi measured on 1 thread, a tenth of a core busy, 2 GB, its six targets offered.
@@ -11267,6 +11273,83 @@ mod tests {
             let why = second(16, lead).expect_err("grown by 16: none");
             assert!(why.contains("memory"), "lead {lead}: {why}");
         }
+    }
+
+    /// slope-hi's runs for memory admission (task #1415): `n` targets far from those offered (no
+    /// memory by place), on 2 threads at 2,000 MB but the last on 4 at 3,000 (500 MB a thread),
+    /// each keeping its threads busy for an hour (a job a target); its four targets 6/1/1–4
+    /// offered, none run.
+    fn by_threads(c: &Coordinator, n: u64) {
+        for i in 1..=n {
+            let th = if i == n { 4 } else { 2 };
+            let sizes = [("threads".to_string(), th), ("cpu_ms".to_string(), th * 3_600_000)].into();
+            let cost = Cost {
+                peak_mb: 1000 + 500 * th,
+                secs: 3600,
+                worker: None,
+                v: cost_version("slope-hi"),
+                sizes,
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/40/{i}")), cost)], "m1");
+        }
+        let ts: Vec<String> = (1..=4).map(|i| format!("6/1/{i}")).collect();
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "slope-hi".into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                job: None,
+            }],
+        );
+    }
+
+    /// Task #1415: memory admission by the needs model where it could admit more than fits. Its
+    /// runs (12: 11 on 2 threads at 2 GB, one on 4 at 3 GB) start a job on 4 threads; its memory
+    /// is read on them, 3 GB (each 2-thread run grown by 500 MB a thread), not their peaks as they
+    /// ran (under 2.9 GB). Several jobs together: three in 11 GB, never four (12 GB on their 4
+    /// threads). A job grown from 4 threads to 8 counts 500 MB for
+    /// each (2 GB), so the next ask beside it is refused where on its grant it's granted. A step of
+    /// few runs (3: two on 2 threads at 2 GB, one on 4 at 3 GB): no memory per thread is fitted,
+    /// each run grown as its own threads (a job on 4 at 4 GB, 1 GB a thread).
+    #[test]
+    fn memory_admission_reads_each_job_on_its_threads() {
+        let (_d, c, w, _clock) = every((0, 0));
+        by_threads(&c, 12);
+        let ask = |mem: u64, want: usize, on: Option<(u64, u32, u32)>| Ask {
+            cores: 14,
+            want,
+            cap: Some(m1_cap(14, false, on)),
+            ..every_ask("m1", "slope-hi", mem, 100_000)
+        };
+        let g = w.ask(&ask(11_000, 1, None)).unwrap().unwrap();
+        assert_eq!((g.threads, g.peak_mb, g.thread_mb, g.thread_covers), (4, 3000, 500, 4));
+        w.give_back(g.lease, "done").unwrap();
+        // (Several together: three of the four in 11 GB.)
+        assert_eq!(all_granted(&w, &ask(11_000, 4, None)).len(), 3);
+        // (Grown: one held on its grant leaves room for one more in 7 GB; grown to 8 threads, 2 GB
+        // more, none.)
+        let second = |grown: u32| -> Result<Grant, String> {
+            let (_d, c, w, _clock) = every((0, 0));
+            by_threads(&c, 12);
+            let g = w.ask(&ask(11_000, 1, None)).unwrap().unwrap();
+            let next = w.ask(&ask(7_000, 1, Some((g.lease, grown, grown)))).unwrap();
+            let s = c.shared.lock().unwrap();
+            next.ok_or_else(|| s.refused.get("m1").map(|r| r.1.words.clone()).unwrap_or_default())
+        };
+        assert!(second(4).is_ok(), "on its grant: one more beside it");
+        let why = second(8).expect_err("grown to 8: none");
+        assert!(why.contains("memory"), "{why}");
+        // (Few runs.)
+        let (_d, c, w, _clock) = every((0, 0));
+        by_threads(&c, 3);
+        let s = c.shared.lock().unwrap();
+        let ts = vec!["6/1/1".to_string()];
+        assert_eq!(s.sched.start_threads("slope-hi", ["6/1/1"]), 4);
+        assert_eq!(s.sched.job_need("slope-hi", &ts).unwrap().mem_mb, 4000);
+        drop(s);
+        let g = w.ask(&ask(11_000, 1, None)).unwrap().unwrap();
+        assert_eq!((g.peak_mb, g.thread_mb), (4000, 1000));
     }
 
     /// Task #1420, mixed versions: a member before live control beats without a capacity, or its

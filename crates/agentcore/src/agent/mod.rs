@@ -6350,12 +6350,13 @@ impl Agent {
             match &worth {
                 Ok(stop) if stop.contains(&k) => {
                     let why = format!(
-                        "stopped by the memory guard: it held {}, frozen {} s{}, the Mac not back above its floor: {}; stopping it frees what the Mac is short ({:.1} GB)",
+                        "stopped by the memory guard: it held {}, frozen {} s{}, the Mac not back above its floor: {}; stopping it frees what the Mac is short ({:.1} GB){}",
                         held.get(k).copied().flatten().map_or("what its footprint didn't say".into(), |m| format!("{:.1} GB", m as f64 / 1024.0)),
                         at.elapsed().as_secs(),
                         if big == mine { String::new() } else { format!(" for {big}") },
                         r.short_words(),
-                        r.short_mb().max(1) as f64 / 1024.0
+                        r.short_mb().max(1) as f64 / 1024.0,
+                        self.estimate_flag(k, held.get(k).copied().flatten())
                     );
                     return Some(self.guard_stop(k, "memory guard", &why));
                 }
@@ -8045,6 +8046,27 @@ impl Agent {
         let (per, covers) = self.slots[k].thread_mb;
         let on = r.watch.map_or(0, |w| w.threads as usize).max(r.threads) as u64;
         per * on.saturating_sub(u64::from(covers))
+    }
+
+    /// The flag on the estimate that let slot `k`'s job in, for the brake's stop of it holding
+    /// `held` (MB): where it held past the memory its lead admitted it at (`Slot::peak_mb`, and the
+    /// threads it grew by, `grown_mb`), said in its stop's words (its lead's history keeps them,
+    /// and the floor its give-back carries raises its targets' memory); nothing where it held
+    /// within it (the Mac short for other reasons: its other processes, the jobs together) or its
+    /// grant said no figure.
+    fn estimate_flag(&self, k: usize, held: Option<u64>) -> String {
+        let (Some(peak), Some(held)) = (self.slots[k].peak_mb, held) else { return String::new() };
+        let admitted = peak + self.grown_mb(k);
+        if held <= admitted {
+            return String::new();
+        }
+        let gb = |mb: u64| mb as f64 / 1024.0;
+        eprintln!(
+            "agent: memory guard: estimate flagged: slot {k}'s job held {:.1} GB, past the {:.1} GB it was admitted at",
+            gb(held),
+            gb(admitted)
+        );
+        format!("; its estimate flagged: it held past the {:.1} GB it was admitted at", gb(admitted))
     }
 
     /// How long slot `k`'s job has run watched on its threads (`threads::Watch::since`, and a test's
@@ -14681,18 +14703,23 @@ mod tests {
         assert!(!tick(&mut a, vec![None], false) && !tick(&mut a, vec![None], false));
         assert!(a.try_start(0, job("bldtiles 6/2/2"), &cond, Some(&nas), &mut Vec::new()), "not kept from this Mac");
         // Its own growth makes the shortfall (13 GB, 1 GB left), the other processes steady: frozen,
-        // then stopped once frozen the hold.
+        // then stopped once frozen the hold; admitted at 4 GB, the estimate that let it in flagged
+        // (task #1415).
+        a.slots[0].peak_mb = Some(4 << 10);
         assert!(!tick(&mut a, vec![Some(13 << 10)], true));
         assert!(a.sampler.frozen(0));
         held_past(&mut a, 0);
         assert!(tick(&mut a, vec![Some(13 << 10)], true));
         assert!(a.slots[0].running.is_none());
         assert!(last(&a).contains("stopping it frees what the Mac is short"), "{}", last(&a));
+        assert!(last(&a).contains("its estimate flagged: it held past the 4.0 GB it was admitted at"), "{}", last(&a));
         // Mixed: one frozen holding 0.1 GB (frozen before) and one grown to 13 GB beside it, frozen
         // too: the one that grew is stopped, the other kept, and goes on once the Mac is back.
         a.mem_cool = None;
         assert!(a.try_start(0, job("terrain-hi 6/1/2"), &cond, Some(&nas), &mut Vec::new()));
         assert!(a.try_start(1, job("bldtiles 6/2/3"), &cond, Some(&nas), &mut Vec::new()));
+        // (Admitted at 13.5 GB: holding 13 within it, no estimate flagged.)
+        a.slots[0].peak_mb = Some((13 << 10) + 512);
         assert!(!tick(&mut a, vec![Some(1 << 10), Some(100)], false));
         assert!(a.sampler.freeze(1));
         assert!(!tick(&mut a, vec![Some(13 << 10), Some(100)], true));
@@ -14701,6 +14728,7 @@ mod tests {
         held_past(&mut a, 1);
         assert!(tick(&mut a, vec![Some(13 << 10), Some(100)], true));
         assert!(a.slots[0].running.is_none() && a.slots[1].running.is_some());
+        assert!(!last(&a).contains("estimate flagged"), "{}", last(&a));
         assert!(!tick(&mut a, vec![None, Some(100)], true));
         assert!(a.sampler.frozen(1) && a.slots[1].running.is_some(), "holding nothing: not stopped");
         assert!(!tick(&mut a, vec![None, Some(100)], false));

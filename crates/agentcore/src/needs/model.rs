@@ -15,10 +15,12 @@
 //!   (`Obs::rest`: its waits, and what its CPU doesn't count) likewise.
 //! - **parallelism** (`Par`): a run that kept every thread busy while not waiting is a floor, at
 //!   least its threads; one that didn't, what it kept busy; its waits left out.
-//! - **memory**: the `high_pct` percentile of the peaks of every run at or above the target's size
-//!   (`above`; past every run, the largest scaled up by size) and its threads or more (where enough
-//!   ran so), plus its memory per thread past the threads they ran (least squares over size and
-//!   threads): a small, fast or new run can't lower it. Disk alike, by size alone.
+//! - **memory**: the `mem_pct` percentile, over every run at or above the target's size (`above`;
+//!   past every run, the largest scaled up by size), of each one's peak at the threads asked: past
+//!   the threads it ran on, its memory per thread for each more (least squares over size and
+//!   threads, at its upper bound, `PER_THREAD_SE`, where `MIN_RUNS` ran on differing threads; else
+//!   the run's peak over its threads, as if its memory were its threads'), never less on fewer: a
+//!   small, fast or new run can't lower it. Disk alike, by size alone, at `high_pct`.
 //! - **NAS** (`Moves`): its runs' of about the target's size, their bytes asked of the NAS and NAS
 //!   calls over their time together (`PerUnit::rate`).
 //!
@@ -139,13 +141,14 @@ pub struct PerUnit {
     /// runs' of about its size, their moves over their time (`PerUnit::rate`).
     rates: Vec<(f64, Moves, f64)>,
     /// Every run's of the way its step runs now (size, threads, peak MB) by size, and its memory
-    /// per thread (MB).
+    /// per thread (MB; None: not fitted, fewer than `MIN_RUNS` runs or all on one thread count).
     mem: Vec<(f64, u32, u64)>,
-    pub mem_per_thread: f64,
+    pub mem_per_thread: Option<f64>,
     /// Its disk measures' (size, disk MB) by size.
     disk: Vec<(f64, u64)>,
     work_pct: f64,
     high_pct: f64,
+    mem_pct: f64,
 }
 
 /// A run's times per unit of a size: its size, its work (the lead's CPU s), the rest of its time
@@ -250,14 +253,27 @@ pub fn sorted(mut v: Vec<f64>) -> Vec<f64> {
     v
 }
 
+/// How many standard errors over its fitted coefficient a step's memory per thread is read at
+/// (`per_thread`): a peak varies with what a target holds far more than with its threads, so the
+/// coefficient alone, a middle, comes out near nothing on a step whose runs say little of their
+/// threads (the lead's records of 12–19 Nov: slope-deep, pack, peaks, bldprep), and a job grown
+/// past its start would reserve nothing for the threads it took. Its upper bound, about the 98th
+/// percentile of what the runs allow, is what memory as the cautious limit reads.
+pub const PER_THREAD_SE: f64 = 2.0;
+
 /// The coefficient of t in the least squares of y over [1, x, t] (over [1, t] where the sizes x
-/// are all one), solved by its normal equations (None: singular).
+/// are all one), solved by its normal equations, plus `PER_THREAD_SE` of its standard errors (None:
+/// singular, or no more rows than coefficients).
 fn per_thread(rows: &[(f64, f64, f64)]) -> Option<f64> {
     let one_size = rows.iter().all(|r| r.0 == rows[0].0);
     let n = if one_size { 2 } else { 3 };
-    let mut a = [[0.0f64; 4]; 3];
+    let feats = |x: f64, t: f64| if one_size { [1.0, t, 0.0] } else { [1.0, x, t] };
+    // (The normal equations, their right side (column 3) and the identity beside them (columns 4
+    // to 6): Gauss–Jordan leaves the solution and the inverse, whose last diagonal scales the
+    // residuals' variance to the coefficient's.)
+    let mut a = [[0.0f64; 7]; 3];
     for &(x, t, y) in rows {
-        let f = if one_size { [1.0, t, 0.0] } else { [1.0, x, t] };
+        let f = feats(x, t);
         for i in 0..n {
             for j in 0..n {
                 a[i][j] += f[i] * f[j];
@@ -265,22 +281,43 @@ fn per_thread(rows: &[(f64, f64, f64)]) -> Option<f64> {
             a[i][3] += f[i] * y;
         }
     }
+    for (i, row) in a.iter_mut().enumerate().take(n) {
+        row[4 + i] = 1.0;
+    }
     for c in 0..n {
         let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
         if a[p][c].abs() < 1e-9 {
             return None;
         }
         a.swap(c, p);
+        let d = a[c][c];
+        for k in 0..7 {
+            a[c][k] /= d;
+        }
         for r in 0..n {
             if r != c {
-                let f = a[r][c] / a[c][c];
-                for k in c..4 {
+                let f = a[r][c];
+                for k in 0..7 {
                     a[r][k] -= f * a[c][k];
                 }
             }
         }
     }
-    Some(a[n - 1][3] / a[n - 1][n - 1])
+    if rows.len() <= n {
+        return None;
+    }
+    let beta: Vec<f64> = (0..n).map(|i| a[i][3]).collect();
+    let rss: f64 = rows
+        .iter()
+        .map(|&(x, t, y)| {
+            let f = feats(x, t);
+            let e = y - (0..n).map(|i| f[i] * beta[i]).sum::<f64>();
+            e * e
+        })
+        .sum();
+    let var = rss / (rows.len() - n) as f64 * a[n - 1][4 + n - 1];
+    // (To a millionth of a MB: an exact fit's rounding errors don't add a MB a thread.)
+    Some(((beta[n - 1] + PER_THREAD_SE * var.max(0.0).sqrt()) * 1e6).round() / 1e6)
 }
 
 /// The runs of about `u` units among `v` (sorted by their size, `size`): those of half to twice
@@ -349,10 +386,14 @@ impl PerUnit {
         let mut mem: Vec<(f64, u32, u64)> =
             units(all).iter().filter(|(o, _)| o.peak > 0).map(|(o, u)| (*u, o.threads, o.peak)).collect();
         mem.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // (Its memory per thread: least squares over size and threads, where its runs' threads differ.)
-        let differ = mem.iter().any(|m| m.1 != mem[0].1);
-        let rows: Vec<(f64, f64, f64)> = mem.iter().map(|m| (m.0, f64::from(m.1), m.2 as f64)).collect();
-        let mem_per_thread = if differ { per_thread(&rows).map_or(0.0, |c| c.max(0.0)) } else { 0.0 };
+        // (Its memory per thread: least squares over size and threads, where `MIN_RUNS` of its runs
+        // said their threads and those differ; else none fitted, and a run's own peak over its
+        // threads stands for it, `at_threads`.)
+        let said: Vec<&(f64, u32, u64)> = mem.iter().filter(|m| m.1 > 0).collect();
+        let differ = said.iter().any(|m| m.1 != said[0].1);
+        let rows: Vec<(f64, f64, f64)> = said.iter().map(|m| (m.0, f64::from(m.1), m.2 as f64)).collect();
+        let mem_per_thread =
+            (differ && rows.len() >= MIN_RUNS).then(|| per_thread(&rows)).flatten().map(|c| c.max(0.0));
         let mut disk: Vec<(f64, u64)> =
             disks.iter().filter_map(|(s, d)| Some((*s.get(size)?, *d))).filter(|(u, _)| *u > 0.0).collect();
         disk.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -369,6 +410,7 @@ impl PerUnit {
             disk,
             work_pct: t.work_pct,
             high_pct: t.high_pct,
+            mem_pct: t.mem_pct,
         }
     }
 
@@ -388,20 +430,38 @@ impl PerUnit {
         self.stand_in.map_or(local, |o| local.up(o))
     }
 
-    /// The memory (MB) a target of `u` units needs on `threads` (0: not said): the high
-    /// percentile of the peaks of the runs at or above `u` units (`above`, a smaller one's scaled
-    /// up; of `threads` or more, where `MIN_RUNS` of them ran so), plus its memory per thread for
-    /// each thread past the most they ran on. None with no run.
+    /// The memory (MB) a target of `u` units needs on `threads` (0: as its runs ran): the
+    /// `mem_pct` percentile, over the runs at or above `u` units (`above`, a smaller one's scaled
+    /// up), of each one's peak at `threads` (`at_threads`). None with no run.
     pub fn mem(&self, u: f64, threads: u32) -> Option<u64> {
         let big = above(&self.mem, u, |m| m.0);
-        let wide: Vec<&(f64, u32, u64)> = big.iter().filter(|m| m.1 >= threads).collect();
-        let these: Vec<&(f64, u32, u64)> =
-            if threads > 0 && wide.len() >= MIN_RUNS { wide } else { big.iter().collect() };
-        let peaks = sorted(these.iter().map(|m| scaled_up(m.2 as f64, m.0, u)).collect());
-        let p = pct(&peaks, self.high_pct)?;
-        let most = these.iter().map(|m| m.1).max().unwrap_or(0);
-        let more = f64::from(threads.saturating_sub(most)) * self.mem_per_thread;
-        Some((p + more).ceil() as u64)
+        let peaks = sorted(big.iter().map(|m| self.at_threads(scaled_up(m.2 as f64, m.0, u), m.1, threads)).collect());
+        pct(&peaks, self.mem_pct).map(|p| p.ceil() as u64)
+    }
+
+    /// A run's peak `peak` (MB) on `ran` threads (0: not said), at `threads`: past its own, its
+    /// memory per thread for each more (the fit's, else its own peak over its threads); on as many
+    /// or fewer, its peak (never less: a thread's share isn't known to come off).
+    fn at_threads(&self, peak: f64, ran: u32, threads: u32) -> f64 {
+        if ran == 0 || threads <= ran {
+            return peak;
+        }
+        peak + self.mem_per_thread.unwrap_or(peak / f64::from(ran)) * f64::from(threads - ran)
+    }
+
+    /// What each thread a job of a target of `u` units grows by adds to its memory at most (MB):
+    /// its memory per thread where fitted, else the `mem_pct` percentile of its runs' (at or above
+    /// `u` units, `above`) peaks over their threads. None: no run said its threads.
+    pub fn thread_mb(&self, u: f64) -> Option<u64> {
+        let per = match self.mem_per_thread {
+            Some(p) => p,
+            None => {
+                let big = above(&self.mem, u, |m| m.0);
+                let each = big.iter().filter(|m| m.1 > 0).map(|m| scaled_up(m.2 as f64, m.0, u) / f64::from(m.1));
+                pct(&sorted(each.collect()), self.mem_pct)?
+            }
+        };
+        Some(per.ceil() as u64)
     }
 
     /// The disk (MB) a target of `u` units needs: the high percentile of the measures' at or above
@@ -512,6 +572,12 @@ impl Model {
     pub fn mem(&self, sizes: &BTreeMap<String, f64>, threads: u32) -> Option<u64> {
         let (p, u) = self.unit_of(sizes, |p| !p.mem.is_empty())?;
         p.mem(u, threads)
+    }
+
+    /// What each thread a job grows by adds to a target of `sizes`' memory (`PerUnit::thread_mb`).
+    pub fn thread_mb(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
+        let (p, u) = self.unit_of(sizes, |p| !p.mem.is_empty())?;
+        p.thread_mb(u)
     }
 
     pub fn disk(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
@@ -739,9 +805,46 @@ mod tests {
         // (Memory per thread: runs at 4 threads holding 1 GB more.)
         runs.extend((200..220).map(|i| obs(i, 100.0, 10.0, 4, 5000 + i)));
         let m = Model::of(runs, &[], &[], &t);
-        let per = m.by.iter().find(|p| p.size == "km2").unwrap().mem_per_thread;
+        let per = m.by.iter().find(|p| p.size == "km2").unwrap().mem_per_thread.unwrap();
         assert!(per > 300.0, "{per}");
         assert!(at(&m, 100.0, 8) > at(&m, 100.0, 4));
+    }
+
+    /// Task #1415: a target's memory on more threads than its runs had adds its memory per thread
+    /// for each, never less on more threads (a few runs on many threads with small peaks don't lower
+    /// it), and where too few runs say how memory grows with threads, each run's peak grows with
+    /// its threads (its peak over them a thread): a step of few runs is never admitted at less.
+    #[test]
+    fn memory_by_threads_grows_and_few_runs_grow_as_their_threads() {
+        let t = Tuning::default();
+        let km = |u: f64| -> BTreeMap<String, f64> { [(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into() };
+        // (Fitted: 20 runs on 2 threads at 4,000 MB, 20 on 4 at 5,000: 500 MB a thread.)
+        let mut runs: Vec<Obs> = (0..20).map(|i| obs(i, 100.0, 10.0, 2, 4000)).collect();
+        runs.extend((20..40).map(|i| obs(i, 100.0, 10.0, 4, 5000)));
+        let m = Model::of(runs.clone(), &[], &[], &t);
+        assert_eq!(m.thread_mb(&km(100.0)), Some(500));
+        assert_eq!(m.mem(&km(100.0), 4), Some(5000));
+        assert_eq!(m.mem(&km(100.0), 8), Some(7000));
+        // (More threads never less: ten runs on 8 threads at 1,000 MB don't take a target on 8
+        // below what its 2- and 4-thread runs grown to 8 hold.)
+        runs.extend((40..50).map(|i| obs(i, 100.0, 10.0, 8, 1000)));
+        let m = Model::of(runs, &[], &[], &t);
+        for th in [2, 4, 8, 16] {
+            assert!(m.mem(&km(100.0), th).unwrap() >= m.mem(&km(100.0), th / 2).unwrap(), "{th}");
+        }
+        assert!(m.mem(&km(100.0), 8).unwrap() >= 5000);
+        // (A step of three runs, all on 2 threads, 3,000 MB: no fit, so a job on 6 takes three
+        // times the peak, and each thread grown 1,500 MB.)
+        let runs: Vec<Obs> = (0..3).map(|i| obs(i, 100.0, 10.0, 2, 3000)).collect();
+        let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.by[0].mem_per_thread, None);
+        assert_eq!(m.mem(&km(100.0), 6), Some(9000));
+        assert_eq!(m.thread_mb(&km(100.0)), Some(1500));
+        // (Nine runs on differing threads: still too few to fit, each run grown as its own threads.)
+        let runs: Vec<Obs> = (0..9).map(|i| obs(i, 100.0, 10.0, 1 + (i % 3) as u32, 1000 * (1 + i % 3))).collect();
+        let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.by[0].mem_per_thread, None);
+        assert_eq!(m.mem(&km(100.0), 6), Some(6000));
     }
 
     /// A run off its prediction by more than `off` is flagged; `relearn` in a row on one side and
@@ -799,11 +902,11 @@ mod tests {
         let m = Model::of(runs, &[], &[], &t);
         assert_eq!(m.by[0].size, "km2");
         assert!(mb(&m, 100.0) >= 10_000, "{}", mb(&m, 100.0));
-        // (At or above: 200 runs of 60 to 66 km² at 3,000 MB, 5 of 100 km² at 6,000; a 60 km²
-        // target is the many's, 3,000.)
+        // (At or above: 200 runs of 60 to 66 km² at 3,000 MB, 2 of 100 km² at 6,000, under the
+        // percent the 99th percentile leaves out; a 60 km² target is the many's, 3,000.)
         let mut runs: Vec<Obs> =
             (0..200).map(|i| obs(i, 60.0 + (i % 7) as f64, 60.0 + (i % 7) as f64, 1, 3000)).collect();
-        runs.extend((200..205).map(|i| obs(i, 100.0, 100.0, 1, 6000)));
+        runs.extend((200..202).map(|i| obs(i, 100.0, 100.0, 1, 6000)));
         let m = Model::of(runs, &[], &[], &t);
         assert_eq!(mb(&m, 60.0), 3000);
         // (A relearn: 30 runs at 8,000 MB, then 5 empty ones in a row, a hundredth the work, at

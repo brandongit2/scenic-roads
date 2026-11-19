@@ -14,9 +14,12 @@ pub struct Tuning {
     /// about a target's size (the median of the fastest twice this share: crowding only adds time,
     /// and one freak can't set it).
     pub work_pct: f64,
-    /// A step's memory, its disk and an update drain's wait: this percentile of its runs at the
-    /// target's size or more.
+    /// A step's disk and an update drain's wait: this percentile of its runs at the target's size
+    /// or more.
     pub high_pct: f64,
+    /// A job's memory as the pool admits and packs it (agentcore::coord::sched): this percentile of
+    /// its step's runs at the target's size or more, each at the threads the job runs on.
+    pub mem_pct: f64,
     /// A step's newest runs its times (work, the rest, parallelism, the NAS rate) are learned
     /// from, and checked against their predictions over (memory and disk read every run: a peak
     /// is a run's, and only many runs show the rare large one). At most `KNOBS`' 5,000: each
@@ -32,18 +35,21 @@ pub struct Tuning {
 
 pub const WORK_PCT: f64 = 40.0;
 pub const HIGH_PCT: f64 = 95.0;
+/// Picked by the admission replay on the lead's records of 12–19 Nov (docs/pool.md §7.7, Memory
+/// admission): the least that reserved no more of what the jobs took past it than before.
+pub const MEM_PCT: f64 = 99.0;
 pub const RUNS: u64 = 500;
 pub const OFF: f64 = 3.0;
 pub const RELEARN: u64 = 5;
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { work_pct: WORK_PCT, high_pct: HIGH_PCT, runs: RUNS, off: OFF, relearn: RELEARN }
+        Tuning { work_pct: WORK_PCT, high_pct: HIGH_PCT, mem_pct: MEM_PCT, runs: RUNS, off: OFF, relearn: RELEARN }
     }
 }
 
 /// The needs model's bounds as the pool's settings: each a number in its range, null its default.
-pub const KNOBS: [Knob<Tuning>; 5] = [
+pub const KNOBS: [Knob<Tuning>; 6] = [
     Knob {
         name: "needs-work-pct",
         what: "a step's work and the rest of its time per unit: this percentile of its runs of about a target's size",
@@ -55,12 +61,21 @@ pub const KNOBS: [Knob<Tuning>; 5] = [
     },
     Knob {
         name: "needs-high-pct",
-        what: "a step's memory, disk and drain wait: this percentile of its runs at the target's size or more",
+        what: "a step's disk and drain wait: this percentile of its runs at the target's size or more",
         unit: "%",
         least: 50.0,
         most: 100.0,
         get: |k| k.high_pct,
         set: |k, v| k.high_pct = v,
+    },
+    Knob {
+        name: "needs-mem-pct",
+        what: "a job's memory as the pool admits it: this percentile of its step's runs at the target's size or more, at the job's threads",
+        unit: "%",
+        least: 50.0,
+        most: 100.0,
+        get: |k| k.mem_pct,
+        set: |k, v| k.mem_pct = v,
     },
     Knob {
         name: "needs-runs",
@@ -119,10 +134,11 @@ mod tests {
         let k = Tuning::of(|n| match n {
             "needs-work-pct" => Some(25.0),
             "needs-high-pct" => Some(101.0),
+            "needs-mem-pct" => Some(97.0),
             "needs-runs" => Some(80.0),
             _ => None,
         });
-        assert_eq!((k.work_pct, k.high_pct, k.runs), (25.0, HIGH_PCT, 80));
+        assert_eq!((k.work_pct, k.high_pct, k.mem_pct, k.runs), (25.0, HIGH_PCT, 97.0, 80));
         for n in &KNOBS {
             let d = (n.get)(&Tuning::default());
             assert!((n.least..=n.most).contains(&d), "{}'s default {d} in its range", n.name);

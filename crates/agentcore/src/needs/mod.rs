@@ -295,13 +295,13 @@ pub struct Cores {
 }
 
 /// A step's models as made from its runs: its needs (`model::Model`), its memory by place (`Near`,
-/// not a `GUESS_FIRST` step's), and its latest earlier way's (`cost_version`) runs' high
-/// percentile of memory (jobrt::needs::Tuning::high_pct; `Book::older_mem`).
+/// not a `GUESS_FIRST` step's), and its latest earlier way's (`cost_version`) needs, made of that
+/// way's runs alike (`Book::older_mem`).
 #[derive(Debug, Default)]
 pub struct Models {
     pub needs: model::Model,
     pub near: Option<Arc<Near>>,
-    older: Option<(u32, u64)>,
+    older: Option<(u32, model::Model)>,
 }
 
 /// The models made, kept until the measures they're made from change: the change count they were
@@ -678,12 +678,7 @@ impl<'a> Book<'a> {
         let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c);
         let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max();
         let older_obs = way.map(|w| self.obs(step, w)).unwrap_or_default();
-        let older = way.and_then(|w| {
-            let peaks =
-                self.costs.iter().filter(|(k, c)| of(k, c) && c.v == w && c.peak_mb > 0).map(|(_, c)| c.peak_mb);
-            let peaks = model::sorted(peaks.map(|p| p as f64).collect());
-            model::pct(&peaks, self.tuning.high_pct).map(|p| (w, p.ceil() as u64))
-        });
+        let older = way.map(|w| (w, model::Model::of(older_obs.clone(), &[], &[], &self.tuning)));
         // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
         // its place against that guess, which the history doesn't keep.)
         let near = (!GUESS_FIRST.contains(&step)).then(|| Arc::new(Near::of_measures(self.places(step))));
@@ -733,14 +728,17 @@ impl<'a> Book<'a> {
     }
 
     /// What the latest earlier way of `step` (`cost_version`) measured `target` at (MB), for a cold
-    /// start after its way changed (task #979): that way's runs' high percentile, or the target's
-    /// own run of it, the larger; None when no run of an earlier way is kept. Floors of an earlier
-    /// way stay out (one held malloc's cached freed blocks, task #499), and so do drops.
+    /// start after its way changed (task #979): that way's needs' memory for the target (its runs
+    /// at or above its size, as the way it runs now reads its own: `model::Model::mem`), or the
+    /// target's own run of it, the larger; None when no run of an earlier way measured its memory.
+    /// Floors of an earlier way stay out (one held malloc's cached freed blocks, task #499), and so
+    /// do drops.
     pub fn older_mem(&self, step: &str, target: &str) -> Option<u64> {
-        let (way, p90) = self.model(step).older?;
-        let own =
-            self.costs.get(&cost_key(step, target)).filter(|c| c.v == way && !is_drop(c)).map_or(0, |c| c.peak_mb);
-        Some(p90.max(own))
+        let md = self.model(step);
+        let (way, older) = md.older.as_ref()?;
+        let own = self.costs.get(&cost_key(step, target)).filter(|c| c.v == *way && !is_drop(c)).map(|c| c.peak_mb);
+        let by_size = older.mem(&self.sizes(step, target, None), 0);
+        by_size.into_iter().chain(own).max().filter(|&mb| mb > 0)
     }
 
     /// The sizes target `target` of `step` is predicted by: its own earlier run's (of any way),
@@ -784,9 +782,11 @@ impl<'a> Book<'a> {
         s
     }
 
-    /// The memory (MB) a job of `step` for `target` needs, and where it came from: `need`'s, alone
-    /// (what the picks read). `guess`: the caller's first guess (MB); for a step offered by an input
-    /// measure (`OFFERED_BY`), that measure of the target, its memory guess none.
+    /// The memory (MB) a job of `step` for `target` needs on `threads` (0: as measured), and where
+    /// it came from: `need`'s, alone (what the picks read). Its own run on fewer threads than
+    /// `threads` (`own_threads`): each thread more its step's `thread_mb`. `guess`: the caller's
+    /// first guess (MB); for a step offered by an input measure (`OFFERED_BY`), that measure of the
+    /// target, its memory guess none.
     pub fn mem(&self, step: &str, target: &str, threads: u32, guess: u64) -> (u64, From) {
         let (guess, offered) = match offered_by(step) {
             Some(m) => (0, Some((m, guess))),
@@ -795,7 +795,14 @@ impl<'a> Book<'a> {
         let key = cost_key(step, target);
         let floor = self.current_floor(step, &key);
         if let Some(c) = self.own(step, target) {
-            return (c.peak_mb.max(floor.unwrap_or(0)), From::Measured);
+            let mb = c.peak_mb.max(floor.unwrap_or(0));
+            let more = match own_threads(c) {
+                Some(ran) if threads > ran => {
+                    u64::from(threads - ran) * self.thread_mb(step, target).unwrap_or(mb.div_ceil(u64::from(ran)))
+                }
+                _ => 0,
+            };
+            return (mb + more, From::Measured);
         }
         if let Some(f) = floor {
             return (f, From::Measured);
@@ -810,6 +817,19 @@ impl<'a> Book<'a> {
             Some(p) => (p, From::Model),
             None => (guess, From::Table),
         }
+    }
+
+    /// What each thread a job of `step` for `target` grows by past the threads its memory (`mem`)
+    /// was read at adds to it (MB): its step's model's (`model::Model::thread_mb`), else its own
+    /// run's peak over its threads; None where neither says (a cold start's: its job grows past no
+    /// threads its grant doesn't cover, crate::agent::threads).
+    pub fn thread_mb(&self, step: &str, target: &str) -> Option<u64> {
+        if let Some(t) = self.model(step).needs.thread_mb(&self.sizes(step, target, None)) {
+            return Some(t);
+        }
+        let c = self.own(step, target)?;
+        let ran = own_threads(c)?;
+        Some(c.peak_mb.div_ceil(u64::from(ran)))
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
@@ -1053,6 +1073,14 @@ impl<'a> Book<'a> {
     }
 }
 
+/// The threads a target's own run `c` measured its memory on: those it said (`threads`), or the
+/// fewest a paced run was cut to under way where fewer (`threads_least`, from the fewest its pace
+/// allowed: its peak may have come on them); None where not said.
+pub fn own_threads(c: &Cost) -> Option<u32> {
+    let least = c.sizes.get("threads_least").copied();
+    c.sizes.get("threads").map(|&n| least.map_or(n, |l| l.min(n)) as u32).filter(|&n| n > 0)
+}
+
 /// A target's own run's cores (`Book::cores`), from `c`, its run on `t` threads: its CPU time
 /// (`cpu_ms`) over the time it ran (its wall time less the time it was stopped, `paused_ms`; a
 /// second at least), the cores it kept busy, within its threads, to the nearest whole, and one
@@ -1085,7 +1113,7 @@ pub fn model_table(book: &Book) -> String {
     let t = &book.tuning;
     let mut out = format!(
         "per unit of its sizes, best first (the least spread of work per unit): work in the lead's CPU s and the rest of its time in s at the {}th percentile of its runs; memory at the {}th of its runs that size or more; NAS bytes a second (at the lead's pace) of its runs of about one unit, their bytes over their time\n\n",
-        t.work_pct, t.high_pct
+        t.work_pct, t.mem_pct
     );
     for s in &steps {
         let md = book.model(s);
@@ -1107,14 +1135,18 @@ pub fn model_table(book: &Book) -> String {
             let f = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x:.4}"));
             let mid = p.mem(1.0, 0).map_or("-".to_string(), |m| format!("{m} MB"));
             let nas = p.rate(1.0).map_or("-".to_string(), |m| format!("{:.0} B/s", m.bytes));
+            let per = match (p.mem_per_thread, p.thread_mb(1.0)) {
+                (Some(f), _) => format!("{f:.0} MB a thread (fitted)"),
+                (None, Some(t)) => format!("{t} MB a thread (its runs' peaks over their threads)"),
+                (None, None) => "no threads said".to_string(),
+            };
             out += &format!(
-                "  per {:<10} {:>5} runs, spread {:.2}: work {} s, rest {:.4} s, NAS {nas}, memory at one {mid}, {:.0} MB a thread\n",
+                "  per {:<10} {:>5} runs, spread {:.2}: work {} s, rest {:.4} s, NAS {nas}, memory at one {mid}, {per}\n",
                 p.size,
                 p.runs,
                 p.spread,
                 f(p.whole.work),
-                p.whole.rest,
-                p.mem_per_thread
+                p.whole.rest
             );
         }
         if let Some(nr) = md.near.as_ref().filter(|nr| nr.runs > 0) {
@@ -1531,7 +1563,9 @@ mod tests {
             ("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
             ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
         ]);
-        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
+        let mut b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
+        // (At the 95th percentile, the one outlier of 31 runs left out.)
+        b.tuning.mem_pct = 95.0;
         assert_eq!(b.mem("peaks", "6/40/1", 0, 1), (9000, From::Model), "the high percentile: not the outlier");
         assert_eq!(b.mem("peaks", "6/50/1", 0, 1), (12_000, From::Measured));
         assert_eq!(b.mem("slope", "6/40/1", 0, 777), (777, From::Table));
@@ -1563,7 +1597,8 @@ mod tests {
     }
 
     /// Task #979: a cold start after its step's way changed is sized by its runs of the latest
-    /// earlier way (their high percentile, or its own run of it, the larger), floors and older ways
+    /// earlier way (that way's model's memory for it, its runs at or above its size: here all one
+    /// size, so their 99th percentile; or its own run of it, the larger), floors and older ways
     /// left out; none without such a run.
     #[test]
     fn a_new_ways_cold_start_is_sized_by_its_earlier_ways_runs() {
@@ -1575,9 +1610,9 @@ mod tests {
         costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
         let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
         let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
-        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(955), "the 95th percentile");
+        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(991), "the 99th percentile");
         assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
-        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(955), "an older way's: nothing");
+        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(991), "an older way's: nothing");
         assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
@@ -1608,7 +1643,8 @@ mod tests {
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let md = b.model("terrain-lo");
         let p = md.needs.by.iter().find(|p| p.size == "tiffs").unwrap();
-        assert!((p.mem_per_thread - 100.0).abs() < 1.0, "{}", p.mem_per_thread);
+        let per = p.mem_per_thread.unwrap();
+        assert!((per - 100.0).abs() < 1.0, "{per}");
         assert!(b.mem("terrain-lo", "3/90/1", 16, 0).0 > b.mem("terrain-lo", "3/90/1", 12, 0).0);
     }
 
@@ -1831,6 +1867,138 @@ mod tests {
                 paces.lead_ginsn_s(),
                 paces.macs
             );
+        }
+    }
+
+    /// By hand (task #1415): the admission replay on the lead's records (docs/pool.md §7.7, Memory
+    /// admission). For each day from `SCENIC_NEEDS_DAY0` (unix s), `SCENIC_NEEDS_DAYS` of them, a
+    /// book of the runs that ended before it (and the floors of targets granted before it), and
+    /// each job granted that day by its targets' costs: its memory as crate::coord::sched admits
+    /// it, on the threads it starts on (`at_start`), and as counted once grown to the threads it
+    /// ran on (`at_ran`), with what it took (`peak`), its time and whether a cold start. Reads
+    /// `costs.json` (`read_costs`), `floors.json` (the lead's floors by cost key), `history.jsonl`
+    /// and `timings.jsonl` in `SCENIC_ADMIT_REPLAY`; writes `<SCENIC_ADMIT_LABEL>.jsonl` (default
+    /// `admit`), at `SCENIC_ADMIT_MEM_PCT` (`needs-mem-pct`; not set, its default). The "before"
+    /// of the docs' table was this test's lines on the scheduler it replaced (53b0f353c). Without
+    /// the folder it prints that it skipped and checks nothing.
+    #[test]
+    fn replay_admission_on_the_leads_records() {
+        use std::io::Write;
+        let Ok(dir) = std::env::var("SCENIC_ADMIT_REPLAY") else {
+            eprintln!("admission replay skipped: SCENIC_ADMIT_REPLAY unset (nothing checked)");
+            return;
+        };
+        let label = std::env::var("SCENIC_ADMIT_LABEL").unwrap_or_else(|_| "admit".into());
+        let dir = std::path::Path::new(&dir);
+        let (all, _) = read_costs(&dir.join("costs.json")).unwrap();
+        let floors_all: BTreeMap<String, Floor> =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("floors.json")).unwrap()).unwrap();
+        let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        let events: Vec<crate::coord::history::Event> =
+            text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let log = std::fs::read_to_string(dir.join("timings.jsonl")).unwrap();
+        let recs: Vec<(f64, &str)> = log
+            .lines()
+            .filter_map(|l| {
+                let r: jobrt::timings::RunRec = serde_json::from_str(l).ok()?;
+                Some((r.start as f64 + r.wall_s, l))
+            })
+            .collect();
+        let the_plan = crate::agent::seam::for_tests();
+        let lead = "Mac-mini-de-Brandon";
+        let day0: u64 = std::env::var("SCENIC_NEEDS_DAY0").unwrap().parse().unwrap();
+        let days: u64 = std::env::var("SCENIC_NEEDS_DAYS").unwrap().parse().unwrap();
+        let mut out = std::fs::File::create(dir.join(format!("{label}.jsonl"))).unwrap();
+        let granted = |c: &Cost| c.job.map(|j| j.n / 1000);
+        for d in 0..days {
+            let t0 = day0 + d * 86_400;
+            let book_costs: BTreeMap<String, Cost> = all
+                .iter()
+                .filter(|(_, c)| granted(c).is_none_or(|g| g + c.secs < t0))
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect();
+            // (A floor of a target granted that day or later is the day's own: left out.)
+            let floors: BTreeMap<String, Floor> = floors_all
+                .iter()
+                .filter(|(k, _)| all.get(*k).and_then(granted).is_none_or(|g| g < t0))
+                .map(|(k, f)| (k.clone(), *f))
+                .collect();
+            let no_disks = BTreeMap::new();
+            let ev: Vec<crate::coord::history::Event> = events.iter().filter(|e| e.t < t0).cloned().collect();
+            let tail_at = dir.join(format!("tail-{label}-{d}.jsonl"));
+            let mut f = std::fs::File::create(&tail_at).unwrap();
+            for (_, l) in recs.iter().filter(|(end, _)| *end < t0 as f64) {
+                writeln!(f, "{l}").unwrap();
+            }
+            drop(f);
+            let mut tail = jobrt::timings::LogTail::default();
+            tail.read(&tail_at);
+            std::fs::remove_file(&tail_at).unwrap();
+            let speeds = tail.speeds(crate::paces::mac_of, |_| true);
+            let paces = crate::paces::Paces::of(&speeds, lead).with_starts(the_plan, &ev, &book_costs, t0);
+            let records = tail.facts().clone();
+            let cache = Cache::default();
+            let tuning = jobrt::needs::Tuning::of(|n| {
+                (n == "needs-mem-pct").then(|| std::env::var("SCENIC_ADMIT_MEM_PCT").ok()?.parse().ok()).flatten()
+            });
+            let book = Book::kept(
+                the_plan,
+                &book_costs,
+                &floors,
+                &no_disks,
+                Inputs { paces: &paces, records: &records, tuning },
+                &cache,
+                0,
+            );
+            // (Each job granted that day: its targets' costs.)
+            let mut jobs: BTreeMap<String, Vec<(&str, &str, &Cost)>> = BTreeMap::new();
+            for (k, c) in all.iter().filter(|(_, c)| granted(c).is_some_and(|g| (t0..t0 + 86_400).contains(&g))) {
+                let crate::coord::CostKey { step, target } = crate::coord::CostKey::parse(k);
+                if c.v < the_plan.cost_version(step) || is_drop(c) {
+                    continue;
+                }
+                jobs.entry(c.job.unwrap().to_string()).or_default().push((step, target, c));
+            }
+            for (job, ts) in &jobs {
+                let step = ts[0].0;
+                let ran = ts.iter().filter_map(|t| t.2.sizes.get("threads").copied()).max().unwrap_or(0) as u32;
+                // (As crate::coord::sched admits a job: each target on the threads it starts on,
+                // `Sched::start_threads`, the most of them; a grow past those its memory covers,
+                // `Sched::thread_mb`, each thread its step's memory per thread.)
+                let on = if the_plan.records_only(step) {
+                    1
+                } else {
+                    ts.iter().filter_map(|t| book.cores(step, t.1).map(|c| c.grant)).max().unwrap_or(0)
+                };
+                let start = if on == 0 { ran } else { on.min(ran.max(1)) };
+                let guess = |c: &Cost| offered_by(step).and_then(|m| c.sizes.get(m).copied()).unwrap_or(0);
+                let mut cold = false;
+                let mut at_start = 0u64;
+                let mut per: Option<u64> = Some(0);
+                let mut least: Option<u32> = Some(u32::MAX);
+                for &(st, t, c) in ts {
+                    let (mb, from) = book.mem(st, t, on, guess(c));
+                    cold |= from == From::Table;
+                    at_start = at_start.max(mb);
+                    per = per.zip(book.thread_mb(st, t)).map(|(a, b)| a.max(b));
+                    least = least.zip(book.own(st, t).and_then(own_threads)).map(|(a, b)| a.min(b));
+                }
+                let (per, covered) = match per {
+                    Some(p) => (p, on.max(least.filter(|&n| n != u32::MAX).unwrap_or(0)).max(1)),
+                    None => (at_start, 1),
+                };
+                let at_ran = at_start + per * u64::from(ran.saturating_sub(start.max(covered)));
+                let peak = ts.iter().map(|t| t.2.peak_mb).max().unwrap_or(0);
+                let secs: u64 = ts.iter().map(|t| t.2.secs).sum();
+                let worker = ts[0].2.worker.clone();
+                let line = serde_json::json!({
+                    "day": d, "job": job, "step": step, "worker": worker, "targets": ts.len(),
+                    "ran": ran, "start": start, "at_start": at_start, "at_ran": at_ran, "per": per,
+                    "peak": peak, "secs": secs, "cold": cold,
+                });
+                writeln!(out, "{line}").unwrap();
+            }
+            eprintln!("day {d}: book of {} costs, {} jobs", book_costs.len(), jobs.len());
         }
     }
 
