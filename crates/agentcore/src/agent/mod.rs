@@ -5469,6 +5469,8 @@ impl Agent {
                 }
             }
         }
+        let paused = self.slots[k].running.as_ref().is_some_and(|r| r.paused.is_some());
+        self.sampler.set_paused(k, paused);
         self.watch_threads(k);
         Ok(false)
     }
@@ -5870,9 +5872,7 @@ impl Agent {
                 // none of its cores, task #462.)
                 if let Some(held_mb) = self.held_mb(k).filter(|_| self.waiting_on(k).is_some()) {
                     waiting.push(crate::coord::WaitingJob { lease: n, held_mb });
-                } else if s.running.is_some()
-                    && self.sampler.busy_at(k).is_some_and(|t| t.elapsed().as_secs() >= IDLE_CPU_S)
-                {
+                } else if s.running.is_some() && self.sampler.idle_for(k).is_some_and(|t| t.as_secs() >= IDLE_CPU_S) {
                     // (Its cores idle a while: a job waiting on the network, task #665.)
                     idle.push(n);
                 }
@@ -5884,7 +5884,7 @@ impl Agent {
                         lease: n,
                         threads: w.threads,
                         cpu_ms: self.sampler.cpu_ns(k).unwrap_or(w.cpu_ns).saturating_sub(w.cpu_ns) / 1_000_000,
-                        ran_ms: self.watched_for(&w).as_millis() as u64,
+                        ran_ms: self.watched_for(k, &w).as_millis() as u64,
                         granted: r.threads as u32,
                         most: self.threads_room(c) as u32,
                     });
@@ -6699,9 +6699,11 @@ impl Agent {
         let net = self.proxy.as_ref().and_then(|p| p.net()).and_then(|n| n.job(&Self::net_tag(k)));
         let ran_s = Some(r.elapsed().as_secs());
         let cpu_ms = self.sampler.cpu_ns(k).map(|ns| ns / 1_000_000);
+        let stopped_ms = self.sampler.stopped_ns(k).map(|ns| ns / 1_000_000);
         Some(jobs::Live {
             ran_s,
             cpu_ms,
+            stopped_ms,
             ..jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net)
         })
     }
@@ -7758,11 +7760,11 @@ impl Agent {
     /// its costs file, jobrt::control::on_grant; a paced one, inputs::inputs::pace, runs on its
     /// file's within the second), watched afresh from when those change, with its CPU time and the
     /// wall time it waited then (store::nasio::waited_in, its counts' folder). A stopped or stopping
-    /// job measures nothing, nor does one a guard holds frozen (memory or disk, SIGSTOPped whole
-    /// without `paused` or `pausing` set): its frozen minutes are wall time with no CPU, not idle
-    /// threads, so its watch is dropped and begins afresh when it thaws.
+    /// job measures nothing. The time it was stopped (a guard's freeze, a pause: the sampler's
+    /// `stopped_ns`) is kept in its watch and left out of its wall time (`watched_for`), however
+    /// short the stop: it is no idle time, and its threads stay known through it (`grown_mb`).
     fn watch_threads(&mut self, k: usize) {
-        let frozen = self.sampler.frozen(k) || self.sampler.disk_frozen(k);
+        let stopped = self.sampler.stopped_ns(k).unwrap_or(0);
         let f = self.threads_path(k);
         let costs = self.slot_costs(k);
         let cpu = self.sampler.cpu_ns(k);
@@ -7774,9 +7776,17 @@ impl Agent {
         }
         let on = if is_paced(&r.spec) { file.map(|n| n as u32) } else { memguard::targets(&costs).threads };
         r.watch = match (on, cpu) {
-            (Some(n), Some(ns)) if !frozen && r.paused.is_none() && r.pausing.is_none() => match r.watch {
-                Some(w) if w.threads == n && ns >= w.cpu_ns && waited >= w.waited_ns => Some(w),
-                _ => Some(threads::Watch { since: Instant::now(), cpu_ns: ns, waited_ns: waited, threads: n }),
+            (Some(n), Some(ns)) if r.pausing.is_none() => match r.watch {
+                Some(w) if w.threads == n && ns >= w.cpu_ns && waited >= w.waited_ns && stopped >= w.stopped_ns => {
+                    Some(w)
+                }
+                _ => Some(threads::Watch {
+                    since: Instant::now(),
+                    cpu_ns: ns,
+                    waited_ns: waited,
+                    stopped_ns: stopped,
+                    threads: n,
+                }),
             },
             _ => None,
         };
@@ -7792,15 +7802,18 @@ impl Agent {
         per * on.saturating_sub(u64::from(covers))
     }
 
-    /// How long a job has been watched on its threads (`threads::Watch::since`, and a test's
-    /// `watch_ahead`).
-    fn watched_for(&self, w: &threads::Watch) -> Duration {
-        w.since.elapsed() + self.watch_ahead
+    /// How long slot `k`'s job has run watched on its threads (`threads::Watch::since`, and a test's
+    /// `watch_ahead`), the time it was stopped since left out.
+    fn watched_for(&self, k: usize, w: &threads::Watch) -> Duration {
+        let stopped = self.sampler.stopped_ns(k).unwrap_or(0).saturating_sub(w.stopped_ns);
+        (w.since.elapsed() + self.watch_ahead).saturating_sub(Duration::from_nanos(stopped))
     }
 
     /// This Mac's running jobs' threads decided again (docs/pool.md §7.1, Threads controlled live;
     /// crate::agent::threads::decide): each watched `threads::EVERY` on the threads its file says
-    /// (`watch_threads`), on the cores it kept busy (its CPU time over its wall time) and its share
+    /// (`watch_threads`), on the cores it kept busy (its CPU time over the time it ran, its wall
+    /// time less the time a guard froze it or it was paused, however short: a stopped job is no
+    /// idle one, never cut for it, and not decided on until it has run a minute) and its share
     /// of it waited, within the most a job may run on here (`threads_room`), the cores its Mac has free (its capacity's, less the in-use share's
     /// while the owner uses it, less what the jobs grown before it this round took) and its Mac's
     /// memory (its capacity's for a job, `mem_mb`, less its jobs' growth, `grown_mb`, at the job's
@@ -7810,11 +7823,10 @@ impl Agent {
     fn tend_threads(&mut self, c: &Conditions) {
         let due: Vec<usize> = (0..self.slots.len())
             .filter(|&k| {
-                !(self.sampler.frozen(k) || self.sampler.disk_frozen(k))
-                    && self.slots[k].running.as_ref().is_some_and(|r| {
-                        r.watch
-                            .is_some_and(|w| w.threads as usize == r.threads && self.watched_for(&w) >= threads::EVERY)
-                    })
+                self.slots[k].running.as_ref().is_some_and(|r| {
+                    r.watch
+                        .is_some_and(|w| w.threads as usize == r.threads && self.watched_for(k, &w) >= threads::EVERY)
+                })
             })
             .collect();
         if due.is_empty() {
@@ -7830,12 +7842,13 @@ impl Agent {
             let cpu = self.sampler.cpu_ns(k).unwrap_or(0);
             let waited = store::nasio::waited_in(&self.nas_counts_path(k)).unwrap_or(0);
             let before = self.grown_mb(k);
-            let ahead = self.watch_ahead;
+            let stopped = self.sampler.stopped_ns(k).unwrap_or(0);
+            let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.watch) else { continue };
+            let wall_ms = self.watched_for(k, &w).as_millis() as u64;
             let Some(r) = self.slots[k].running.as_mut() else { continue };
-            let Some(w) = r.watch else { continue };
             let window = threads::Window {
                 threads: w.threads,
-                wall_ms: (w.since.elapsed() + ahead).as_millis() as u64,
+                wall_ms,
                 cpu_ms: cpu.saturating_sub(w.cpu_ns) / 1_000_000,
                 waited_ms: waited.saturating_sub(w.waited_ns) / 1_000_000,
             };
@@ -7850,8 +7863,13 @@ impl Agent {
                     covers,
                 },
             );
-            r.watch =
-                Some(threads::Watch { since: Instant::now(), cpu_ns: cpu, waited_ns: waited, threads: w.threads });
+            r.watch = Some(threads::Watch {
+                since: Instant::now(),
+                cpu_ns: cpu,
+                waited_ns: waited,
+                stopped_ns: stopped,
+                threads: w.threads,
+            });
             if d.threads == w.threads {
                 continue;
             }
@@ -9218,7 +9236,7 @@ impl Agent {
                 // (Past the time a pause gives, a job whose processes have done next to nothing
                 // for UPDATE_STALL holds it no longer: it may be stuck. By its CPU, not its progress
                 // lines, which a long step may not print.)
-                let stalled = self.sampler.busy_at(k).is_some_and(|t| t.elapsed() >= UPDATE_STALL);
+                let stalled = self.sampler.idle_for(k).is_some_and(|t| t >= UPDATE_STALL);
                 // (Frozen by a guard, it reaches no safe point until that guard lets it go on: held
                 // no longer than a pause gives, the next agent holding it frozen, task #1137.)
                 let frozen = self.sampler.frozen(k) || self.sampler.disk_frozen(k);
@@ -12832,20 +12850,53 @@ mod tests {
         a.tend_threads(&cond);
         assert_eq!(file(&a), 2, "waiting and idle: cut");
         a.watch_threads(0);
-        // A minute frozen by a guard, no CPU: not idle time. No cut, its watch dropped, and it is
-        // watched afresh (a window of its own) once thawed.
-        minute(&mut a);
+        // A minute stopped is no idle one (a guard's freeze, the sampler's `stopped_ns`): 3 threads
+        // on no CPU. A freeze that comes between `watch_threads` and `tend_threads` cuts nothing,
+        // and the watch, with the threads it ran on, stays through it.
+        let on3 = |a: &mut Agent| {
+            jobrt::control::grant(&a.threads_path(0), 3).unwrap();
+            a.slots[0].running.as_mut().unwrap().threads = 3;
+            a.watch_threads(0);
+            minute(a);
+            a.watch_threads(0);
+        };
+        let watched = |a: &Agent| a.slots[0].running.as_ref().unwrap().watch.map(|w| w.threads);
+        let minute_stopped = Duration::from_secs(61);
+        cpu(&a, 3 * 61 * s + s / 10);
+        on3(&mut a);
         assert!(a.sampler.freeze(0));
-        a.watch_threads(0);
-        assert!(a.slots[0].running.as_ref().unwrap().watch.is_none(), "frozen: not watched");
+        a.sampler.add_test_stopped(0, minute_stopped);
         a.tend_threads(&cond);
-        assert_eq!(file(&a), 2, "a frozen minute cuts nothing");
-        assert!(a.sampler.thaw(0));
-        a.watch_ahead = Duration::ZERO;
-        a.watch_threads(0);
-        assert_eq!(a.slots[0].running.as_ref().unwrap().watch.map(|w| w.threads), Some(2), "watched afresh");
+        assert_eq!((file(&a), watched(&a)), (3, Some(3)), "a frozen minute cuts nothing, its watch kept");
+        a.sampler.thaw(0);
         a.tend_threads(&cond);
-        assert_eq!(file(&a), 2, "under a minute since it thawed: nothing decided");
+        assert_eq!(file(&a), 3, "thawed: it has run no minute yet");
+        // (A minute run since, and idle: cut.)
+        a.watch_ahead = Duration::from_secs(122);
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 1, "running idle a minute: cut");
+        // A freeze begun and ended within one round (watched before it and after) is left out the
+        // same: no cut for the minute it took, then the control goes on as before.
+        on3(&mut a);
+        assert!(a.sampler.freeze(0));
+        a.sampler.thaw(0);
+        a.sampler.add_test_stopped(0, minute_stopped);
+        a.watch_threads(0);
+        assert_eq!(watched(&a), Some(3));
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 3, "a one-round freeze isn't counted");
+        a.watch_ahead = Duration::from_secs(122);
+        a.tend_threads(&cond);
+        assert_eq!(file(&a), 1, "idle a minute on top of it: cut");
+        a.watch_threads(0);
+        // (Its lead hears the time it ran, its stops left out.)
+        minute(&mut a);
+        a.sampler.add_test_stopped(0, Duration::from_secs(30));
+        assert_eq!(a.capacity(&cond).threads.iter().map(|t| t.ran_ms / 1000).collect::<Vec<_>>(), [31]);
+        // (Back on the 2 threads the steps below follow.)
+        jobrt::control::grant(&a.threads_path(0), 2).unwrap();
+        a.slots[0].running.as_mut().unwrap().threads = 2;
+        a.watch_threads(0);
         // Every thread busy, but each past those its grant covers would take 64 GB: held.
         a.slots[0].thread_mb = (64 << 10, 2);
         minute(&mut a);
@@ -12967,6 +13018,16 @@ mod tests {
             a.sampler.set_test_busy(Some(vec![Some(old), ago_i(IDLE_CPU_S - 60), None]));
             assert_eq!(a.capacity(&cond).idle, [leases[0]]);
             a.sampler.set_test_busy(None);
+            // (Frozen all that time, by a guard: not idle, its cores kept; the same time run, idle.)
+            let mut w = a.sampler.unwatch(0).unwrap();
+            w.cpu_mark = Some((old, 0, 0));
+            w.stopped_total = (IDLE_CPU_S + 60) * 1_000_000_000;
+            a.sampler.watch(0, w.clone());
+            assert!(a.capacity(&cond).idle.is_empty(), "stopped throughout: not idle");
+            w.stopped_total = 0;
+            a.sampler.watch(0, w.clone());
+            assert_eq!(a.capacity(&cond).idle, [leases[0]], "the same time run: idle");
+            a.sampler.watch(0, memguard::Watch { cpu_mark: None, ..w });
         }
         // (Its slots full by what the lead grants: asked again, nothing more fits.)
         assert!(a.member_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w).is_empty());

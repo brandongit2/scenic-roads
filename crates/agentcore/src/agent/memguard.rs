@@ -395,10 +395,11 @@ pub struct Watch {
     /// The top of its scratch folder as last looked at (bytes), and when.
     pub scratch_top: u64,
     pub looked: Option<std::time::Instant>,
-    /// When it last used a core-minute more (`BUSY_CPU`), and its CPU time (ns) then (the first
-    /// sample, or a sum that fell as a process ended, starts it again): how long it has been idle,
+    /// When it last used a core-minute more (`BUSY_CPU`), its CPU time (ns) and the time it had
+    /// been stopped (ns, `stopped_ns`) then (the first sample, or a sum that fell as a process
+    /// ended, starts it again): how long it has been idle,
     /// for an update's wait (crate::agent's `update_due`), whatever its progress lines say.
-    pub cpu_mark: Option<(std::time::Instant, u64)>,
+    pub cpu_mark: Option<(std::time::Instant, u64, u64)>,
     /// Its CPU time (ns) as sampled: each sample's rise over the last summed, so it never falls
     /// (its processes' sum falls as one ends, its time taken with it: the time it took since the
     /// sample before is missed). What its threads used, for its live thread control (crate::agent::
@@ -406,6 +407,14 @@ pub struct Watch {
     pub cpu_ns: Option<u64>,
     /// Its processes' summed CPU time at the last sample (ns): what the next one's rise is from.
     pub cpu_sum: Option<u64>,
+    /// Whether the agent paused it (SIGSTOP for its conditions: `Sampler::set_paused`).
+    pub paused: bool,
+    /// The time it has been stopped (ns): frozen by either guard or paused, counted whole to the
+    /// moment it goes on (`mark_stopped`), the stop under way not yet in it (`stopped_ns` adds it).
+    /// What a reading of its CPU over its wall time leaves out, as the records' `paused_ms` does
+    /// (buildstore::costin::stopped_ms): a stopped minute is no idle one.
+    pub stopped_total: u64,
+    pub stopped_since: Option<std::time::Instant>,
 }
 
 /// The CPU time (ns) a job uses for its sampler to call it busy again: a core-minute.
@@ -443,6 +452,25 @@ pub fn noted_disks(costs: &Path) -> Vec<(String, u64)> {
 }
 
 impl Watch {
+    /// Its stops brought up to date, after its `frozen`, `disk_frozen` or `paused` changed: a stop
+    /// begun is timed, one ended counted. The one place stopped time is kept, whoever stopped it.
+    fn mark_stopped(&mut self) {
+        let stopped = self.frozen || self.disk_frozen || self.paused;
+        match (stopped, self.stopped_since) {
+            (true, None) => self.stopped_since = Some(std::time::Instant::now()),
+            (false, Some(t)) => {
+                self.stopped_total += t.elapsed().as_nanos() as u64;
+                self.stopped_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The time it has been stopped (ns), the stop under way included.
+    pub fn stopped_ns(&self) -> u64 {
+        self.stopped_total + self.stopped_since.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     /// Its processes' summed CPU time `sum` (ns) sampled: `cpu_ns` rises by what it rose since the
     /// last sample, never falls (a process ending takes its time out of the sum).
     pub fn note_cpu(&mut self, sum: u64) {
@@ -679,6 +707,7 @@ impl Sampler {
         let real = g.held_set.is_none() && g.disk_set.is_none();
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.disk_frozen) else { return false };
         w.disk_frozen = false;
+        w.mark_stopped();
         w.disk_hist.clear();
         // (Still frozen for its memory: it stays so.)
         if w.frozen || !real {
@@ -731,13 +760,40 @@ impl Sampler {
         self.inner.lock().ok()?.reading
     }
 
-    /// When slot `k`'s job last used a core-minute (`Watch::cpu_mark`); None: not sampled yet, or
-    /// unreadable.
-    pub fn busy_at(&self, k: usize) -> Option<std::time::Instant> {
+    /// How long slot `k`'s job has used under a core-minute of CPU (`Watch::cpu_mark`), the time it
+    /// was stopped in it left out (`Watch::stopped_ns`): a frozen or paused job is not idle, and
+    /// one let go on is idle only for the time it ran. None: not sampled yet, or unreadable.
+    pub fn idle_for(&self, k: usize) -> Option<std::time::Duration> {
         let g = self.inner.lock().ok()?;
-        match &g.busy_set {
-            Some(v) => v.get(k).copied().flatten(),
-            None => g.watches.get(k)?.as_ref()?.cpu_mark.map(|m| m.0),
+        if let Some(v) = &g.busy_set {
+            return v.get(k).copied().flatten().map(|t| t.elapsed());
+        }
+        let w = g.watches.get(k)?.as_ref()?;
+        let (at, _, stopped) = w.cpu_mark?;
+        Some(at.elapsed().saturating_sub(std::time::Duration::from_nanos(w.stopped_ns().saturating_sub(stopped))))
+    }
+
+    /// The time slot `k`'s job has been stopped (ns, `Watch::stopped_ns`); None: not watched.
+    pub fn stopped_ns(&self, k: usize) -> Option<u64> {
+        Some(self.inner.lock().ok()?.watches.get(k)?.as_ref()?.stopped_ns())
+    }
+
+    /// Slot `k`'s job paused or let go on by the agent (`Running::pause`, `resume`): its stops timed
+    /// with the guards' (`Watch::mark_stopped`).
+    pub fn set_paused(&self, k: usize, paused: bool) {
+        let Ok(mut g) = self.inner.lock() else { return };
+        if let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.paused != paused) {
+            w.paused = paused;
+            w.mark_stopped();
+        }
+    }
+
+    /// As a test sets it: slot `k`'s job stopped for `d` more.
+    pub fn add_test_stopped(&self, k: usize, d: std::time::Duration) {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) {
+                w.stopped_total += d.as_nanos() as u64;
+            }
         }
     }
 
@@ -796,6 +852,7 @@ impl Sampler {
             jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
         w.frozen = true;
+        w.mark_stopped();
         true
     }
 
@@ -809,6 +866,7 @@ impl Sampler {
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
         w.frozen |= memory;
         w.disk_frozen |= disk;
+        w.mark_stopped();
         if real && (w.frozen || w.disk_frozen) {
             jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
@@ -829,6 +887,7 @@ impl Sampler {
         let Ok(mut g) = self.inner.lock() else { return false };
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.frozen) else { return false };
         w.frozen = false;
+        w.mark_stopped();
         // (Still frozen for the disk: it stays so.)
         if w.disk_frozen {
             return true;
@@ -954,8 +1013,8 @@ impl Sampler {
                 if let Some(ns) = *ns {
                     w.note_cpu(ns);
                     match w.cpu_mark {
-                        Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}
-                        _ => w.cpu_mark = Some((now, ns)),
+                        Some((_, m, _)) if ns >= m && ns - m < BUSY_CPU => {}
+                        _ => w.cpu_mark = Some((now, ns, w.stopped_ns())),
                     }
                 }
             }
@@ -1011,6 +1070,7 @@ impl Sampler {
                 jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
             }
             w.frozen = true;
+            w.mark_stopped();
             let what = format!(
                 "froze slot {k}'s job: it held {:.1} GB with {:.1} GB available against this Mac's {:.1} GB floor, the memory brake on ({})",
                 w.held.unwrap_or(0) as f64 / 1024.0,
@@ -1127,6 +1187,7 @@ impl Sampler {
                         jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
                     }
                     w.disk_frozen = true;
+                    w.mark_stopped();
                     said.push(format!("froze slot {k}'s job too: the disk has {:.1} GB free, under half the {} GB room target, while another job is frozen for it", free.unwrap_or(0) as f64 / (1u64 << 30) as f64, floor >> 30));
                 }
                 for what in said {
@@ -1153,6 +1214,7 @@ impl Sampler {
             jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
         w.disk_frozen = true;
+        w.mark_stopped();
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
         let what = format!("froze slot {k}'s job: the disk has {:.1} GB free, short of the {} GB room target, and it grew fastest ({:.1} GB in the last minute, {:.1} GB in all)", gb(free.unwrap_or(0)), floor >> 30, gb(w.disk_growth()), gb(w.disk_now));
         eprintln!("agent: disk guard {what}");
@@ -1651,6 +1713,47 @@ mod tests {
         assert_eq!(w.cpu_ns, Some(9_000), "never falls");
         w.note_cpu(7_000);
         assert_eq!(w.cpu_ns, Some(12_000));
+    }
+
+    /// A job's stops (frozen by either guard, paused) are timed whole, one begun and ended within a
+    /// round too, and left out of how long it has been idle: one frozen over `IDLE_CPU_S` isn't
+    /// idle, one let go on only for the time it ran.
+    #[test]
+    fn a_jobs_stopped_time_is_kept_and_left_out_of_its_idleness() {
+        let s = Sampler::new(1);
+        let ago = |secs: u64| std::time::Instant::now().checked_sub(std::time::Duration::from_secs(secs));
+        let Some(old) = ago(1200) else { return };
+        let d = std::time::Duration::from_secs;
+        // (Last busy twenty minutes ago, with ten of them stopped.)
+        s.watch(
+            0,
+            Watch { cpu_mark: Some((old, 0, 0)), stopped_total: d(600).as_nanos() as u64, ..Default::default() },
+        );
+        assert!(s.idle_for(0).is_some_and(|i| i >= d(600) && i < d(601)), "{:?}", s.idle_for(0));
+        // Stopped now: the stop under way counts, so it is not idle longer for it.
+        s.set_paused(0, true);
+        let at = s.stopped_ns(0).unwrap();
+        assert!(at >= d(600).as_nanos() as u64);
+        std::thread::sleep(std::time::Duration::from_millis(30)); // (sleep ok: a stop is timed by the clock; the checks bound it only below)
+        assert!(s.stopped_ns(0).unwrap() >= at + 30_000_000, "a stop under way is counted as it goes");
+        s.set_paused(0, false);
+        // A freeze begun and ended with nothing between is counted whole, once.
+        assert!(s.freeze(0));
+        std::thread::sleep(std::time::Duration::from_millis(30)); // (sleep ok: a stop is timed by the clock; the checks bound it only below)
+        s.thaw(0);
+        let total = s.stopped_ns(0).unwrap();
+        assert!(total >= at + 30_000_000, "the freeze counted");
+        assert_eq!(s.stopped_ns(0), Some(total), "stopped, ended: it stops growing");
+        // Both guards at once count the time once.
+        let t = std::time::Instant::now();
+        s.hold_frozen(0, true, true);
+        s.set_paused(0, true);
+        std::thread::sleep(std::time::Duration::from_millis(30)); // (sleep ok: a stop is timed by the clock; the checks bound it only below)
+        s.thaw(0);
+        s.thaw_disk(0);
+        s.set_paused(0, false);
+        let both = s.stopped_ns(0).unwrap() - total;
+        assert!(both >= 30_000_000 && both <= t.elapsed().as_nanos() as u64, "{both}");
     }
 
     #[test]

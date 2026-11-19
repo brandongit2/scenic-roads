@@ -155,6 +155,11 @@ pub struct Live {
     /// crate::agent::memguard::Sampler::cpu_ns; set by its agent, not by `read`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_ms: Option<u64>,
+    /// The time its job has been stopped (ms: frozen by a guard or paused, the sampler's
+    /// `Watch::stopped_ns`; set by its agent, not by `read`), left out of the time its CPU is read
+    /// over (`cores_since`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_ms: Option<u64>,
 }
 
 impl Live {
@@ -184,19 +189,28 @@ impl Live {
             net_out: net.map(|n| n.1),
             ran_s: None,
             cpu_ms: None,
+            stopped_ms: None,
         }
     }
 
     /// Whether its job's work moved from `was` (an earlier view of it): anything it says but its CPU
-    /// time, which a job spinning on nothing moves too (crate::coord::lease's stillness).
+    /// time, which a job spinning on nothing moves too (crate::coord::lease's stillness), and the
+    /// time it was stopped, which a frozen job's grows with no work.
     pub fn moved_from(&self, was: &Live) -> bool {
-        Live { cpu_ms: None, ..self.clone() } != Live { cpu_ms: None, ..was.clone() }
+        let bare = |l: &Live| Live { cpu_ms: None, stopped_ms: None, ..l.clone() };
+        bare(self) != bare(was)
     }
 
     /// The cores its job kept busy over the `secs` since `base` (an earlier beat's view of it): its
-    /// CPU time over that time; None when either doesn't say it.
+    /// CPU time over the time it ran, `secs` less the time it was stopped (`stopped_ms`; an older
+    /// agent's beat, which doesn't say it, none left out). None when either doesn't say its CPU
+    /// time, or it ran under a second of them (frozen or paused throughout: it reads nothing, not
+    /// no cores).
     pub fn cores_since(&self, base: &Live, secs: f64) -> Option<f64> {
-        Some(self.cpu_ms?.saturating_sub(base.cpu_ms?) as f64 / 1000.0 / secs.max(1.0))
+        let stopped = self.stopped_ms.zip(base.stopped_ms).map_or(0.0, |(a, b)| a.saturating_sub(b) as f64 / 1000.0);
+        let ran = secs - stopped;
+        let cpu = self.cpu_ms?.saturating_sub(base.cpu_ms?) as f64 / 1000.0;
+        (ran >= 1.0).then(|| cpu / ran)
     }
 
     /// What its job has moved on the NAS since it began: bytes read and written, files made,
@@ -1082,6 +1096,7 @@ mod tests {
                 net_out: Some(2),
                 ran_s: None,
                 cpu_ms: None,
+                stopped_ms: None,
             }
         );
     }

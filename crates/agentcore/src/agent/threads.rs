@@ -49,13 +49,15 @@ pub const IDLE: f64 = 0.5;
 /// The share of its minute a job waited from which it's never grown.
 pub const WAITING: f64 = 0.25;
 
-/// A job watched on the threads it runs on (`Agent::watch_threads`): since when, its CPU time and
-/// wall time waited then (ns), and those threads.
+/// A job watched on the threads it runs on (`Agent::watch_threads`): since when, its CPU time, wall
+/// time waited and time stopped then (ns: a freeze or pause, left out of the wall time it ran,
+/// `Agent::watched_for`), and those threads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Watch {
     pub since: Instant,
     pub cpu_ns: u64,
     pub waited_ns: u64,
+    pub stopped_ns: u64,
     pub threads: u32,
 }
 

@@ -723,10 +723,10 @@ say no threads, so nothing is decided for them).
   disk: a read its cache serves is its thread's computing, and a job's disk reads rise with its
   threads, so a job computing on every thread would read as waiting and never be grown; nor its
   waits on other work (a join, a condition), as the threads waited for may be computing. Read from its
-  slot's counts folder (`store::nasio::waited_in`). A frozen or stopping job measures nothing.
+  slot's counts folder (`store::nasio::waited_in`). A stopping job measures nothing; the time a job was stopped (frozen by either guard or paused, however short: the sampler's `stopped_ns`, kept in its watch) is left out of its wall time, as the records' `paused_ms` is (`costin::stopped_ms`), and the lead's reading of its busy cores (`Live::cores_since`, `stopped_ms` in its beat) and its idleness (`Sampler::idle_for`, `IDLE_CPU_S`) leave it out too: a stopped minute is no idle one.
 - **The decision** (`Agent::tend_threads`, `threads::decide`), once a job has been watched a
   minute (`threads::EVERY`) on the threads its file says (one taking them as a target begins waits
-  for its next target to run on them): on the cores it kept busy, its CPU time over its wall time,
+  for its next target to run on them): on the cores it kept busy, its CPU time over its wall time less the time it was stopped,
   against its threads. Not over its wall time less its waits: a wait is an instant any of its
   threads was in a call while the others may compute, so that would count their CPU over less
   time than they ran (4 threads, 40 % of the minute waiting, 2.4 cores busy, would read as 4 busy,

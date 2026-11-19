@@ -1364,6 +1364,40 @@ mod tests {
         assert_eq!((l.cores_lately(), l.cores_mean()), (Some(3.0), Some((198.0 + 180.0) / 210.0)));
     }
 
+    /// A job's stopped time (a guard's freeze, a pause) is left out of the time its CPU is read over
+    /// (`Live::cores_since`): frozen a whole minute it reads no cores at all, not none busy, so the
+    /// lead doesn't pack it as idle and grant its cores again; its stillness isn't broken by it.
+    #[test]
+    fn a_jobs_stopped_time_is_not_idle_time() {
+        use crate::agent::jobs::Live;
+        let view = |cpu_s: u64, stopped_s: u64| Live {
+            cpu_ms: Some(cpu_s * 1000),
+            stopped_ms: Some(stopped_s * 1000),
+            ..Default::default()
+        };
+        // 2 cores for the 30 s of a minute it ran, 30 s frozen: 2 cores, not 1.
+        assert_eq!(view(60, 30).cores_since(&view(0, 0), 60.0), Some(2.0));
+        assert_eq!(view(60, 0).cores_since(&view(0, 0), 60.0), Some(1.0), "none stopped: over all of it");
+        // Stopped throughout: no reading, where plain wall time says none busy.
+        assert_eq!(view(0, 60).cores_since(&view(0, 0), 60.0), None);
+        // (A beat of an older agent, saying no stopped time: over all the wall time, as before.)
+        let old = Live { cpu_ms: Some(60_000), ..Default::default() };
+        assert_eq!(old.cores_since(&Live { cpu_ms: Some(0), ..Default::default() }, 60.0), Some(1.0));
+        // A job frozen two minutes after a minute at 3 cores: no reading lately (not none busy), its
+        // mean over the time it ran; its stopped time isn't its work moving.
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut ls = Leases::new(Duration::from_secs(600));
+        let id = ls.grant("m1", Work::Job { step: "unit".into(), targets: vec![] }, t0);
+        assert!(ls.renew_live(id, "m1", None, Some(view(0, 0)), at(0)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 0)), at(60)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 60)), at(120)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(180, 120)), at(180)));
+        let l = ls.of(id).unwrap();
+        assert_eq!((l.cores_lately(), l.cores_mean()), (None, Some(3.0)), "frozen a minute: no cores freed");
+        assert_eq!(l.still(), Some(Duration::from_secs(180)), "its stopped time isn't a move");
+    }
+
     /// A job's pace by its beats' progress lines (task #990): each target's run of a line is a part;
     /// only the most a line has said counts (a retry gone back, its bytes sent again, counts
     /// nothing until it passes it); its rate in each unit over its parts' time, its longest wait
