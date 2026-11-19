@@ -2723,6 +2723,48 @@ slowest 206 s before, 7 s after) and four with all regions on (6 Nov 19:18-19:50
 s before, 23-29 s after). `forecast-check --replay` of those 61, `BUDGET` raised in both
 copies: the same report byte for byte (codes 6 and 7, train and test), 46 minutes before and 7 after.
 
+**What changed (code 9, task #1413).** Each job is timed by its needs over its Mac's supply now, as
+placement and the grants size it, in place of its targets' costs at its lane's pace:
+
+- **A job the run grants** takes, target by target, `forecast::needs_secs` (its own run at the two
+  Macs' speeds, else its step's model's work at the Mac's speed over the threads granted, plus the
+  rest of its time; or its NAS moves at the NAS budget, `forecast::nas_secs`, where longer), its
+  job's start at the step (`Paces::start`) on its first target. A stopped run's rest, and a step none
+  of whose runs is of the way it runs now, keep their cost at the lane's pace.
+- **A job under way** (`forecast::lease_busy`): its targets' needs on its Mac at the threads it
+  holds, its start, less how long it has run (`Lease::ran`); a minute at least.
+- **Each step's pace against its needs** (`forecast::needs_pace`, `Input::needs_pace`, in the record
+  so a member's page reruns the same): over its jobs done well in the last 12 h, their time over what
+  their grants were sized to (the lease event's `sized_s`), three jobs at least; said only for a step
+  quicker than its needs, never under a quarter. The needs' figures run high (#1415's replay), and a
+  job that ran long mostly waited on what else ran, which the run already times.
+- **Placement** where it finishes soonest (§7.2), the run asking the same scheduler.
+
+Code 9 removed code 2's paces and caps rather than adding beside them, so a replay's old and new are
+both code 9; the before below is the code 8 app's replay of the same inputs and copy. The backtest
+(`--replay --from 2026-11-12T14:00 --to 2026-11-19T15:00 --split 2026-11-17T00:00`, the lead's
+records copied read-only from the Mac mini, release builds on the M1; test set, 135 inputs, 4,312
+jobs; minutes, bias, median / p90 of the absolute error):
+
+| | code 8 | code 9 |
+|---|---|---|
+| end, all | +94, 188 / 647 | +81, 194 / 610 |
+| start, all | 182 / 621 | +46, 188 / 590 |
+| run, all | 1 / 99 | +36, 1 / 101 |
+| targets placed in a forecast's first 6 h (118,399 done) | 80,357 | 81,092 |
+| the right Mac | 44 % | 45 % |
+
+The live forecasts over 12 to 19 Nov (2,661, code 8 and before) had their end at +101, 148 / 764.
+Code 9's test end by horizon: under 15 min −150, 95 / 388; 15 min-1 h 98 / 415; 1-4 h 103 / 390;
+4-12 h 269 / 535; 12 h + +619, 641 / 988. The far horizons stay late: the work the pool did in a
+day was placed later than it ran.
+
+Tried and left out, on the test set's span alone (from 17 Nov 00:00, end median / p90): the needs
+without a pace 226 / 829 (bias +203); with each step's pace both ways (a slow step's jobs made
+longer too) 217 / 743; a target's own run at its cost at the lane's pace instead of its needs 213 /
+772; without the NAS floor 223 / 824; with the job under way at its slot's time 228 / 889; the
+one-sided pace kept 188 / 619.
+
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
