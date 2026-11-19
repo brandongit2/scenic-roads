@@ -14,7 +14,7 @@
 //!   moved. Beside it: whether the geometry its key had before moved, and whether what its run
 //!   reads of the coverage changed, exactly (its candidates kept, its ways kept, its own buildings'
 //!   countries, its mask in its live cells), with the record's size and the time to ask again.
-//!   `<step>:moved[@k]` (trees, bldtiles): each (k-th) of its targets whose geometry moved, with a
+//!   `<step>:moved[@k]`: each (k-th) of its targets whose geometry moved, with a
 //!   sum; a trees tile's mid made beside the build's (made under the new regions once run again):
 //!   one differing, its output changed, with its line kept would be unsound. The
 //!   indexes are content hashes (`sources/inputs/regions/@index.<hash>.json`); the coverages are
@@ -266,10 +266,18 @@ fn case(root: &NasRoot, scratch: &Path, old: &str, new: &str, tiles: &[String]) 
             None => 1,
         };
         let mut n = 0usize;
-        let geo: fn(&Coverage, TileId) -> String = match step {
-            "trees" => idents::inside_geo,
-            "bldtiles" => idents::shapes_geo,
-            s => bail!("{s}:moved: trees or bldtiles"),
+        let geo: Box<dyn Fn(&Coverage, TileId) -> String> = match step {
+            "trees" => Box::new(idents::inside_geo),
+            "bldtiles" => Box::new(idents::shapes_geo),
+            "pois" => Box::new(idents::clip_geo),
+            "unit" => {
+                let reach = roads::reach::Reaches::load(root, &m, &date).ok().flatten().context("no reaches")?;
+                let fine = inputs::dem::spacing::Fine::of_records(root, &m)?;
+                Box::new(move |c: &Coverage, u: TileId| {
+                    reach.get(u).map(|r| r.coverage_key(c, u, &fine)).unwrap_or_default()
+                })
+            }
+            s => bail!("{s}:moved: not a step keyed on what each target asked"),
         };
         eprintln!("{step}:moved: every {every}");
         for x in 0..64u32 {
