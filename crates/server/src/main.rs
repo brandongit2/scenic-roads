@@ -1040,10 +1040,10 @@ mod tests {
         assert!(coordwire::isolated());
         assert!(coordwire::lead::this_macs_agent().is_none());
         assert!(coordwire::net::names().is_empty());
-        assert!(coordwire::net::served_https(7311).is_none());
+        assert!(coordwire::net::served_https(0).is_none());
         assert!(coordwire::net::tailscale_json(&["status", "--json"]).is_none());
-        assert!(coordwire::net::lan_urls(7311).is_empty());
-        assert_eq!(coordwire::net::urls(7311), ["http://127.0.0.1:7311"]);
+        assert!(coordwire::net::lan_urls(0).is_empty());
+        assert_eq!(coordwire::net::urls(0), ["http://127.0.0.1:0"]);
     }
 
     #[test]
