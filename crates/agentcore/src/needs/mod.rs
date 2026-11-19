@@ -7,8 +7,9 @@
 //! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run, a
 //! floor or a disk floor of an older way of it (a z6 tile's before its v2, whose measures held
 //! malloc's cached freed blocks; lo's before its v1, which held a z3 tile's ways at once) is neither
-//! a measure nor one of the model's runs, and sizes no run of the way it runs now. A disk floor
-//! carries no way of its own: it's its target's cost line's (`Book::disk`).
+//! a measure nor one of the model's runs, and bounds no run of the way it runs now (only a cold
+//! start's packing reads it, `Book::older_mem`, below). A disk floor carries no way of its own: it's
+//! its target's cost line's (`Book::disk`).
 //!
 //! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
 //!   floor alone counts as its measure. Its time on another Mac at that Mac's speed (crate::paces).
@@ -26,9 +27,10 @@
 //! - **Guess first** (z6 tiles and landmark candidates, `GUESS_FIRST`): while the model has fewer than
 //!   `MIN_RUNS` runs, the caller's guess scaled by the target's extract comes before it, so one dense
 //!   z6 tile doesn't set every other's need.
-//! - **Table**: the caller's guess, when nothing of the step was measured the way it runs now (a
-//!   cold start: the coordinator sizes it by its offered guess; with none it runs alone,
-//!   crate::coord::sched).
+//! - **Table**: the caller's guess, when nothing of the step was measured (a cold start: the
+//!   coordinator packs it by the step's runs of its latest earlier way, `Book::older_mem`, else
+//!   its offered guess; with neither it runs alone, crate::coord::sched). That figure only packs
+//!   a cold start beside other jobs: it never holds one off a Mac (a cold start is never too big).
 //!
 //! A step offered by an input measure (`OFFERED_BY`: the 3D buildings by their rows) has no memory
 //! guess: what its caller passes as the guess is that measure of the target, a size the model reads
@@ -296,12 +298,14 @@ pub struct Cores {
     pub busy_tenths: Option<u32>,
 }
 
-/// A step's models as made from its runs: its needs (`model::Model`) and its memory by place
-/// (`Near`, not a `GUESS_FIRST` step's).
+/// A step's models as made from its runs: its needs (`model::Model`), its memory by place (`Near`,
+/// not a `GUESS_FIRST` step's), and its latest earlier way's (`cost_version`) needs, made of that
+/// way's runs alike (`Book::older_mem`).
 #[derive(Debug, Default)]
 pub struct Models {
     pub needs: model::Model,
     pub near: Option<Arc<Near>>,
+    older: Option<(u32, model::Model)>,
 }
 
 /// The models made, kept until the measures they're made from change: the change count they were
@@ -678,6 +682,7 @@ impl<'a> Book<'a> {
         let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c);
         let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max();
         let older_obs = way.map(|w| self.obs(step, w)).unwrap_or_default();
+        let older = way.map(|w| (w, model::Model::of(older_obs.clone(), &[], &[], &self.tuning)));
         // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
         // its place against that guess, which the history doesn't keep.)
         let near = (!GUESS_FIRST.contains(&step)).then(|| Arc::new(Near::of_measures(self.places(step))));
@@ -696,7 +701,7 @@ impl<'a> Book<'a> {
             })
             .collect();
         let needs = model::Model::of(self.obs(step, v), &older_obs, &disks, &self.tuning);
-        let m = Arc::new(Models { needs, near });
+        let m = Arc::new(Models { needs, near, older });
         cache.models.lock().unwrap_or_else(|e| e.into_inner()).1.insert(step.to_string(), m.clone());
         m
     }
@@ -724,6 +729,20 @@ impl<'a> Book<'a> {
             }
         }
         at
+    }
+
+    /// What the latest earlier way of `step` (`cost_version`) measured `target` at (MB), for a cold
+    /// start after its way changed (task #979): that way's needs' memory for the target (its runs
+    /// at or above its size, as the way it runs now reads its own: `model::Model::mem`), or the
+    /// target's own run of it, the larger; None when no run of an earlier way measured its memory.
+    /// Floors of an earlier way stay out (one held malloc's cached freed blocks, task #499), and so
+    /// do drops.
+    pub fn older_mem(&self, step: &str, target: &str) -> Option<u64> {
+        let md = self.model(step);
+        let (way, older) = md.older.as_ref()?;
+        let own = self.costs.get(&cost_key(step, target)).filter(|c| c.v == *way && !is_drop(c)).map(|c| c.peak_mb);
+        let by_size = older.mem(&self.sizes(step, target, None), 0);
+        by_size.into_iter().chain(own).max().filter(|&mb| mb > 0)
     }
 
     /// The sizes target `target` of `step` is predicted by: its own earlier run's (of any way),
@@ -1598,6 +1617,27 @@ mod tests {
         // 1,400 MB; 30 million's those of 30 to 40.)
         assert!(small < big && (1300..=1400).contains(&small) && (3800..=4300).contains(&big), "{small} {big}");
         assert_eq!(b.mem("bldtiles", "6/63/63", 0, 30_000_000), (0, From::Table));
+    }
+
+    /// Task #979: a cold start after its step's way changed is sized by its runs of the latest
+    /// earlier way (that way's model's memory for it, its runs at or above its size: here all one
+    /// size, so their 98th percentile; or its own run of it, the larger), floors and older ways
+    /// left out; none without such a run.
+    #[test]
+    fn a_new_ways_cold_start_is_sized_by_its_earlier_ways_runs() {
+        let v = cost_version("terrain-hi");
+        let mut costs = BTreeMap::new();
+        for i in 1..=10u64 {
+            costs.insert(cost_key("terrain-hi", &format!("6/{i}/1")), Cost { v: v - 1, ..cost(i * 100, 60, &[]) });
+        }
+        costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
+        let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
+        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(982), "the 98th percentile");
+        assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
+        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(982), "an older way's: nothing");
+        assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
 
     /// Task #1507: a target whose own run, floor and disk floor are of an older way of its step

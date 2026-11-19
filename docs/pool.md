@@ -1789,7 +1789,7 @@ alone for the picks; the model itself `needs::model`, task #1416): only what was
 the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); a run or floor of an
 older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage jobs' before
 their v2; lo's before v1, which held a z3 tile's ways at once) is no target's memory or time
-measure, nor one of the model's runs, and sizes no run of the way it runs now. A disk floor carries
+measure, nor one of the model's runs, and bounds no run of the way it runs now (it packs a cold start, below). A disk floor carries
 no way of its own: it is its target's cost line's (`needs::Book::disk`: one whose target's cost is
 of an older way counts for nothing, nor in the model), and a job's disks come before its costs, so
 the first run of a newer way puts its target's older disk floor away rather than rising from it
@@ -2135,12 +2135,16 @@ sizing measured what the runs held; their work had moved under them within one v
 none of those runs counts now; the replay above was run on the code before that merge.
 
 **A cold start** (no target of its step measured the way it runs now; task #499) is packed by its
-*provisional need*: the most it was offered with (unit's and pois' extract-size guess,
+*provisional need*: the most its step's runs of its latest earlier way measured (`cost_version`
+raised; that way's needs model's memory for the target, its runs at or above its size as above, or
+the target's own run of it, the larger: `needs::Book::older_mem`, task #979; floors of that way
+stay out) or it was offered with (unit's and pois' extract-size guess,
 terrain-hi's bound), times 3/2 (`coord::sched::provisional_mb`), its disk its step's measures'
-(else none); with none, it has no figure and runs alone (`Sched::no_figure`). Its step's runs of an
-earlier way size nothing (task #1507): a cost version raised says the code's needs moved, and lo's
-3/4/2, measured at 17.5 GB before #1182 drew a z3 tile a tile at a time (2.3 GB on the M4 after),
-would have been held to 26 GB by them; its cores one
+(else none); with neither, it has no figure and runs alone (`Sched::no_figure`). That figure only
+packs it: a cold start is never too big, so the older way never holds it off a Mac (lo 3/4/2 after
+task #1507: packed at 26 GB, 3/2 of its old 17.5 GB, so the lead's own jobs end first and it runs
+alone). It stays because a running cold job is no longer offered, and its earlier way's runs are
+what keeps a figure for it then, so other jobs go beside it; its cores one
 thread (task #896; its agent grows it from there, §7.1, Threads controlled live)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, terrain-deep's

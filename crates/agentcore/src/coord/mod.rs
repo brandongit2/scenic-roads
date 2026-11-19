@@ -8721,7 +8721,7 @@ mod tests {
         for (t, mb) in tiles.iter().zip([500, 2_000, 400]) {
             c.add_costs(&[(
                 cost_key("lo", t),
-                Cost { peak_mb: 800, secs: 90, worker: None, v: 0, ..Default::default() },
+                Cost { peak_mb: 800, secs: 90, worker: None, v: cost_version("lo"), ..Default::default() },
             )]);
             c.add_disks(&[(cost_key("lo", t), mb)]);
         }
@@ -9920,14 +9920,13 @@ mod tests {
     }
 
     /// Task #499: a cold job of the lead's own (bld-fetch, run before but not measured the way it
-    /// runs now) goes beside the lead's jobs when its provisional need (what it's offered with times
-    /// 3/2; its runs of its earlier way size nothing, task #1507) fits the room left; one that
-    /// doesn't, or a step never measured (the catalogue), isn't starved: the lead's asks get nothing
-    /// more until it can go. A member with more room, asking for the step it may never be granted,
-    /// isn't its asker.
+    /// runs now) goes beside the lead's jobs when its provisional need (its runs of its earlier way
+    /// times 3/2) fits the room left; one that doesn't, or a step never measured (the catalogue), isn't
+    /// starved: the lead's asks get nothing more until it can go. A member with more room, asking
+    /// for the step it may never be granted, isn't its asker.
     #[test]
     fn a_cold_job_of_the_leads_own_goes_by_its_provisional_need() {
-        let provisional = OFFERED_MB * 3 / 2;
+        let provisional = OLDER_MB * 3 / 2;
         for (step, room, beside) in
             [("bld-fetch", 64_000, true), ("bld-fetch", 2000 + provisional - 1, false), ("catalog", 64_000, false)]
         {
@@ -9939,7 +9938,7 @@ mod tests {
                 0,
                 Offer {
                     step: step.into(),
-                    targets: vec![(step.into(), "k".into(), OFFERED_MB)],
+                    targets: vec![(step.into(), "k".into(), 0)],
                     job: Some(format!("{step} {step}")),
                 },
             );
@@ -12929,22 +12928,21 @@ mod tests {
         assert_eq!(held, Some(sched::Rule::Waiting));
     }
 
-    /// The memory a cold target is offered with (its plan's guess): its provisional need's.
-    const OFFERED_MB: u64 = 1000;
+    /// The memory a step's runs of its earlier way took (`ran_before`).
+    const OLDER_MB: u64 = 1000;
 
     /// A step that has run before, its memory not measured the way it runs now: a cold start, but
-    /// not one never measured. A run of its earlier way where it has one (a target not offered, of
-    /// 50 GB: task #1507, it sizes none of the way it runs now), and a disk floor.
+    /// not one never measured. A run of its earlier way (`OLDER_MB`, a target not offered: task
+    /// #979, its cold starts sized by it) where it has one, and a disk floor.
     fn ran_before(c: &Coordinator, step: &str) {
         if let Some(v) = cost_version(step).checked_sub(1) {
-            let cost = Cost { peak_mb: 50_000, secs: 600, v, ..Default::default() };
+            let cost = Cost { peak_mb: OLDER_MB, secs: 600, v, ..Default::default() };
             c.add_costs_by(&[(cost_key(step, "6/63/63"), cost)], "m1");
         }
         c.add_disks(&[(cost_key(step, "6/63/63"), 10)]);
     }
 
-    /// A cold `slope` target (offered with `OFFERED_MB`) offered after `step`'s measured ones (2 GB,
-    /// two threads).
+    /// A cold `slope` target offered after `step`'s measured ones (2 GB, two threads).
     fn with_cold_slope(c: &Coordinator, step: &str, n: usize) {
         packable(c, step, n, Some(2));
         ran_before(c, "slope-hi");
@@ -12952,18 +12950,18 @@ mod tests {
         // (Listed first, as the plan lists a region's slope ahead of what it reads: task #909.)
         offers.insert(
             0,
-            Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), OFFERED_MB)], job: None },
+            Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None },
         );
         c.offer("p", offers);
     }
 
-    /// Task #499: a cold start is packed by its provisional need (what it's offered with times 3/2;
-    /// its step's runs of an earlier way size nothing, task #1507): beside measured jobs when that
-    /// fits the room left, and measured jobs beside it; past the room left, not beside (alone once
-    /// its worker holds nothing, whatever its size).
+    /// Task #499: a cold start is packed by its provisional need (its step's runs of its earlier way
+    /// times 3/2, task #979): beside measured jobs when that fits the room left, and measured jobs
+    /// beside it; past the room left, not beside (alone once its worker holds nothing, whatever its
+    /// size).
     #[test]
     fn packing_takes_a_cold_start_by_its_provisional_need() {
-        let provisional = OFFERED_MB * 3 / 2;
+        let provisional = OLDER_MB * 3 / 2;
         let a = |mem: u64| Ask {
             want: 3,
             can: vec!["trees".into(), "slope-hi".into()],
@@ -12983,20 +12981,11 @@ mod tests {
         ran_before(&c, "slope-hi");
         c.offer(
             "p",
-            vec![Offer {
-                step: "slope-hi".into(),
-                targets: vec![("6/2/2".into(), "k 6/2/2".into(), OFFERED_MB)],
-                job: None,
-            }],
+            vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
         );
         assert_eq!(all_granted(&w, &a(provisional / 2)), [["6/2/2"]]);
-        // Measured jobs beside a running cold start, by its provisional need (as it was offered:
-        // its offer kept).
-        let cold = c.shared.lock().unwrap().offers.clone();
+        // Measured jobs beside a running cold start, by its provisional need.
         packable(&c, "trees", 2, Some(2));
-        let mut offers = c.shared.lock().unwrap().offers.clone();
-        offers.extend(cold);
-        c.offer("p", offers);
         assert_eq!(all_granted(&w, &a(4000 + provisional)), [["6/1/1"], ["6/1/2"]], "beside a cold start");
     }
 
@@ -13029,11 +13018,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         ran_before(&c, "slope-hi");
         ran_before(&c, "terrain-hi");
-        let cold = |step: &str| Offer {
-            step: step.into(),
-            targets: vec![("6/2/2".into(), "k".into(), OFFERED_MB)],
-            job: None,
-        };
+        let cold = |step: &str| Offer { step: step.into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
         c.offer("p", vec![cold("slope-hi"), cold("terrain-hi")]);
         assert_eq!(all_granted(&w, &a).len(), 1, "one cold start a Mac");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
@@ -13051,8 +13036,7 @@ mod tests {
             can: vec!["trees".into(), "terrain-hi".into()],
             ..every_ask("m1", "trees", 64_000, 100_000)
         };
-        let cold =
-            Offer { step: "terrain-hi".into(), targets: vec![("6/2/2".into(), "k".into(), OFFERED_MB)], job: None };
+        let cold = Offer { step: "terrain-hi".into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
         // Beside a measured job: not granted (cores).
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "trees", 1, Some(2));
@@ -13086,7 +13070,7 @@ mod tests {
         packable(&c, "trees", 1, Some(2));
         let mut offers = vec![Offer {
             step: "pyramids-fill".into(),
-            targets: vec![("6/55/23".into(), "k 6/55/23".into(), OFFERED_MB)],
+            targets: vec![("6/55/23".into(), "k 6/55/23".into(), OLDER_MB)],
             job: Some("pyramids-fill 6/55/23".into()),
         }];
         offers.extend(c.shared.lock().unwrap().offers.clone());
@@ -13110,10 +13094,9 @@ mod tests {
     fn a_cold_redo_goes_beside_a_long_lead_job() {
         let (_d, c, _w, _clock) = every((0, 0));
         ran_before(&c, "terrain-hi");
-        // (Terrain-hi offered with the memory its code bounds its jobs at: its cold start's figure.)
         let own = |step: &str, t: &str| Offer {
             step: step.into(),
-            targets: vec![(t.into(), format!("k {t}"), if step == "terrain-hi" { OFFERED_MB } else { 0 })],
+            targets: vec![(t.into(), format!("k {t}"), 0)],
             job: Some(format!("{step} {t}")),
         };
         let a = Ask {
@@ -13125,7 +13108,7 @@ mod tests {
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "terrain-hi"), "{:?}", g.work);
         assert_eq!(g.threads, 8, "a cold terrain job: the whole Mac");
-        c.offer("p", vec![own("terrain-hi", "3/1/1"), own("redo", "redo 1")]);
+        c.offer("p", vec![own("redo", "redo 1")]);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never measured: it waits");
         let cost = Cost { peak_mb: 300, secs: 2, v: cost_version("redo"), ..Default::default() };
         c.add_costs_by(&[(cost_key("redo", "redo"), cost)], "m4");
@@ -15915,12 +15898,15 @@ mod tests {
         }
     }
 
-    /// A cold start of `step` over `ts` as `recorded_cold_starts` prints it: its provisional need
-    /// (as offered), or none (it runs alone).
+    /// A cold start of `step` over `ts` as `recorded_cold_starts` prints it: its provisional need,
+    /// or none (it runs alone), and where that came from.
     fn cold_words(s: &sched::Sched, step: &str, ts: &[String], gb: &dyn Fn(u64) -> String) -> String {
-        match s.provisional(step, ts) {
-            Some(m) => format!("{} (as offered)", gb(m.mem_mb)),
-            None => "none: it runs alone".to_string(),
+        let b = s.book();
+        let older = ts.iter().filter_map(|t| b.older_mem(step, t)).max();
+        match (s.provisional(step, ts), older) {
+            (Some(m), Some(o)) => format!("{} (its earlier way's runs: {})", gb(m.mem_mb), gb(o)),
+            (Some(m), None) => format!("{} (as offered)", gb(m.mem_mb)),
+            (None, _) => "none: it runs alone".to_string(),
         }
     }
 }
