@@ -3798,6 +3798,76 @@ mod tests {
         }
     }
 
+    /// What the agent's other threads do with a plan's results, each measured alone
+    /// (`frozen_plans_memory` with `SCENIC_FROZEN_THREADS`), after the plan's own threads are done:
+    /// the forecast's input archived (fcinputs) and its archive entry (fcarchive), both taken in
+    /// by the coordinator for the page, `/pool/view`'s and `/api/regions`' answers as bytes, the
+    /// page's own forecast (pageview) and the offers given again. A line each: its time, the bytes
+    /// it asked for, the most it held at once and each size's most summed (`allocs::climb`), and
+    /// the process's reusable pages after.
+    fn apart(p: &Planner, c: &crate::coord::Coordinator, forecast: Option<Out>) -> Vec<String> {
+        use crate::agent::allocs;
+        let busy = || {
+            p.forecasting.borrow().as_ref().is_some_and(|h| !h.is_finished())
+                || p.regions_making.borrow().as_ref().is_some_and(|h| !h.is_finished())
+        };
+        while busy() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let mut out = Vec::new();
+        let mut op = |what: &str, f: &mut dyn FnMut()| {
+            allocs::climb();
+            let (t, a) = (Instant::now(), allocs::asked());
+            f();
+            let (took, b, (most, sum)) = (t.elapsed(), allocs::asked(), allocs::climb());
+            out.push(format!(
+                "{what}: {:.2} s, asked for {} MB in {} blocks; at most {} MB more live, the sizes' mosts {} MB; reusable {} MB after",
+                took.as_secs_f64(),
+                (b.0 - a.0) >> 20,
+                b.1 - a.1,
+                most >> 20,
+                sum >> 20,
+                allocs::Memory::now().reusable >> 20
+            ));
+        };
+        let the_plan = crate::agent::seam::for_tests();
+        if let Some(Out::Forecast(Some(bytes), entry)) = forecast {
+            let given = fcinputs::Given { term: 1, at: now_s(), bytes: bytes.clone() };
+            op(&format!("the forecast's input ({} KB) archived (fcinputs)", bytes.len() >> 10), &mut || {
+                fcinputs::frame(&[&given]).unwrap();
+            });
+            op("its archive entry (fcarchive)", &mut || {
+                fcarchive::compress(&serde_json::to_vec(&entry).unwrap()).unwrap();
+            });
+            op("the forecast's input for the page (coordinator)", &mut || c.set_page_forecast(&bytes));
+            op("the page's own forecast (pageview)", &mut || {
+                forecast::Record::from_bytes(&bytes).unwrap().forecast(the_plan);
+            });
+        }
+        if let Some((_, v)) = p.regions_view.borrow().clone() {
+            c.set_page_regions(v.clone());
+            op("/api/regions' answer as bytes (coordinator)", &mut || {
+                serde_json::to_vec(&(*v).clone()).unwrap();
+            });
+        }
+        let mut view = serde_json::Value::Null;
+        op("/pool/view's answer as bytes, its agent's status read (coordinator)", &mut || {
+            view = c.pool_view(&crate::coord::ViewAsk::default());
+            serde_json::to_vec(&view).unwrap();
+        });
+        op("the page's copy of the status (pageview)", &mut || drop(view["status"].clone()));
+        if let Ok(st) = serde_json::from_value::<crate::agent::Status>(view["status"].clone()) {
+            op("the status as written (the beat's)", &mut || drop(serde_json::to_vec(&st).unwrap()));
+        }
+        let (date, offers) = p.offered.borrow().clone();
+        let n = offers.iter().map(|o| o.targets.len()).sum::<usize>();
+        let mut given = Some(offers);
+        op(&format!("the offers given again ({n} targets, coordinator)"), &mut || {
+            c.offer(&date, given.take().unwrap_or_default())
+        });
+        out
+    }
+
     /// The frozen-plan check (docs/crates.md §6.3, 6f2): a planner's `region_jobs` and `checklist`
     /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied there by hand,
     /// every other entry of the NAS's project folder linked there by the check itself,
@@ -3913,11 +3983,13 @@ mod tests {
     /// makes them. A line per plan to
     /// `SCENIC_FROZEN_OUT`: its time, the bytes it asked the allocator for, and the process's
     /// footprint, its peak, its resident size and its reusable pages after it
-    /// (crate::agent::allocs). With `SCENIC_FROZEN_SITES=<n>`, the stacks of the plans after the
-    /// first are sampled and the `n` functions and sites allocating the most bytes listed after
-    /// (slower: the plans' times are then the sampling's too; with `SCENIC_FROZEN_SITES_LEAST=<bytes>`,
+    /// (crate::agent::allocs). With `SCENIC_FROZEN_SITES=<n>`, the plans' stacks are sampled and the
+    /// `n` functions and sites allocating the most bytes listed, for the first plan and for the plans
+    /// after it (slower: the plans' times are then the sampling's too; with `SCENIC_FROZEN_SITES_LEAST=<bytes>`,
     /// of the blocks of that size or more alone). With `SCENIC_FROZEN_SIZES`, each
-    /// plan's blocks by size after its line (`allocs::sizes`).
+    /// plan's blocks by size after its line (`allocs::sizes`); with `SCENIC_FROZEN_PEAKS=<n>`, by
+    /// size, the `n` sites whose blocks took that size's live bytes to their most in the plan
+    /// (`allocs::peaks`: who holds what the allocator keeps of that size).
     #[test]
     #[ignore]
     fn frozen_plans_memory() {
@@ -3935,8 +4007,26 @@ mod tests {
         let root = store::nasfs::NasRoot::local_for_test(real);
         let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
         let hold = bus::Snap::new(jobrt::control::HoldState::default());
-        let mut p =
-            Planner::new(frozen_options(&root, &home), "frozen".into(), app, 0, None, false, hold, Default::default());
+        // (With `SCENIC_FROZEN_THREADS`, a coordinator of its own, in a folder of its own: what the
+        // plan hands it is the plan's, the rest measured after each plan, `apart`.)
+        let threads = std::env::var_os("SCENIC_FROZEN_THREADS").is_some();
+        let dir = tempfile::tempdir().unwrap();
+        // (`SCENIC_FROZEN_STATUS`: a copy of the lead's status.json, as its coordinator reads it.)
+        if let Ok(f) = std::env::var("SCENIC_FROZEN_STATUS") {
+            std::fs::copy(f, dir.path().join("status.json")).unwrap();
+        }
+        let coord = threads
+            .then(|| std::sync::Arc::new(crate::coord::start_for_test(&dir.path().join("coord"), "frozen", "").0));
+        let mut p = Planner::new(
+            frozen_options(&root, &home),
+            "frozen".into(),
+            app,
+            0,
+            coord.clone(),
+            false,
+            hold,
+            Default::default(),
+        );
         let made = p.out_rx.take().unwrap();
         let mb = |b: u64| b >> 20;
         let mut lines = Vec::new();
@@ -3972,13 +4062,13 @@ mod tests {
         let rounds = num("SCENIC_FROZEN_ROUNDS").unwrap_or(7);
         let sites = num("SCENIC_FROZEN_SITES");
         let sizes = num("SCENIC_FROZEN_SIZES").is_some();
+        let peaks = num("SCENIC_FROZEN_PEAKS");
         for round in 1..=rounds {
-            if round > 1 {
-                allocs::on(sites.is_some(), num("SCENIC_FROZEN_SITES_LEAST").unwrap_or(0));
-            }
+            allocs::on(sites.is_some(), num("SCENIC_FROZEN_SITES_LEAST").unwrap_or(0));
+            allocs::peaks_on(peaks.is_some());
             let (t, a) = (Instant::now(), allocs::asked());
             p.take_forecast();
-            while made.try_recv().is_ok() {}
+            let forecast = made.try_iter().last();
             let mut waiting = Vec::new();
             let c = p.inp.conditions;
             let plan = p.plan(&root, &c, &mut waiting);
@@ -3996,16 +4086,28 @@ mod tests {
             p.progress = p.checklist(&root, &regions);
             p.publish();
             allocs::on(false, 0);
+            allocs::peaks_on(false);
             say(memory(&format!("plan {round} ({jobs} jobs, {waits} waits)"), t.elapsed(), since(a)));
+            for l in peaks.map_or_else(Vec::new, |n| allocs::peaks(n as usize)) {
+                say(l);
+            }
             if sizes {
                 for l in allocs::sizes() {
                     say(l);
                 }
             }
-        }
-        if let Some(n) = sites {
-            for l in allocs::report(rounds.saturating_sub(1), n as usize) {
-                say(l);
+            // (The first plan, after a start, apart from the steady ones after it.)
+            if let Some(n) = sites.filter(|_| round == 1 || round == rounds) {
+                say(format!("the sites of {}", if round == 1 { "the first plan" } else { "the plans after it" }));
+                for l in allocs::report(if round == 1 { 1 } else { rounds - 1 }, n as usize) {
+                    say(l);
+                }
+            }
+            // (After the plan's own figures: its sizes' mosts are the plan's alone.)
+            if let Some(c) = &coord {
+                for l in apart(&p, c, forecast) {
+                    say(l);
+                }
             }
         }
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();

@@ -48,9 +48,17 @@ static MOST_ALL: AtomicI64 = AtomicI64::new(0);
 /// The sampled stacks, each standing for `EVERY` bytes: a list the samplers push onto and `report`
 /// takes whole (no lock: a thread sampling holds none while it allocates).
 static SAMPLES: AtomicPtr<Sample> = AtomicPtr::new(std::ptr::null_mut());
+/// Whether the peaks are sampled (`peaks_on`): by bucket, the stack of the block that took the
+/// bucket's live bytes `EVERY` past the last one sampled (`PEAK_AT`), so a bucket's stacks are who
+/// held its most (`peaks`).
+static PEAKS_ON: AtomicBool = AtomicBool::new(false);
+static PEAK_AT: [AtomicI64; BUCKETS] = [const { AtomicI64::new(0) }; BUCKETS];
+static PEAK_SAMPLES: AtomicPtr<Sample> = AtomicPtr::new(std::ptr::null_mut());
 
 struct Sample {
     stack: std::backtrace::Backtrace,
+    /// Its block's bucket (a peak's sample).
+    bucket: usize,
     next: *mut Sample,
 }
 
@@ -77,8 +85,15 @@ fn count(size: usize) {
     CALLS.fetch_add(1, Relaxed);
     let k = bucket(size);
     ASKED[k].fetch_add(size as u64, Relaxed);
-    MOST[k].fetch_max(LIVE[k].fetch_add(size as i64, Relaxed) + size as i64, Relaxed);
+    let live = LIVE[k].fetch_add(size as i64, Relaxed) + size as i64;
+    MOST[k].fetch_max(live, Relaxed);
     MOST_ALL.fetch_max(LIVE_ALL.fetch_add(size as i64, Relaxed) + size as i64, Relaxed);
+    if PEAKS_ON.load(Relaxed) {
+        let at = PEAK_AT[k].load(Relaxed);
+        if live >= at + EVERY as i64 && PEAK_AT[k].compare_exchange(at, live, Relaxed, Relaxed).is_ok() {
+            sample(&PEAK_SAMPLES, k);
+        }
+    }
     if !ON.load(Relaxed) || (size as u64) < LEAST.load(Relaxed) {
         return;
     }
@@ -88,21 +103,41 @@ fn count(size: usize) {
         s.set(n % EVERY);
         n >= EVERY
     });
-    if due != Ok(true) || SAMPLING.try_with(|b| b.replace(true)) != Ok(false) {
+    if due == Ok(true) {
+        sample(&SAMPLES, k);
+    }
+}
+
+/// This thread's stack pushed onto `list`, its block of bucket `k`; none while it samples already.
+fn sample(list: &AtomicPtr<Sample>, bucket: usize) {
+    if SAMPLING.try_with(|b| b.replace(true)) != Ok(false) {
         return;
     }
     let stack = std::backtrace::Backtrace::force_capture();
-    let new = Box::into_raw(Box::new(Sample { stack, next: std::ptr::null_mut() }));
-    let mut head = SAMPLES.load(Relaxed);
+    let new = Box::into_raw(Box::new(Sample { stack, bucket, next: std::ptr::null_mut() }));
+    let mut head = list.load(Relaxed);
     loop {
         // SAFETY: `new` is this thread's alone until the exchange below hands it over.
         unsafe { (*new).next = head };
-        match SAMPLES.compare_exchange_weak(head, new, Relaxed, Relaxed) {
+        match list.compare_exchange_weak(head, new, Relaxed, Relaxed) {
             Ok(_) => break,
             Err(h) => head = h,
         }
     }
     SAMPLING.try_with(|b| b.set(false)).ok();
+}
+
+/// The samples pushed onto `list` since it was last taken.
+fn take(list: &AtomicPtr<Sample>) -> Vec<(usize, std::backtrace::Backtrace)> {
+    let mut out = Vec::new();
+    let mut at = list.swap(std::ptr::null_mut(), Relaxed);
+    while !at.is_null() {
+        // SAFETY: the list taken whole is this call's alone; each node was a `Box` made in `sample`.
+        let s = unsafe { Box::from_raw(at) };
+        at = s.next;
+        out.push((s.bucket, s.stack));
+    }
+    out
 }
 
 // SAFETY: every call goes to the system's allocator as given; the counting allocates only while
@@ -184,25 +219,13 @@ pub fn sizes() -> Vec<String> {
 /// each function on it, so a caller's line holds its callees'), `top` of them, then the innermost
 /// workspace function of each stack ranked alike (the sites), each in MB per `rounds`.
 pub fn report(rounds: u64, top: usize) -> Vec<String> {
-    let mut stacks = Vec::new();
-    let mut at = SAMPLES.swap(std::ptr::null_mut(), Relaxed);
-    while !at.is_null() {
-        // SAFETY: the list taken whole is this call's alone; each node was a `Box` made in `count`.
-        let s = unsafe { Box::from_raw(at) };
-        at = s.next;
-        stacks.push(s.stack);
-    }
+    let stacks = take(&SAMPLES);
     let mb = |n: u64| n as f64 * EVERY as f64 / rounds.max(1) as f64 / (1u64 << 20) as f64;
     let mut out = vec![format!("{} stacks sampled, one per {} KB, over {rounds} round(s)", stacks.len(), EVERY >> 10)];
     let (mut under, mut site): (BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
-    for s in &stacks {
+    for (_, s) in &stacks {
         let ours = our_frames(&s.to_string());
-        // (A site with its two callers: one helper is reached from many places.)
-        let at = match ours.is_empty() {
-            true => "(no workspace function on the stack)".to_string(),
-            false => ours.iter().take(3).cloned().collect::<Vec<_>>().join(" < "),
-        };
-        *site.entry(at).or_default() += 1;
+        *site.entry(site_of(&ours)).or_default() += 1;
         let mut seen = std::collections::BTreeSet::new();
         for f in ours {
             if seen.insert(f.clone()) {
@@ -214,6 +237,64 @@ pub fn report(rounds: u64, top: usize) -> Vec<String> {
         let mut v: Vec<(String, u64)> = map.into_iter().collect();
         v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         out.extend(v.into_iter().take(top).map(|(f, n)| format!("{name} {:8.1} MB a round  {f}", mb(n))));
+    }
+    out
+}
+
+/// Since the last call: the most the live bytes rose over what was live then, and the sum of each
+/// bucket's most rise (what an allocator keeping each size's freed pages for that size takes on
+/// for it, over what it had); the mosts start again from now.
+pub fn climb() -> (u64, u64) {
+    static BASE: [AtomicI64; BUCKETS] = [const { AtomicI64::new(0) }; BUCKETS];
+    static BASE_ALL: AtomicI64 = AtomicI64::new(0);
+    let mut sum = 0;
+    for k in 0..BUCKETS {
+        let now = LIVE[k].load(Relaxed);
+        sum += (MOST[k].swap(now, Relaxed) - BASE[k].swap(now, Relaxed)).max(0);
+    }
+    let now = LIVE_ALL.load(Relaxed);
+    let all = (MOST_ALL.swap(now, Relaxed) - BASE_ALL.swap(now, Relaxed)).max(0);
+    (all as u64, sum as u64)
+}
+
+/// A stack's site: its innermost workspace function with its two callers (one helper is reached
+/// from many places).
+fn site_of(ours: &[String]) -> String {
+    match ours.is_empty() {
+        true => "(no workspace function on the stack)".to_string(),
+        false => ours.iter().take(3).cloned().collect::<Vec<_>>().join(" < "),
+    }
+}
+
+/// The peaks sampled (`peaks_on`) or not from now on; on, from the bytes live now.
+pub fn peaks_on(yes: bool) {
+    for k in 0..BUCKETS {
+        PEAK_AT[k].store(LIVE[k].load(Relaxed), Relaxed);
+    }
+    PEAKS_ON.store(yes, Relaxed);
+}
+
+/// The peaks sampled since the last call, as lines: for each bucket by the most of its bytes they
+/// stand for, the `top` sites whose blocks took its live bytes higher, each in MB of that climb
+/// (a stack per `EVERY` of it).
+pub fn peaks(top: usize) -> Vec<String> {
+    let mb = |n: u64| (n * EVERY) as f64 / (1u64 << 20) as f64;
+    let mut by: BTreeMap<usize, BTreeMap<String, u64>> = BTreeMap::new();
+    for (k, s) in take(&PEAK_SAMPLES) {
+        *by.entry(k).or_default().entry(site_of(&our_frames(&s.to_string()))).or_default() += 1;
+    }
+    let mut buckets: Vec<(usize, BTreeMap<String, u64>)> = by.into_iter().collect();
+    buckets.sort_by_key(|(k, s)| (std::cmp::Reverse(s.values().sum::<u64>()), *k));
+    let mut out = Vec::new();
+    for (k, sites) in buckets {
+        out.push(format!(
+            "peak of blocks of {} B and up: {:.0} MB of climb sampled",
+            1u64 << k,
+            mb(sites.values().sum())
+        ));
+        let mut v: Vec<(String, u64)> = sites.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        out.extend(v.into_iter().take(top).map(|(f, n)| format!("  {:8.1} MB  {f}", mb(n))));
     }
     out
 }
