@@ -13378,7 +13378,8 @@ mod tests {
         let small = every_ask("m1", "pack", 100, 10_000);
         assert!(w1.ask(&small).unwrap().is_none());
         assert!(picks(&c).iter().all(|&(_, y)| y), "past m1's room: m2's");
-        // Granted, its lease event says what it was sized to and why it went there.
+        // Granted, its lease event says what it was sized to and why it went there (in the file, as
+        // its job's page reads it; memory keeps its sizing).
         assert!(w1.ask(&a1).unwrap().is_none());
         c.offer(
             "p",
@@ -13390,7 +13391,10 @@ mod tests {
         );
         assert!(w1.ask(&a1).unwrap().is_some());
         let history = c.history();
-        let data = history.iter().rev().find(|e| e.kind == "lease").and_then(|e| e.data.clone()).unwrap();
+        let lease = history.iter().rev().find(|e| e.kind == "lease").unwrap();
+        let file = c.shared.lock().unwrap().history.path().map(Path::to_path_buf).unwrap();
+        let data = history::data_in_file(&file, lease.seq).unwrap();
+        assert_eq!((lease.data.as_ref(), lease.sized_s.map(u64::from)), (None, data["sized_s"].as_u64()));
         assert_eq!(data["threads"].as_u64().map(|t| t > 0), Some(true), "{data}");
         assert!(data["sized_s"].as_u64().is_some(), "{data}");
         let why = data["why"].as_str().unwrap_or_default();

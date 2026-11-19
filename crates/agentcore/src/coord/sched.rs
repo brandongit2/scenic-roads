@@ -2875,7 +2875,10 @@ impl Sched {
                 Some((n.clone(), x.want.max(1).saturating_sub(since)))
             })
             .collect();
-        {
+        // (Within one `pack` alone, the targets it passed to each already: a pick outside one
+        // starts afresh.)
+        let packing = self.packing.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if packing {
             let placed = self.placed.lock().unwrap_or_else(|e| e.into_inner());
             for (n, k) in slots.iter_mut() {
                 *k = k.saturating_sub(placed.passed.get(n).copied().unwrap_or(0));
@@ -2916,7 +2919,9 @@ impl Sched {
                         slots.remove(n);
                     }
                 }
-                *self.placed.lock().unwrap_or_else(|e| e.into_inner()).passed.entry(n.clone()).or_default() += 1;
+                if packing {
+                    *self.placed.lock().unwrap_or_else(|e| e.into_inner()).passed.entry(n.clone()).or_default() += 1;
+                }
                 return false;
             }
             // (Its needs' time on each Mac, and where its Mac holds the step's cache, how it was
