@@ -565,9 +565,6 @@ pub(super) struct Planner {
     /// The forecasts' runs of the last `forecast::PACE_MAX_S`, one each `forecast::CURVE_S` at most
     /// (`Forecast::at`, `Forecast::curve`): what the next is held to (`forecast::pace`).
     pub(super) curves: std::cell::RefCell<Vec<(u64, Vec<u32>)>>,
-    /// The costs the forecasts gave each target while it was work left (`forecast::Noted`): what
-    /// each step's pace is held to (`forecast::step_pace`).
-    pub(super) noted: std::cell::RefCell<forecast::Noted>,
     /// The build page's regions as last made (crate::agent::regionsview), by what they were made of;
     /// what they were last tried for (each once, failed or not); the last catalogue's sizes, by its
     /// number; and the making under way, off the plan.
@@ -666,7 +663,6 @@ impl Planner {
             forecast: Default::default(),
             departed: Default::default(),
             curves: Default::default(),
-            noted: Default::default(),
             regions_view: Default::default(),
             regions_tried: Default::default(),
             region_bytes: Default::default(),
@@ -2511,9 +2507,8 @@ impl Planner {
         let inputs = crate::needs::Inputs { paces: &paces, records: &records, tuning };
         let book = crate::needs::Book::pool(self.o.the_plan, &costs, None, inputs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
-        let cost = |step: &str, t: &str| {
-            forecast::target_cost(&book, step, t, &|c, _| at_lead(c), &partial, &per, need_mb(step, t))
-        };
+        let cost =
+            |step: &str, t: &str| forecast::target_cost(&book, &self.host, step, t, &partial, &per, need_mb(step, t));
         // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
         // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
         let drop_cost = |step: &str, t: &str| -> Cost {
@@ -2798,8 +2793,8 @@ impl Planner {
             running,
             macs: rooms,
             sched: self.coord.as_ref().map(|c| c.sched_state()),
+            needs_pace: Default::default(),
             pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
-            step_pace: BTreeMap::new(),
             paused: self.inp.pause.is_some(),
             along: left.along.clone(),
             code: forecast::VERSION,
@@ -2817,20 +2812,9 @@ impl Planner {
                 })
                 .collect(),
         };
-        // (Each step's pace: its jobs of late against what the forecasts before them gave their
-        // targets, at the lead's pace by their worker's speed.)
-        let mut noted = self.noted.borrow_mut();
-        noted.note(self.o.the_plan, &inp);
-        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w| {
-            if paces.known() {
-                1.0 / paces.get(w)
-            } else {
-                pace(Some(w))
-            }
-        });
-        drop(noted);
-        // (Each lane's job under way held to its step's longest of late.)
-        forecast::cap_busy(&mut inp, &forecast::longest_jobs(&events, now_s()));
+        // (Each lane's job under way timed by its needs over its Mac's supply.)
+        inp.needs_pace = forecast::needs_pace(&events, inp.now);
+        forecast::lease_busy(self.o.the_plan, &mut inp);
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
         let each_s = self
             .o

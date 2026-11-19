@@ -327,13 +327,20 @@ from the first (`edit_held`).
   short (a pause, a lapse, a restart: its job's progress line's total and what its part made, over the
   time that took, kept on the history's "end", "done" or "fail" event as `progress`; `forecast::partials`:
   its pace over its whole total where no later run of the step has counted a smaller total or begun past
-  the stop, the step redoing its target, else over what is left), else its own run's time at the lead's
-  pace (a run of the way its step runs now, as the coordinator sizes it: docs/pool.md §7.7), else its
-  step's mean over the targets measured (a shared step's), else what the lead's own jobs of the step took
-  lately, else a first guess (`first_secs`); a job of several targets sums its targets', those not
-  stopped at the step's figure. Each machine at its measured speed (half the lead's until measured). A
-  stopped run's time, its own run's and the lead's own jobs' count as measured, a step's mean and a guess
-  as estimated. Run three times for
+  the stop, the step redoing its target, else over what is left), else its needs on the lead's Mac (its
+  own run of the way its step runs now at the two Macs' speeds, else its step's needs model for its
+  size: docs/pool.md §7.7, as the coordinator sizes it), else its step's mean over the targets measured
+  (a shared step's), else what the lead's own jobs of the step took lately, else a first guess
+  (`first_secs`); a job of several targets sums its targets', those not stopped at the step's figure.
+  That is the cost table, at the lead's pace. A job the run grants takes, target by target, its needs
+  over the Mac's supply then (task #1413, `forecast::needs_secs`: its own run at the two Macs' speeds,
+  else its step's model's work at the Mac's speed over the threads granted, plus the rest of its time,
+  or its NAS moves at the NAS budget where longer; its job's start at the step on the first; a step
+  whose jobs of the last 12 h took less than they were sized to, at that share, `forecast::needs_pace`), and a job
+  under way its needs less how long it has run (`forecast::lease_busy`); a stopped run's rest and a
+  step not measured the way it runs now at its cost at the lane's pace. A stopped run's time, its own
+  run's and the lead's own jobs' count as measured, a step's model's, its mean and a guess as
+  estimated. Run three times for
   a range. It says when each step, region and everything will be done, when each region is all on
   the map, when each cadenced step may next go, and each machine's schedule, or why there's no
   finish. It doesn't model the lead's duties planned outside the regions' work, one list

@@ -7,17 +7,16 @@
 //!   last target's forecast end and the whole build's (`slack`): the long poles (no slack) first.
 //!   The lead's coordinator tries a member's ask on the offers in that order, and within a step
 //!   from its target measured to take longest (crate::coord's `pick_every`).
-//! - **Who takes it** (`draw`): of the members asking lately that would take a target now (its
-//!   room fits it by their last ask, with a slot free), one drawn with a weight of its Mac's speed
-//!   at the target's step, the inverse of its pace there (crate::paces, task #934: the same
-//!   targets' runs on it and on the lead; a Mac with no pair the lead's), times `CACHE_PREFER` where its Mac
-//!   holds the step's shared cache whole (crate::needs::CACHES: no copy, no NAS read in place), as
-//!   a function of the target and the time (a minute's window, `DRAW_S`, from when the coordinator
-//!   was told): the same inputs, the same draw. A member asking for a target drawn to another
-//!   passes it by for the next one drawn to it; its next target is one in its last one's
-//!   neighbourhood (`group`) when one is drawn to it; a task likewise among the pages and workers that
-//!   could take it, weighted by their measured pace at its kind. Weights only, never exclusive: no
-//!   rule names a Mac or a kind of job.
+//! - **Who takes it** (crate::coord::sched's `placed_start`, task #1413): of the asker and the
+//!   members asking lately that would take a target now (its room fits it by their last ask, with a
+//!   slot free), the Mac that finishes it soonest by its needs over that Mac's supply (`finish_s`:
+//!   crate::agent::forecast::needs_secs at the threads it'd be granted there), over `CACHE_PREFER`
+//!   where its Mac holds the step's shared cache whole (crate::needs::CACHES: no copy, no NAS read in
+//!   place). A member asking for a target that finishes sooner on another passes it by for the next,
+//!   each other member counting for as many targets as it has slots free; its next target is one in
+//!   its last one's neighbourhood (`group`) when it can be. A task goes by a draw (`draw`) among the
+//!   pages and workers that could take it, weighted by their measured pace at its kind, as a function
+//!   of the task and the time (a minute's window, `DRAW_S`): the same inputs, the same draw.
 //! - **Offered ahead** (jobrt::jobs::AHEAD_ENV, told to every job): a terrain job offers its next z6 tile's
 //!   subtrees as it begins a z6 tile; each task of a terrain z6 tile or a tree cover's row says how
 //!   much of this Mac's work comes before the job needs it (`ahead`, in tasks' worth: a head start
@@ -27,21 +26,20 @@
 
 use std::collections::BTreeMap;
 
-/// How long one draw holds (s): a target drawn to a member that doesn't ask for it in that time is
+/// How long one draw holds (s): a task drawn to a worker that doesn't ask for it in that time is
 /// drawn again.
 pub const DRAW_S: u64 = 60;
 
-/// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`); a draw's
-/// weights are the coordinator's paces (crate::paces, `Sched::draw_weight`).
+/// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placement {
     /// Each step's slack in the forecast (s); a step the forecast gives no end is last.
     pub slack: BTreeMap<String, u64>,
 }
 
-/// The weight a Mac holding a step's shared cache whole has in a draw, against one that would copy
-/// it or read the NAS in place (task #552): one random 64 KB NAS read takes ~40 ms where the local
-/// disk takes 0.2 ms, and a whole copy is GBs.
+/// How many times sooner a Mac holding a step's shared cache whole is taken to finish a target of
+/// it than its needs say, against one that would copy it or read the NAS in place (task #552): one
+/// random 64 KB NAS read takes ~40 ms where the local disk takes 0.2 ms, and a whole copy is GBs.
 pub const CACHE_PREFER: f64 = 4.0;
 
 impl Placement {

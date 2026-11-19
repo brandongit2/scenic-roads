@@ -115,9 +115,6 @@ pub struct Entry {
     pub macs: BTreeMap<String, Mac>,
     /// Each step's time a target at the lead's pace (s).
     pub each_s: BTreeMap<String, f64>,
-    /// Each step's pace against its costs the run took (`Input::step_pace`; code 2 on).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub step_pace: BTreeMap<String, f64>,
     /// The NAS budget the scheduler held to (jobrt::budget::nas::Limits), when it had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas: Option<serde_json::Value>,
@@ -187,7 +184,6 @@ impl Entry {
             lanes,
             macs,
             each_s: r.each_s.iter().map(|(k, v)| (k.clone(), round(*v, 10.0))).collect(),
-            step_pace: inp.step_pace.clone(),
             nas: inp.sched.as_ref().and_then(|s| s.nas).and_then(|l| serde_json::to_value(l).ok()),
             steps: Vec::new(),
         };
@@ -795,8 +791,8 @@ mod tests {
             running: Default::default(),
             macs: [("m".to_string(), MacRoom { mem_mb: 1000, cores: 8 })].into(),
             sched: None,
+            needs_pace: Default::default(),
             pace: None,
-            step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),

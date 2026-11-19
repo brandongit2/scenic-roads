@@ -16,10 +16,14 @@
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
 //! ahead of the regions' work, and a catalogue follows within the minute (publish::CATALOGUE_EVERY_S):
 //! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:
-//! build::low_gate, build::gate_open). Each target takes its last run's time (else its step's mean,
-//! else a first guess), at the pace measured for the machine doing it at its step (crate::paces), else
-//! at its speed. It's run three times: as
-//! estimated, and for a range, the times measured a little off and those guessed much more.
+//! build::low_gate, build::gate_open). Each target of a job granted takes its needs over its Mac's
+//! supply then (`needs_secs`, task #1413: its own run at the two Macs' speeds, else its step's needs
+//! model's work at the Mac's speed over the threads the job was given, plus the rest of its time, or
+//! its NAS moves at the NAS budget where longer; its job's start on the first), and each job under way
+//! its needs less how long it has run (`lease_busy`); what is left of a stopped run, or a target of a
+//! step not measured the way it runs now (a first guess), at its cost at its lane's pace. It's run
+//! three times: as estimated, and for a range, the times measured a little off and those guessed much
+//! more.
 
 use super::publish::{CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
 use super::seam::RegionLeft;
@@ -134,8 +138,9 @@ pub enum Basis {
     /// What a target of its step took in the lead's own jobs lately (`Memory::step_secs`): measured
     /// of the step itself where the lead alone runs it.
     Here,
-    /// The nearest measured figure, an estimate for a target not run itself: its step's mean over
-    /// its other targets' runs (a drop's, its step's drops').
+    /// The nearest measured figure, an estimate for a target not run itself: its step's needs model
+    /// for its size (crate::needs), else its step's mean over its other targets' runs (a drop's, its
+    /// step's drops').
     Sibling,
     /// A first guess (`first_secs`): nothing of its step measured.
     #[default]
@@ -234,16 +239,15 @@ pub struct Input<'a> {
     /// state for every job (`run`). None (a test, or no coordinator): the work's measures alone.
     #[serde(default)]
     pub sched: Option<State>,
+    /// Each step's jobs' time against what their grants sized them to (`needs_pace`, code 9 on):
+    /// every item the run times by its needs is at its needs times this; a step not in it, at its
+    /// needs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub needs_pace: BTreeMap<String, f64>,
     /// How an earlier forecast's run fared against the work done since (`pace`): the live error,
     /// said beside the finish. None: no earlier forecast to hold to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<Pace>,
-    /// Each step's pace against its costs (`step_pace`): what its jobs of the last
-    /// `STEP_PACE_S` took, at the lead's pace, over what the forecasts before them gave their
-    /// targets, a step that ran faster than them alone. Every item of the step is run at its cost
-    /// times this; a step not in it, at its cost.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub step_pace: BTreeMap<String, f64>,
     /// Targets the plan holds until another is made (`Unknown`; code 5 on).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<Unknown>,
@@ -289,115 +293,119 @@ pub fn paused(events: &[crate::coord::history::Event], now: u64) -> bool {
 /// The forecast's `why` while the build is paused (`Input::paused`).
 pub const PAUSED: &str = "the build is paused: nothing new starts until it's resumed";
 
-/// The span of the history `step_pace` reads, and how long `Noted` keeps a target's cost after it
-/// last saw it.
-pub const STEP_PACE_S: u64 = 12 * 3600;
-/// The jobs of a step `step_pace` needs before it says the step's pace.
-const STEP_PACE_JOBS: usize = 3;
-/// `step_pace`'s floor: a step's few jobs never make it more than fourfold faster.
-const STEP_PACE_MIN: f64 = 0.25;
-
-/// The cost each target was last forecast at while it was work left (`Input::costs`, and the
-/// shared steps' targets of `chains`, `after` and `idle`), with when: what `step_pace` holds the
-/// jobs done to. A target leaves the work left once built, so its cost stays the one the forecasts
-/// before its job gave it, not the measure its job left. Kept `STEP_PACE_S` after it was last seen.
-#[derive(Clone, Debug, Default)]
-pub struct Noted {
-    costs: std::collections::HashMap<(String, String), (f64, u64)>,
+/// What target `target` of `step` takes Mac `mac` on `threads` (s; 0: as many as its step can use):
+/// its needs over the Mac's supply now (task #1413). Its time there by its needs
+/// (crate::coord::sched::Sched::secs_on: its own run at the two Macs' speeds, else its step's model's
+/// work at the Mac's speed over the cores it is given, plus the rest of its time), or the time its
+/// NAS moves take at the NAS budget (`nas_secs`), the longer. None: none of its step ran the way it
+/// runs now.
+pub fn needs_secs(s: &Sched, step: &str, target: &str, mac: &str, threads: u32) -> Option<f64> {
+    let (secs, _) = s.secs_on(step, target, mac, threads)?;
+    Some((secs as f64).max(nas_secs(s, step, target, mac)))
 }
 
-impl Noted {
-    /// `inp`'s costs noted (at `inp.now`), those not seen for `STEP_PACE_S` dropped.
-    pub fn note(&mut self, the_plan: &dyn crate::agent::seam::Plan, inp: &Input) {
-        let now = inp.now;
-        for (step, ts) in &inp.costs {
-            for (t, c) in ts {
-                self.costs.insert((step.clone(), t.clone()), (c.secs, now));
-            }
-        }
-        for (step, t, c) in inp.chains.iter().chain(&inp.after).chain(&inp.idle) {
-            if the_plan.shared().contains(&step.as_str()) {
-                self.costs.insert((step.clone(), t.clone()), (c.secs, now));
-            }
-        }
-        self.costs.retain(|_, (_, at)| now.saturating_sub(*at) <= STEP_PACE_S);
-    }
+/// The span of the history `needs_pace` reads (s), and the jobs of a step it needs.
+pub const NEEDS_PACE_S: u64 = 12 * 3600;
+const NEEDS_PACE_JOBS: usize = 3;
+/// `needs_pace`'s floor: a step's few jobs never cut its needs more than fourfold.
+const NEEDS_PACE_FLOOR: f64 = 0.25;
 
-    /// The cost noted for `step`'s `target`, if any.
-    pub fn cost(&self, step: &str, target: &str) -> Option<f64> {
-        self.costs.get(&(step.to_string(), target.to_string())).map(|c| c.0)
-    }
-}
-
-/// Each step's pace against its costs (`Input::step_pace`): over the jobs done well in the
-/// `STEP_PACE_S` before `now` whose every target has a cost `noted`, the time they took at the
-/// lead's pace (their seconds times `speed`, their worker's at the step) over the sum of their
-/// targets' costs;
-/// a step with `STEP_PACE_JOBS` such jobs at least, `STEP_PACE_MIN` at least. A cost is its
-/// target's last measure (an earlier build's) or its step's mean, and a step's code, its Mac's load
-/// and its jobs' size change what a target takes now. Only a step whose jobs ran faster than their
-/// costs is said: one slower (pack, pois, depth, terrain-lo on 24-27 Oct, 2-4 times) is so by what
-/// each job takes whatever its targets (opening its packs, its inputs), which a target's pace would
-/// lay on the run's jobs, many targets each: in the backtest that made the forecast worse, pack's
-/// own the most (docs/pool.md §7.9).
-pub fn step_pace(
-    events: &[crate::coord::history::Event],
-    now: u64,
-    noted: &Noted,
-    speed: &dyn Fn(&str) -> f64,
-) -> BTreeMap<String, f64> {
-    let from = now.saturating_sub(STEP_PACE_S);
+/// Each step's pace against its needs (`Input::needs_pace`, task #1413): over its jobs done well in
+/// the `NEEDS_PACE_S` before `now` whose grant said the time it was sized to (the history's "lease"
+/// event's `sized_s`: its needs over its Mac's supply then, crate::coord::sched::Sched::batch_secs),
+/// their time over that, summed; a step with `NEEDS_PACE_JOBS` such jobs at least, no less than
+/// `NEEDS_PACE_FLOOR`. Only a step quicker than its needs is said: the needs' figures run high
+/// (#1415), and a job that ran long mostly waited on what else ran (the NAS, its Mac's other jobs),
+/// which the run already times; scaling slow steps up too made the backtest worse (pool.md §7.9).
+pub fn needs_pace(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<String, f64> {
+    let from = now.saturating_sub(NEEDS_PACE_S);
+    let mut sized: std::collections::HashMap<jobrt::jobid::JobId, f64> = Default::default();
     let mut sums: BTreeMap<&str, (f64, f64, usize)> = BTreeMap::new();
-    for e in events.iter().filter(|e| e.t > from && e.t <= now && e.ok == Some(true)) {
-        if !matches!(e.kind.as_str(), "done" | "end") || e.targets.is_empty() {
-            continue;
+    for e in events.iter().filter(|e| e.t <= now) {
+        let Some(job) = e.job else { continue };
+        match e.kind.as_str() {
+            "lease" => {
+                if let Some(s) = e.data.as_ref().and_then(|d| d.get("sized_s")).and_then(|v| v.as_f64()) {
+                    sized.insert(job, s);
+                }
+            }
+            "done" | "end" if e.t > from && e.ok == Some(true) => {
+                let (Some(step), Some(secs), Some(&want)) = (e.step.as_deref(), e.secs, sized.get(&job)) else {
+                    continue;
+                };
+                if want > 0.0 && secs > 0.0 {
+                    let x = sums.entry(step).or_default();
+                    (x.0, x.1, x.2) = (x.0 + secs, x.1 + want, x.2 + 1);
+                }
+            }
+            _ => {}
         }
-        let (Some(step), Some(w), Some(secs)) = (e.step.as_deref(), e.worker.as_deref(), e.secs) else { continue };
-        let Some(cost) = e.targets.iter().map(|t| noted.cost(step, t)).sum::<Option<f64>>() else { continue };
-        if cost <= 0.0 || secs <= 0.0 {
-            continue;
-        }
-        let s = sums.entry(step).or_default();
-        (s.0, s.1, s.2) = (s.0 + secs * speed(w), s.1 + cost, s.2 + 1);
     }
     sums.into_iter()
-        .filter(|(_, s)| s.2 >= STEP_PACE_JOBS)
-        .map(|(step, (took, cost, _))| (step.to_string(), ((took / cost * 100.0).round() / 100.0).max(STEP_PACE_MIN)))
+        .filter(|(_, x)| x.2 >= NEEDS_PACE_JOBS)
+        .map(|(step, (took, want, _))| {
+            let p = (took / want).max(NEEDS_PACE_FLOOR);
+            (step.to_string(), (p * 100.0).round() / 100.0)
+        })
         .filter(|(_, p)| *p < 1.0)
         .collect()
 }
 
-/// Each step's longest job (wall seconds) of those done well in the `STEP_PACE_S` before `now`,
-/// a step with `STEP_PACE_JOBS` at least: what `cap_busy` holds a lane's job under way to.
-pub fn longest_jobs(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<String, f64> {
-    let from = now.saturating_sub(STEP_PACE_S);
-    let mut per: BTreeMap<&str, (f64, usize)> = BTreeMap::new();
-    for e in events.iter().filter(|e| e.t > from && e.t <= now && e.ok == Some(true)) {
-        if !matches!(e.kind.as_str(), "done" | "end") {
-            continue;
-        }
-        let (Some(step), Some(secs)) = (e.step.as_deref(), e.secs) else { continue };
-        let p = per.entry(step).or_default();
-        (p.0, p.1) = (p.0.max(secs), p.1 + 1);
+/// The least time (s) target `target` of `step`'s NAS moves take Mac `mac` at the NAS budget: what
+/// it moves (crate::needs::Book::nas_load: its rate there over its time there) as a share of what
+/// the NAS moves a second (`Limits`, the pool's measure of it, each kind of move added up as
+/// `Limits::weight` adds them, not capped), over the share the pacing's window lets the pool's jobs
+/// hold together (`Limits::window`). 0 while no probe measured the NAS, or no run of its step moved
+/// anything and took time.
+pub fn nas_secs(s: &Sched, step: &str, target: &str, mac: &str) -> f64 {
+    let Some(l) = s.nas.as_ref().or(s.nas_own.as_ref()) else { return 0.0 };
+    let Some((r, Some(secs))) = s.book().nas_load(step, target, Some(mac)) else { return 0.0 };
+    let part = |x: f64, of: f64| if of > 0.0 { x / of } else { 0.0 };
+    let whole_s = (part(r.bytes_s, l.bytes_s)
+        + part(r.creates_s, l.creates_s)
+        + part(r.listed_s, l.listed_s)
+        + part(r.stats_s, l.stats_s)
+        + part(r.deletes_s, l.deletes_s))
+        * secs;
+    let budget = f64::from(l.window.max(1)) / f64::from(jobrt::budget::nas::WHOLE);
+    let t = whole_s / budget;
+    if t.is_finite() {
+        t
+    } else {
+        0.0
     }
-    per.into_iter().filter(|(_, p)| p.1 >= STEP_PACE_JOBS).map(|(s, p)| (s.to_string(), p.0)).collect()
 }
 
-/// Each lane's time left on its job under way (`Machine::busy_s`) held to its step's longest job
-/// of late (`longest_jobs`), a minute at least: a job's time left is its targets left at its slot's
-/// pace (an unmeasured slot's a guess, its Mac's hold on top) or its own estimate, whichever is
-/// longer, and on 24-27 Oct a lane said busy 4-24 h was free after about a quarter of that (the
-/// median), one said busy a day or more after 0.2 %, its lane blocked meanwhile (docs/pool.md §7.9). Its step: its `running`'s, else that of the targets `running` puts on it.
-pub fn cap_busy(inp: &mut Input, longest: &BTreeMap<String, f64>) {
-    for (k, m) in inp.machines.iter_mut().enumerate() {
-        let step = m
-            .running
-            .as_ref()
-            .map(|r| r.0.as_str())
-            .or_else(|| inp.running.iter().find(|(_, &on)| on == k).map(|((s, _), _)| s.as_str()));
-        if let Some(&most) = step.and_then(|s| longest.get(s)) {
-            m.busy_s = m.busy_s.min(most.max(60.0));
-        }
+/// Each lane's job under way timed by its needs over its Mac's supply (code 9 on, task #1413): for
+/// each job leased in the record's scheduler (`Input::sched`), its targets' times on its Mac at the
+/// threads it holds (`needs_secs`, its job's start at its step on top: crate::paces::Paces::start)
+/// less how long it has run, a minute at least, as its lane's `busy_s`. Its lane: the one running
+/// its targets, else its Mac's lane running its step. A job none of whose step ran the way it runs
+/// now keeps its lane's `busy_s` (its slot's own estimate).
+pub fn lease_busy(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut Input) {
+    let Some(st) = inp.sched.as_ref() else { return };
+    let now = Instant::now();
+    let s = Sched::from_state(the_plan, st, Clock { now, unix: inp.now }, RUN_TTL);
+    let mut set: Vec<(usize, f64)> = Vec::new();
+    for l in s.leases.all(now) {
+        let crate::coord::lease::Work::Job { step, targets } = &l.work else { continue };
+        let lane = targets.iter().find_map(|t| inp.running.get(&(step.clone(), t.0.clone())).copied()).or_else(|| {
+            (0..inp.machines.len()).find(|&k| {
+                mac_of(&inp.machines[k]) == l.worker && inp.machines[k].running.as_ref().is_some_and(|r| r.0 == *step)
+            })
+        });
+        let Some(k) = lane.filter(|&k| k < inp.machines.len()) else { continue };
+        let mac = mac_of(&inp.machines[k]);
+        let Some(secs) = targets.iter().map(|t| needs_secs(&s, step, &t.0, &mac, l.threads)).sum::<Option<f64>>()
+        else {
+            continue;
+        };
+        let pace = inp.needs_pace.get(step.as_str()).copied().unwrap_or(1.0);
+        let left = (s.paces.start(&mac, step) + secs) * pace - l.ran(now).as_secs_f64();
+        set.push((k, left.max(60.0)));
+    }
+    for (k, b) in set {
+        inp.machines[k].busy_s = b;
     }
 }
 
@@ -670,20 +678,20 @@ pub fn partials(
         .collect()
 }
 
-/// What a region's target of `step` takes (`cost_table`'s `cost`): what is left of a run that
-/// stopped short, at its own pace (`partial`: `partials`), the target's own run at the lead's pace (`at`), known, where it ran the way its step runs now
-/// (crate::needs::Book::own: the measure the coordinator sizes its jobs by), else `per`, the
-/// nearest figure of its step's and where it comes from (`Basis`); its memory `peak_mb`.
-/// (Task #1165: the table had known any run of a target, so 155 of 165 terrain-deep targets on 12
-/// Nov were known at 0-8 s from runs of cost version 0 that found no tiffs, and the forecast saw 17-18
-/// of their jobs a Mac in 5 minutes where the lead granted 2. Task #1449: a target with a paused run,
-/// available-bathymetry's 2,169 s on 18 Nov, counted as the guess's 300 s though its run said how
-/// far it had got.)
+/// What a region's target of `step` takes (`cost_table`'s `cost`), at the lead's pace: what is left
+/// of a run that stopped short, at its own pace (`partial`: `partials`); else its needs on the lead's
+/// Mac `lead` (crate::needs::Book::secs_on: its own run where it ran the way its step runs now, the
+/// measure the coordinator sizes its jobs by, `Basis::Own`; else its step's needs model for its
+/// size, `Basis::Sibling`); else `per`, the nearest figure of its step's and where it comes from
+/// (`Basis`); its memory `peak_mb`. (Task #1165: the table had known any run of a target, so 155 of
+/// 165 terrain-deep targets on 12 Nov were known at 0-8 s from runs of cost version 0 that found no
+/// tiffs. Task #1449: a target with a paused run, available-bathymetry's 2,169 s on 18 Nov, counted as
+/// the guess's 300 s though its run said how far it had got.)
 pub fn target_cost(
     book: &crate::needs::Book,
+    lead: &str,
     step: &str,
     target: &str,
-    at: &dyn Fn(&crate::coord::Cost, &str) -> f64,
     partial: &dyn Fn(&str, &str) -> Option<f64>,
     per: &dyn Fn(&str) -> (f64, Basis),
     peak_mb: u64,
@@ -691,8 +699,14 @@ pub fn target_cost(
     if let Some(secs) = partial(step, target) {
         return Cost { secs, basis: Basis::Partial, peak_mb };
     }
-    match book.own(step, target) {
-        Some(c) => Cost { secs: at(c, step), basis: Basis::Own, peak_mb },
+    let own = book.own(step, target);
+    let basis = if own.is_some() { Basis::Own } else { Basis::Sibling };
+    // (Its own run on another Mac than the lead's at the two Macs' speeds; on the lead's, or of no
+    // Mac said, as it ran; its step's model at the lead's.)
+    let other =
+        own.and_then(|c| c.worker.as_deref()).is_some_and(|w| crate::paces::mac_of(w) != crate::paces::mac_of(lead));
+    match book.secs_on(step, target, 0, other.then_some(lead)) {
+        Some((secs, _)) => Cost { secs: secs as f64, basis, peak_mb },
         None => {
             let (secs, basis) = per(step);
             Cost { secs, basis, peak_mb }
@@ -1074,7 +1088,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// A stretch of a lane's work of one step (a "run" of the schedule: `Runs`, the page's run
 /// numbers): from and until when (unix seconds), and how many targets. A stretch is one or more jobs as the scheduler grants them in the forecast's run, one after
@@ -1807,8 +1821,12 @@ fn run_on(
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
     let Items { mut items, region_items, groups } = its;
     for it in &mut items {
-        it.cost.secs = (scale(&it.cost) * inp.step_pace.get(&it.step).copied().unwrap_or(1.0)).max(1.0);
+        it.cost.secs = scale(&it.cost).max(1.0);
     }
+    // (A time its needs give, `needs_secs`, is measured: the runs' spread of a known time. With no
+    // scheduler's state (a test's input, no coordinator) there are no needs to read: its cost.)
+    let known = scale(&Cost { secs: 1.0, basis: Basis::Own, peak_mb: 0 });
+    let needs = inp.sched.is_some();
     let mut pool = Pool::new(the_plan, inp, &items);
     let n = inp.machines.len();
     let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
@@ -2073,9 +2091,20 @@ fn run_on(
             let ids: Vec<usize> =
                 p.targets.iter().filter_map(|x| at.get(&(p.step.clone(), x.0.clone())).copied()).collect();
             let mut start = t;
-            for &i in &ids {
+            for (n_i, &i) in ids.iter().enumerate() {
                 let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
-                let end = start + inp.lane_secs(mac, items[i].cost.secs) + extra;
+                // (Its needs over its Mac's supply now (`needs_secs`), its job's start on the first;
+                // what is left of a stopped run, or a step not measured the way it runs now, at its
+                // cost at the lane's pace.)
+                let step = items[i].step.as_str();
+                let at_needs = (needs && items[i].cost.basis != Basis::Partial)
+                    .then(|| needs_secs(&pool.sched, step, &items[i].target, &g, p.threads))
+                    .flatten()
+                    .map(|s| {
+                        let first = if n_i == 0 { pool.sched.paces.start(&g, step) } else { 0.0 };
+                        (s + first) * known * inp.needs_pace.get(step).copied().unwrap_or(1.0)
+                    });
+                let end = start + at_needs.unwrap_or_else(|| inp.lane_secs(mac, items[i].cost.secs)).max(1.0) + extra;
                 (items[i].by, items[i].from, items[i].end, items[i].job) = (Some(k), start, end, jobs);
                 start = end;
                 inflight.push(i);
@@ -3075,17 +3104,23 @@ mod tests {
         let costs: BTreeMap<String, crate::coord::Cost> =
             [(cost_key("terrain-deep", "10/1/0"), run(40))].into_iter().collect();
         let book = crate::needs::Book::new(plan, &costs);
-        let at = |c: &crate::coord::Cost, _: &str| c.secs as f64;
         let partial = |_: &str, t: &str| (t == "10/1/0" || t == "10/2/0").then_some(7.0);
         let per = |_: &str| (99.0, Basis::Sibling);
-        let cost = |t: &str| target_cost(&book, "terrain-deep", t, &at, &partial, &per, 500);
+        let cost = |t: &str| target_cost(&book, "m4", "terrain-deep", t, &partial, &per, 500);
         let c = |secs, basis| Cost { secs, basis, peak_mb: 500 };
         assert_eq!(cost("10/1/0"), c(7.0, Basis::Partial), "a stopped run before its own");
         assert_eq!(cost("10/2/0"), c(7.0, Basis::Partial), "and where it has no run of its own");
         let none = |_: &str, _: &str| None;
         let cost =
-            |t: &str, per: &dyn Fn(&str) -> (f64, Basis)| target_cost(&book, "terrain-deep", t, &at, &none, per, 500);
+            |t: &str, per: &dyn Fn(&str) -> (f64, Basis)| target_cost(&book, "m4", "terrain-deep", t, &none, per, 500);
         assert_eq!(cost("10/1/0", &per), c(40.0, Basis::Own));
+        // (One run of its step: its model says a target not run itself, about the one that ran.)
+        assert_eq!(cost("10/3/0", &per), c(40.0, Basis::Sibling));
+        // (None of its step run the way it runs now: its step's nearest figure.)
+        let none_run = BTreeMap::new();
+        let book = crate::needs::Book::new(plan, &none_run);
+        let cost =
+            |t: &str, per: &dyn Fn(&str) -> (f64, Basis)| target_cost(&book, "m4", "terrain-deep", t, &none, per, 500);
         assert_eq!(cost("10/3/0", &per), c(99.0, Basis::Sibling));
         assert_eq!(cost("10/3/0", &|_| (30.0, Basis::Here)), c(30.0, Basis::Here));
         assert_eq!(cost("10/3/0", &|_| (300.0, Basis::Guess)), c(300.0, Basis::Guess));
@@ -3149,8 +3184,8 @@ mod tests {
             running: BTreeMap::new(),
             macs: BTreeMap::new(),
             sched: None,
+            needs_pace: Default::default(),
             pace: None,
-            step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),
@@ -3805,6 +3840,151 @@ mod tests {
         assert_eq!(inp.lane_secs(&m2, 100.0), 100.0, "not measured: the lead's, as everywhere");
     }
 
+    /// Task #1413: a scheduler's state (the lead's, `Input::sched`) with the targets' runs on the lead
+    /// and the M1 at twice its time: each item the M1 runs takes its needs over the M1's supply
+    /// (`needs_secs`: its run at the M1's speed, 1,200 s), not its cost at the lane's pace; the time
+    /// its NAS moves take at the NAS budget where that's longer (`nas_secs`); its step's job start on
+    /// the first of a job. A target its step's model can't say (none of it measured) runs
+    /// at its cost.
+    #[test]
+    fn a_jobs_time_is_its_needs_over_its_macs_supply() {
+        let ts = ["6/1/1", "6/1/2", "6/1/3"];
+        let regions = [region("a", &ts, &[], &[])];
+        let c = |_: &str, _: &str| Cost { secs: 50.0, basis: Basis::Own, peak_mb: 1000 };
+        let state = |bytes: u64, start: f64| {
+            let mut st = State {
+                lead_name: "m4".into(),
+                paces: crate::paces::Paces {
+                    lead: "m4".into(),
+                    macs: [("m4".to_string(), 1.0), ("m1".to_string(), 2.0)].into(),
+                    starts: [("m1".to_string(), [("terrain-hi".to_string(), start)].into())].into(),
+                    ..Default::default()
+                },
+                nas: Some(jobrt::budget::nas::Limits { bytes_s: 100e6, ..Default::default() }),
+                ..Default::default()
+            };
+            let v = crate::coord::cost_version("terrain-hi");
+            for t in ts {
+                let sizes = [("bytes".to_string(), bytes)].into();
+                let run = crate::coord::Cost {
+                    peak_mb: 1000,
+                    secs: 600,
+                    worker: Some("m4".into()),
+                    v,
+                    sizes,
+                    ..Default::default()
+                };
+                st.costs.insert(cost_key("terrain-hi", t), run);
+            }
+            st
+        };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
+        let times = |st: Option<State>| {
+            let mut inp = input(&regions, vec![lead.clone(), member("m1")], &c);
+            inp.after.clear();
+            inp.sched = st;
+            let f = forecast_by(crate::agent::seam::for_tests(), &inp, far());
+            let mut v: Vec<(u64, u64)> =
+                f.placed.iter().filter(|p| p.step == "terrain-hi").map(|p| (p.from, p.until - p.from)).collect();
+            v.sort();
+            v.into_iter().map(|x| x.1).collect::<Vec<_>>()
+        };
+        assert_eq!(times(Some(state(0, 0.0))), [1200, 1200, 1200], "its run at the M1's speed");
+        // (90 GB takes the whole NAS, 100 MB/s, 900 s: within the M1's 1,200 s; 180 GB, 1,800 s.)
+        assert_eq!(times(Some(state(90_000_000_000, 0.0))), [1200, 1200, 1200], "within the NAS on the M1");
+        assert_eq!(times(Some(state(180_000_000_000, 0.0))), [1800, 1800, 1800], "past it: at the NAS's pace");
+        // (Each its own job, past the batch length: each pays its job's start.)
+        assert_eq!(times(Some(state(0, 60.0))), [1260, 1260, 1260], "its job's start on the first");
+        assert_eq!(times(None), [50, 50, 50], "no scheduler: its cost at its speed");
+    }
+
+    /// Task #1413: a lane's job under way is timed by its needs over its Mac's supply
+    /// (`lease_busy`): its targets on its Mac at the threads it holds, less how long it has run; a
+    /// minute at least; a job of a step none of whose runs is of the way it runs now keeps its
+    /// lane's time left as its slot said it.
+    #[test]
+    fn a_leased_jobs_time_left_is_its_needs_less_its_run() {
+        use crate::coord::sched::Leased;
+        let regions = [region("a", &["6/1/1", "6/1/2"], &[], &[])];
+        let v = crate::coord::cost_version("terrain-hi");
+        let mut st = State {
+            lead_name: "m4".into(),
+            paces: crate::paces::Paces {
+                lead: "m4".into(),
+                macs: [("m4".to_string(), 1.0), ("m1".to_string(), 2.0)].into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for t in ["6/1/1", "6/1/2"] {
+            let run =
+                crate::coord::Cost { peak_mb: 1000, secs: 600, worker: Some("m4".into()), v, ..Default::default() };
+            st.costs.insert(cost_key("terrain-hi", t), run);
+        }
+        let leased = |worker: &str, step: &str, ts: &[&str], ran: u64| Leased {
+            worker: worker.into(),
+            step: step.into(),
+            targets: ts.iter().map(|t| (t.to_string(), "k".to_string())).collect(),
+            threads: 1,
+            granted_at: 1_000_000 - ran,
+            busy_tenths: None,
+        };
+        st.leases = vec![
+            leased("m1", "terrain-hi", &["6/1/1", "6/1/2"], 300),
+            leased("m2", "slope-hi", &["6/9/9"], 300),
+            leased("m3", "terrain-hi", &["6/1/1"], 5000),
+        ];
+        let lane =
+            |name: &str, step: &str| Machine { busy_s: 99_999.0, running: Some((step.to_string(), 1)), ..member(name) };
+        let mut inp = input(
+            &regions,
+            vec![mac("m4", 1.0), lane("m1", "terrain-hi"), lane("m2", "slope-hi"), lane("m3", "terrain-hi")],
+            &cost,
+        );
+        inp.sched = Some(st);
+        lease_busy(crate::agent::seam::for_tests(), &mut inp);
+        let busy: Vec<f64> = inp.machines.iter().map(|m| m.busy_s).collect();
+        // (The M1's two at 1,200 s each less its 300 s run; slope-hi never measured; the third Mac's
+        // speed not known: twice the lead's 600 s, run past it.)
+        assert_eq!(busy, [0.0, 2100.0, 99_999.0, 60.0]);
+    }
+
+    /// Task #1413: a step's pace against its needs is its jobs' time over what their grants were
+    /// sized to, over the last 12 h's jobs done well, three at least; only a step quicker than its
+    /// needs is said, and never under a quarter.
+    #[test]
+    fn a_steps_pace_against_its_needs_is_its_quicker_jobs_against_their_sizing() {
+        use crate::coord::history::Event;
+        let now = 1_000_000;
+        let mut events = Vec::new();
+        let mut n = 0;
+        let mut job = |step: &str, t: u64, sized: f64, took: f64, ok: bool| {
+            n += 1;
+            let id = Some(jobrt::jobid::JobId { epoch: 1, n });
+            events.push(Event {
+                kind: "lease".into(),
+                t: t - took as u64,
+                job: id,
+                data: Some(serde_json::json!({ "sized_s": sized })),
+                ..Default::default()
+            });
+            let (step, secs, ok) = (Some(step.into()), Some(took), Some(ok));
+            events.push(Event { kind: "done".into(), t, job: id, step, secs, ok, ..Default::default() });
+        };
+        for _ in 0..3 {
+            job("terrain-hi", now - 600, 600.0, 400.0, true);
+            job("slope-deep", now - 600, 100.0, 900.0, true);
+            job("unit", now - 600, 1000.0, 10.0, true);
+        }
+        job("terrain-hi", now - 600, 600.0, 6000.0, false);
+        job("terrain-hi", now - 13 * 3600, 600.0, 6000.0, true);
+        job("slope-hi", now - 600, 600.0, 60.0, true);
+        job("slope-hi", now - 600, 600.0, 60.0, true);
+        let pace = needs_pace(&events, now);
+        let want: BTreeMap<String, f64> = [("terrain-hi".to_string(), 0.67), ("unit".to_string(), 0.25)].into();
+        assert_eq!(pace, want);
+    }
+
     #[test]
     fn a_members_slots_take_any_work_offered_to_it_but_the_leads_own() {
         // (Task #383) the lead's two slots and a member's two: the member's take z6 tiles (no
@@ -4300,95 +4480,6 @@ mod tests {
         assert!(pace(&[(now - 600, vec![0, 4])], &events, now).is_none(), "too young");
     }
 
-    /// A step's jobs that took half their noted costs at the lead's pace run its items at half;
-    /// a step with too few jobs, a job with a target never noted, or one done before the span,
-    /// aren't counted; the costs noted are those the targets had while left, not after.
-    #[test]
-    fn a_steps_pace_from_its_jobs_against_their_noted_costs() {
-        use crate::coord::history::Event;
-        let now = 200_000;
-        let job = |w: &str, t: u64, step: &str, targets: &[&str], secs: f64| Event {
-            t,
-            kind: "done".into(),
-            worker: Some(w.into()),
-            step: Some(step.into()),
-            secs: Some(secs),
-            ok: Some(true),
-            targets: targets.iter().map(|t| t.to_string()).collect(),
-            ..Default::default()
-        };
-        let regions = [region("r", &["6/1/1", "6/1/2", "6/1/3", "6/1/4"], &["6/9/9"], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
-        inp.now = now - 3600;
-        let mut noted = Noted::default();
-        noted.note(crate::agent::seam::for_tests(), &inp);
-        assert_eq!(noted.cost("terrain-hi", "6/1/1"), Some(600.0));
-        // (Later the targets are built: no longer work left, their noted costs stay.)
-        let later = input(&[], vec![mac("m4", 1.0)], &cost);
-        noted.note(crate::agent::seam::for_tests(), &Input { now, ..later });
-        // terrain-hi: three jobs at the lead's pace 300 s a 600 s target (m1 at half the pace in
-        // 600 s); one too old; one with a target never noted. unit: one job, too few.
-        let events = vec![
-            job("m4", now - 100, "terrain-hi", &["6/1/1"], 300.0),
-            job("m1", now - 200, "terrain-hi", &["6/1/2"], 600.0),
-            job("m4 #2", now - 300, "terrain-hi", &["6/1/3", "6/1/4"], 600.0),
-            job("m4", now - STEP_PACE_S - 10, "terrain-hi", &["6/1/1"], 6000.0),
-            job("m4", now - 50, "terrain-hi", &["6/7/7"], 6000.0),
-            job("m4", now - 50, "unit", &["6/9/9"], 30.0),
-        ];
-        let speed = |w: &str| if w == "m1" { 0.5 } else { 1.0 };
-        let p = step_pace(&events, now, &noted, &speed);
-        assert_eq!(p, [("terrain-hi".to_string(), 0.5)].into());
-        // The run takes it: the terrain at 300 s a target.
-        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
-        inp.step_pace = p;
-        let f = forecast_by(crate::agent::seam::for_tests(), &inp, far());
-        let t = f.placed.iter().find(|p| p.step == "terrain-hi").unwrap();
-        assert_eq!(t.until - t.from, 300);
-        // A step slower than its costs isn't said; a fast one never more than fourfold.
-        let slow: Vec<Event> = (0..3).map(|k| job("m4", now - k, "unit", &["6/9/9"], 30_000.0)).collect();
-        assert!(step_pace(&slow, now, &noted, &speed).is_empty());
-        let fast: Vec<Event> = (0..3).map(|k| job("m4", now - k, "unit", &["6/9/9"], 1.0)).collect();
-        assert_eq!(step_pace(&fast, now, &noted, &speed)["unit"], STEP_PACE_MIN);
-        // (A cost not seen for the span is dropped.)
-        noted.note(crate::agent::seam::for_tests(), &Input { now: now + STEP_PACE_S + 1, ..input(&[], vec![], &cost) });
-        assert_eq!(noted.cost("terrain-hi", "6/1/1"), None);
-    }
-
-    /// A lane's job under way is held to its step's longest job of late (three at least): its
-    /// `running`'s step, else its running targets'; a step not timed, as said.
-    #[test]
-    fn a_lanes_time_left_is_held_to_its_steps_longest_job() {
-        use crate::coord::history::Event;
-        let now = 100_000;
-        let done = |step: &str, secs: f64| Event {
-            t: now - 60,
-            kind: "end".into(),
-            worker: Some("m4".into()),
-            step: Some(step.into()),
-            secs: Some(secs),
-            ok: Some(true),
-            ..Default::default()
-        };
-        let events = vec![done("slope", 600.0), done("slope", 900.0), done("slope", 300.0), done("unit", 50.0)];
-        let longest = longest_jobs(&events, now);
-        assert_eq!(longest, [("slope".to_string(), 900.0)].into());
-        let regions = [region("r", &["6/1/1"], &[], &[])];
-        let lane = |busy_s: f64, running: Option<(&str, usize)>| Machine {
-            busy_s,
-            running: running.map(|(s, n)| (s.to_string(), n)),
-            ..mac("m", 1.0)
-        };
-        let mut inp = input(
-            &regions,
-            vec![lane(340_000.0, Some(("slope", 28))), lane(5000.0, None), lane(5000.0, Some(("unit", 1)))],
-            &cost,
-        );
-        inp.running.insert(("slope".into(), "6/1/1".into()), 1);
-        cap_busy(&mut inp, &longest);
-        assert_eq!(inp.machines.iter().map(|m| m.busy_s).collect::<Vec<_>>(), [900.0, 900.0, 5000.0]);
-    }
-
     #[test]
     fn a_departure_is_two_jobs_and_half_the_forecasts_apart() {
         assert!(!departed(3, 4) && !departed(10, 13) && departed(0, 2) && departed(4, 1) && departed(3, 6));
@@ -4655,8 +4746,8 @@ mod tests {
             running: BTreeMap::new(),
             macs: BTreeMap::new(),
             sched: Some(st),
+            needs_pace: Default::default(),
             pace: None,
-            step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),

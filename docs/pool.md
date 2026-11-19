@@ -1246,18 +1246,25 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   equals; `Sched::pack`, so the forecast's run tries its members' offers in the same order, task
   #1163; the lead's own asks in plan order); within a step, the targets in the asker's
   last one's z3 tile first (`placement::group`, from just after it in plan order: its jobs read
-  the same neighbourhood's inputs, task #552), then from the longest. Each target is drawn among
-  the members asking lately that would take it now (`Sched::would_take_now`: by their last ask,
-  a slot free and their free memory fitting it; a busy Mac is never drawn a target it would leave
-  untaken), the lead's own agent among them (`placement::draw`, stable per minute window); an
-  asker passed by goes on down the offer to the next target drawn to it. A worker's weight
-  (`Sched::draw_weight`) is its Mac's speed against the lead's, the inverse of its time (§7.7,
-  Each Mac's speed; task #1416: a Mac not measured, the lead's); times `CACHE_PREFER` (4) where its
-  ask's capacity says it holds the step's shared cache (`needs::CACHES`: the whole copies) whole. Trade-offs: weights only, so a Mac asking alone takes what it can and the
-  weights act only where Macs ask together (no Mac idles for a draw); a
-  minute's window keeps a target drawn to one Mac until the next window. The forecast runs the
-  same draws (the placement is in the scheduler's state it's given), its lanes asking as its
-  model has them. A task offered
+  the same neighbourhood's inputs, task #552), then from the longest. **Where it finishes soonest**
+  (task #1413): each target goes to the Mac that finishes it soonest of the asker and the members
+  asking lately that would take it now (`Sched::would_take_now`: by their last ask, a slot free and
+  their free memory fitting it, so a target is never passed to a Mac that would leave it untaken),
+  each timed by its needs over that Mac's supply (`Sched::finish_s`, `forecast::needs_secs`: its own
+  run at the two Macs' speeds, else its step's model's work at the Mac's speed over the threads it
+  would be granted of the cores its ask says, plus the rest of its time, or its NAS moves at the
+  NAS budget where longer; a Mac whose speed isn't measured at twice the lead's time), over
+  `CACHE_PREFER` (4) where its ask's capacity says it holds the step's shared cache
+  (`needs::CACHES`: the whole copies) whole. Each other member counts for as many targets before
+  this one as it has slots free (its ask's, less the jobs granted it since): an asker passed by
+  goes on down the offer, and once the sooner Macs' slots are spoken for the rest are its own (no
+  Mac idles while another's slots are full). A cold start (none of its step measured) goes to the
+  asker, one at a time. The memory admitted is the scheduler's own (Memory admission, §7.7): placement
+  only says which of the Macs that would admit a target takes it, never more than its Mac's last ask
+  had free, so it can't place a job a Mac's room doesn't hold. Why a job went where it did is kept
+  with its grant (`Pick::why`, the history's lease event, below) and shown on its page. The forecast
+  runs the same placement (the placement is in the scheduler's state it's given), its lanes asking
+  as its model has them. A task offered
   ahead goes to a slower worker only while its head start covers that worker's run. The lead's own
   planned jobs keep plan order.
 - **Resuming** (`crate::agent::resume`, in the pool): a job interrupted with progress
@@ -2054,7 +2061,10 @@ The one place an older way enters is the step's model while the way it runs now 
 own run on one, is sized at the lead's speed (another Mac's run counted twice), and says so: the
 grant's log line names the time each job was sized to and how ("sized to 14.8 min at its Mac's
 speed", or "at the lead's speed: <Mac>'s isn't measured"), and the history's lease event keeps it
-(`data`: `sized_s`, `own`). A leased job's
+with what it was granted (`data`, `coord::granted_data`: `sized_s`, `own`, `threads`, `mem_mb`,
+`disk_mb`, and `why`, placement's words: "soonest done here of the Macs asking that would take it
+now: 12.0 min here, mini 30.0 min", or "the only Mac asking that would take it now"), which the
+job's page shows (Predicted and placed). A leased job's
 predicted time (`job_weight`) is the same sum. The forecast's runs size by the same code, but offer
 an ask the first 64 ready targets of a step (`forecast::OFFER_MAX`), where the live plan offers all
 of them and the coordinator grants up to 256 (`JOB_MAX`). Two gaps follow: a run of more than 64
@@ -2194,7 +2204,7 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   placed (lane, step, target, from and until); and what shaped it: each lane (its Mac, speed,
   time left on its job under way), each Mac's slots, room, conditions (its last ask's memory and
   cores free, limits, in use, on power, battery, NAS) and what held it back over the day, each
-  step's time a target and its pace against its costs (code 2 on, below), the NAS budget,
+  step's time a target, the NAS budget,
   `forecast::VERSION` (raised whenever a change moves the run's times) and the app.
 - **Where:** `state/coord/forecasts/<day>.jsonl.zst`, one file a day (UTC), lines appended in
   batches, each batch one zstd frame. Handed over only by the lead's pool step: the forecast's
@@ -2272,15 +2282,14 @@ Oct 13:35 UTC, term 673); those between then and the archive's start weren't kep
 archive's, and the terms' at times it hasn't: `fccheck::inputs`), read one at a time as it's rerun,
 is rerun twice,
 as the code before made it (old) and as the code is (new), each archived as the lead archives its
-forecasts (`Entry::of`) and checked as above (`fccheck::replay`). Both: the costs noted from the
-inputs before it and its own (`forecast::Noted`), each step's pace from the history before it
-(its workers' speeds its lanes', their Mac's code 2 hold taken off), each lane's job under way
-capped (below; a record of code 2 on holds its `busy_s` capped already), the record's lanes, each
-lane's speed with its Mac's code 2 hold taken off, the build's pause and each Mac's time by
-step read from the history (code 3, below), and each Mac's pace at each step read from the history
-(`fccheck::repace`, code 4 below), the record's cost table made again from its scheduler's
-measures as the lead makes it now (`fccheck::recost`: a target known by its own run of the way its
-step runs now, Batch length in §7.7). Old and new differ by what the code now does and the one before
+forecasts (`Entry::of`) and checked as above (`fccheck::replay`). Both: the record's lanes, each
+lane's speed with its Mac's code 2 hold taken off, the build's pause read from the history (code 3,
+below), each Mac's pace at each step read from the history (`fccheck::repace`, code 4 below), the
+record's cost table made again from its scheduler's measures as the lead makes it now
+(`fccheck::recost`: a target's own run of the way its step runs now, else its step's needs model,
+Batch length in §7.7), each step's pace against its needs read from the history
+(`forecast::needs_pace`), and each lane's job under way timed by its needs over its Mac's supply
+(`forecast::lease_busy`; both code 9, below). Old and new differ by what the code now does and the one before
 didn't (`Input::code`): the tables below ran their own code's pair. The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
 scored on. The terms' files held a term's last input alone (81 over 24-27 Oct: a run took ~12 min
@@ -2318,21 +2327,9 @@ forecast's order 66 % of pairs. Its largest sources:
   began over an hour later; pack's forecast on the MacBook Pro, 95 % of the time. Each Mac ran no job
   25-76 % of each day.
 
-**What changed (code 2).** Two things, each in the record (`Input::step_pace`, a lane's capped
-`busy_s`) so a member's page reruns the same, and archived (`Entry::step_pace`):
-
-- **Each step's pace** (`forecast::step_pace`, `Noted`): the lead notes the cost each target had
-  while it was work left (a target leaves the work left once built, so the measure its own job leaves
-  never replaces it; kept 12 h after it was last seen; ~2 ms a forecast for 27,000 costs); each
-  forecast, over the jobs done well in the last 12 h whose every target was noted, a step's time at
-  the lead's pace (the job's seconds times its worker's speed) over its targets' noted costs, three
-  jobs at least, is the step's pace, and the run takes each of its targets at its cost times it.
-  Only a step faster than its costs (at most fourfold): one slower is so by what each job takes
-  whatever its targets, which a target's pace lays on the run's jobs of many targets; with it, a backtest of the 80
-  inputs of a few hours before had its test end error at 2,054 / 25,682 against the old 995 / 10,645,
-  pack's own p90 9,163 to 23,049. A lead that has just started notes for a while before it says a pace.
-- **A lane's job under way held to its step's longest job of the last 12 h** (`cap_busy`,
-  `longest_jobs`; three jobs at least).
+**What changed (code 2).** Each step's pace against its targets' costs, and a lane's job under way
+held to its step's longest job of the last 12 h; both replaced in code 9 by each job's needs over its
+Mac's supply (below).
 
 Tried and left out: a Mac's lanes past those it ran at once (`Held::lanes`) kept for their job alone,
 taking nothing after: the near horizons gained (under 15 min median 17 to 12, the order within 4 h

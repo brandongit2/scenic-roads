@@ -3,7 +3,7 @@
 //   Left, fixed: what it is (step, targets, Mac, job id and lease, app), what it held and used
 //   (threads granted, cores busy, peak memory, what it retired, its NAS bytes asked and served, the
 //   work it did, the plausibility checks its record failed, what its Mac supplied, its NAS weight),
-//   when and how it ended and why, its
+//   what its grant predicted it needs and why it ran on its Mac, when and how it ended and why, its
 //   figures beside its step's medians (`/api/timings`), the other runs of its targets and the jobs
 //   beside it on its Mac (the history's: `runs`, `beside`).
 //   Main: its spans on a timeline (timeline.js, the schedule's; laid out by runlanes.js, the dev
@@ -20,7 +20,7 @@ import { n, plural } from "./words.js";
 import { lineage, pack, spanLanes, spanTree } from "./runlanes.js";
 import { versionWatch } from "./version.js";
 import { remote } from "./live.js";
-import { MARK_LANES, dur, linesIn, markers, outcome, recordFigures, spanLook, stepMedians, supplyText, timeWords, clockText } from "./jobview.js";
+import { MARK_LANES, dur, linesIn, markers, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, clockText } from "./jobview.js";
 
 const $ = (id) => document.getElementById(id);
 // (The build page's folder: "" at the coordinator's root, "/build" through tools/caddy.)
@@ -73,6 +73,21 @@ const stepColour = (step) => `var(--st-${stageOf(step) || "upkeep"}, var(--st-up
 const mb = (x) => (x == null ? "–" : x >= 1024 ? `${(x / 1024).toFixed(x >= 10240 ? 0 : 1)} GB` : `${Math.round(x)} MB`);
 const bytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} kB` : `${b} B`);
 const fx = (x, d = 1) => (x == null ? "–" : x.toFixed(d));
+
+// What its grant predicted it needs on its Mac (its needs over that Mac's supply then: coord's
+// `granted_data`) beside what it took, and why it ran there (placement's words), task #1413.
+function placedSec(p, fig, f, end) {
+  if (!p) return sec("Predicted and placed", h("div", "dim small", "Its grant kept no prediction (a lead's own job, or granted before task #1413)."));
+  const took = fig?.wall ?? (f.t0 != null && end != null ? end - f.t0 : null);
+  const ratio = p.secs && took != null && !v.running ? ` (it took ×${(took / p.secs).toFixed(took / p.secs >= 10 ? 0 : 1)})` : "";
+  return sec("Predicted and placed", kv([
+    ["time", p.secs != null ? `${dur(p.secs)}${ratio}` : "not measured", p.own === false ? "Its needs over its Mac's supply as granted: at the lead's speed, its Mac's not measured (another Mac's run counted twice)" : "Its needs over its Mac's supply as granted: each target's work at its Mac's speed over the threads it was given, plus the rest of its time, or its NAS moves at the NAS budget where longer (coord::sched batch_secs)"],
+    ["threads", p.threads != null ? String(p.threads) : null, "The threads it was granted (its Mac's free cores, as its ask said them)"],
+    ["memory", p.memMb != null ? `${mb(p.memMb)}${fig?.peak != null ? ` (its peak ${mb(fig.peak)})` : ""}` : null, "What the lead admitted it at on its Mac: its targets' memory together on the threads it starts on (docs/pool.md §7.7, Memory admission)"],
+    ["disk", p.diskMb ? mb(p.diskMb) : null, "The disk reserved for it, its shared cache's fill among it"],
+    ["why here", p.why ?? "the first Mac to ask with room for it (placement off, or a job it doesn't place)", "Placement (docs/pool.md §7.2): of the Macs asking lately that would take it now, the one its needs over each Mac's supply finish soonest"],
+  ]));
+}
 
 // The job's own facts, as far as its view or its history has them (a legacy job's: its events').
 function facts() {
@@ -132,6 +147,7 @@ function side(f, out) {
       ["its Mac gave", supplyText(v.record?.supply), "What its Mac supplied over the run, the means of its agent's live readings then (task #1418): the cores free of load outside the build, those kept for the owner while they used the Mac, the memory available, the NAS's answer time, the jobs' NAS throughput, and the pool's with the NAS's busiest disk as the lead kept the record"],
       ["NAS weight", "not recorded", "The lead weighs a running job's NAS share from its beats (coord::sched job_weight); nothing keeps the weight it was granted under"],
     ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null, fig?.unchecked.length ? h("div", "small dim", `Not checked: ${fig.unchecked.join("; ")}`) : null),
+    placedSec(predicted(v), fig, f, end),
     sec("When and how", kv([
       ["started", f.t0 != null ? clockText(f.t0, { date: true }) : "–"],
       ["took", f.t0 != null && end != null ? `${dur(end - f.t0)}${v.running ? " so far" : ""}` : "–"],

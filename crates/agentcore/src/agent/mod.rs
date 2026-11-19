@@ -20099,8 +20099,8 @@ mod membership_tests {
 
     /// Task #1165: the forecast's cost table knows a target's own run as the coordinator sizes it
     /// (crate::needs::Book::own): one of an older way of its step (terrain-deep's cost version 0,
-    /// 0-s runs that found no tiffs) leaves it to its step's mean, as the grants leave it to the
-    /// step's runs; a drop's own drop of an older way leaves it to its step's drops'.
+    /// 0-s runs that found no tiffs) leaves it to its step's needs model, as the grants leave it to
+    /// the step's runs; a drop's own drop of an older way leaves it to its step's drops'.
     #[test]
     fn the_forecast_knows_a_targets_run_only_of_the_way_its_step_runs_now() {
         let d = tempfile::tempdir().unwrap();
@@ -20150,9 +20150,9 @@ mod membership_tests {
             "a run of an older way isn't its measure: {old:?}"
         );
         assert_eq!(now.basis, crate::agent::forecast::Basis::Own, "{now:?}");
-        // (Its step's mean of the runs the way it runs now, at the same pace as its own run's.)
-        let mean = (20.0 * 100.0 + 10.0) / 21.0;
-        assert!((old.secs / now.secs - mean / 10.0).abs() < 0.01, "{old:?} {now:?}");
+        // (Its step's model of the runs the way it runs now, their high percentile, as the coordinator
+        // sizes it; the 10 s run's worker unsaid, so counted at twice the lead's time.)
+        assert_eq!((old.secs, now.secs), (100.0, 20.0), "{old:?} {now:?}");
         let drop = &rec.input.drops.iter().find(|j| j.1 == "10/97/0").unwrap().2;
         assert_eq!(
             (drop.secs, drop.basis),
@@ -20163,8 +20163,8 @@ mod membership_tests {
 
     /// Task #1449: the forecast's cost table says which figure each target's time is: a stopped run's
     /// pace (the history's progress of a job that stopped short: 18 Nov's available-bathymetry,
-    /// paused at 2,169 s, counted 300 s as a guess), else its own run, else its step's mean over its
-    /// targets, else what the lead's jobs of the step took lately, else the first guess; and each
+    /// paused at 2,169 s, counted 300 s as a guess), else its own run, else its step's needs model,
+    /// else what the lead's jobs of the step took lately, else the first guess; and each
     /// step's targets are counted by it.
     #[test]
     fn the_forecast_says_which_figure_each_targets_time_is() {
@@ -20231,11 +20231,9 @@ mod membership_tests {
         let own = c["terrain-deep"]["10/98/0"];
         assert_eq!(own.basis, Basis::Own);
         let step = &c["terrain-deep"]["10/97/0"];
-        assert_eq!(step.basis, Basis::Sibling, "its step's mean over its targets");
-        assert!(
-            (step.secs / own.secs - ((10.0 * 100.0 + 10.0) / 11.0) / 10.0).abs() < 0.01,
-            "its own run's pace: {step:?} {own:?}"
-        );
+        assert_eq!(step.basis, Basis::Sibling, "its step's needs model");
+        // (The model's high percentile of the step's runs; the own run's worker unsaid, at twice.)
+        assert_eq!((step.secs, own.secs), (100.0, 20.0), "{step:?} {own:?}");
         assert_eq!(c["slope-deep"]["10/1/0"].basis, Basis::Guess);
         assert_eq!(c["slope-deep"]["10/1/0"].secs, first_secs("slope-deep"));
         // (What the lead's jobs of a step took lately, else the guess.)

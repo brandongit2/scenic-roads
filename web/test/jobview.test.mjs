@@ -1,7 +1,7 @@
 // A job's page's sums (web/buildpage/jobview.js) and a run's lanes (runlanes.js), task #1105.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clockText, crossesMidnight, markers, median, outcome, recordFigures, spanLook, stepMedians, supplyText, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
+import { clockText, crossesMidnight, markers, median, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
 import { lineage, pack, spanLanes, spanTree } from "../buildpage/runlanes.js";
 import { jobHref, pastRuns, packRuns, segHref } from "../buildpage/sums.js";
 
@@ -71,6 +71,18 @@ test("what its Mac supplied: each part it says, none without", () => {
   assert.equal(supplyText({ secs: 5, p: 10, e: 0, free_p: 9, free_e: 0, build: 1 }), "9.0 of 10 performance cores free, the build on 1.0 (over 5 s)");
   assert.equal(supplyText({ secs: 5, p: 8, e: 2 }), null);
   assert.equal(supplyText(undefined), null);
+});
+
+test("what its grant predicted and why it ran there: its first lease event's data", () => {
+  const lease = (data) => ({ history: [{ kind: "lease", data }, { kind: "lease", data: { sized_s: 1 } }, { kind: "done" }] });
+  assert.deepEqual(predicted(lease({ sized_s: 720, own: true, threads: 4, mem_mb: 3500, disk_mb: 20, why: "soonest done here of the Macs asking that would take it now: 12.0 min here, mini 30.0 min" })),
+    { secs: 720, own: true, threads: 4, memMb: 3500, diskMb: 20, why: "soonest done here of the Macs asking that would take it now: 12.0 min here, mini 30.0 min" });
+  // (A grant before task #1413: its sized time alone.)
+  assert.deepEqual(predicted(lease({ sized_s: 60, own: false })), { secs: 60, own: false, threads: null, memMb: null, diskMb: null, why: null });
+  assert.equal(predicted(lease(null)), null);
+  assert.equal(predicted(lease({})), null);
+  assert.equal(predicted({ history: [{ kind: "done" }] }), null);
+  assert.equal(predicted({}), null);
 });
 
 test("how it ended: running, its run's word, else the history's; why from its error, exit and notes", () => {

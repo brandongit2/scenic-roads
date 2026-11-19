@@ -53,6 +53,9 @@ pub struct Pick {
     /// The time it was sized to (s), and whether by its Mac's own runs (`Sched::batch_secs`); None:
     /// a planned job of the lead's own (`pick_own`), or a target of no time measured.
     pub sized: Option<(u64, bool)>,
+    /// Why it went to this Mac (`placed_start`'s words, placement on); None: placement off or a
+    /// job it didn't place (a cold start, the lead's own).
+    pub why: Option<String>,
 }
 
 /// Why `Sched::pack` granted an ask fewer jobs than it wanted: the rule that held the rest back,
@@ -264,6 +267,9 @@ pub struct Sched {
     pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
     /// While `pack` packs, what it looks up of the leases (`Packing`); None otherwise.
     pub packing: Mutex<Option<Packing>>,
+    /// Why placement left each target it gave a worker to it ((worker, step, target) → why, in
+    /// words: `placed_start`), until its grant says it (`grant`); cleared at each `pack`.
+    pub placed: Mutex<BTreeMap<(String, String, String), String>>,
     /// What's worked out of each leased job (`LeaseKept`), by lease, as the measures stood (`rev`),
     /// and as offered (`set_offers` clears it).
     pub kept_leases: Mutex<(u64, FxMap<u64, Vec<LeaseKept>>)>,
@@ -914,7 +920,7 @@ impl Sched {
 
     /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
     /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
-    pub(super) fn book(&self) -> crate::needs::Book<'_> {
+    pub(crate) fn book(&self) -> crate::needs::Book<'_> {
         let inputs = crate::needs::Inputs { paces: &self.paces, records: &self.records, tuning: self.tuning };
         crate::needs::Book::kept(self.the_plan, &self.costs, &self.floors, &self.disks, inputs, &self.needs, self.rev())
     }
@@ -1097,7 +1103,7 @@ impl Sched {
     /// whether at its Mac's measured speed: a drop its own run hasn't measured, its step's drops'
     /// (`drop_of`); else crate::needs::Book::secs_on (its own run at the worker's Mac's speed, else
     /// its step's model there); None when none of its step's has run the way it runs now.
-    pub(super) fn secs_on(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<(u64, bool)> {
+    pub(crate) fn secs_on(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<(u64, bool)> {
         let b = self.book();
         match self.drop_of(&b, step, target) {
             Some(d) => Some((d.0, true)),
@@ -1720,6 +1726,7 @@ impl Sched {
     /// the rule and in words (`Held`; None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<Held>) {
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = Some(Packing::default());
+        self.placed.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let got = self.pack_kept(a, offers, lead, clock);
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = None;
         got
@@ -2270,6 +2277,9 @@ impl Sched {
         });
         let on = self.start_threads(&o.step, ts.iter().map(String::as_str));
         let (thread_mb, covered) = self.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, on);
+        let why = ts.first().and_then(|t| {
+            self.placed.lock().unwrap_or_else(|e| e.into_inner()).remove(&(a.worker.clone(), o.step.clone(), t.clone()))
+        });
         Pick {
             lease,
             step: o.step.clone(),
@@ -2281,6 +2291,7 @@ impl Sched {
             disk_mb,
             job: o.job.clone(),
             sized,
+            why,
         }
     }
 
@@ -2686,8 +2697,8 @@ impl Sched {
             .and_then(|l| o.targets.iter().position(|t| t.0 == *l))
             .map(|i| i + 1);
         let start = match &self.placement {
-            // (Placement on: from the target measured to take longest that's drawn to this worker.)
-            Some((_, since)) => self.placed_start(o, a, *since, now, &held, after, &takeable),
+            // (Placement on: from the target measured to take longest that finishes soonest here.)
+            Some(_) => self.placed_start(o, a, now, &held, after, &takeable),
             None => after
                 .filter(|&i| i < o.targets.len() && takeable(i))
                 .or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
@@ -2797,16 +2808,16 @@ impl Sched {
     /// of the step's index past it; `placement::group`: a z6 tile's z3 tile) first, from just after
     /// it in plan order, so its consecutive jobs share their inputs (task #552); then from the one
     /// measured to take longest (`secs_of`; plan order between equals, those never measured last).
-    /// The first drawn to it among the members asking lately that would take it now
-    /// (`would_take_now`; `placement::draw`, each by `draw_weight`, in the window `now` is in since
-    /// `since`); a cold start (none of its step measured) undrawn, by its provisional need
-    /// (`cold_fits`).
-    #[allow(clippy::too_many_arguments)]
+    /// The first that finishes soonest on its Mac (`finish_s`: its needs over that Mac's supply now)
+    /// among the members asking lately that would take it now (`would_take_now`), each other member
+    /// counted for as many targets before it as it has slots free (its ask's, less the jobs granted
+    /// it since): a target finishing sooner on another passes to it, and once that one's slots are
+    /// spoken for the rest are this one's. A cold start (none of its step measured) is taken, by its
+    /// provisional need (`cold_fits`). Why it went here is kept for its grant (`placed`).
     pub(super) fn placed_start(
         &self,
         o: &Offer,
         a: &Ask,
-        since: Instant,
         now: Instant,
         held: &BTreeSet<String>,
         after: Option<usize>,
@@ -2827,7 +2838,24 @@ impl Sched {
             _ => Vec::new(),
         };
         let rest = order.into_iter().map(|(_, i)| i).filter(|i| !near.contains(i));
-        let window = now.saturating_duration_since(since).as_secs();
+        // (Each other member asking lately on this app, by its last ask, with its slots free.)
+        let mut slots: BTreeMap<String, usize> = self
+            .workers
+            .iter()
+            .filter(|(n, w)| {
+                *n != &a.worker
+                    && w.kind == "native"
+                    && now.duration_since(w.seen) < AROUND
+                    && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
+                    && w.app.as_ref().is_none_or(|x| *x == self.app)
+            })
+            .filter_map(|(n, w)| {
+                let (x, at) = (w.ask.as_ref()?, w.asked?);
+                let since = self.worker_jobs(n, now).filter(|l| l.granted >= at).count();
+                Some((n.clone(), x.want.max(1).saturating_sub(since)))
+            })
+            .filter(|(_, k)| *k > 0)
+            .collect();
         near.iter().copied().chain(rest).find(|&i| {
             if !takeable(i) {
                 return false;
@@ -2835,29 +2863,62 @@ impl Sched {
             let (t, k, _) = &o.targets[i];
             let Some(m) = self.measured(&o.step, t) else { return true };
             // (Each other member by the rules its own ask would meet, and only one that would take
-            // it now: a draw's winner never leaves it untaken.)
-            let mut who: Vec<(String, f64)> = self
-                .workers
-                .iter()
-                .filter(|(n, w)| {
-                    *n != &a.worker
-                        && w.kind == "native"
-                        && now.duration_since(w.seen) < AROUND
-                        && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
-                        && w.app.as_ref().is_none_or(|x| *x == self.app)
-                })
-                .filter_map(|(n, w)| {
+            // it now: a target passed to it is one it takes.)
+            let mut who: Vec<(String, f64)> = slots
+                .keys()
+                .filter_map(|n| {
+                    let w = self.workers.get(n)?;
                     let x = w.ask.as_ref()?;
                     let takes = x.can.contains(&o.step)
                         && self.may_take_measured(o, x, t, k, &m, held, now)
                         && !self.swamped(n, x, now)
                         && self.would_take_now(n, w.asked?, x, &m, now);
-                    takes.then(|| (n.clone(), self.draw_weight(&o.step, n, x)))
+                    if !takes {
+                        return None;
+                    }
+                    Some((n.clone(), self.finish_s(&o.step, t, n, x)?))
                 })
                 .collect();
-            who.push((a.worker.clone(), self.draw_weight(&o.step, &a.worker, a)));
-            placement::draw(&placement::key(&format!("{} {t}", o.step), window), &who) == Some(a.worker.as_str())
+            let Some(mine) = self.finish_s(&o.step, t, &a.worker, a) else { return true };
+            who.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
+            if let Some((n, _)) = who.first().filter(|(_, theirs)| *theirs < mine) {
+                if let Some(k) = slots.get_mut(n) {
+                    *k -= 1;
+                    if *k == 0 {
+                        slots.remove(n);
+                    }
+                }
+                return false;
+            }
+            let min = |s: f64| format!("{:.1} min", s / 60.0);
+            let why = if who.is_empty() {
+                format!("the only Mac asking that would take it now ({} here)", min(mine))
+            } else {
+                let others: Vec<String> = who.iter().map(|(n, s)| format!("{n} {}", min(*s))).collect();
+                format!(
+                    "soonest done here of the Macs asking that would take it now: {} here, {}",
+                    min(mine),
+                    others.join(", ")
+                )
+            };
+            self.placed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((a.worker.clone(), o.step.clone(), t.clone()), why);
+            true
         })
+    }
+
+    /// How long target `target` of `step` takes worker `n`'s Mac as its ask `x` says (s): placement's
+    /// measure of where it finishes soonest, its needs over that Mac's supply now
+    /// (crate::agent::forecast::needs_secs: its speed, the threads it would be granted alone of the
+    /// cores its ask says, the NAS budget), over `CACHE_PREFER` where its Mac holds the step's shared
+    /// cache whole (`holds_cache`: no copy, no NAS read in place). None: none of its step measured.
+    pub(super) fn finish_s(&self, step: &str, target: &str, n: &str, x: &Ask) -> Option<f64> {
+        let threads = self.sizing_threads(step, target, ask_cores(x));
+        let secs = crate::agent::forecast::needs_secs(self, step, target, n, threads)?;
+        let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
+        Some(secs / cache)
     }
 
     /// The memory (MB) a job under lease `l` takes: what the packing counts it at (`lease_need`:
@@ -2876,15 +2937,6 @@ impl Sched {
         let taken: u64 = since.iter().map(|l| self.lease_mem(l)).sum();
         since.len() < x.want.max(1)
             && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb.saturating_add(taken) <= c.mem_mb)
-    }
-
-    /// Worker `n`'s weight in placement's draw for a target of `step`, as its last ask `x` says:
-    /// its Mac's speed against the lead's, the inverse of its time (`paces`, crate::paces::Paces::get;
-    /// not measured, the lead's), `CACHE_PREFER` times that where its Mac
-    /// holds the step's shared cache whole (`holds_cache`).
-    pub(super) fn draw_weight(&self, step: &str, n: &str, x: &Ask) -> f64 {
-        let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
-        cache / self.paces.get(n)
     }
 
     /// Whether the Mac asking `a` holds the shared cache a job of `step` reads whole (its ask's
@@ -3158,6 +3210,7 @@ impl Sched {
             drop_needs: Default::default(),
             kept_leases: Default::default(),
             packing: Default::default(),
+            placed: Default::default(),
             provisional_at: Default::default(),
             paces: s.paces.clone(),
             records: s.records.clone(),

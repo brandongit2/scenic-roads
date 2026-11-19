@@ -246,10 +246,11 @@ pub const REWRITE_AGAIN_S: u64 = 600;
 
 /// Whether an event of `kind` keeps its `data` in memory: a "planned" (the map tiles' keys a
 /// restarted lead reads back from its coordinator's memory: crate::pubtimes::PlannedNotes::begin;
-/// a few hundred a week, ~0.3 MB). Every other's `data` is read from the file alone
-/// (`since_in_file`: publishing's times).
+/// a few hundred a week, ~0.3 MB), and a "lease" (what its grant predicted and why it went to its
+/// Mac, crate::coord's `granted_data`, which a job's page shows: 11,635 in the lead's week to 19 Nov, ~250 B each, ~3
+/// MB). Every other's `data` is read from the file alone (`since_in_file`: publishing's times).
 fn keeps_data(kind: &str) -> bool {
-    kind == "planned"
+    matches!(kind, "planned" | "lease")
 }
 
 /// An event's number and time, read from its line without the rest (`since_in_file`'s search, the

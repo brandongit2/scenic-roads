@@ -346,6 +346,23 @@ fn sized_words(p: &sched::Pick, worker: &str) -> String {
     }
 }
 
+/// What a job's "lease" event keeps of its grant (docs/formats.md, The history; the job's page,
+/// "Predicted and placed"): the time it was sized to and whether by its Mac's own runs (`sized_s`,
+/// `own`: its needs over its Mac's supply, `sched::Sched::batch_secs`), the threads and memory it
+/// was granted (`threads`, `mem_mb`, MB, on its threads) and its disk (`disk_mb`), and why it went
+/// to its Mac (`why`, placement's words: `sched::Sched::placed_start`).
+fn granted_data(p: &sched::Pick) -> serde_json::Value {
+    let mut v = serde_json::json!({ "threads": p.threads, "mem_mb": p.mem_mb, "disk_mb": p.disk_mb });
+    if let Some((s, own)) = p.sized {
+        v["sized_s"] = s.into();
+        v["own"] = own.into();
+    }
+    if let Some(w) = &p.why {
+        v["why"] = w.clone().into();
+    }
+    v
+}
+
 /// A worker, as its requests describe it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Worker {
@@ -850,7 +867,7 @@ impl Shared {
                 job: self.sched.leases.job_of(p.lease),
                 step: Some(p.step.clone()),
                 targets: p.targets.iter().map(|t| t.0.clone()).collect(),
-                data: p.sized.map(|(s, own)| serde_json::json!({ "sized_s": s, "own": own })),
+                data: Some(granted_data(&p)),
                 ..history::Event::new("lease")
             });
             Grant {
@@ -1991,6 +2008,7 @@ impl Coordinator {
                 drop_needs: Default::default(),
                 kept_leases: Default::default(),
                 packing: Default::default(),
+                placed: Default::default(),
                 provisional_at: Default::default(),
                 paces: Default::default(),
                 records: Default::default(),
@@ -10460,12 +10478,13 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "the first ended: the second goes");
     }
 
-    /// Task #552, #934, #1416: placement's draw weighs a worker by its Mac's speed, the inverse of
-    /// its time against the lead's (crate::paces: a Mac not measured, the lead's),
-    /// `CACHE_PREFER` times where its Mac holds the step's shared cache whole by its ask (its fill
-    /// measured); short of it, or a step reading none, no more.
+    /// Task #1413: placement times a target on each Mac by its needs over that Mac's supply
+    /// (`Sched::finish_s`): its run on the lead at each Mac's time against the lead's (crate::paces;
+    /// a Mac not measured, twice it: no reading says how they compare), over `CACHE_PREFER` where
+    /// the Mac holds the step's shared cache whole by its ask (its fill measured); short of it, or a
+    /// step reading none, no less.
     #[test]
-    fn the_draw_weighs_the_pace_and_the_cache_held() {
+    fn placement_times_a_target_by_its_needs_on_each_mac_and_the_cache_held() {
         use crate::agent::placement::CACHE_PREFER;
         let cache = buildstore::localread::CACHE;
         let mut s = sched::Sched::from_state(
@@ -10477,9 +10496,19 @@ mod tests {
         s.fills.insert(cache.to_string(), 20_000);
         s.set_paces(crate::paces::Paces {
             lead: "m4".into(),
-            macs: [("m1".to_string(), 2.0), ("mini".to_string(), 0.25)].into(),
+            macs: [("m4".to_string(), 1.0), ("m1".to_string(), 2.0), ("mini".to_string(), 0.25)].into(),
             ..Default::default()
         });
+        for step in ["depth", "slope-hi"] {
+            let c = Cost {
+                peak_mb: 500,
+                secs: 600,
+                worker: Some("m4".into()),
+                v: cost_version(step),
+                ..Default::default()
+            };
+            s.costs.insert(cost_key(step, "6/1/1"), c);
+        }
         let holding = |mb: u64| Ask {
             cap: Some(Capacity {
                 caches: [(cache.to_string(), CacheHere { have_mb: mb })].into(),
@@ -10487,53 +10516,58 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(s.draw_weight("depth", "mini #2", &holding(0)), 4.0, "its Mac's, its slots' alike");
-        assert_eq!(s.draw_weight("slope-hi", "mini", &holding(0)), 4.0, "at every step");
-        assert_eq!(s.draw_weight("depth", "m4 #3", &holding(0)), 1.0, "the lead's");
-        assert_eq!(s.draw_weight("depth", "ipad", &holding(0)), 1.0, "not measured: the lead's");
-        assert_eq!(s.draw_weight("depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
-        assert_eq!(s.draw_weight("depth", "m1", &holding(19_000)), 0.5, "short of it");
-        assert_eq!(s.draw_weight("slope-hi", "m1", &holding(20_000)), 0.5, "a step reading none");
+        let at = |s: &sched::Sched, step: &str, n: &str, x: &Ask| s.finish_s(step, "6/1/1", n, x);
+        assert_eq!(at(&s, "depth", "mini #2", &holding(0)), Some(150.0), "its Mac's, its slots' alike");
+        assert_eq!(at(&s, "slope-hi", "mini", &holding(0)), Some(150.0), "at every step");
+        assert_eq!(at(&s, "depth", "m4 #3", &holding(0)), Some(600.0), "the lead's");
+        assert_eq!(at(&s, "depth", "ipad", &holding(0)), Some(1200.0), "not measured: twice the lead's");
+        assert_eq!(at(&s, "depth", "m1", &holding(20_000)), Some(1200.0 / CACHE_PREFER), "holds it whole");
+        assert_eq!(at(&s, "depth", "m1", &holding(19_000)), Some(1200.0), "short of it");
+        assert_eq!(at(&s, "slope-hi", "m1", &holding(20_000)), Some(1200.0), "a step reading none");
+        assert_eq!(s.finish_s("depth", "6/9/9", "m1", &holding(0)).is_some(), true, "its step's model");
+        assert_eq!(s.finish_s("pack", "6/1/1", "m1", &holding(0)), None, "its step never measured");
         s.fills.clear();
-        assert_eq!(s.draw_weight("depth", "m1", &holding(20_000)), 0.5, "no fill measured");
+        assert_eq!(at(&s, "depth", "m1", &holding(20_000)), Some(1200.0), "no fill measured");
     }
 
-    /// Task #552 review: a draw's winner is a member that would take the target now. One whose
-    /// last ask wanted a job and was granted it since (its slots full) isn't drawn: the other
-    /// takes every target, the z6 tiles of one z3 tile among them, so none sits untaken. A member
-    /// passed by for one target takes the next drawn to it, down the offer.
+    /// Task #1413: a target finishing sooner on another member asking goes to it only as far as
+    /// that member has slots free (its ask's, less the jobs granted it since): the first of an offer
+    /// is spoken for by the sooner one, the next are the asker's, so none sits untaken. One whose
+    /// slots are full takes nothing more: the other takes every target, the z6 tiles of one z3 tile
+    /// among them.
     #[test]
-    fn placement_draws_only_among_those_who_would_take_it_now() {
+    fn placement_counts_the_sooner_members_free_slots() {
         let (_d, c, w1, _clock) = every((0, 0));
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
-        // (Clustered: 64 z6 tiles, one z3 tile.)
+        // (Clustered: 64 z6 tiles, one z3 tile, each run on m1: on m2, with no speeds measured,
+        // twice its time.)
         let ts: Vec<String> = (0..64).map(|i| format!("6/{}/{}", i % 8, i / 8)).collect();
         let cost = Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() };
         c.add_costs_by(&ts.iter().map(|t| (cost_key("pack", t), cost.clone())).collect::<Vec<_>>(), "m1");
         c.add_disks(&ts.iter().map(|t| (cost_key("pack", t), 10)).collect::<Vec<_>>());
-        let (a1, a2) =
-            (every_ask("m1", "pack", 4096, 10_000), Ask { want: 1, ..every_ask("m2", "pack", 4096, 10_000) });
+        let (a1, a2) = (every_ask("m1", "pack", 4096, 10_000), every_ask("m2", "pack", 4096, 10_000));
         assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
         c.set_placement(Some(placement(&[])));
         let all =
             Offer { step: "pack".into(), targets: ts.iter().map(|t| (t.clone(), "k".into(), 0)).collect(), job: None };
         let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], job: None };
-        let drawn_to_m1 = |c: &Coordinator| {
+        let each = |c: &Coordinator, a: &Ask| {
             let s = c.shared.lock().unwrap();
             let now = s.now();
-            ts.iter().filter(|t| !s.pick_every(&one(t), &a1, now).is_empty()).count()
+            ts.iter().filter(|t| !s.pick_every(&one(t), a, now).is_empty()).count()
         };
-        // Both free: about half each, and m1 passed by for one goes on to the next drawn to it.
-        let n = drawn_to_m1(&c);
-        assert!(n > 16 && n < 48, "{n}");
+        // Both free: each target alone sooner on m1, so m1's; m2's run of the whole offer starts past
+        // the one m1's slot takes.
+        assert_eq!((each(&c, &a1), each(&c, &a2)), (ts.len(), 0));
         {
             let s = c.shared.lock().unwrap();
-            assert!(!s.pick_every(&all, &a1, s.now()).is_empty(), "down the offer to one drawn to it");
+            let run = s.pick_every(&all, &a2, s.now());
+            assert_eq!(run.first().map(|t| t.0.as_str()), Some(ts[1].as_str()), "the first spoken for by m1");
         }
-        // m2 granted the one job its ask wanted: full, it's drawn nothing; m1 takes every one.
+        // m1 granted the one job its ask wanted: full, m2 takes every one.
         c.offer("p", vec![all.clone()]);
-        assert!(w2.ask(&a2).unwrap().is_some());
-        assert_eq!(drawn_to_m1(&c), ts.len() - 1);
+        assert!(w1.ask(&a1).unwrap().is_some());
+        assert_eq!(each(&c, &a2), ts.len() - 1, "all but the one m1 holds");
     }
 
     /// Task #560: a member's room is its ask's free memory less the jobs granted it since (a
@@ -12812,15 +12846,23 @@ mod tests {
         assert!(c.answers(m1[1].at + 1).is_empty(), "none since");
     }
 
-    /// Task #440 review: placement leaves a member out of a target's draw only while load from
-    /// outside the pool fills its cores, not while its own jobs do. Member m2 holds one job: granted
-    /// all 8 cores, all busy by its load, it stays in the draw by its weight; granted 4 with all 8
-    /// busy (4 outside, the most counted: half), it's left out and m1 takes every target.
+    /// Task #440 review: placement leaves a member out of those a target may go to only while load
+    /// from outside the pool fills its cores, not while its own jobs do. Member m2, at half m1's
+    /// time, holds one job: granted all 8 cores, all busy by its load, it still takes each target
+    /// (sooner there, task #1413); granted 4 with all 8 busy (4 outside, the most counted: half),
+    /// it's left out and m1 takes every target.
     #[test]
     fn placement_leaves_out_only_a_member_swamped_outside_the_pool() {
         let (_d, c, _w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 40, Some(1));
         c.set_placement(Some(placement(&[])));
+        // (m2 at half m1's time: each target finishes sooner there while it would take one.)
+        let paces = crate::paces::Paces {
+            lead: "m1".into(),
+            macs: [("m1".to_string(), 1.0), ("m2".to_string(), 0.5)].into(),
+            ..Default::default()
+        };
+        c.shared.lock().unwrap().sched.set_paces(paces);
         let offer = c.shared.lock().unwrap().offers[0].clone();
         let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
         let a1 = every_ask("m1", "slope-hi", 64_000, 100_000);
@@ -12849,8 +12891,7 @@ mod tests {
             s.seen("m2", String::new(), Some(&a2), now);
             (0..39).filter(|&i| !s.pick_every(&one(i), &a1, now).is_empty()).count()
         };
-        let in_draw = m1_takes(8);
-        assert!(in_draw > 5 && in_draw < 34, "m2 by its weight: m1 took {in_draw} of 39");
+        assert_eq!(m1_takes(8), 0, "m2 sooner, a slot free: each its");
         assert_eq!(m1_takes(4), 39, "m2 swamped outside the pool: left out");
     }
 
@@ -13273,18 +13314,19 @@ mod tests {
         // reads only the waits noted.)
     }
 
-    /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
-    /// paces, the other passing it by: exactly one of them gets each, the faster about
-    /// three in four at a third of the other's time, the same draw in the same window, and a new window a
-    /// new draw. Off: either may take any.
+    /// Task #1413: placement on, of two members asking whose room fits a target, it goes to the one
+    /// that finishes it soonest (its needs over each Mac's supply: m2 at three times m1's time), the
+    /// other passing it by; its grant's history says why. A target the sooner one couldn't take
+    /// (it failed it lately, or it's past its room) is the other's, and so is every one once the
+    /// sooner one no longer asks. Off: either may take any.
     #[test]
-    fn placement_draws_each_target_to_one_member_by_pace() {
+    fn placement_gives_each_target_to_the_member_that_finishes_it_soonest() {
         let (_d, c, w1, clock) = every((0, 0));
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
-        let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
+        let ts: Vec<String> = (0..40).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
         // (In one call each: every call writes the whole costs file.)
         let cost = Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() };
-        c.add_costs_by(&ts.iter().map(|t| (cost_key("pack", t), cost.clone())).collect::<Vec<_>>(), "m1");
+        c.add_costs_by(&ts.iter().map(|t| (cost_key("pack", t), cost.clone())).collect::<Vec<_>>(), "mini");
         c.add_disks(&ts.iter().map(|t| (cost_key("pack", t), 10)).collect::<Vec<_>>());
         // (Both asking lately: nothing offered yet.)
         let (a1, a2) = (every_ask("m1", "pack", 4096, 10_000), every_ask("m2", "pack", 4096, 10_000));
@@ -13300,45 +13342,52 @@ mod tests {
         // Off: both may take every one.
         assert!(picks(&c).iter().all(|&(x, y)| x && y));
         c.set_placement(Some(placement(&[])));
-        // (m2 at three times m1's time a target: m1 at the lead's, not measured.)
-        let paces =
-            crate::paces::Paces { lead: "mini".into(), macs: [("m2".to_string(), 3.0)].into(), ..Default::default() };
+        // (m2 at three times m1's time a target, m1 at the lead's.)
+        let paces = crate::paces::Paces {
+            lead: "mini".into(),
+            macs: [("mini".to_string(), 1.0), ("m1".to_string(), 1.0), ("m2".to_string(), 3.0)].into(),
+            ..Default::default()
+        };
         c.shared.lock().unwrap().sched.set_paces(paces);
-        let first = picks(&c);
-        assert!(first.iter().all(|&(x, y)| x != y), "each to exactly one");
-        let share = first.iter().filter(|p| p.0).count() as f64 / ts.len() as f64;
-        assert!((share - 0.75).abs() < 0.06, "{share}");
-        // The same window: the same draws; the next: drawn again (a target passed by isn't held by
-        // one member for good).
-        // (Both still asking.)
-        clock.advance(Duration::from_secs(crate::agent::placement::DRAW_S - 1));
-        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
-        assert_eq!(picks(&c), first);
-        clock.advance(Duration::from_secs(1));
-        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
-        let next = picks(&c);
-        assert!(next.iter().all(|&(x, y)| x != y) && next != first);
-        // A target m2 couldn't take itself (it failed it lately, or it's past its room) isn't drawn
-        // to it: m1 takes it.
+        assert!(picks(&c).iter().all(|&p| p == (true, false)), "each to m1");
+        // A target m1 couldn't take itself (it failed it lately, or it's past its room) is m2's.
         {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
-            for t in &ts[..200] {
-                s.failed.insert(("m2".into(), cost_key("pack", t)), (now, 1));
+            for t in &ts[..20] {
+                s.failed.insert(("m1".into(), cost_key("pack", t)), (now, 1));
             }
         }
         let after = picks(&c);
-        assert!(after[..200].iter().all(|&(x, y)| x && !y), "failed on m2: m1's");
-        assert_eq!(&after[200..], &next[200..]);
-        let small = every_ask("m2", "pack", 100, 10_000);
-        assert!(w2.ask(&small).unwrap().is_none());
-        assert!(picks(&c).iter().all(|&(x, _)| x), "past m2's room: m1's");
+        assert!(after[..20].iter().all(|&p| p == (false, true)), "failed on m1: m2's");
+        assert!(after[20..].iter().all(|&p| p == (true, false)));
+        let small = every_ask("m1", "pack", 100, 10_000);
+        assert!(w1.ask(&small).unwrap().is_none());
+        assert!(picks(&c).iter().all(|&(_, y)| y), "past m1's room: m2's");
+        // Granted, its lease event says what it was sized to and why it went there.
+        assert!(w1.ask(&a1).unwrap().is_none());
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "pack".into(),
+                targets: ts[20..].iter().map(|t| (t.clone(), "k".into(), 0)).collect(),
+                job: None,
+            }],
+        );
+        assert!(w1.ask(&a1).unwrap().is_some());
+        let history = c.history();
+        let data = history.iter().rev().find(|e| e.kind == "lease").and_then(|e| e.data.clone()).unwrap();
+        assert_eq!(data["threads"].as_u64().map(|t| t > 0), Some(true), "{data}");
+        assert!(data["sized_s"].as_u64().is_some(), "{data}");
+        let why = data["why"].as_str().unwrap_or_default();
+        assert!(why.starts_with("soonest done here") && why.contains("m2 45.0 min"), "{why}");
         // The other no longer asking: the one asking takes any.
         clock.advance(ASKING);
-        assert!(w1.ask(&a1).unwrap().is_none());
+        w2.ask(&a2).unwrap();
         let s = c.shared.lock().unwrap();
         let now = s.now();
-        assert!(ts.iter().all(|t| !s.pick_every(&one(t), &a1, now).is_empty()));
+        // (Past the one m1 was granted, and the one m2 just was.)
+        assert!(ts[22..].iter().all(|t| !s.pick_every(&one(t), &a2, now).is_empty()));
     }
 
     /// Placement on: a task of a kind a worker is measured slower at than this Mac goes to it only

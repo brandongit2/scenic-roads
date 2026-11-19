@@ -1057,7 +1057,7 @@ commit; re-exports at the old paths as before.
         - **Held and passed:** `Options::the_plan` (the agent, the planner), `Sched::the_plan`
           (`Coordinator::start`, `start_on`, `viewer`, `Broker::start`), `needs::Book`,
           `history::History`, `membership::Run`, `BuiltView`, `PageView` and the map log's `Writer`; passed to
-          the forecast (`forecast`, `forecast_by`, `Record::forecast`, `Noted::note`, `speeds`,
+          the forecast (`forecast`, `forecast_by`, `Record::forecast`, `lease_busy`, `speeds`,
           `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
           `room::Hints`, `redo::said`, `every`'s functions, `Paces::with_starts`,
           `memguard::Watch::floors`. `jobs::note_cost` takes the step's way as a number (`gc::set_way`).
