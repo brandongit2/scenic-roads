@@ -1474,8 +1474,8 @@ fn remainders(
                     let x = made.get_mut(&m).unwrap();
                     land.push(x.land.get(c));
                     lakes.push(x.lakes.get(c));
-                    x.land.set(c, geom::union_all(&land));
-                    x.lakes.set(c, geom::union_all(&lakes));
+                    x.land.set(c, without_specks(geom::union_all(&land)));
+                    x.lakes.set(c, without_specks(geom::union_all(&lakes)));
                 }
             }
             Err(ps) => {
@@ -1582,28 +1582,30 @@ fn part_reach(
     }
 }
 
-/// What a polygon under this wide on average (twice its area over its perimeter, metres) is: a
-/// hairline the land less the regions' land leaves where the two meet on one line drawn twice (the
-/// whole input's: rings of 0-0.3 m², 300 m long, 158 902 of them in one regional district's water
-/// alone before this, #1448 review), never land a remainder gives.
-pub const HAIRLINE_M: f64 = 1.0;
+/// A ring under this (m²) a remainder neither gives nor leaves: what the land less the regions' land
+/// leaves where the two meet on one line cut twice, and the union of a piece with its region's land
+/// leaves along their seam (the whole input's, before this: rings of 0-0.3 m², 158 902 of them in one
+/// regional district's water alone, its stored points ten times its own, #1448 review).
+pub const SPECK_M2: f64 = 1.0;
 
-/// Area `a` without its hairlines (`HAIRLINE_M`).
-fn without_hairlines(a: Area) -> Area {
-    let m = 1e-7 * roadcore::geo::M_PER_DEG;
-    let wide = |p: &Vec<geom::Ring>| {
-        let mut per = 0.0;
-        for ring in p {
-            for (i, a) in ring.iter().enumerate() {
-                let b = ring[(i + 1) % ring.len()];
-                let c = ((a[1] + b[1]) as f64 * 0.5 * 1e-7).to_radians().cos();
-                per += (((b[0] - a[0]) as f64 * m * c).powi(2) + ((b[1] - a[1]) as f64 * m).powi(2)).sqrt();
-            }
-        }
-        let area_m2 = geom::area_km2(&Area { polys: vec![p.clone()] }) * 1e6;
-        per > 0.0 && 2.0 * area_m2 / per >= HAIRLINE_M
+/// Area `a` without its specks (`SPECK_M2`): its polygons under it, and its holes under it filled.
+fn without_specks(a: Area) -> Area {
+    let m2 = |r: &geom::Ring| {
+        let lat = (r[0][1] as f64 * 1e-7).to_radians().cos();
+        (geom::area2(r) as f64 * 0.5).abs() * (1e-7 * roadcore::geo::M_PER_DEG).powi(2) * lat
     };
-    Area { polys: a.polys.into_iter().filter(wide).collect() }
+    Area {
+        polys: a
+            .polys
+            .into_iter()
+            .filter(|p| p.first().is_some_and(|o| m2(o) >= SPECK_M2))
+            .map(|p| {
+                let mut it = p.into_iter();
+                let outer = it.next().unwrap();
+                std::iter::once(outer).chain(it.filter(|h| m2(h) >= SPECK_M2)).collect()
+            })
+            .collect(),
+    }
 }
 
 /// A remainder's pieces (`remainders`): (the region, the cell, its land, its lakes).
@@ -1659,7 +1661,7 @@ fn remainder_pieces(
             .chain(others.values().map(|t| t.cells.get(&c)))
             .flatten()
             .collect();
-        let free = without_hairlines(of.intersect(&land.union(&lakes)).minus(&geom::union_all_of(&taken)));
+        let free = without_specks(of.intersect(&land.union(&lakes)).minus(&geom::union_all_of(&taken)));
         if free.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
