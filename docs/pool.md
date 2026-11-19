@@ -1208,12 +1208,17 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   progress's pace says, as its status shows it ("about 159 min left": its agent's estimate, sent
   with each beat as `Live::left_s`, less the time since the beat, `Lease::left_by_progress`),
   discounted by how such estimates have ended (`Sched::left_discount`): each lease keeps the times
-  left its beats said, and its "end" or "done" holds them to what was left in fact
-  (`history::Event::left`: from its last beat back, a pair each time that doubled, so a long job's
-  thousand beats weigh as a dozen); the ratio of the two (left in fact over said) of the week's jobs
-  that ended well (`History::left_ratios`), its step's, else every step's, at the percentile as far
-  below the middle as `needs-high-pct` is above it (5 by default), times the time left said; with no
-  estimate ended yet, or a discount to nothing, none from it. Else, measured and past it, its
+  left its beats said (kept beside the leases, `Leases::take_left`, not on each lease an ask
+  copies), and its "end" or "done" holds them to what was left in fact, less the time its job was
+  stopped since (paused or frozen, `Live::stopped_ms`) (`history::Event::left`: from its last beat
+  back, a pair each time that doubled, so a long job's thousand beats weigh as a dozen, none closer
+  to its end than its beats' median gap, where what's left is the beat's timing); the ratio of the
+  two (left in fact over said) of the week's jobs that ended well (`History::left_ratios`, each end's
+  put in among them as it comes, all made again as the history's file is rewritten), its step's,
+  else every step's, at the percentile as far below the middle as `needs-high-pct` is above it (5
+  by default; nearest rank, so with fewer than 100 / that percentile pairs, 20 by default, the
+  least of them), times the time left said; with no estimate ended yet, or a discount to nothing,
+  none from it. Else, measured and past it, its
   measured time and its slowest target's excess at its step's runs' high percentile
   (`Sched::batch_slow`: one target running long, the rest as measured) less what it has run, while
   it's within it; else none (it may end any moment). A job not measured has no model either (its

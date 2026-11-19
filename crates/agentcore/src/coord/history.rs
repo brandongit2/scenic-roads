@@ -121,7 +121,7 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
     /// The times left its job's beats said by its progress against what was left in fact, its
-    /// job ending then (s, [said, actual]: crate::coord::lease::Lease::left_pairs), on an "end" or
+    /// job ending then (s, [said, actual]: crate::coord::lease::Leases::take_left), on an "end" or
     /// "done" of a leased job: what a progress end is discounted by (`History::left_ratios`, task
     /// #1505 review). Events before it have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -251,6 +251,16 @@ pub struct History {
     /// No rewrite of the file is tried before this time (unix s): a rewrite that failed is tried
     /// again `REWRITE_AGAIN_S` later, not at every event (each a read of the whole file).
     rewrite_at: u64,
+    /// The file's rewrites so far (`rewrites`).
+    rewrites: u64,
+}
+
+/// Event `e`'s step and its progress estimates' ratios, what was left in fact over what was said
+/// (`Event::left`), on an "end" or "done" that ended well (`History::left_ratios`).
+pub fn left_ratios_of(e: &Event) -> Option<(&str, Vec<f64>)> {
+    let ok = matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && !e.left.is_empty();
+    let r = e.left.iter().filter(|p| p[0] > 0).map(|&[said, actual]| actual as f64 / said as f64).collect();
+    ok.then_some((e.step.as_deref()?, r))
 }
 
 /// How long after a failed rewrite of the file the next is tried (s).
@@ -572,6 +582,7 @@ impl History {
             set_at: 0,
             noted: HashMap::new(),
             rewrite_at: 0,
+            rewrites: 0,
         };
         let Some(f) = path.and_then(|p| std::fs::File::open(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
@@ -672,13 +683,16 @@ impl History {
     /// (crate::coord::sched::Sched::set_lefts).
     pub fn left_ratios(&self) -> BTreeMap<String, Vec<f64>> {
         let mut by: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-        for e in self.events.iter().filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true)) {
-            let Some(step) = &e.step else { continue };
-            for &[said, actual] in e.left.iter().filter(|p| p[0] > 0) {
-                by.entry(step.clone()).or_default().push(actual as f64 / said as f64);
-            }
+        for (step, r) in self.events.iter().filter_map(left_ratios_of) {
+            by.entry(step.to_string()).or_default().extend(r);
         }
         by
+    }
+
+    /// How many times the file has been rewritten, its events older than the week let go: what
+    /// the scheduler's discounts are made again from the history at (crate::coord's `Shared::note`).
+    pub fn rewrites(&self) -> u64 {
+        self.rewrites
     }
 
     /// What a running job's pace is held to (crate::agent::flags' slow): the runs kept that ended
@@ -740,7 +754,9 @@ impl History {
         if self.lines > 2 * self.events.len() + 1000 && now >= self.rewrite_at {
             let first = self.events.front().map_or(0, |e| e.seq);
             self.built.retain(|_, &mut s| s >= first);
-            if !self.rewrite(from) {
+            if self.rewrite(from) {
+                self.rewrites += 1;
+            } else {
                 self.rewrite_at = now + REWRITE_AGAIN_S;
             }
         }

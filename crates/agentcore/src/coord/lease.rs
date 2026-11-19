@@ -111,11 +111,6 @@ pub struct Lease {
     /// (crate::agent::jobs::Live::left_s, s), and when (`left_by_progress`; in memory alone).
     #[serde(skip)]
     left_said: Option<(Instant, u64)>,
-    /// Every time left its beats said, and when (in memory alone): held to its real end as it ends
-    /// (`left_pairs`), what the room held for a waiting job discounts a progress end by
-    /// (crate::coord::sched's `Lefts`, task #1505 review).
-    #[serde(skip)]
-    left_seen: Vec<(Instant, u64)>,
     /// The threads its job is counted for (0: not said): granted, then as its agent controls them
     /// (docs/pool.md §7.1, Threads controlled live: the more of what it runs on now and what its
     /// agent has told it, `Leases::running_on`), the cores the pool's own work takes on its Mac,
@@ -167,23 +162,6 @@ impl Lease {
     pub fn left_by_progress(&self, now: Instant) -> Option<u64> {
         let (at, s) = self.left_said?;
         s.checked_sub(now.saturating_duration_since(at).as_secs()).filter(|&s| s > 0)
-    }
-
-    /// The times left its beats said against what was left in fact, its job ending at `end` (s,
-    /// [said, actual]): from its last beat back, one each time what was left in fact has doubled
-    /// since the last taken, so a lease's pairs cover its run evenly in the log of its time left
-    /// and a long job's thousand beats weigh as a dozen, not as a thousand short jobs (any steady
-    /// spacing in that log gives the same spread; doubling keeps it to a few). None of a beat at
-    /// its end.
-    pub fn left_pairs(&self, end: Instant) -> Vec<[u64; 2]> {
-        let mut out: Vec<[u64; 2]> = Vec::new();
-        for &(at, said) in self.left_seen.iter().rev() {
-            let actual = end.saturating_duration_since(at).as_secs();
-            if actual > 0 && out.last().is_none_or(|l| actual >= 2 * l[1]) {
-                out.push([said, actual]);
-            }
-        }
-        out
     }
 
     /// Its job began before its lease (taken up at a lead's restart, or held
@@ -255,10 +233,7 @@ impl Lease {
     /// progress to go on and the most threads it had meanwhile (`Pace`): what its step's runs are
     /// held to (crate::coord::history::History). None of them for a lease `taken_up`: they'd be of
     /// the part of its run since, its longest stretches cut short.
-    /// And, taken up or not, the times left its beats said against its end (`left_pairs`): each
-    /// beat heard is held to its end, whenever its lease began.
     pub fn noted(&self, e: crate::coord::history::Event, end: Instant) -> crate::coord::history::Event {
-        let e = crate::coord::history::Event { left: self.left_pairs(end), ..e };
         if self.taken_up() {
             return e;
         }
@@ -397,6 +372,10 @@ pub struct Leases {
     /// id), for GC's queue: each may be handed off under until its member says otherwise
     /// (crate::coord::held::tell_gc). Not saved: a lease out at a restart is among those loaded.
     granted: Vec<(String, u64, u64)>,
+    /// Each lease's times left its beats said by its progress: when, what, and its job's time stopped
+    /// then (ms, `Live::stopped_ms`); kept here, not on the lease, which every ask copies
+    /// (`take_left`, task #1505 review). Let go as its lease goes (`expire`) or its end takes them.
+    seen: BTreeMap<u64, Vec<(Instant, u64, u64)>>,
 }
 
 /// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
@@ -431,7 +410,34 @@ impl Leases {
             cancelled: Vec::new(),
             by_word: BTreeSet::new(),
             granted: Vec::new(),
+            seen: BTreeMap::new(),
         }
+    }
+
+    /// The times left lease `id`'s beats said by its progress against what was left in fact, its
+    /// job ending at `end` (s, [said, actual]; `history::Event::left`), taken: from its last beat
+    /// back, one each time what was left in fact has doubled since the last taken, so a lease's
+    /// pairs cover its run evenly in the log of its time left and a long job's thousand beats weigh
+    /// as a dozen (any steady spacing in that log gives the same spread; doubling keeps it to a
+    /// few). What was left in fact leaves out the time its job was stopped since (paused or frozen:
+    /// `Live::stopped_ms`, its last beat's standing for its end's), and none closer to its end than
+    /// its beats' median gap is taken: within a beat of its end, what's left is the beat's timing,
+    /// not the estimate's.
+    pub fn take_left(&mut self, id: u64, end: Instant) -> Vec<[u64; 2]> {
+        let seen = self.seen.remove(&id).unwrap_or_default();
+        let mut gaps: Vec<u64> = seen.windows(2).map(|w| w[1].0.saturating_duration_since(w[0].0).as_secs()).collect();
+        gaps.sort_unstable();
+        let floor = gaps.get(gaps.len().saturating_sub(1) / 2).copied().unwrap_or(0);
+        let stopped_end = seen.last().map_or(0, |x| x.2);
+        let mut out: Vec<[u64; 2]> = Vec::new();
+        for &(at, said, stopped) in seen.iter().rev() {
+            let actual =
+                end.saturating_duration_since(at).as_secs().saturating_sub(stopped_end.saturating_sub(stopped) / 1000);
+            if actual > 0 && actual >= floor && out.last().is_none_or(|l| actual >= 2 * l[1]) {
+                out.push([said, actual]);
+            }
+        }
+        out
     }
 
     /// The leases `saved` (a `leases.json` read; none without one), each live for a whole `ttl`
@@ -727,7 +733,6 @@ impl Leases {
                 still_most: 0,
                 pace: Pace::default(),
                 left_said: None,
-                left_seen: Vec::new(),
                 slot: None,
                 threads: 0,
                 start_threads: 0,
@@ -806,7 +811,6 @@ impl Leases {
                 // (A view that doesn't say it (none yet, paused, an older agent's) clears it.)
                 if let Some(left) = left {
                     l.left_said = left.map(|s| (now, s));
-                    l.left_seen.extend(left.map(|s| (now, s)));
                 }
                 // (Its work moved: its progress line, or anything its job's view says but its CPU
                 // time, changed.)
@@ -862,6 +866,10 @@ impl Leases {
                     l.live = Some(v);
                     l.live_at = Some(now);
                 }
+                if let Some(Some(said)) = left {
+                    let stopped = l.live.as_ref().and_then(|v| v.stopped_ms).unwrap_or(0);
+                    self.seen.entry(id).or_default().push((now, said, stopped));
+                }
                 true
             }
             _ => false,
@@ -914,7 +922,11 @@ impl Leases {
     /// offered again.
     pub fn expire(&mut self, now: Instant) -> Vec<Lease> {
         let gone: Vec<u64> = self.by_id.values().filter(|l| !self.lasts(l, now)).map(|l| l.id).collect();
-        self.drop_where(|l| gone.contains(&l.id))
+        let out = self.drop_where(|l| gone.contains(&l.id));
+        // (The times left said of leases gone without an end to take them.)
+        let by = &self.by_id;
+        self.seen.retain(|id, _| by.contains_key(id));
+        out
     }
 
     /// The jobs' leases granted since the last take (worker, epoch, id), and every job's lease held
@@ -1205,29 +1217,43 @@ mod tests {
         assert!(back.all(t3).is_empty());
     }
 
-    /// Task #1505 review: a lease keeps every time left its beats said by its progress, off its
-    /// view (a beat not saying it clears the one in force, never the ones kept), and its end holds
-    /// them to what was left in fact, one pair each time that has doubled from its last beat back.
+    /// Task #1505 review: the leases keep every time left a lease's beats said by its progress, off
+    /// its view (a beat not saying it clears the one in force, never the ones kept), and its end
+    /// holds them to what was left in fact less the time its job was stopped since, one pair each
+    /// time that has doubled from its last beat back, none within its beats' median gap of its end.
     #[test]
     fn a_lease_holds_its_beats_times_left_to_its_end() {
         let t0 = Instant::now();
         let s = |n: u64| Duration::from_secs(n);
         let mut l = Leases::new(s(600));
         let a = l.grant("m1", job(&[("6/1/1", "k")]), t0);
-        let said = |left: Option<u64>| crate::agent::jobs::Live { left_s: left, targets: 1, ..Default::default() };
-        // (A beat every 10 s from 10 to 90 s, each saying 50 s left; the one at 50 s none.)
+        let said = |left: Option<u64>, stopped: u64| crate::agent::jobs::Live {
+            left_s: left,
+            stopped_ms: Some(stopped),
+            targets: 1,
+            ..Default::default()
+        };
+        // (A beat every 10 s from 10 to 90 s, each saying 50 s left; the one at 50 s none; its job
+        // paused 30 s between 20 and 30 s.)
         for t in (10..=90).step_by(10) {
             let left = (t != 50).then_some(50);
-            assert!(l.renew_live(a, "m1", None, Some(said(left)), t0 + s(t)));
+            assert!(l.renew_live(a, "m1", None, Some(said(left, if t < 30 { 0 } else { 30_000 })), t0 + s(t)));
         }
-        let x = l.of(a).unwrap();
+        let x = l.of(a).unwrap().clone();
         assert!(x.live.as_ref().unwrap().left_s.is_none(), "kept off its view");
         assert_eq!(x.left_by_progress(t0 + s(100)), Some(40), "50 s said at 90 s");
         assert_eq!(x.left_by_progress(t0 + s(140)), None, "the time said passed");
-        // Ending at 100 s: left in fact 10 s at its last beat (90 s), then 20 (80 s), 40 (60 s)
-        // and 80 (20 s), each double the last taken.
-        let e = x.noted(crate::coord::history::Event::new("done"), t0 + s(100));
-        assert_eq!(e.left, vec![[50, 10], [50, 20], [50, 40], [50, 80]]);
+        // Ending at 100 s: left in fact 10 s at its last beat (90 s), its beats' median gap, then
+        // 20 (80 s) and 40 (60 s), each double the last taken; at 20 s 80 s less its 30 s paused:
+        // 50, short of 80.
+        assert_eq!(l.take_left(a, t0 + s(100)), vec![[50, 10], [50, 20], [50, 40]]);
+        assert!(l.take_left(a, t0 + s(100)).is_empty(), "taken");
+        // Within a beat of its end: none.
+        let b = l.grant("m1", job(&[("6/1/2", "k")]), t0);
+        for t in [10, 20, 30] {
+            assert!(l.renew_live(b, "m1", None, Some(said(Some(50), 0)), t0 + s(t)));
+        }
+        assert_eq!(l.take_left(b, t0 + s(35)), vec![[50, 15]], "5 s from its last beat, under its 10 s gap");
     }
 
     /// Task #992: a lease's job began when its beats say (`Live::ran_s`, kept off its view: two

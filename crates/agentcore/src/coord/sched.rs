@@ -321,6 +321,17 @@ impl Lefts {
         }
         Lefts { by, taken: BTreeMap::new() }
     }
+
+    /// `ratios` of a job of `step` that ended, put in among its step's and every step's, in order.
+    pub fn add(&mut self, step: &str, ratios: &[f64]) {
+        for &r in ratios.iter().filter(|r| r.is_finite()) {
+            for k in [step, ""] {
+                let v = self.by.entry(k.to_string()).or_default();
+                let at = v.partition_point(|&x| x < r);
+                v.insert(at, r);
+            }
+        }
+    }
 }
 
 /// What placement (`Sched::placed_start`) keeps within one `Sched::pack`: why it left each target it

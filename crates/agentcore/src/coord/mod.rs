@@ -456,6 +456,9 @@ pub struct Shared {
     pub pause_at: u64,
     /// What happened, the last week's (`history`): the build page's activity.
     pub history: history::History,
+    /// The history's rewrites (`history::History::rewrites`) when the scheduler's discounts were
+    /// last made from it whole (`note`).
+    lefts_at: u64,
     /// The jobs' spans, logs and records by job id (jobspans: the lead's alone).
     pub jobspans: Option<Arc<jobspans::Store>>,
     /// The pool's lead (docs/pool.md §6.6): why it grants nothing now (its view not fresh, no longer
@@ -624,13 +627,17 @@ pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 impl Shared {
     /// `e` in the history (`history::History::add`); its number. A job's end that held its progress
     /// estimates to its end (`history::Event::left`) moves how the scheduler discounts them
-    /// (`sched::Sched::set_lefts`, task #1505 review), from the week of ends the history keeps.
+    /// (`sched::Sched::set_lefts`, task #1505 review): its ratios put in among them, and all made
+    /// again from the week the history keeps once its file is rewritten (its older events gone).
     fn note(&mut self, e: history::Event) -> u64 {
-        let lefts = !e.left.is_empty();
+        let ratios = history::left_ratios_of(&e).map(|(step, r)| (step.to_string(), r));
         let n = self.history.add(e);
-        if lefts {
+        if self.history.rewrites() != self.lefts_at {
+            self.lefts_at = self.history.rewrites();
             let by = self.history.left_ratios();
             self.sched.set_lefts(by);
+        } else if let Some((step, r)) = ratios {
+            self.sched.lefts.add(&step, &r);
         }
         n
     }
@@ -2037,6 +2044,7 @@ impl Coordinator {
             paused,
             pause_at,
             history,
+            lefts_at: 0,
             jobspans: lead.then(|| Arc::new(jobspans::Store::new(dir.join(jobspans::DIR)))),
             moving: None,
             told: None,
@@ -3035,12 +3043,14 @@ impl Coordinator {
     /// (`Lease::noted`: its longest still stretch, its rates, its longest wait for progress); as it
     /// is when `id` isn't a lease held.
     pub fn noted(&self, id: u64, e: history::Event) -> history::Event {
-        let s = self.shared.lock().unwrap();
+        let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        match s.leases.of(id) {
+        let e = match s.leases.of(id) {
             Some(l) => l.noted(e, now),
             None => e,
-        }
+        };
+        // (And the times left its beats said, held to its end: `history::Event::left`.)
+        history::Event { left: s.leases.take_left(id, now), ..e }
     }
 
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions; its number.
@@ -5466,7 +5476,8 @@ fn route(
                         ok: Some(!d.failed),
                         ..history::Event::new("done")
                     };
-                    s.note(l.noted(e, now));
+                    let e = history::Event { left: s.leases.take_left(l.id, now), ..l.noted(e, now) };
+                    s.note(e);
                 }
                 Work::Task { id } => {
                     let kind = s.tasks.kind_of(*id);
