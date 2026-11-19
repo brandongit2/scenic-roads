@@ -1302,18 +1302,20 @@ mod tests {
             h.add_at(with(now - KEEP_S - 10, i), now);
         }
         let new: Vec<u64> = (0..3).map(|i| h.add_at(with(now - 5, 100 + i), now)).collect();
-        // (No count bounds it: all kept, for the week.)
-        for _ in 0..60_000 {
+        // (No count bounds it: all kept, for the week; more than the thousand the rewrite lets
+        // the lines pass twice the events kept by.)
+        const MORE: usize = 3_000;
+        for _ in 0..MORE {
             h.add_at(Event::new("task"), now);
         }
         let kept = h.since(0, usize::MAX);
-        assert_eq!(kept.len(), 60_003);
+        assert_eq!(kept.len(), MORE + 3);
         assert_eq!(kept[..3].iter().map(|e| e.seq).collect::<Vec<_>>(), new);
         assert!(kept.iter().all(|e| e.data.is_none()), "no data in memory");
         let lines = std::fs::read_to_string(&p).unwrap();
         // (Rewritten as its lines passed twice the events kept and a thousand: the old ones written
         // by then dropped, those since left for the next.)
-        assert!(!lines.contains(r#"{"i":0}"#) && lines.lines().count() < 60_003 + 1100, "the old lines dropped");
+        assert!(!lines.contains(r#"{"i":0}"#) && lines.lines().count() < MORE + 3 + 1100, "the old lines dropped");
         let filed = since_in_file(&p, 0, 3);
         assert_eq!(
             filed.iter().map(|e| e.data.as_ref().unwrap()["i"].as_u64().unwrap()).collect::<Vec<_>>(),

@@ -367,17 +367,32 @@ pub fn read_steps(step: &str) -> Vec<(&'static str, bool)> {
 /// Whether target `t` of `step` may run in `view` (docs/readiness.md §3): `Waits` while a target or
 /// step it reads is left or itself waits for one (`held`, `whole_left`), else `Unknown` while an input it reads can't be worked out, else `Yes`.
 pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
+    readiness_in(step, t, view, &mut Worked::default())
+}
+
+/// What `readiness` has worked out as it follows what its reads read, kept for as long as the
+/// view stands still (one call's, or a planner's run of calls over one view: `ready_in`): a target
+/// held (`held`, which reads it as `Stale` does) and a step read whole that is left
+/// (`whole_left`) are answered once however many reads reach them, where a target's reads were
+/// followed again from each target beside it.
+#[derive(Default)]
+pub struct Worked {
+    held: std::collections::HashMap<(String, String), bool>,
+    whole: std::collections::HashMap<String, bool>,
+}
+
+pub fn readiness_in(step: &str, t: &str, view: &dyn View, worked: &mut Worked) -> Ready {
     let mut waits: Vec<(&'static str, String)> = Vec::new();
     for (r, passes, mid) in declared(step, t, view.along()) {
         match r {
             ReadTarget::One(s, u) => {
                 let left = if mid { view.mid_left(s, &u) } else { view.left(s, &u) };
-                if left || (passes && held(s, &u, view)) {
+                if left || (passes && held(s, &u, view, worked)) {
                     waits.push((s, u));
                 }
             }
             ReadTarget::Whole(s) => {
-                if view.any_left(s) || (passes && whole_left(s, view)) {
+                if view.any_left(s) || (passes && whole_left(s, view, worked)) {
                     waits.push((s, s.to_string()));
                 }
             }
@@ -408,7 +423,11 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
 /// step declares only what its run reads (its key's lines), never what its reads read.
 /// Only what's stale passes on: a mid made again for a target whose packs stay (`View::mid_left`)
 /// holds what reads the mids, not what reads the packs made from them.
-fn held(step: &str, u: &str, view: &dyn View) -> bool {
+fn held(step: &str, u: &str, view: &dyn View, worked: &mut Worked) -> bool {
+    let key = (step.to_string(), u.to_string());
+    if let Some(&h) = worked.held.get(&key) {
+        return h;
+    }
     struct Stale<'a>(&'a dyn View);
     impl View for Stale<'_> {
         fn left(&self, step: &str, t: &str) -> bool {
@@ -424,13 +443,21 @@ fn held(step: &str, u: &str, view: &dyn View) -> bool {
             self.0.along()
         }
     }
-    matches!(readiness(step, u, &Stale(view)), Ready::Waits(_))
+    let h = matches!(readiness_in(step, u, &Stale(view), worked), Ready::Waits(_));
+    worked.held.insert(key, h);
+    h
 }
 
 /// Whether `step`, read whole, is left: a target of it is, or something any of its targets read
 /// (any target of each step it reads, whole).
-fn whole_left(step: &str, view: &dyn View) -> bool {
-    view.any_left(step) || read_steps(step).into_iter().any(|(s, passes)| passes && whole_left(s, view))
+fn whole_left(step: &str, view: &dyn View, worked: &mut Worked) -> bool {
+    if let Some(&l) = worked.whole.get(step) {
+        return l;
+    }
+    let l = view.any_left(step)
+        || read_steps(step).into_iter().any(|(s, passes)| passes && whole_left(s, view, worked));
+    worked.whole.insert(step.to_string(), l);
+    l
 }
 
 /// Target `t`'s key of `step` (docs/readiness.md §4): its `derived_key` (a "none" target's is
@@ -588,6 +615,11 @@ pub fn wholes(step: &str) -> impl Iterator<Item = &'static str> {
 /// Whether `readiness` says `Yes`.
 pub fn ready(step: &str, t: &str, view: &dyn View) -> bool {
     readiness(step, t, view) == Ready::Yes
+}
+
+/// `ready` with what the calls before it over this same, unchanged view worked out (`Worked`).
+pub fn ready_in(step: &str, t: &str, view: &dyn View, worked: &mut Worked) -> bool {
+    readiness_in(step, t, view, worked) == Ready::Yes
 }
 
 /// The waiting note of a step's targets held (`seam::Planned::held`, the status's `waiting` list, the

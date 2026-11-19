@@ -1037,7 +1037,7 @@ fn put_record(out: &mut Out, ml: &str, meta: &MidsMeta, blobs: &BTreeMap<String,
     let mut w = store::pack::PackWriter::create(&local, serde_json::to_value(meta)?, true)?;
     for (t, b) in blobs {
         let (x, y) = xy(t);
-        let raw = Tile::decode(b)?.encode().len() as u32;
+        let raw = fmt::unzipped_len(b)?;
         w.add(fmt::PACK_Z, x, y, b, raw)?;
     }
     w.finish()?;

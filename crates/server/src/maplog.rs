@@ -293,7 +293,7 @@ impl Link {
         }
         if self.contact.is_none() {
             let root = self.d.nas_root().filter(|_| self.d.online());
-            let home = coordwire::lead::this_macs_agent();
+            let home = crate::data::this_macs_agent();
             self.contact = coordwire::lead::find(home.as_deref(), root.as_ref()).ok().flatten();
         }
         self.contact.clone()

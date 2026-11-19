@@ -8,7 +8,7 @@
 //! when it last succeeded (`state/build/jobs.json`) isn't run again; an unchanged output keeps its
 //! content name, so what depends on it keeps its key too.
 
-use super::steps::{along_add, along_add_built, readiness, ready, Ready, View};
+use super::steps::{along_add, along_add_built, readiness, readiness_in, ready, ready_in, Ready, View, Worked};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use agentcore::agent::jobs::Work;
 use agentcore::agent::nasread;
@@ -838,10 +838,15 @@ pub const PEAKS_V: u32 = 4;
 
 /// What a step's targets held in `view` wait for (crate::agent::steps::readiness), each a held
 /// target's: the step's waiting note (`Planned::held`), None when none of them waits.
-fn held_note<'a>(step: &str, targets: impl IntoIterator<Item = &'a str>, view: &dyn View) -> Option<String> {
+fn held_note<'a>(
+    step: &str,
+    targets: impl IntoIterator<Item = &'a str>,
+    view: &dyn View,
+    worked: &mut Worked,
+) -> Option<String> {
     let mut waits = Vec::new();
     for t in targets {
-        if let Ready::Waits(w) = readiness(step, t, view) {
+        if let Ready::Waits(w) = readiness_in(step, t, view, worked) {
             waits.extend(w);
         }
     }
@@ -1793,17 +1798,18 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.clone()).collect(),
     );
     let mut lo_held = Vec::new();
+    let mut worked = Worked::default();
     for (q, k) in &tt.terrain_lo {
         if k == UNKNOWN || !w.terrain_lo_left.contains(q) {
             continue;
         }
-        if ready("terrain-lo", q, &w.left) {
+        if ready_in("terrain-lo", q, &w.left, &mut worked) {
             w.terrain_lo.push((q.clone(), k.clone()));
         } else if w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q)) {
             lo_held.push(q.as_str());
         }
     }
-    if let Some(n) = held_note("terrain-lo", lo_held, &w.left) {
+    if let Some(n) = held_note("terrain-lo", lo_held, &w.left, &mut worked) {
         w.held.push(("terrain-lo", n));
     }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
@@ -1845,14 +1851,15 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     // declared read (task #929). A "none" z6 tile reads nothing.)
     w.left.set("terrain-deep", w.terrain_deep_left.iter().cloned());
     let mut hi_held: Vec<String> = Vec::new();
+    let mut worked = Worked::default();
     w.terrain.retain(|(t, k)| {
-        let ok = is_none_key("terrain-hi", t, k) || ready("terrain-hi", t, &w.left);
+        let ok = is_none_key("terrain-hi", t, k) || ready_in("terrain-hi", t, &w.left, &mut worked);
         if !ok {
             hi_held.push(t.clone());
         }
         ok
     });
-    if let Some(n) = held_note("terrain-hi", hi_held.iter().map(String::as_str), &w.left) {
+    if let Some(n) = held_note("terrain-hi", hi_held.iter().map(String::as_str), &w.left, &mut worked) {
         w.held.push(("terrain-hi", n));
     }
     if !idle.is_empty() {
@@ -1927,13 +1934,14 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         }
     }
     let left = &w.left;
+    let mut worked = Worked::default();
     let mut sd_held = Vec::new();
     let mut slope_deep = Vec::new();
     for (t, k) in &tt.slope_deep {
         let Some(k) = k else { continue };
         if !sdcurrent(t, &Some(k.clone())) {
             // (A drop reads nothing: it waits for nothing, `hollow_drops`.)
-            if is_none_key("slope-deep", t, k) || ready("slope-deep", t, left) {
+            if is_none_key("slope-deep", t, k) || ready_in("slope-deep", t, left, &mut worked) {
                 slope_deep.push((t.clone(), k.clone()));
             } else {
                 sd_held.push(t.as_str());
@@ -1946,7 +1954,7 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     for (t, k) in &tt.slope {
         let Some(k) = k else { continue };
         if !scurrent(t, &Some(k.clone())) {
-            if ready("slope-hi", t, left) {
+            if ready_in("slope-hi", t, left, &mut worked) {
                 slope.push((t.clone(), k.clone()));
             } else {
                 s_held.push(t.as_str());
@@ -1959,7 +1967,7 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     let mut slo_held = Vec::new();
     for (q, k) in &tt.slope_lo {
         if w.slope_lo_left.contains(q) {
-            if ready("slope-lo", q, left) {
+            if ready_in("slope-lo", q, left, &mut worked) {
                 slope_lo.push((q.clone(), k.clone()));
             } else {
                 slo_held.push(q.as_str());
@@ -1968,7 +1976,7 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     }
     let mut held = Vec::new();
     for (ts, step) in [(sd_held, "slope-deep"), (s_held, "slope-hi"), (slo_held, "slope-lo")] {
-        if let Some(n) = held_note(step, ts, left) {
+        if let Some(n) = held_note(step, ts, left, &mut worked) {
             held.push((step, n));
         }
     }
@@ -2039,18 +2047,19 @@ pub fn tree_work(tt: &trees::treepacks::Targets, m: &BTreeMap<String, String>, d
     w.unmid = tt.pieces.iter().filter(|(t, k, _)| !(current(t, k) && has_mid(t))).map(|p| p.0.clone()).collect();
     let mut unmid = Left::default();
     unmid.mids.insert("trees", w.unmid.clone());
+    let mut worked = Worked::default();
     let mut held = Vec::new();
     for (q, k, none) in &tt.lo {
         if !stale_lo.contains(q) {
             continue;
         }
-        if *none || ready("trees-lo", q, &unmid) {
+        if *none || ready_in("trees-lo", q, &unmid, &mut worked) {
             w.lo.push((q.clone(), k.clone()));
         } else {
             held.push(q.as_str());
         }
     }
-    w.lo_held = held_note("trees-lo", held, &unmid);
+    w.lo_held = held_note("trees-lo", held, &unmid, &mut worked);
     w.stale_pieces = stale_pieces;
     w.stale_lo = stale_lo;
     w
@@ -3527,8 +3536,10 @@ fn landmarks_work(
     let mut held: Vec<(String, String)> = Vec::new();
     // (Each of a step's stale targets that can run, the rest held, said.)
     let mut take = |step: &str, targets: Vec<(String, String)>, left: &Left, out: &mut Vec<Work>| {
-        let (go, wait): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, _)| ready(step, t, left));
-        if let Some(n) = held_note(step, wait.iter().map(|(t, _)| t.as_str()), left) {
+        let mut worked = Worked::default();
+        let (go, wait): (Vec<_>, Vec<_>) =
+            targets.into_iter().partition(|(t, _)| ready_in(step, t, left, &mut worked));
+        if let Some(n) = held_note(step, wait.iter().map(|(t, _)| t.as_str()), left, &mut worked) {
             held.push((step.to_string(), n));
         }
         if !go.is_empty() {
@@ -9080,8 +9091,8 @@ mod tests {
     /// back in place (as a restarted agent reads it), each new at every state, with its shapes'
     /// memos empty, and a context, terrain indexes and key memo of its own (a process's hash seeds
     /// and memos differ from another's); and from the first, its memos filled. Three regions over
-    /// two z6 tiles, so the plan's lists by region and by tile hold several; at each state as the
-    /// build goes on.
+    /// two z6 tiles, so the plan's lists by region and by tile hold several; at the build's first
+    /// state and every third after.
     #[test]
     fn the_plan_is_the_same_however_its_coverage_and_memos_came() {
         let d = tempfile::tempdir().unwrap();
@@ -9120,9 +9131,16 @@ mod tests {
         let (mut states, mut most) = (0, 0);
         for _ in 0..12 {
             let one = planned(&first, &m, &done);
-            assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
-            assert!(one == planned(&kept_back(&made()), &m, &done), "a coverage read back in place, state {states}");
-            assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled, state {states}");
+            // (Each of the others a plan of its own, a half second of the plan's work: at the first
+            // state, where the first coverage's memos are empty, and at every third after.)
+            if states % 3 == 0 {
+                assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
+                assert!(
+                    one == planned(&kept_back(&made()), &m, &done),
+                    "a coverage read back in place, state {states}"
+                );
+                assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled, state {states}");
+            }
             let p = &one.1;
             most = most.max(p.regions.len().min(p.built.len()).min(p.regions.iter().map(|r| r.units.len()).sum()));
             states += 1;

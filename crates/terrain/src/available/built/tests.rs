@@ -214,11 +214,20 @@ fn only_the_z6_tiles_a_dataset_moved_in_are_made_again() {
 
 /// A pause between z6 tiles keeps those made (the records saved, the job told it's paused): the
 /// next run makes the rest, then the root and the caps, ending with the files of a run not paused.
+/// Over a small coast (two z6 tiles of land among the 4096, the rest cut away whole), so a run is
+/// the keys of every tile and the packs of two.
 #[test]
 fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
     let d = tempfile::tempdir().unwrap();
     let ds = [everywhere("world")];
-    let all = crate::available::tests::everything();
+    let land = crate::available::tests::coast(2.5);
+    let all = Cut::new(&land, super::super::cut::Side::Land).unwrap();
+    let run = |root: &Path, ds: &[Dataset]| {
+        let mut o = out(root);
+        let m = build(&mut o, ds, &all, &|_, _| {}).unwrap();
+        o.save().unwrap();
+        m
+    };
     let e = build_with(&mut out(d.path()), &ds, &all, &|_, _| {}, &|| true).unwrap_err();
     assert!(jobrt::control::is_paused(&e), "{e:#}");
     let m = run(d.path(), &ds);
@@ -230,8 +239,9 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
         out(r).manifest.into_iter().filter(|(l, _)| l.contains("/available-built-")).collect()
     };
     assert_eq!(files(d.path()), files(fresh.path()));
-    // (Paused again and again, at safe points all through, over a fine dataset's packs: the same
-    // files in the end, no z6 tile lost or made twice.)
+    // (Paused again and again, at safe points all through and once between the coast's tile and
+    // the island's, over a fine dataset's packs: the same files in the end, no z6 tile lost or
+    // made twice.)
     let (tx, ty) = z10(2.25, 44.25);
     let b = roadcore::geo::tile_box(BUILT_MAXZ, tx, ty);
     let fine = || {
@@ -246,13 +256,26 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
         )
     };
     let ds = [fine(), everywhere("world")];
+    // (The tiles are made in the order of their names, "6/x/y".)
+    let order: Vec<String> = {
+        let mut v: Vec<String> = (0..64u32).flat_map(|x| (0..64u32).map(move |y| format!("6/{x}/{y}"))).collect();
+        v.sort();
+        v
+    };
+    let place = |lon, lat| {
+        let (x, y) = roadcore::geo::tile_of(roadcore::geo::merc(lon, lat), fmt::PACK_Z);
+        order.iter().position(|t| *t == format!("6/{x}/{y}")).unwrap() as u32
+    };
+    let (coast, island) = (place(2.0, 44.1), place(20.25, 44.25));
+    assert!(coast != island, "two tiles");
+    let between = coast.min(island) + 1;
     let paused = tempfile::tempdir().unwrap();
-    let n = std::cell::Cell::new(0u32);
+    let (n, last) = (std::cell::Cell::new(0u32), std::cell::Cell::new(0u32));
     let pausing = || {
         n.set(n.get() + 1);
-        n.get() % 701 == 0
+        n.get() % 701 == 0 || n.get() == between
     };
-    let (mut pauses, mut made) = (0, 0);
+    let (mut pauses, mut made, mut between_pause) = (0, 0, false);
     loop {
         let mut o = out(paused.path());
         match build_with(&mut o, &ds, &all, &|_, _| {}, &pausing) {
@@ -264,11 +287,13 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
             Err(e) => {
                 assert!(jobrt::control::is_paused(&e), "{e:#}");
                 pauses += 1;
-                made += 701;
+                made += (n.get() - last.get()) as usize;
+                between_pause |= n.get() == between;
+                last.set(n.get());
             }
         }
     }
-    assert!(pauses >= 5, "{pauses}");
+    assert!(pauses >= 5 && between_pause, "{pauses} pauses");
     assert_eq!(made, 4096, "each z6 tile made once");
     let whole = tempfile::tempdir().unwrap();
     run(whole.path(), &ds);
