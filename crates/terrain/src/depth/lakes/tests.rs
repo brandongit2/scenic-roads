@@ -451,7 +451,7 @@ fn the_small_lakes_resume_where_a_stop_left_them() {
     // Stopped again from afresh, given back, and taken up on another Mac: carried there.
     std::fs::remove_dir_all(&a).unwrap();
     let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
-    CARRY_ROOT.set(Some((nas, "lake-depth".into())));
+    CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(&nas, "lake-depth", &["the-target"])));
     forget_opened();
     STOP_AFTER.set(Some(100));
     assert!(jobrt::control::is_paused(&run(&mut open(&a)).unwrap_err()));

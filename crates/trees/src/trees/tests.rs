@@ -459,7 +459,8 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
 }
 
 /// Task #889: a z6 tile's run paused at every one of its safe points (each row of blocks kept),
-/// resumed each time, writes the same mid and archives as one never paused.
+/// resumed each time, on the other of two Macs (task #1414), writes the same mid and archives as
+/// one never paused.
 #[test]
 fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
     use jobrt::resume_log::STOP_AFTER;
@@ -485,21 +486,32 @@ fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
             .collect::<Vec<_>>()
     };
     z6(&run("fresh", None)).unwrap();
-    let keep = o.path().join("keep");
+    // (Task #1414: given back at each and taken up on the other of two Macs in turn, its log
+    // carried between them through the NAS: jobrt::resume_log::carry_out.)
+    let keeps = [o.path().join("a/keep"), o.path().join("b/keep")];
+    let nas = store::nasfs::NasRoot::local_for_test(o.path().join("nas"));
+    jobrt::resume_log::CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(&nas, "trees", &["6/33/22"])));
+    let copy = o.path().join("nas").join(jobrt::resume_log::CARRIED).join("trees/6%2F33%2F22/6_33_22.resume");
     let mut stops = 0;
     loop {
+        // (Each run a job's process of its own: jobrt::resume_log::forget_opened.)
+        jobrt::resume_log::forget_opened();
         STOP_AFTER.set(Some(1));
-        let r = z6(&run("paused", Some(keep.clone())));
+        let r = z6(&run("paused", Some(keeps[stops % 2].clone())));
         STOP_AFTER.set(None);
         match r {
             Err(e) => {
                 assert!(jobrt::control::is_paused(&e), "{e:#}");
                 stops += 1;
+                assert_eq!(jobrt::resume_log::carry_out().len(), 1);
+                assert!(copy.exists());
             }
             Ok(_) => break,
         }
     }
+    jobrt::resume_log::CARRY_ROOT.set(None);
     assert!(stops >= 1, "a row a safe point: {stops}");
+    assert!(!copy.exists(), "taken up on the other Mac");
     assert!(files("paused") == files("fresh"), "paused at each of its {stops} safe points");
 }
 

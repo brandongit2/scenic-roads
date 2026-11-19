@@ -5442,9 +5442,17 @@ impl Agent {
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
         // from then, so a job frozen meanwhile, by a pause or a condition, is stopped once a pause
         // would have frozen it, `Agent::guard`.)
+        // (No longer drained for memory: it carries again, should it stop at a safe point.)
+        if slot.mem_drain.is_none() {
+            std::fs::remove_file(jobrt::control::no_carry_mark(&control)).ok();
+        }
         if let Some(why) = &slot.mem_drain {
             if slot.drain_since.is_none() {
                 eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
+                // (Carrying nothing as it stops: the memory it holds is wanted now, jobrt::control.)
+                if let Err(e) = std::fs::write(jobrt::control::no_carry_mark(&control), b"") {
+                    eprintln!("agent: telling {} to carry nothing: {e}", r.spec.id);
+                }
                 if let Err(e) = jobrt::control::tell(&control, jobrt::control::Say::Drain) {
                     eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                 }
@@ -5488,7 +5496,8 @@ impl Agent {
                 });
                 // (For the update, not frozen past the grace: the loop restarts then, leaving it
                 // running for the new agent to take over, `Agent::update_due`, `hand_over_jobs`.)
-                if r.paused.is_none() && since.elapsed() >= grace && !for_update {
+                let carrying = jobrt::control::carrying_mark(&control).exists();
+                if r.paused.is_none() && drain_freezes(since.elapsed(), grace, for_update, carrying) {
                     eprintln!(
                         "agent: {} reached no safe point in {} min; frozen where it is",
                         r.spec.id,
@@ -7542,11 +7551,19 @@ impl Agent {
         if self.resume_on() {
             env.push((resume::RESUME_ENV.into(), "1".into()));
             // (Where a planned step's logs go given back, and where its targets' logs given back on
-            // another Mac wait for it: its own `--root`, under its step, jobrt::resume_log's
-            // carry_out and take_carried.)
+            // another Mac wait for it: its own `--root`, under its step and targets as the plan names
+            // them, jobrt::resume_log's carry_out and take_carried; and, on the lead, the NAS's
+            // throughput as its probes measured it, what a carry is weighed by when the job measured
+            // none.)
             if let (Some(r), Some(w)) = (self.last_root.as_ref(), spec.record.as_ref()) {
+                let targets: Vec<&str> = w.targets.iter().map(|(t, _)| t.as_str()).collect();
                 env.push((jobrt::resume_log::CARRY_ENV.into(), jobs::root_arg(r)));
                 env.push((jobrt::resume_log::CARRY_STEP_ENV.into(), w.step.clone()));
+                env.push((jobrt::resume_log::CARRY_TARGETS_ENV.into(), targets.join("\n")));
+                let probed = self.coord.as_ref().and_then(|c| c.nas_view()).and_then(|v| v.limits).map(|l| l.bytes_s);
+                if let Some(b) = probed.filter(|b| *b > 0.0) {
+                    env.push((jobrt::resume_log::CARRY_RATE_ENV.into(), format!("{b:.0}")));
+                }
             }
             if resume::resumable(&spec.id) {
                 if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
@@ -7562,6 +7579,9 @@ impl Agent {
         // done (jobrt::control), afresh.
         let control = self.control_path(k);
         jobrt::control::tell(&control, jobrt::control::Say::Run)?;
+        // (Neither carrying nor drained for memory, yet: jobrt::control's marks, the last job's gone.)
+        std::fs::remove_file(jobrt::control::carrying_mark(&control)).ok();
+        std::fs::remove_file(jobrt::control::no_carry_mark(&control)).ok();
         let done = self.done_path(k);
         std::fs::remove_file(&done).ok();
         self.slots[k].drain_since = None;
@@ -8328,10 +8348,18 @@ impl Agent {
                 eprintln!("agent: {id}: its work under way dropped ({})", p.display());
             }
         }
-        // (And its log carried to the NAS, should a stop have carried one: jobrt::resume_log.)
-        if let (Some(r), Some(t)) = (self.last_root.as_ref(), codecs::tile::TileId::parse(&c.target)) {
-            if !step.is_empty() && jobrt::resume_log::drop_carried(r, &step, (t.z, t.x, t.y)) {
-                eprintln!("agent: {id}: its resume log carried to the NAS dropped");
+        // (And its logs carried to the NAS, should a stop have carried any: jobrt::resume_log, on a
+        // thread of its own, its NAS calls never the loop's.)
+        if let Some(r) = self.last_root.clone().filter(|_| !step.is_empty()) {
+            let (step, target, job) = (step.clone(), c.target.clone(), id.clone());
+            let drop = move || {
+                let n = jobrt::resume_log::drop_carried(&r, &step, &target);
+                if n > 0 {
+                    eprintln!("agent: {job}: its {n} resume logs carried to the NAS dropped");
+                }
+            };
+            if let Err(e) = std::thread::Builder::new().name("carried-drop".into()).spawn(drop) {
+                eprintln!("agent: {id}: dropping its carried resume logs: {e}");
             }
         }
         self.mem.retry.remove(&id);
@@ -9677,6 +9705,14 @@ fn apply_gate_ask(root: &NasRoot, a: &inputs::inputs::Ask, shown: Option<inputs:
         }
         Err(e) => eprintln!("agent: {}'s ask of {}: {e:#}", a.by, a.unit),
     }
+}
+
+/// Whether a job asked `since` ago to stop at its next safe point is frozen where it is: past the
+/// drain's `grace`, not for an update (left running for the next agent), and not one that said it
+/// reached its safe point and carries its logs (jobrt::control::carrying_mark: frozen, it would
+/// hold its Mac's carry turn, and the jobs beside it waiting for the turn, task #1414).
+fn drain_freezes(since: Duration, grace: Duration, for_update: bool, carrying: bool) -> bool {
+    since >= grace && !for_update && !carrying
 }
 
 /// A cancelled job's work under way on `target` dropped (jobrt::control::Cancel): the entries at
@@ -13502,6 +13538,9 @@ mod tests {
         tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_none());
         assert_eq!(jobrt::control::said(&a.control_path(1)), Some(jobrt::control::Say::Drain));
+        // (Task #1414: drained for memory, told to carry nothing as it stops; the others not.)
+        assert!(jobrt::control::no_carry_mark(&a.control_path(1)).exists());
+        assert!(!jobrt::control::no_carry_mark(&a.control_path(0)).exists());
         // (The largest grown, what stays past the room: the next newest drains too.)
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
@@ -20504,10 +20543,22 @@ mod membership_tests {
         );
     }
 
+    /// Task #1414: a job asked to stop at its next safe point is frozen past the drain's grace, but
+    /// not one that reached its safe point and says it carries its logs, nor one draining for an
+    /// update.
+    #[test]
+    fn a_job_carrying_its_logs_is_not_frozen_for_its_safe_point() {
+        let (past, within) = (DRAIN_GRACE + Duration::from_secs(1), DRAIN_GRACE - Duration::from_secs(1));
+        assert!(drain_freezes(past, DRAIN_GRACE, false, false));
+        assert!(!drain_freezes(within, DRAIN_GRACE, false, false));
+        assert!(!drain_freezes(past, DRAIN_GRACE, false, true), "carrying");
+        assert!(!drain_freezes(past, DRAIN_GRACE, true, false), "for an update");
+    }
+
     /// Task #1414: a planned step's job is told where its resume logs go given back, and where its
-    /// targets' logs given back on another Mac wait for it (jobrt::resume_log's `CARRY_ENV` and
-    /// `CARRY_STEP_ENV`: its own root, its step); cancelled, its target's carried copy is dropped
-    /// with its work.
+    /// targets' logs given back on another Mac wait for it (jobrt::resume_log's `CARRY_ENV`,
+    /// `CARRY_STEP_ENV` and `CARRY_TARGETS_ENV`: its own root, its step, its targets as the plan
+    /// names them); cancelled, its target's carried copies are dropped with its work.
     #[test]
     fn a_job_is_told_where_logs_are_carried_and_a_cancel_drops_its_copy() {
         let d = tempfile::tempdir().unwrap();
@@ -20548,23 +20599,26 @@ mod membership_tests {
             cmd: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                "printf '%s %s' \"$SCENIC_RESUME_CARRY\" \"$SCENIC_RESUME_CARRY_STEP\" > \"$1/env\"; sleep 3600".into(),
+                "printf '%s %s %s' \"$SCENIC_RESUME_CARRY\" \"$SCENIC_RESUME_CARRY_STEP\" \"$SCENIC_RESUME_CARRY_TARGETS\" > \"$1/env\"; sleep 3600".into(),
                 "--scratch".into(),
                 scratch.to_string_lossy().into_owned(),
             ],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/9/9".into(), "k".into())] }),
+            record: Some(jobs::Work {
+                step: "bldtiles".into(),
+                targets: vec![("6/9/9".into(), "k".into()), ("6/9/10".into(), "k".into())],
+            }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         a.start(0, spec, &cond, None).unwrap();
-        let told = format!("{} bldtiles", jobs::root_arg(&nas));
+        let told = format!("{} bldtiles 6/9/9\n6/9/10", jobs::root_arg(&nas));
         let env = scratch.join("env");
         store::testkit::eventually("the job's environment written", || {
             std::fs::read_to_string(&env).is_ok_and(|s| s.len() == told.len())
         });
         assert_eq!(std::fs::read_to_string(&env).unwrap(), told);
-        let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles/6_9_9.resume");
+        let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles/6%2F9%2F9/6_9_9.resume");
         std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
         std::fs::write(&copy, b"bldtiles-resume 1 x\n").unwrap();
         let c = jobrt::control::Cancel {
@@ -20575,7 +20629,8 @@ mod membership_tests {
             at: 0,
         };
         a.cancel_slot(0, &c);
-        assert!(a.slots[0].running.is_none() && !copy.exists(), "its copy dropped with its work");
+        assert!(a.slots[0].running.is_none());
+        store::testkit::eventually("its copy dropped with its work", || !copy.exists());
     }
 
     #[test]

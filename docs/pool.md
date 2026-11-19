@@ -1363,26 +1363,35 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   Deleted when its packs are written, on a cancel, with a given-back job's scratch by
   room-making, and, untouched for 24 hours, as the step's next run on that Mac starts.
   **Carried to the next Mac** (task #1414): a job stopping at a safe point short of its targets
-  (`jobrt::control::stop_paused`: a pause, the memory guard's drain, an update's) copies the logs
-  it opened and grew to the NAS, `state/pool/carried/<step>/<z>_<x>_<y>.resume`, before it exits
-  (`resume_log::carry_out`), so its agent sees its end, and gives its lease back, only once the
-  copies are made, its lease beating meanwhile; the bytes are the job's own, in its record's NAS
-  counts. A job ended any other way carries nothing: a failure, a cancel, and every stop by signal
-  (the memory and disk guards' stops, a yield, a sleep, a lapsed lease, the lead moving). One
-  Mac's carries go one at a time (`<home>/carry.lock`), each a turn of its job's NAS limit
-  (store::nasfs's `copy_from_local_paced`), and a log is skipped when its copy up and the next
-  run's down, at the job's NAS rate (its bytes over the time it waited on the NAS), take longer
-  than the work it holds (this run's time keeping its blocks, scaled to all it holds:
-  `worth_carrying`). A log holding work kept beside it on its Mac's disk (unit's folders,
-  `Pieces::folder_piece`) says so in its first line (`<kind>-resume L <id>`) and is never carried:
-  a unit z6 tile resumes on its own Mac alone and starts afresh elsewhere. A planned step's jobs
-  are told the NAS and their step (`resume_log::CARRY_ENV`, its `--root`, and `CARRY_STEP_ENV`),
-  and a target's log as it opens reads the carried copy's first line on the NAS and takes the copy
-  when it's of the run's identity and holds more than the log there (a longer log of one first
-  line: logs are appended to from where the last run left them), weighed again once it's here,
-  deleting the copy either way (`take_carried`). A cancel deletes its target's copy with its
-  work; the lead's agent, once an hour, deletes the copies whose target its plan neither plans nor
-  leases in that step, and those cut short (a copy's temporary file) a day on
+  (a pause, an update's drain) copies the logs it opened and grew to the NAS before it exits
+  (`resume_log::carry_out`, from `jobrt::control::stop_paused` and from every paused exit,
+  `jobrt::control::exit`'s, so a program a step runs, the trees', carries its own), filed under
+  its target as the plan names it: `state/pool/carried/<step>/<target, its slashes %2F>/<z>_<x>_<y>.resume`
+  (the job's target whose last three parts are the log's tile, `n/4/3/1` for `4_3_1`, else its only
+  target). So its agent sees its end, and gives its lease back, only once the copies are made, its
+  lease beating meanwhile; the bytes are the job's own, in its record's NAS counts. It says it's
+  carrying beside its channel (`control.carrying`), and its agent doesn't freeze it at the drain's
+  grace meanwhile. A job ended any other way carries nothing: a failure, a cancel, every stop by
+  signal (the memory and disk guards' stops, a yield, a sleep, a lapsed lease, the lead moving),
+  and a memory guard's drain, the memory it holds wanted now (its agent says so beside its
+  channel, `control.no-carry`). One Mac's carries go one at a time (`<home>/carry.lock`), the turn
+  waited for only while waiting and copying cost less than the work the logs hold (past that, none
+  carried, said), each copy a turn of its job's NAS limit (store::nasfs's `copy_from_local_paced`);
+  a log is skipped when its copy up and the next run's down take longer than the work it holds
+  (this run's time a block, from its first block kept, times the blocks the log holds:
+  `worth_carrying`), at the job's NAS rate (its bytes over the time it waited on the NAS), else,
+  on the lead, the NAS's throughput as its probes measured it (`CARRY_RATE_ENV`; a member's job
+  without a rate of its own carries). A log holding work kept beside it on its Mac's disk (unit's
+  folders, `Pieces::folder_piece`) says so in its first line (`<kind>-resume L <id>`) and is never
+  carried: a unit z6 tile resumes on its own Mac alone and starts afresh elsewhere. A planned
+  step's jobs are told the NAS, their step and their targets (`resume_log::CARRY_ENV`, its
+  `--root`, `CARRY_STEP_ENV`, `CARRY_TARGETS_ENV`), and a target's log as it opens reads the
+  carried copy's first line on the NAS and takes the copy when it's of the run's identity and
+  holds more than the log there (a longer log of one first line: logs are appended to from where
+  the last run left them), weighed again once it's here, deleting the copy either way
+  (`take_carried`). A cancel deletes its target's copies with its work, off the agent's loop; the
+  lead's agent, once an hour, deletes the copies of a target its plan neither plans (keyed or not
+  yet) nor leases in that step, and those cut short (a copy's temporary file) a day on
   (`resume_log::sweep_carried`). The logs on the M1's disk on 19 Nov were 5 MB to 1.3 GB
   (bldtiles' 5â€“305 MB); lake-depth's holds its small lakes' grids, at most its pack (the one run
   whose writes were counted: 775 MB for 496 s of work). **What a give-back costs** (the lead's
@@ -1392,7 +1401,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   points, else that of its step's runs at least half as long): lost before #1414 58,900 s
   (3.4 minutes an hour); with the logs carried at safe points 43,100 s (2.5 minutes an hour). The
   saving is an upper bound: it counts every safe-point give-back's log as carried and taken, none
-  skipped by its cost. Of what's still lost, by how the job ended: safe points 11,000 s (steps
+  skipped by its cost or its Mac's turn, and the history doesn't tell a memory guard's drain, which
+  carries nothing, from a pause's. Of what's still lost, by how the job ended: safe points 11,000 s (steps
   that keep no pieces, pack, available, and unit elsewhere), sleeps 14,800, the memory guard's
   stops 10,000, the disk guard's 5,200, a lapse 2,000. By step, before and after: bldtiles 44
   run again, 28,200 s and 22,000; depth 26, 17,600 and 9,900; terrain-deep 17, 4,100 and 2,600;

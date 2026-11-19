@@ -1120,7 +1120,7 @@ mod tests {
         // through the NAS.)
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let macs = [d.path().join("a/bldprep"), d.path().join("b/bldprep")];
-        jobrt::resume_log::CARRY_ROOT.set(Some((nas, "bldprep".into())));
+        jobrt::resume_log::CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(&nas, "bldprep", &["the-target"])));
         let resumed = loop {
             // (Each run a job's process of its own: jobrt::resume_log::forget_opened.)
             jobrt::resume_log::forget_opened();

@@ -20,7 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How a pause stops the work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -622,7 +622,8 @@ pub fn stop_if_paused(step: &str, e: anyhow::Error) -> anyhow::Error {
 /// Ends the job as paused, at a safe point it stopped at (each target before it saved and noted
 /// done): whether or not the pause has been lifted meanwhile, as it didn't do the rest. The resume
 /// logs it grew carried to the NAS first (crate::resume_log::carry_out), for its targets' next run
-/// on whichever Mac it goes to: before it exits, so before its agent gives its lease back.
+/// on whichever Mac it goes to: before it exits, so before its agent gives its lease back, and
+/// before its record is kept, so the carry's bytes are in it.
 pub fn stop_paused(step: &str) -> ! {
     eprintln!("{step}: paused at a safe point; the rest goes on when the build does");
     crate::resume_log::carry_out();
@@ -630,6 +631,37 @@ pub fn stop_paused(step: &str) -> ! {
     // (Its timings kept, as a run that didn't finish.)
     crate::timings::finish(false);
     exit(PAUSED_EXIT)
+}
+
+/// Where a job says it reached its safe point and is carrying its logs (`carrying`), beside its
+/// channel `chan`: its agent doesn't freeze it for a safe point not reached (agentcore's agent,
+/// the drain's grace).
+pub fn carrying_mark(chan: &Path) -> PathBuf {
+    let mut p = chan.as_os_str().to_owned();
+    p.push(".carrying");
+    PathBuf::from(p)
+}
+
+/// Where a job's agent says it's drained for memory (`no_carry`), beside its channel `chan`: it
+/// stops at its next safe point and carries nothing, the memory it holds wanted now.
+pub fn no_carry_mark(chan: &Path) -> PathBuf {
+    let mut p = chan.as_os_str().to_owned();
+    p.push(".no-carry");
+    PathBuf::from(p)
+}
+
+/// This job, at its safe point, carries its logs: said beside its channel (`carrying_mark`).
+pub fn carrying() {
+    if let Some(chan) = std::env::var_os(CONTROL_ENV) {
+        if let Err(e) = std::fs::write(carrying_mark(Path::new(&chan)), b"") {
+            eprintln!("control: saying the job carries its logs: {e}");
+        }
+    }
+}
+
+/// Whether this job's agent drains it for memory (`no_carry_mark`): it carries nothing.
+pub fn no_carry() -> bool {
+    std::env::var_os(CONTROL_ENV).is_some_and(|chan| no_carry_mark(Path::new(&chan)).exists())
 }
 
 /// The job is ending with exit code `code`: when it leaves NAS calls in the kernel past their
@@ -666,6 +698,11 @@ fn say_end(p: &Path, code: i32, held: usize) -> bool {
 
 /// Exits with `code`, the job's end said first when its exit may not end (`ending`).
 pub fn exit(code: i32) -> ! {
+    // (A paused exit, however a program comes to it, carries what its logs grew: stop_paused's
+    // carry, or this one's.)
+    if code == PAUSED_EXIT {
+        crate::resume_log::carry_out();
+    }
     ending(code);
     std::process::exit(code)
 }

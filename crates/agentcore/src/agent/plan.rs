@@ -454,8 +454,9 @@ pub(super) struct Planner {
     /// found then, and no depth pack is dropped).
     pub(super) depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
     /// The regions' work as the last plan found it, every step's (step, target), before what holds
-    /// it back this round: the resume logs carried for it kept on the NAS (`sweep_carried`; None:
-    /// not found then, and none is dropped).
+    /// it back this round, and the z6 tiles it couldn't key yet (step "": any step's, as they're in
+    /// no step's work until they can be keyed, `seam::Planned::unknown`): the resume logs carried for
+    /// them kept on the NAS (`sweep_carried`; None: not found then, and none is dropped).
     pub(super) carry_keep: std::cell::RefCell<Option<std::collections::BTreeSet<(String, String)>>>,
     /// When this process last swept the carried logs (`sweep_carried`).
     pub(super) carry_swept: std::cell::Cell<Option<std::time::Instant>>,
@@ -1213,7 +1214,8 @@ impl Planner {
 
     /// The resume logs carried to the NAS for targets no run will take (jobrt::resume_log's
     /// `sweep_carried`): those whose target, in its step, neither the regions' work as this plan
-    /// found it (`carry_keep`), nor a job it plans (`jobs`), nor a lease now names; and copies cut
+    /// found it, keyed or not yet (`carry_keep`), nor a job it plans (`jobs`), nor a lease now names
+    /// (each target as the plan names it, as its job filed the copy: jobrt::resume_log); and copies cut
     /// short a day on. By the lead's agent that runs the jobs alone, once an hour, on a plan that
     /// found the regions' work.
     fn sweep_carried(&self, root: &store::nasfs::NasRoot, jobs: &[JobSpec]) {
@@ -1231,6 +1233,7 @@ impl Planner {
         let leased = std::cell::RefCell::new(std::collections::BTreeMap::<String, Vec<String>>::new());
         let keep = |step: &str, t: &str| {
             keep.contains(&(step.to_string(), t.to_string()))
+                || keep.contains(&(String::new(), t.to_string()))
                 || leased
                     .borrow_mut()
                     .entry(step.to_string())
@@ -1865,8 +1868,12 @@ impl Planner {
         let building_arg: String =
             planned.building.iter().map(|(id, b, t)| format!("{id}={b}/{t}")).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
-        *self.carry_keep.borrow_mut() =
-            Some(plan.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone()))).collect());
+        *self.carry_keep.borrow_mut() = Some(
+            plan.iter()
+                .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone())))
+                .chain(planned.unknown.iter().map(|t| (String::new(), t.clone())))
+                .collect(),
+        );
         // (The map tiles as first planned at their keys, for publishing's times:
         // crate::pubtimes::PlannedNotes, since the last catalogue, what was noted known again after a
         // restart or a change of lead.)

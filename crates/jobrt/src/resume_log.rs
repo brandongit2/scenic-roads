@@ -24,11 +24,12 @@
 //!   is emptied and the run starts afresh.
 //! - **Where it's found:** the job's scratch folder, or the same step's folder of another of the
 //!   agent's slots (`scratch-2/`, …), moved here; or, given back on another Mac, carried on the NAS
-//!   (task #1414): a job stopping at a safe point (`crate::control::stop_paused`: a pause, the
-//!   memory guard's drain, an update's) copies the logs it grew to `CARRIED/<step>/` before it
-//!   exits (`carry_out`), so before its agent sees its end and gives its lease back, the lease
-//!   beating meanwhile; its bytes are the job's own, in its record. A job ended otherwise (a
-//!   failure, a signal: a guard's or a yield's stop, a sleep, a cancel) carries nothing. The next
+//!   (task #1414): a job stopping at a safe point (`crate::control::stop_paused`, and any paused
+//!   exit, `crate::control::exit`'s: a pause, an update's drain) copies the logs it grew to
+//!   `CARRIED/<step>/<target>/`, its target as the plan names it, before it exits (`carry_out`),
+//!   so before its agent sees its end and gives its lease back, the lease beating meanwhile; its
+//!   bytes are the job's own, in its record. A job ended otherwise (a failure, a signal: a guard's
+//!   or a yield's stop, a sleep, a cancel), or drained for memory, carries nothing. The next
 //!   run of the target, on any Mac, takes that copy when it holds more of the run's identity than
 //!   this Mac's own (`take_carried`; the copy deleted once looked at, the target this Mac's). A log
 //!   is one file, so the NAS takes it as one stream. A log holding work kept beside it (unit's
@@ -68,46 +69,109 @@ pub const CARRY_ENV: &str = "SCENIC_RESUME_CARRY";
 /// A job's environment beside `CARRY_ENV`: its step, as the plan names it (`CARRIED/<step>/`).
 pub const CARRY_STEP_ENV: &str = "SCENIC_RESUME_CARRY_STEP";
 
-/// Where on the NAS a log given back waits for its target's next run: `<CARRIED>/<step>/<log>`.
+/// A job's environment beside `CARRY_ENV`: its targets as the plan names them, a line each (a
+/// log's copy is filed under its target's: `target_of`).
+pub const CARRY_TARGETS_ENV: &str = "SCENIC_RESUME_CARRY_TARGETS";
+
+/// A job's environment beside `CARRY_ENV`, when its agent knows it: the NAS's throughput as the
+/// lead's probes last measured it (bytes a second), what a carry is weighed by when the job has
+/// measured none of its own (`worth_carrying`).
+pub const CARRY_RATE_ENV: &str = "SCENIC_RESUME_CARRY_RATE";
+
+/// Where on the NAS a log given back waits for its target's next run:
+/// `<CARRIED>/<step>/<target, its slashes %2F>/<log>`.
 pub const CARRIED: &str = "state/pool/carried";
+
+/// Where a job's logs are carried: the NAS root, its step and targets as the plan names them,
+/// and the lead's probed NAS throughput (bytes a second) when its agent knew it.
+#[derive(Clone, Debug)]
+pub struct Carry {
+    pub root: store::nasfs::NasRoot,
+    pub step: String,
+    pub targets: Vec<String>,
+    pub probed: Option<f64>,
+}
+
+impl Carry {
+    /// Tests: `root`, step `step`, targets `targets`, no probe.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn test(root: &store::nasfs::NasRoot, step: &str, targets: &[&str]) -> Carry {
+        let targets = targets.iter().map(|t| t.to_string()).collect();
+        Carry { root: root.clone(), step: step.into(), targets, probed: None }
+    }
+
+    /// Log tile `t`'s target among the job's: the one whose last three parts are its z, x and y
+    /// (`6/33/22`, `n/4/3/1`), else the job's only target (a target not named by a tile: a pass's,
+    /// a unit's check); None when neither names it.
+    fn target_of(&self, t: (u8, u32, u32)) -> Option<&str> {
+        let tile = |s: &str| {
+            let p: Vec<&str> = s.rsplit('/').take(3).collect();
+            p.len() == 3 && p[2].parse() == Ok(t.0) && p[1].parse() == Ok(t.1) && p[0].parse() == Ok(t.2)
+        };
+        match self.targets.iter().find(|s| tile(s)) {
+            Some(s) => Some(s),
+            None if self.targets.len() == 1 => Some(&self.targets[0]),
+            None => None,
+        }
+    }
+}
 
 #[cfg(any(test, feature = "testkit"))]
 thread_local! {
-    /// Tests: the NAS root and step a log is carried through on this thread, in place of
-    /// `CARRY_ENV`'s and `CARRY_STEP_ENV`'s.
-    pub static CARRY_ROOT: std::cell::RefCell<Option<(store::nasfs::NasRoot, String)>> = const { std::cell::RefCell::new(None) };
+    /// Tests: where logs are carried on this thread, in place of the environment's.
+    pub static CARRY_ROOT: std::cell::RefCell<Option<Carry>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The NAS root logs are carried through and the job's step: the job's `CARRY_ENV` and
-/// `CARRY_STEP_ENV` (a test's `CARRY_ROOT`); none for a run by hand.
-fn carry_root() -> Option<(store::nasfs::NasRoot, String)> {
+/// Where this job's logs are carried: its `CARRY_ENV`, `CARRY_STEP_ENV`, `CARRY_TARGETS_ENV` and
+/// `CARRY_RATE_ENV` (a test's `CARRY_ROOT`); none for a run by hand.
+fn carry_root() -> Option<Carry> {
     #[cfg(any(test, feature = "testkit"))]
     if let Some(r) = CARRY_ROOT.with(|c| c.borrow().clone()) {
         return Some(r);
     }
-    static ROOT: std::sync::OnceLock<Option<(store::nasfs::NasRoot, String)>> = std::sync::OnceLock::new();
+    static ROOT: std::sync::OnceLock<Option<Carry>> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let root = std::env::var_os(CARRY_ENV)?;
         let step = std::env::var(CARRY_STEP_ENV).ok().filter(|s| !s.is_empty() && !s.contains(['/', '.']))?;
-        Some((store::nasfs::NasRoot::from_arg(PathBuf::from(root)), step))
+        let targets = std::env::var(CARRY_TARGETS_ENV).ok()?.lines().map(str::to_string).collect();
+        let probed = std::env::var(CARRY_RATE_ENV).ok().and_then(|r| r.parse().ok()).filter(|r: &f64| *r > 0.0);
+        Some(Carry { root: store::nasfs::NasRoot::from_arg(PathBuf::from(root)), step, targets, probed })
     })
     .clone()
 }
 
-/// Target `t`'s carried copy for step `step` under `root`.
-fn carried(root: &store::nasfs::NasRoot, step: &str, t: (u8, u32, u32)) -> store::nasfs::NasPath {
-    root.join(format!("{CARRIED}/{step}/{}_{}_{}{EXT}", t.0, t.1, t.2))
+/// A target as a folder's name: its `%` as `%25` and `/` as `%2F`.
+fn folder_of(target: &str) -> String {
+    target.replace('%', "%25").replace('/', "%2F")
+}
+
+/// `folder_of`'s target back.
+fn target_of_folder(name: &str) -> String {
+    name.replace("%2F", "/").replace("%25", "%")
+}
+
+/// Target `target`'s carried copies for step `step` under `root`: a folder.
+fn carried_dir(root: &store::nasfs::NasRoot, step: &str, target: &str) -> store::nasfs::NasPath {
+    root.join(format!("{CARRIED}/{step}/{}", folder_of(target)))
+}
+
+/// Log tile `t`'s carried copy, its target the job's `target_of`.
+fn carried(c: &Carry, t: (u8, u32, u32)) -> Option<store::nasfs::NasPath> {
+    let target = c.target_of(t)?;
+    Some(carried_dir(&c.root, &c.step, target).join(format!("{}_{}_{}{EXT}", t.0, t.1, t.2)))
 }
 
 /// A log this process opened, as `carry_out` weighs it.
 struct Opened {
     path: PathBuf,
     t: (u8, u32, u32),
-    /// Its length as it opened (what an earlier run left): a log that grew no further holds nothing
-    /// this run would lose.
+    /// Its length as it opened (what an earlier run left), and as it was last carried: a log that
+    /// grew no further holds nothing this run would lose.
     at_open: u64,
     opened: std::time::Instant,
-    /// When this run last kept a block in it, and how many it kept; the blocks it holds in all.
+    /// When this run first and last kept a block in it, and how many it kept; the blocks it holds
+    /// in all.
+    first_keep: Option<std::time::Instant>,
     last_keep: Option<std::time::Instant>,
     new: u64,
     total: u64,
@@ -116,6 +180,21 @@ struct Opened {
     /// Tests: the thread that opened it (a test's job), the only one that carries it.
     #[cfg(any(test, feature = "testkit"))]
     thread: std::thread::ThreadId,
+}
+
+impl Opened {
+    /// The work it holds (s): this run's time a block, kept after kept (from its first block, so
+    /// not the run's setup, which a resumed run does again; one block alone, from the log's
+    /// opening), times the blocks it holds.
+    fn work_s(&self) -> f64 {
+        let (Some(first), Some(last)) = (self.first_keep, self.last_keep) else { return 0.0 };
+        let each = if self.new >= 2 {
+            last.duration_since(first).as_secs_f64() / (self.new - 1) as f64
+        } else {
+            last.duration_since(self.opened).as_secs_f64()
+        };
+        each * self.total as f64
+    }
 }
 
 /// The logs this process opened (`Log::open`), each once, as they stand.
@@ -132,9 +211,9 @@ pub fn forget_opened() {
     with_opened(|v| v.retain(|o| o.thread != me));
 }
 
-/// Whether a log holding work of `work_s` (this run's time keeping its new blocks, scaled to all
-/// it holds) is worth `bytes` carried at `rate` (bytes a second, the job's NAS measured: None when
-/// it measured none): its upload and the next run's download take less than the work they spare.
+/// Whether a log holding work of `work_s` (`Opened::work_s`) is worth `bytes` carried at `rate`
+/// (bytes a second: None when neither the job nor the lead's probes measured one): its upload and
+/// the next run's download take less than the work they spare.
 pub fn worth_carrying(bytes: u64, rate: Option<f64>, work_s: f64) -> bool {
     rate.filter(|r| *r > 0.0).is_none_or(|r| 2.0 * bytes as f64 / r <= work_s)
 }
@@ -158,17 +237,39 @@ fn mac_lock(scratch: &Path) -> PathBuf {
     }
 }
 
-/// The job stops at a safe point, its targets not all made (crate::control::stop_paused): the
-/// logs it opened and grew, each copied to the NAS (`CARRIED/<step>/`, replacing an older copy)
-/// for the target's next run wherever it goes (`take_carried`), before the job exits, so before
-/// its agent gives its lease back, the lease beating meanwhile. Its bytes counted as the job's
-/// (store::nasio, in its record). Not a log that holds work kept beside it (`local_head`), nor one
-/// whose copy would take longer up and down at the job's NAS rate than the work it holds
-/// (`worth_carrying`). One Mac's carries go one at a time (`mac_lock`), each a turn of the job's
-/// NAS limit (store::nasfs's `copy_from_local_paced`). Each log copied and its bytes; one that
-/// fails is said and left.
+/// The Mac's carry lock (`mac_lock`), waited for at most `most`: past it, waiting would cost more
+/// than the carry spares. None then, or when it can't be taken.
+fn turn_within(lock: &Path, most: std::time::Duration) -> Option<crate::sys::PathLock> {
+    let t = std::time::Instant::now();
+    loop {
+        match crate::sys::PathLock::take(lock, false) {
+            Ok(Some(l)) => return Some(l),
+            Ok(None) if t.elapsed() < most => std::thread::sleep(std::time::Duration::from_millis(250)),
+            Ok(None) => return None,
+            Err(e) => {
+                eprintln!("resume: carrying the logs: {}: {e}", lock.display());
+                return None;
+            }
+        }
+    }
+}
+
+/// The job stops at a safe point, its targets not all made (crate::control::stop_paused, and any
+/// paused exit: crate::control::exit): the logs it opened and grew, each copied to the NAS
+/// (`CARRIED/<step>/<target>/`, replacing an older copy) for the target's next run wherever it
+/// goes (`take_carried`), before the job exits, so before its agent gives its lease back, the lease
+/// beating meanwhile and its agent told it's carrying (crate::control::carrying: not frozen for a
+/// safe point it has reached). Its bytes counted as the job's (store::nasio, in its record).
+/// Nothing when its agent drains it for memory (crate::control::no_carry: the memory it holds is
+/// wanted now). Not a log that holds work kept beside it (`local_head`), nor one whose copy would
+/// take longer up and down than the work it holds (`worth_carrying`, at the job's NAS rate, else
+/// the lead's probed one), nor one no target of the job names (`Carry::target_of`). One Mac's
+/// carries go one at a time (`mac_lock`), the turn waited for only while waiting and copying cost
+/// less than the work the logs hold (`turn_within`); each a turn of the job's NAS limit
+/// (store::nasfs's `copy_from_local_paced`). Each log copied and its bytes; one that fails is said
+/// and left. Called again, only what grew since.
 pub fn carry_out() -> Vec<(String, u64)> {
-    let Some((root, step)) = carry_root() else { return Vec::new() };
+    let Some(c) = carry_root() else { return Vec::new() };
     let mut grew = Vec::new();
     with_opened(|v| {
         for o in v.iter().filter(|o| !o.local && o.new > 0) {
@@ -178,29 +279,44 @@ pub fn carry_out() -> Vec<(String, u64)> {
             }
             let len = std::fs::metadata(&o.path).map_or(0, |m| m.len());
             if len > o.at_open {
-                let kept = o.last_keep.map_or(0.0, |k| k.duration_since(o.opened).as_secs_f64());
-                grew.push((o.path.clone(), o.t, len, kept * o.total as f64 / o.new as f64));
+                grew.push((o.path.clone(), o.t, len, o.work_s()));
             }
         }
     });
     let Some(scratch) = grew.first().and_then(|g| g.0.parent().map(Path::to_path_buf)) else { return Vec::new() };
-    let rate = nas_rate();
-    let _turn = match crate::sys::PathLock::take(&mac_lock(&scratch), true) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("resume: carrying the logs: {}: {e}", mac_lock(&scratch).display());
-            None
-        }
-    };
+    if crate::control::no_carry() {
+        eprintln!("resume: {} logs not carried: drained for memory", grew.len());
+        return Vec::new();
+    }
+    crate::control::carrying();
+    let rate = nas_rate().or(c.probed);
     let mut v = Vec::new();
+    let mut weighed = Vec::new();
     for (p, t, len, work_s) in grew {
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(to) = carried(&c, t) else {
+            eprintln!("resume: {name} not carried: no target of the job's names it");
+            continue;
+        };
         if !worth_carrying(len, rate, work_s) {
             let mb_s = rate.unwrap_or_default() / 1e6;
             eprintln!("resume: {name} not carried: {len} bytes at {mb_s:.1} MB/s up and down take longer than its {work_s:.0} s of work");
             continue;
         }
-        let to = carried(&root, &step, t);
+        weighed.push((p, len, work_s, name, to));
+    }
+    let spare: f64 = weighed.iter().map(|w| w.2 - rate.map_or(0.0, |r| 2.0 * w.1 as f64 / r)).sum();
+    let lock = mac_lock(&scratch);
+    let Some(_turn) = turn_within(&lock, std::time::Duration::from_secs_f64(spare.max(0.0))) else {
+        if !weighed.is_empty() {
+            eprintln!(
+                "resume: {} logs not carried: this Mac's carries took longer than the {spare:.0} s they'd spare",
+                weighed.len()
+            );
+        }
+        return v;
+    };
+    for (p, len, _, name, to) in weighed {
         let r = to
             .parent()
             .map_or(Ok(()), |d| d.create_dir_all())
@@ -209,6 +325,7 @@ pub fn carry_out() -> Vec<(String, u64)> {
         match r {
             Ok(n) => {
                 eprintln!("resume: {name}: {} MB carried to the NAS for the target's next run", n >> 20);
+                with_opened(|v| v.iter_mut().filter(|o| o.path == p).for_each(|o| o.at_open = len));
                 v.push((name, n));
             }
             Err(e) => eprintln!("resume: {} not carried to the NAS: {e:#}", to.display()),
@@ -217,36 +334,42 @@ pub fn carry_out() -> Vec<(String, u64)> {
     v
 }
 
-/// Target `t`'s copy carried for step `step` (`carry_out`), deleted: its job cancelled (agentcore's
-/// agent, cancel_slot), its work dropped. Whether one was there.
-pub fn drop_carried(root: &store::nasfs::NasRoot, step: &str, t: (u8, u32, u32)) -> bool {
-    carried(root, step, t).remove_file().is_ok()
+/// Target `target`'s copies carried for step `step` (`carry_out`), deleted: its job cancelled
+/// (agentcore's agent, cancel_slot), its work dropped. How many went.
+pub fn drop_carried(root: &store::nasfs::NasRoot, step: &str, target: &str) -> usize {
+    let d = carried_dir(root, step, target);
+    let n = d.read_dir().into_iter().flatten().filter(|e| e.path.remove_file().is_ok()).count();
+    d.remove_dir().ok();
+    n
 }
 
-/// The lead's sweep of the carried copies (`CARRIED/<step>/`): a copy whose target `keep` (its
-/// step, its target as the plan names it, `z/x/y`) says neither the plan plans nor a lease holds,
-/// deleted (made, re-keyed away or gone: no run will take it); and a copy cut short (its temporary
-/// file, store::whole's `left_by_write`) left `store::whole::ASIDE_KEPT`, deleted. How many went.
+/// The lead's sweep of the carried copies (`CARRIED/<step>/<target>/`): a target's copies `keep`
+/// (its step, its target as the plan names it) says neither the plan plans nor a lease holds,
+/// deleted (made, re-keyed away or gone: no run will take them); and a copy cut short (its
+/// temporary file, store::whole's `left_by_write`) left `store::whole::ASIDE_KEPT`, deleted. How
+/// many went.
 pub fn sweep_carried(root: &store::nasfs::NasRoot, keep: &dyn Fn(&str, &str) -> bool) -> usize {
     let now = std::time::SystemTime::now();
+    let old = |e: &store::nasfs::NasEntry| {
+        e.path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|t| now.duration_since(t).is_ok_and(|a| a >= store::whole::ASIDE_KEPT))
+    };
     let mut n = 0;
-    for d in root.join(CARRIED).read_dir().into_iter().flatten().filter(|e| e.is_dir()) {
-        for e in d.path.read_dir().into_iter().flatten() {
-            let target = e.name.strip_suffix(EXT).map(|t| t.replace('_', "/"));
-            let gone = match &target {
-                Some(t) => !keep(&d.name, t),
-                None => {
-                    store::whole::left_by_write(&e.name)
-                        && e.path
-                            .metadata()
-                            .ok()
-                            .and_then(|m| m.modified().ok())
-                            .is_some_and(|t| now.duration_since(t).is_ok_and(|a| a >= store::whole::ASIDE_KEPT))
+    for s in root.join(CARRIED).read_dir().into_iter().flatten().filter(|e| e.is_dir()) {
+        for d in s.path.read_dir().into_iter().flatten().filter(|e| e.is_dir()) {
+            let kept = keep(&s.name, &target_of_folder(&d.name));
+            for e in d.path.read_dir().into_iter().flatten() {
+                let cut = store::whole::left_by_write(&e.name) && old(&e);
+                if (!kept || cut) && e.path.remove_file().is_ok() {
+                    eprintln!("resume: {} deleted: no run will take it", e.path.display());
+                    n += 1;
                 }
-            };
-            if gone && e.path.remove_file().is_ok() {
-                eprintln!("resume: {} deleted: no run will take it", e.path.display());
-                n += 1;
+            }
+            if !kept {
+                d.path.remove_dir().ok();
             }
         }
     }
@@ -259,9 +382,8 @@ pub fn sweep_carried(root: &store::nasfs::NasRoot, keep: &dyn Fn(&str, &str) -> 
 /// target is this Mac's. The copy's first line read on the NAS first, so one of another identity
 /// is never downloaded; and the copy taken weighed again against this Mac's own before it's put in
 /// its place. A copy that can't be read is left for a later run.
-fn take_carried(carry: Option<&(store::nasfs::NasRoot, String)>, t: (u8, u32, u32), p: &Path, head: &str) {
-    let Some((root, step)) = carry else { return };
-    let c = carried(root, step, t);
+fn take_carried(carry: Option<&Carry>, t: (u8, u32, u32), p: &Path, head: &str) {
+    let Some(c) = carry.and_then(|c| carried(c, t)) else { return };
     let Ok(m) = c.metadata() else { return };
     let ours = |f: &Path| -> u64 {
         let mut first = vec![0u8; head.len()];
@@ -302,6 +424,10 @@ fn take_carried(carry: Option<&(store::nasfs::NasRoot, String)>, t: (u8, u32, u3
     }
     if let Err(e) = c.remove_file() {
         eprintln!("resume: {} not deleted: {e}", c.display());
+    }
+    // (Its target's folder, once it holds no other log.)
+    if let Some(d) = c.parent() {
+        d.remove_dir().ok();
     }
 }
 
@@ -491,6 +617,7 @@ impl Log {
                         t,
                         at_open,
                         opened,
+                        first_keep: None,
                         last_keep: None,
                         new: 0,
                         total,
@@ -536,8 +663,9 @@ impl Log {
                     let new = !self.done.contains(&b);
                     with_opened(|v| {
                         if let Some(o) = v.iter_mut().find(|o| o.path == self.path) {
-                            (o.last_keep, o.new, o.total) =
-                                (Some(std::time::Instant::now()), o.new + 1, o.total + u64::from(new));
+                            let now = std::time::Instant::now();
+                            o.first_keep.get_or_insert(now);
+                            (o.last_keep, o.new, o.total) = (Some(now), o.new + 1, o.total + u64::from(new));
                         }
                     });
                 }
@@ -1062,8 +1190,9 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let [a, b, c] = ["a/scratch/depth", "b/scratch-2/depth", "c/scratch/depth"].map(|s| d.path().join(s));
         let t = (6, 19, 23);
-        let copy = d.path().join("nas").join(CARRIED).join("depth-step/6_19_23.resume");
-        CARRY_ROOT.set(Some((nas.clone(), "depth-step".into())));
+        let copy = d.path().join("nas").join(CARRIED).join("depth-step/6%2F19%2F23/6_19_23.resume");
+        // (Filed under its target as the plan names it, among the job's.)
+        CARRY_ROOT.set(Some(Carry::test(&nas, "depth-step", &["6/1/1", "6/19/23"])));
         // (A new job's process on each "Mac": what this thread opened before forgotten.)
         let job = || forget_opened();
         job();
@@ -1114,7 +1243,7 @@ mod tests {
         job();
         three(&c, t, "a");
         carry_out();
-        assert!(drop_carried(&nas, "depth-step", t) && !copy.exists());
+        assert!(drop_carried(&nas, "depth-step", "6/19/23") == 1 && !copy.exists() && !copy.parent().unwrap().exists());
         CARRY_ROOT.set(None);
     }
 
@@ -1127,7 +1256,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let (s, dir) = (d.path().join("scratch/unit"), d.path().join("work"));
         std::fs::create_dir_all(&dir).unwrap();
-        CARRY_ROOT.set(Some((nas, "unit".into())));
+        CARRY_ROOT.set(Some(Carry::test(&nas, "unit", &["6/1/2"])));
         forget_opened();
         let t = (6, 1, 2);
         let mut p = Pieces::open(&s, t, "unit", "a", true);
@@ -1154,6 +1283,33 @@ mod tests {
         assert!(worth_carrying(100 * mb, None, 0.0));
     }
 
+    /// Task #1414: a log is filed under the job's target its tile names, however the plan names it
+    /// (`n/4/3/1` for `4_3_1`), else under the job's only target; a log no target names, not at all.
+    #[test]
+    fn a_log_is_filed_under_the_target_the_plan_names() {
+        let nas = store::nasfs::NasRoot::local_for_test("/tmp/x-nas-test");
+        let c = Carry::test(&nas, "polar-terrain", &["n/4/3/1", "s/4/3/2"]);
+        assert_eq!(c.target_of((4, 3, 1)), Some("n/4/3/1"));
+        assert_eq!(c.target_of((4, 3, 2)), Some("s/4/3/2"));
+        assert_eq!(c.target_of((4, 9, 9)), None);
+        assert_eq!(Carry::test(&nas, "water", &["2026-11-01"]).target_of((0, 0, 0)), Some("2026-11-01"));
+        assert_eq!(target_of_folder(&folder_of("n/4/3%/1")), "n/4/3%/1");
+        assert!(!folder_of("n/4/3/1").contains('/'));
+    }
+
+    /// Task #1414: a Mac's carry turn is waited for only so long: past it, nothing.
+    #[test]
+    fn a_carry_waits_for_its_macs_turn_only_so_long() {
+        let d = tempfile::tempdir().unwrap();
+        let lock = d.path().join("carry.lock");
+        let held = crate::sys::PathLock::take(&lock, false).unwrap().unwrap();
+        let t = std::time::Instant::now();
+        assert!(turn_within(&lock, std::time::Duration::from_millis(300)).is_none());
+        assert!(t.elapsed() >= std::time::Duration::from_millis(300));
+        drop(held);
+        assert!(turn_within(&lock, std::time::Duration::ZERO).is_some());
+    }
+
     /// Task #1414: the lead's sweep of the carried copies deletes a copy whose target its plan
     /// neither plans nor leases, and a copy cut short (its temporary file) once it's a day old.
     #[test]
@@ -1161,48 +1317,74 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let dir = d.path().join("nas").join(CARRIED).join("bldtiles");
-        std::fs::create_dir_all(&dir).unwrap();
         let day = store::whole::ASIDE_KEPT;
         let at = |name: &str, age: std::time::Duration| {
             let p = dir.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, b"x").unwrap();
             let f = std::fs::File::options().write(true).open(&p).unwrap();
             f.set_modified(std::time::SystemTime::now() - age).unwrap();
             p
         };
         let zero = std::time::Duration::ZERO;
-        let planned = at("6_1_2.resume", zero);
-        let gone = at("6_3_4.resume", zero);
-        let cut = at("6_5_6.resume.mac.4242.0.tmp", day);
-        let young = at("6_7_8.resume.mac.4243.0.tmp", zero);
+        let planned = at("6%2F1%2F2/6_1_2.resume", zero);
+        let gone = at("6%2F3%2F4/6_3_4.resume", zero);
+        let cut = at("6%2F1%2F2/6_5_6.resume.mac.4242.0.tmp", day);
+        let young = at("6%2F1%2F2/6_7_8.resume.mac.4243.0.tmp", zero);
         let n = sweep_carried(&nas, &|step, t| step == "bldtiles" && t == "6/1/2");
         assert_eq!(n, 2);
-        assert!(planned.exists() && !gone.exists() && !cut.exists() && young.exists());
+        assert!(
+            planned.exists() && !gone.exists() && !gone.parent().unwrap().exists() && !cut.exists() && young.exists()
+        );
     }
 
-    /// Task #1414: a job stopping at a safe point (crate::control::stop_paused) has carried its
-    /// log before it exits: its agent sees its end, and gives its lease back, only after.
+    /// Task #1414: a job stopping at a safe point has carried its log before it exits, whichever
+    /// way it comes to its paused exit (crate::control::stop_paused, or crate::control::exit's
+    /// PAUSED_EXIT, as the trees program's own): its agent sees its end, and gives its lease back,
+    /// only after; and it said it was carrying (crate::control::carrying_mark), so its agent
+    /// doesn't freeze it meanwhile. Drained for memory (crate::control::no_carry_mark), nothing.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_job_stopping_at_a_safe_point_carries_its_log_before_it_exits() {
         const CHILD: &str = "SCENIC_TEST_CARRY_SCRATCH";
+        const BY_EXIT: &str = "SCENIC_TEST_CARRY_BY_EXIT";
         if let Some(s) = std::env::var_os(CHILD) {
             let mut p = Pieces::open(Path::new(&s), (6, 1, 2), "test", "a", true);
             p.piece((1, 0, 0), || Ok(vec![1, 2])).unwrap();
+            if std::env::var_os(BY_EXIT).is_some() {
+                crate::control::exit(crate::control::PAUSED_EXIT);
+            }
             crate::control::stop_paused("test");
         }
         let d = tempfile::tempdir().unwrap();
-        let s = d.path().join("home/scratch/test");
-        let mut c = store::spawn::command(std::env::current_exe().unwrap());
-        c.args(["--exact", "resume_log::tests::a_job_stopping_at_a_safe_point_carries_its_log_before_it_exits"])
-            .env(CHILD, &s)
-            .env(CARRY_ENV, d.path().join("nas"))
-            .env(CARRY_STEP_ENV, "test-step")
-            .env_remove(crate::timings::TIMINGS_ENV);
-        let st = store::spawn::spawn(&mut c).unwrap().wait().unwrap();
-        assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT), "{st:?}");
-        let copy = d.path().join("nas").join(CARRIED).join("test-step/6_1_2.resume");
-        assert_eq!(std::fs::read(copy).unwrap(), std::fs::read(path(&s, (6, 1, 2))).unwrap());
+        let chan = d.path().join("control");
+        let run = |name: &str, by_exit: bool| {
+            let s = d.path().join(format!("home/scratch/{name}"));
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "resume_log::tests::a_job_stopping_at_a_safe_point_carries_its_log_before_it_exits"])
+                .env(CHILD, &s)
+                .env(CARRY_ENV, d.path().join("nas"))
+                .env(CARRY_STEP_ENV, name)
+                .env(CARRY_TARGETS_ENV, "6/1/2")
+                .env(crate::control::CONTROL_ENV, &chan)
+                .env_remove(crate::timings::TIMINGS_ENV);
+            if by_exit {
+                c.env(BY_EXIT, "1");
+            }
+            let st = store::spawn::spawn(&mut c).unwrap().wait().unwrap();
+            assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT), "{st:?}");
+            (s, d.path().join("nas").join(CARRIED).join(format!("{name}/6%2F1%2F2/6_1_2.resume")))
+        };
+        for by_exit in [false, true] {
+            let name = if by_exit { "by-exit" } else { "stopped" };
+            std::fs::remove_file(crate::control::carrying_mark(&chan)).ok();
+            let (s, copy) = run(name, by_exit);
+            assert_eq!(std::fs::read(copy).unwrap(), std::fs::read(path(&s, (6, 1, 2))).unwrap(), "{name}");
+            assert!(crate::control::carrying_mark(&chan).exists(), "{name}");
+        }
+        std::fs::write(crate::control::no_carry_mark(&chan), b"").unwrap();
+        let (s, copy) = run("memory", false);
+        assert!(path(&s, (6, 1, 2)).exists() && !copy.exists(), "drained for memory: nothing carried");
     }
 
     /// Task #889: pieces kept are handed back, not made again, to a run of the same identity; to

@@ -41,16 +41,10 @@ use std::path::PathBuf;
 
 pub fn main(args: Vec<String>) -> Result<()> {
     let a = Trees::parse_from(args);
-    // (Its phases, for the job's phase that runs it: jobrt::timings.)
-    let r = jobrt::timings::job("trees", || run(&a));
-    // (Paused at a row kept, task #889: its job takes the exit as the pause's.)
-    if let Err(e) = &r {
-        if jobrt::control::is_paused(e) {
-            eprintln!("trees: {e:#}");
-            jobrt::control::exit(jobrt::control::PAUSED_EXIT);
-        }
-    }
-    r
+    // (Its phases, for the job's phase that runs it: jobrt::timings. Paused at a row kept, task
+    // #889, it ends as paused, its job taking the exit as the pause's, its log carried first for
+    // the tile's next run on any Mac, as every step's: jobrt::control::stop_paused.)
+    jobrt::timings::job("trees", || run(&a).map_err(|e| jobrt::control::stop_if_paused("trees", e)))
 }
 
 /// An option the mode needs.

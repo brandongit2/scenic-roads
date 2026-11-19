@@ -1998,7 +1998,7 @@ mod tests {
         assert!(!log.exists(), "done with once its outputs are put");
         // Stopped again, given back, and taken up on another Mac: the log carried there.
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
-        CARRY_ROOT.set(Some((nas, "slope-deep".into())));
+        CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(&nas, "slope-deep", &["the-target"])));
         forget_opened();
         let (r, _) = run("a/scratch", Some(2));
         assert!(jobrt::control::is_paused(&r.unwrap_err()));

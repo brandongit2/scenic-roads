@@ -729,7 +729,11 @@ mod tests {
             let name = format!("stop-{stop}");
             // (Each run a job's process of its own, the NAS to carry through: jobrt::resume_log.)
             jobrt::resume_log::forget_opened();
-            jobrt::resume_log::CARRY_ROOT.set(Some((nas.clone(), "terrain-deep".into())));
+            jobrt::resume_log::CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(
+                &nas,
+                "terrain-deep",
+                &["the-target"],
+            )));
             assert!(run(&name, Some(stop)).is_none(), "stopped after {stop}");
             let here = if k % 2 == 0 {
                 assert_eq!(jobrt::resume_log::carry_out().len(), 1);

@@ -987,7 +987,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let macs = [out.scratch.clone(), d.path().join("other").join(out.scratch.file_name().unwrap())];
         std::fs::create_dir_all(&macs[1]).unwrap();
-        jobrt::resume_log::CARRY_ROOT.set(Some((nas, "bldtiles".into())));
+        jobrt::resume_log::CARRY_ROOT.set(Some(jobrt::resume_log::Carry::test(&nas, "bldtiles", &["the-target"])));
         loop {
             // (Each run a job's process of its own: jobrt::resume_log::forget_opened.)
             jobrt::resume_log::forget_opened();
