@@ -133,6 +133,10 @@ def listed(key, files):
     m = re.search(r"^%s\s*=\s*\[([^\]]*)\]" % key, read("Cargo.toml"), re.M)
     dirs = []
     for g in re.findall(r'"([^"]+)"', m.group(1)) if m else []:
+        # (As cargo reads them: "./crates/x" and "crates/x/" are crates/x.)
+        if norm("", g) is None:
+            raise Doubt("Cargo.toml's %s names a folder outside the repo: %s" % (key, g))
+        g = norm("", g)
         if "*" not in g:
             dirs.append(g); continue
         if not g.endswith("/*") or "*" in g[:-2]:
@@ -298,16 +302,31 @@ def build_inputs(files, pkgs):
     return ins, runs, macros, data
 
 
+# A module declared by its name alone, `mod name;` (one after a #[path] is PATHATTR's).
+MODDECL = re.compile(r'(#\[path\s*=\s*"[^"]*"\]\s*)?(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?\bmod\s+(\w+)\s*;')
+
+
 def script_files(s):
-    """Build script s and the files its #[path] modules are, and theirs: the code that runs as it
-    (none if it isn't there)."""
-    out, todo = [], [s]
+    """Build script s and the files its modules are, and theirs: the code that runs as it (none if
+    it isn't there). A #[path] module's file is relative to its source's folder; a `mod name;`'s is
+    name.rs or name/mod.rs in the folder of the source's own modules (the script's and a #[path]
+    file's own folder, a mod.rs's too; a name.rs's name/ beside it): neither there is a Doubt."""
+    out, todo = [], [(s, True)]
     while todo:
-        f = todo.pop()
+        f, own_dir = todo.pop()
         if f in out or not os.path.exists(f):
             continue
         out.append(f)
-        todo += [p for p in (norm(posixpath.dirname(f), rel) for rel in PATHATTR.findall(read(f))) if p]
+        src, d = read(f), posixpath.dirname(f)
+        todo += [(p, True) for p in (norm(d, rel) for rel in PATHATTR.findall(src)) if p]
+        kids = d if own_dir or f.endswith("/mod.rs") else f[:-len(".rs")]
+        for m in MODDECL.finditer(blank(src, strings=False)):
+            if m.group(1):
+                continue
+            c = [p for p in (kids + "/" + m.group(2) + ".rs", kids + "/" + m.group(2) + "/mod.rs") if os.path.exists(p)]
+            if not c:
+                raise Doubt("%s declares mod %s, whose file isn't there" % (f, m.group(2)))
+            todo.append((c[0], False))
     return out
 
 
@@ -350,8 +369,9 @@ def manifests(pkgs):
     root = toml("Cargo.toml")
     table = root.get("workspace", {}).get("dependencies", {})
     patch = {n: norm("", v["path"]) for t in root.get("patch", {}).values() for n, v in t.items() if "path" in v}
-    # ([replace]'s keys are "<name>:<version>", as crates/inputs' build/checks_code.rs reads them.)
-    patch.update({k.split(":")[0]: norm("", v["path"]) for k, v in root.get("replace", {}).items() if "path" in v})
+    # ([replace]'s keys are package ID specs, "<name>:<version>" or "<source URL>#<name>:<version>": the
+    # name is after the last '#', before ':' or '@', as crates/inputs' build/checks_code.rs reads it.)
+    patch.update({re.split(r"[:@]", k.rsplit("#", 1)[-1])[0]: norm("", v["path"]) for k, v in root.get("replace", {}).items() if "path" in v})
 
     def deps(d, m, kinds, patched):
         out = set()

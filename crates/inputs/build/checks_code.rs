@@ -761,9 +761,11 @@ fn deps_of(toml: &Path, which: Tables) -> Result<Vec<Dep>, String> {
                     _ => return Err(format!("{at}: a dependency key this doesn't read: {key}")),
                 };
                 let mut name = unquote(&name).unwrap_or(name);
-                // (`[replace]`'s `"foo:1.2.3"`: crate foo.)
+                // (`[replace]`'s keys are package ID specs, `"foo:1.2.3"` or
+                // `"https://…#foo:1.2.3"`: crate foo, after the last '#', before ':' or '@'.)
                 if which == Tables::Patch {
-                    name = name.split(':').next().unwrap_or_default().to_string();
+                    let spec = name.rsplit('#').next().unwrap_or_default();
+                    name = spec.split([':', '@']).next().unwrap_or_default().to_string();
                 }
                 let mut d = Dep { name, ..Dep::default() };
                 match sub {

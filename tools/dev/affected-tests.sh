@@ -27,14 +27,17 @@ case $#:${1:-} in
   0:|1:[^-]*|2:--nextest) ;;
   *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
-# Its Python reads the manifests with tomllib, 3.11's: where the python3 first on the PATH is older,
-# mise's, as check.sh's. (tools/dev/test-guard.py runs this in Claude Code's environment: the desktop
-# app gives its sessions the login shell's PATH, mise's python3 first, but a PATH of the system's alone
-# has /usr/bin's 3.9, and brew's rg and mise only from the line below.) Without one, every member's
-# tests run, whole (below): never a failure blocking the run.
+# Its Python reads the manifests with tomllib, 3.11's: the first with it of the PATH's python3, brew's,
+# then mise's for this checkout (`mise env`, which a checkout mise doesn't trust can't give).
+# tools/dev/test-guard.py runs this in Claude Code's environment: the desktop app gives its sessions
+# the login shell's PATH, mise's python3 first, but on a PATH of the system's alone python3 is
+# /usr/bin's 3.9, and brew's rg is found only by the line below. With none, every member's tests run,
+# whole (below): never a failure blocking the run.
 path=($path /opt/homebrew/bin)
-python3 -c 'import tomllib' 2>/dev/null || eval "$(mise env -C ${0:A:h:h:h} -s zsh 2>/dev/null)" 2>/dev/null
-SCENIC_AFFECTED_HERE=${0:A:h} exec python3 - "$@" <<'PY'
+py=
+for c in python3 /opt/homebrew/bin/python3; do $c -c 'import tomllib' 2>/dev/null && { py=$c; break }; done
+[[ -z $py ]] && eval "$(mise env -C ${0:A:h:h:h} -s zsh 2>/dev/null)" 2>/dev/null
+SCENIC_AFFECTED_HERE=${0:A:h} exec ${py:-python3} - "$@" <<'PY'
 import glob, os, re, subprocess, sys
 from collections import OrderedDict
 args = sys.argv[1:]
@@ -144,29 +147,39 @@ for f in sorted(r.stdout.split()):
 # excluded and patched in for crates.io's) runs instead the members whose own dependencies reach it,
 # whole, as Cargo.lock records them (check-reuse.py's outside_users: landmarks names geos-src,
 # terrain reaches it through geos and geos-sys); the members reaching those aren't traced.
-# What can't be told from the manifests (check-reuse.py's Doubt: no tomllib, a manifest or Cargo.lock
-# it can't read) runs every member's tests whole: wide, never failing the run.
+# What check-reuse.py can't tell, its Doubt (e.g. no tomllib, a manifest or Cargo.lock it can't read,
+# a build script's module whose file isn't there, a members list it can't read: then every crates/*
+# with a manifest, but the excluded), runs every member's tests whole, saying why on stderr: wide,
+# never failing the run (test-guard.py would refuse every cargo test).
 files = git("ls-files", "-z").split("\0")
-try: members = reuse.listed("members", files)
-except reuse.Doubt as e: sys.exit("affected-tests.sh: the workspace's members: %s" % e)
+wide, scripted, outside = None, [], {}
 try:
+    members = reuse.listed("members", files)
     pkgs = reuse.packages(files)
     scripted = [(d, hit) for d, pres in reuse.script_reads(pkgs).items()
                 if d.startswith("crates/") and (hit := next((f for f in dict.fromkeys(changed) if any(reuse.under(f, p) for p in pres)), None))]
     outside = reuse.outside_users(pkgs, files) if set(pkgs) - set(members) else {}
-    wide = None
 except reuse.Doubt as e:
     wide = str(e)
+    try: members
+    except NameError:
+        try: ex = reuse.listed("exclude", files)
+        except reuse.Doubt: ex = []
+        members = [d for d in sorted(glob.glob("crates/*")) if os.path.exists(d + "/Cargo.toml") and d not in ex]
+    print("affected-tests.sh: %s: every member's tests, whole" % wide, file=sys.stderr)
+# (Wide, a change under the Rust build's own files, check-reuse.py's BUILD, counts: what a build script
+# reads can't be told. One outside them, a script's literal rerun path elsewhere, is missed then.)
+built = wide is not None and any(reuse.under(f, p) for f in changed for p in reuse.BUILD)
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)
+if not changed and not scan_hits and not included and not scripted and not built:
+    print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 if wide is not None:
-    print("# the manifests can't be read (%s): every member's tests, whole" % wide)
+    print("# check-reuse.py can't tell (%s): every member's tests, whole" % wide)
     for d in members:
         print("cargo test -p %s %s" % (d.split("/")[1], " ".join(sorted(crate_targets(d.split("/")[1])))))
     sys.exit()
-if not changed and not scan_hits and not included and not scripted:
-    print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 
 _cache = {}
 def read(p):

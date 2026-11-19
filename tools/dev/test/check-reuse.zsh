@@ -340,11 +340,13 @@ fresh "a build script naming a variable alone: a file it compiles in" s m 'cargo
 # digests read every crate its manifest reaches; a change in store alone listed none of its tests, and
 # publish's run failed on its guard). Each on a toy repo: b's script reruns on paths it makes (reading
 # its path dependency a), c's on a literal file outside the packages, d's on a variable alone; e's names a rerun
-# line in a comment only.
-affected() {  # affected <name> <main's edit> <want commands, |-separated>
-  local d=$(mktemp -d) out
+# line in a comment only. d and g are listed as "./crates/d" and "crates/g/", members all the same
+# (d's cases and x's, whose g is a member reaching it, select nothing if read as written);
+# d's script has a module by its name alone, `mod helper;`.
+affected() {  # affected <name> <main's edit> <want commands, |-separated> [<what stderr says>]
+  local d=$(mktemp -d) out err
   ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
-members = ["crates/a", "crates/b", "crates/c", "crates/d", "crates/e", "crates/f", "crates/g", "crates/h"]
+members = ["crates/a", "crates/b", "crates/c", "./crates/d", "crates/e", "crates/f", "crates/g/", "crates/h"]
 exclude = ["crates/x"]
 [patch.crates-io]
 x = { path = "crates/x" }'
@@ -357,7 +359,9 @@ a = { path = \"../a\" }"; w crates/$p/src/lib.rs '#[test]
 fn t() {}'; done
     w crates/b/build.rs 'fn main() { for f in ["../a/src/lib.rs"] { println!("cargo::rerun-if-changed={f}"); } }'
     w crates/c/build.rs 'fn main() { println!("cargo::rerun-if-changed=../../data/x.txt"); }'
-    w crates/d/build.rs 'fn main() { println!("cargo::rerun-if-env-changed=D_RERUN"); }'
+    w crates/d/build.rs 'mod helper;
+fn main() { helper::go(); println!("cargo::rerun-if-env-changed=D_RERUN"); }'
+    w crates/d/helper.rs 'pub fn go() {}'
     w crates/e/build.rs '// Not `rerun-if-changed={f}`: a variable.
 fn main() { println!("cargo::rerun-if-env-changed=E_RERUN"); }'
     w crates/x/Cargo.toml '[package]
@@ -385,10 +389,10 @@ fn t() {}'; done
           h) print 'dependencies = ["f"]' ;; xsys) print 'source = "registry+toy"\ndependencies = ["x"]' ;; esac
       done } > Cargo.lock
     g add -A; g commit -m b0; $2; g add -A; g commit -m main
-    zsh $here/../affected-tests.sh HEAD 2>&1 ) > $d/out
-  out=$(grep -v '^#' $d/out); rm -rf $d
-  if [[ ${(j:|:)${(f)out}} == $3 ]]; then ok "affected-tests: $1: ${3:-nothing}"
-  else bad "affected-tests: $1: wanted ${3:-nothing}; got:"; print -r -- $out | sed 's/^/    /'; fi
+    zsh $here/../affected-tests.sh HEAD 2> $d/err ) > $d/out
+  out=$(grep -v '^#' $d/out); err=$(<$d/err); rm -rf $d
+  if [[ ${(j:|:)${(f)out}} == $3 && $err == *${4:-}* && ( -n ${4:-} || -z $err ) ]]; then ok "affected-tests: $1: ${3:-nothing}"
+  else bad "affected-tests: $1: wanted ${3:-nothing}${4:+, stderr saying $4}; got:"; print -r -- $out $err | sed 's/^/    /'; fi
 }
 m() { print '// 2' >> crates/a/src/lib.rs }
 affected "a path dependency's source a build script reads by the paths it makes" m 'cargo test -p b --lib'
@@ -398,12 +402,19 @@ m() { print '// 2' >> crates/b/src/lib.rs }
 affected "the build script's own package" m 'cargo test -p b --lib'
 m() { print '// 2' >> crates/d/build.rs }
 affected "a build script naming a variable alone: its own code" m 'cargo test -p d --lib'
+m() { print '// 2' >> crates/d/helper.rs }
+affected "a build script's module by its name alone" m 'cargo test -p d --lib'
+m() { rm crates/d/helper.rs }
+wide='cargo test -p a --lib|cargo test -p b --lib|cargo test -p c --lib|cargo test -p d --lib|cargo test -p e --lib|cargo test -p f --lib|cargo test -p g --lib|cargo test -p h --lib'
+affected "a build script's module whose file isn't there: every member's tests, saying why" m $wide 'crates/d/build.rs declares mod helper'
+m() { sed -i '' 's|"crates/a",|"crates/**",|' Cargo.toml }
+affected "a members list it can't read: every crate with a manifest, but the excluded" m $wide "Cargo.toml's members has a glob"
 m() { print 2 >> crates/x/source/Version.txt }
 affected "a file a script outside the members compiles in: the members reaching it" m 'cargo test -p f --lib|cargo test -p g --lib'
 m() { print '// 2' >> crates/x/src/lib.rs }
 affected "a source outside the members: the members reaching it" m 'cargo test -p f --lib|cargo test -p g --lib'
 m() { print '[[package' >> Cargo.lock }
-affected "a Cargo.lock it can't read: every member's tests, not a failure" m 'cargo test -p a --lib|cargo test -p b --lib|cargo test -p c --lib|cargo test -p d --lib|cargo test -p e --lib|cargo test -p f --lib|cargo test -p g --lib|cargo test -p h --lib'
+affected "a Cargo.lock it can't read: every member's tests, not a failure" m $wide "Cargo.lock can't be read"
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them

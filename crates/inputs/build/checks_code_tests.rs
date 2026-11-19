@@ -11,14 +11,14 @@ use std::path::Path;
 /// `a` and `b`, `gate`; `other`, `extra`, `conv` and `deep`, modules outside `src/inputs/`), a path
 /// dependency `dep`, and a crate for each form a manifest names one by (`wsdep` the workspace's,
 /// `tabled` by a table of its own, `unixdep` a target's, `real` renamed `renamed`, `patched` a
-/// registry's the workspace patches to a path).
+/// registry's the workspace patches to a path, `replaced` one it replaces by an ID spec with its source).
 fn base() -> BTreeMap<&'static str, String> {
     let f = "pub fn f() -> u32 {\n    1\n}\n";
     [
-        ("Cargo.toml", "[workspace]\nmembers = [\"inputs\", \"dep\"]\n\n[workspace.dependencies]\nwsdep = { path = \"wsdep\" }\n\n[patch.crates-io]\npatched = { path = \"patched\" }\n".into()),
+        ("Cargo.toml", "[workspace]\nmembers = [\"inputs\", \"dep\"]\n\n[workspace.dependencies]\nwsdep = { path = \"wsdep\" }\n\n[patch.crates-io]\npatched = { path = \"patched\" }\n\n[replace]\n\"toy-registry#replaced:1.0.0\" = { path = \"replaced\" }\n".into()),
         (
             "inputs/Cargo.toml",
-            "[package]\nname = \"inputs\"\n\n[dependencies]\ndep = { path = \"../dep\" }\nserde = \"1\"\nwsdep.workspace = true\nrenamed = { path = \"../real\", package = \"real\" } # (Its name in code.)\npatched = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nunixdep = { path = \"../unixdep\" }\n\n[dependencies.tabled]\npath = \"../tabled\"\nfeatures = [\n    \"x\",\n]\n\n[dev-dependencies]\nnot_read = { path = \"../nowhere\" }\n".into(),
+            "[package]\nname = \"inputs\"\n\n[dependencies]\ndep = { path = \"../dep\" }\nserde = \"1\"\nwsdep.workspace = true\nrenamed = { path = \"../real\", package = \"real\" } # (Its name in code.)\npatched = \"1\"\nreplaced = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nunixdep = { path = \"../unixdep\" }\n\n[dependencies.tabled]\npath = \"../tabled\"\nfeatures = [\n    \"x\",\n]\n\n[dev-dependencies]\nnot_read = { path = \"../nowhere\" }\n".into(),
         ),
         ("inputs/src/lib.rs", "pub mod inputs;\npub mod other;\npub mod extra;\npub mod conv;\npub mod deep;\n".into()),
         (
@@ -97,7 +97,7 @@ mod tests;
         ("inputs/src/inputs/a/schema.json", "{\"v\": 1}".into()),
         (
             "inputs/src/inputs/b.rs",
-            "pub const UNIT: &str = \"b\";\n\npub fn other() -> u32 {\n    let dep = 2;\n    dep + wsdep::f() + renamed::f() + unixdep::f() + tabled::f() + patched::f() + crate::deep::inner::twiced()\n}\n".into(),
+            "pub const UNIT: &str = \"b\";\n\npub fn other() -> u32 {\n    let dep = 2;\n    dep + wsdep::f() + renamed::f() + unixdep::f() + tabled::f() + patched::f() + replaced::f() + crate::deep::inner::twiced()\n}\n".into(),
         ),
         ("inputs/src/inputs/gate.rs", "pub fn decide() -> bool {\n    super::Finding.holds()\n}\n".into()),
         ("inputs/src/inputs/tests.rs", "#[test]\nfn t() {}\n".into()),
@@ -119,6 +119,8 @@ mod tests;
         ("real/src/lib.rs", f.into()),
         ("patched/Cargo.toml", "[package]\nname = \"patched\"\n".into()),
         ("patched/src/lib.rs", f.into()),
+        ("replaced/Cargo.toml", "[package]\nname = \"replaced\"\n".into()),
+        ("replaced/src/lib.rs", f.into()),
     ]
     .into_iter()
     .collect()
@@ -209,6 +211,7 @@ fn what_a_unit_names_moves_its_digest_and_nothing_else_does() {
             &["a"],
         ),
         ("a dependency the workspace patches to a path", vec![("patched/src/lib.rs", "1", "2")], &["b"]),
+        ("one it replaces by a spec naming its source", vec![("replaced/src/lib.rs", "1", "2")], &["b"]),
         ("the gate's own item it names", vec![(mod_rs, "        true\n", "        false\n")], &["a", "gate"]),
         ("another unit", vec![(b, "let dep = 2;", "let dep = 7;")], &["b"]),
         ("a workspace dependency", vec![("wsdep/src/lib.rs", "1", "2")], &["b"]),
