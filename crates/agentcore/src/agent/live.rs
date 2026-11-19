@@ -775,6 +775,12 @@ impl Store {
         }
     }
 
+    /// Tests: whether the NAS's latency is sampled (`set_nas`).
+    #[cfg(test)]
+    pub fn samples_nas(&self) -> bool {
+        self.nas.lock().is_ok_and(|n| n.is_some())
+    }
+
     /// The proxy's counts, answered and sampled from here on.
     pub fn set_net(&self, net: Arc<jobrt::budget::net::Net>) {
         if let Ok(mut n) = self.net.lock() {

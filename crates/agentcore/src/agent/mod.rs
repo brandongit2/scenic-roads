@@ -13543,6 +13543,40 @@ mod tests {
         assert!(a.slots.iter().all(|s| s.running.is_none() && s.lease.is_none()));
     }
 
+    /// Task #1417 follow-up: the lead samples the NAS's answers while work waits for the NAS budget,
+    /// with nothing running and no lease out, so its pacing has answers to judge; with nothing
+    /// waiting either, it lets the NAS be.
+    #[test]
+    fn the_lead_samples_the_nas_while_work_waits_for_its_budget() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root.clone());
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(nas.clone()),
+            home,
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.coord = Some(co.clone());
+        let l = live::Store::new(None, "m4");
+        a.live = Some(l.clone());
+        a.tend_live(Some(&nas), &Conditions::default());
+        assert!(!l.samples_nas(), "nothing running, out or waiting");
+        {
+            let s = co.shared.lock().unwrap();
+            let now = s.now();
+            s.nas_waits.lock().unwrap().insert(("slope-hi".into(), "6/1/1".into()), (now, now));
+        }
+        a.tend_live(Some(&nas), &Conditions::default());
+        assert!(l.samples_nas(), "work held back for the budget: sampled");
+    }
+
     /// A job of the lead's own that fails ends its lease as failed (`finish_failed`): its target
     /// kept from the lead by its coordinator as a member's failed work is, so the next loop's ask
     /// isn't granted it again, the agent's own wait aside.

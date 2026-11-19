@@ -105,14 +105,17 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   paced starts until enough of them end. No new cut until the weight in use has fallen to the
 ///   window and its answers had a `span_s` since to show it (store::aimd's once a window: a cut
 ///   compounding on readings of the jobs out before it takes the pool to nothing);
-/// - **near the best** (within `Tuning::near`, the disks within the target): it grows, only while
+/// - **near the best** (within `Tuning::near`, the disks within the target, and a Mac's answers
+///   read: the disks alone, or no Mac listing the NAS, never grow it): it grows, only while
 ///   it's what limits (the weight in use and the least a job waiting for the budget weighs past
 ///   it; none waiting, the weight in use within a step of it: a window no job asks for isn't credit
 ///   for a later burst, nor is room left by a job just ended), only on readings every Mac holding
 ///   leased jobs gave fresh (none older than its span and a beat: no growth on stale data), and
 ///   only once the jobs last started have run a `span_s` (their answers in the reading): doubling a
 ///   `Tuning::grow_s` up to the slow start's threshold (none before the first cut), then a step a
-///   `grow_s`;
+///   `grow_s`; and never past what its readings tested: under the threshold twice the weight in
+///   use (at least two steps), at or past it a step past the weight in use (a window grown on
+///   readings of a light load would admit a heavy job in one jump);
 /// - **between**, or nothing read: it holds.
 ///
 /// Each reading keeps why it held (`Hold`: the first of those gates it failed), for the lead's
@@ -183,8 +186,8 @@ impl Default for State {
 
 /// One reading of the pacing (`Pace::read`): when (unix s), the Mac whose answers counted and its
 /// ratio (one more than its excess over the least floor, at most `RATIO_MOST`), whether it was past
-/// the knee, the disks' smoothed load, the weight in use and the least a job waiting needs
-/// (`Sample::wants`), whether every Mac holding jobs answered fresh, what it did and why it held
+/// the knee, the disks' smoothed load, the weight in use and the room the next job waiting needs
+/// (`Sample::wants`), what it did and why it held
 /// (`Hold`; None: it grew or cut), the slow start's threshold after it, and until when a job beside
 /// nothing is held back (`Pace::lone`; None: it isn't).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -201,7 +204,6 @@ pub struct Reading {
     pub in_use: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wants: Option<u32>,
-    pub fresh: bool,
     pub verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold: Option<Hold>,
@@ -219,15 +221,20 @@ pub enum Hold {
     /// Past the knee within the last cut's hold-off: the weight in use not yet down to the window,
     /// or no `Tuning::span_s` since it fell there.
     HoldOff,
+    /// No Mac's answers read (none listing the NAS), the disks alone within the target.
+    NoAnswer,
     /// Under the knee, not near the best.
     NotNear,
     /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
     NotFresh,
     /// The jobs last started haven't run a `Tuning::span_s`.
     Started,
-    /// The window isn't what limits: the least a job waiting needs fits beside what's in use (none
-    /// waiting: the weight in use more than a step under it).
+    /// The window isn't what limits: the room the next job waiting needs fits beside what's in use
+    /// (none waiting: the weight in use more than a step under it).
     NotLimiting,
+    /// The window already as far past the weight in use as its readings tested (`Pace::read`'s
+    /// ceiling).
+    Ahead,
 }
 
 impl Hold {
@@ -235,23 +242,24 @@ impl Hold {
     pub fn words(self) -> &'static str {
         match self {
             Hold::HoldOff => "past the knee, within the last cut's hold-off",
+            Hold::NoAnswer => "no Mac's answers read",
             Hold::NotNear => "the answers counted not near their best",
             Hold::NotFresh => "not every Mac's answers fresh",
             Hold::Started => "the jobs last started not a span old",
             Hold::NotLimiting => "the window not what limits",
+            Hold::Ahead => "the window already past the load its readings tested",
         }
     }
 }
 
 impl Reading {
     /// The pacing's line in the lead's status at `now` (unix s), its window `window`: the window,
-    /// its threshold, the weight in use and the least a job waiting needs, the reading's ratio and
-    /// disk load, its verdict and why it held, and the lone way's hold.
+    /// its threshold, the weight in use and the room the next job waiting needs (`Sample::wants`),
+    /// the reading's ratio and disk load, its verdict and why it held, and the lone way's hold.
     pub fn line(&self, window: u32, now: u64) -> String {
-        let pct = |w: u32| format!("{:.0} %", f64::from(w) / 10.0);
         let th = self.threshold.map_or(String::new(), |t| format!(" (threshold {})", pct(t)));
         let wants =
-            self.wants.map_or(", nothing waiting".to_string(), |w| format!(", the least job waiting {}", pct(w)));
+            self.wants.map_or(", nothing waiting".to_string(), |w| format!(", the next job waiting needs {}", pct(w)));
         let ratio = self.ratio.map_or(String::new(), |x| format!(", answers {x:.1}× their best"));
         let load = self.load_pct.map_or(String::new(), |l| format!(", disks {l:.0} % busy"));
         let verdict = match (self.verdict, self.hold) {
@@ -305,6 +313,11 @@ impl Answer {
 /// The most a reading's ratio is taken to be (a Mac missing its deadlines; the cliff's).
 pub const RATIO_MOST: f64 = 100.0;
 
+/// A weight (thousandths of the NAS) as the lead's lines say it: a whole percent, rounded.
+pub fn pct(w: u32) -> String {
+    format!("{:.0} %", f64::from(w) / 10.0)
+}
+
 /// What a reading did to the window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -323,7 +336,8 @@ pub enum Verdict {
 /// What the lead reads each `Tuning::read_s` (`Pace::read`): at `t` (unix s), every Mac's answers
 /// (`Answer`), whether a Mac holding leased jobs gave none fresh (`blind`), the disks' busy shares
 /// (%; None: not read) against the target `pct`, the weight the pool's leased jobs hold, and the
-/// least a job waiting for the budget weighs (None: none waits; the window is what limits once it
+/// room the next job waiting for the budget needs (agentcore's `Sched::nas_wants`: the least one
+/// waiting weighs, or the room held for an aged one; None: none waits; the window is what limits once it
 /// refuses that beside what's in use, or, none waiting, a step).
 #[derive(Clone, Copy, Debug)]
 pub struct Sample<'a> {
@@ -675,10 +689,16 @@ impl Pace {
         let dt = self.last.as_ref().map_or(k.read_s, |r| t.saturating_sub(r.at)).min(k.grow_s) as f64
             / k.grow_s.max(1) as f64;
         let unread = ratio.is_none() && self.load.is_none();
+        // (The most its readings tested: slow start, twice the weight in use (two steps at least);
+        // past the threshold, a step past it.)
+        let additive = st.threshold.is_some_and(|th| st.window >= th);
+        let ceiling = if additive { in_use + step } else { 2.0 * in_use.max(step) };
         let hold = if unread {
             None
         } else if past {
             (st.cut_at.is_some() && st.settled_at.is_none_or(|at| t < at + k.span_s)).then_some(Hold::HoldOff)
+        } else if ratio.is_none() {
+            Some(Hold::NoAnswer)
         } else if !near {
             Some(Hold::NotNear)
         } else if !fresh {
@@ -687,6 +707,8 @@ impl Pace {
             Some(Hold::Started)
         } else if in_use + s.wants.map_or(step, f64::from) <= st.window {
             Some(Hold::NotLimiting)
+        } else if st.window >= ceiling {
+            Some(Hold::Ahead)
         } else {
             None
         };
@@ -702,10 +724,11 @@ impl Pace {
                 Verdict::Cut
             }
             None => {
-                match st.threshold {
-                    Some(th) if st.window >= th => st.window += step * dt,
-                    th => st.window = (st.window * det::Det::dexp2(dt)).min(th.unwrap_or(f64::INFINITY)).max(st.window),
-                }
+                let grown = match st.threshold {
+                    Some(_) if additive => st.window + step * dt,
+                    th => (st.window * det::Det::dexp2(dt)).min(th.unwrap_or(f64::INFINITY)).max(st.window),
+                };
+                st.window = grown.min(ceiling);
                 Verdict::Grew
             }
         };
@@ -720,7 +743,6 @@ impl Pace {
             load_pct,
             in_use: s.in_use,
             wants: s.wants,
-            fresh,
             verdict,
             hold,
             threshold,
@@ -748,7 +770,7 @@ impl Pace {
                     None => "cut lately".to_string(),
                 },
             };
-            format!("NAS work paced to {} % of the NAS, {} % in use (the NAS {cause})", w / 10, r.in_use / 10)
+            format!("NAS work paced to {} of the NAS, {} in use (the NAS {cause})", pct(w), pct(r.in_use))
         })
     }
 }
@@ -1375,9 +1397,10 @@ mod tests {
             p.read(&Sample { t, answers: &[], blind: false, busy, pct: 85, in_use: 100, wants: Some(150) }, &k)
         };
         assert_eq!(disks(&mut p, 0, None), Verdict::Unread);
-        assert_eq!(disks(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Grew, "the busiest within the target");
+        assert_eq!(disks(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Held, "within the target, but no answers: held");
+        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NoAnswer));
         assert_eq!(p.load, Some(60.0));
-        assert_eq!(disks(&mut p, 40, Some(&[95.0])), Verdict::Grew, "smoothed: one busy reading isn't over");
+        assert_eq!(disks(&mut p, 40, Some(&[95.0])), Verdict::Held, "smoothed: one busy reading isn't over");
         let cut = (5..10).map(|k| disks(&mut p, k * 10, Some(&[95.0]))).filter(|v| *v == Verdict::Cut).count();
         assert_eq!(cut, 1, "cut once: its jobs out before the cut still run");
         assert_eq!(p.window(), 50, "half the 100 in use");
@@ -1439,7 +1462,7 @@ mod tests {
             wants: Some(150),
         };
         assert_eq!(q.read(&s, &Tuning::default()), Verdict::Held);
-        assert!(!q.last.as_ref().unwrap().fresh);
+        assert_eq!(q.last.as_ref().unwrap().hold, Some(Hold::NotFresh));
         // (Stale, but past the knee: cut all the same.)
         let s = Sample { t: 50, answers: &[Answer { fresh: false, ..ans("m1", 50.0, 5.0) }], ..s };
         assert_eq!(q.read(&s, &Tuning::default()), Verdict::Cut);
@@ -1573,7 +1596,7 @@ mod tests {
         assert_eq!(r.lone_until, Some(90 + LONE_S), "past the knee: a lone job held back");
         assert_eq!(
             r.line(p.window(), 160),
-            "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the least job waiting 15 %; last reading 60 s \
+            "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the next job waiting needs 15 %; last reading 60 s \
              ago, answers 8.0× their best: held: past the knee, within the last cut's hold-off; a job beside \
              nothing held back 9 min more"
         );
@@ -1582,9 +1605,47 @@ mod tests {
         at(&mut p, 110, 10.0, 400, Some(150));
         assert_eq!(
             p.why().unwrap(),
-            "NAS work paced to 5 % of the NAS, 40 % in use (the NAS cut lately, not grown since: the answers \
+            "NAS work paced to 6 % of the NAS, 40 % in use (the NAS cut lately, not grown since: the answers \
              counted not near their best)"
         );
+    }
+
+    /// The window never grows on readings with no Mac's answers (the disks alone, nothing listing
+    /// the NAS), nor past what its readings tested: twice the weight in use under the threshold, a
+    /// step past it at the threshold; however much room the next job waiting needs.
+    #[test]
+    fn the_window_grows_only_on_answers_and_never_past_the_load_tested() {
+        let k = Tuning::default();
+        let disks_only = |p: &mut Pace, t: u64, in_use: u32| {
+            let s = Sample { t, answers: &[], blind: false, busy: Some(&[2.0]), pct: 85, in_use, wants: Some(900) };
+            p.read(&s, &k)
+        };
+        // (Idle, the disks quiet, a heavy job waiting: held for want of answers.)
+        let mut p = Pace::default();
+        for t in (0..600).step_by(10) {
+            assert_eq!(disks_only(&mut p, t, 0), Verdict::Held);
+            assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::NoAnswer));
+        }
+        assert_eq!(p.window(), STEP);
+        // (Answers near the best, nothing in use: two steps at most, then ahead of the load.)
+        for t in (600..1200).step_by(10) {
+            at(&mut p, t, 5.0, 0, Some(900));
+        }
+        assert_eq!(p.window(), 2 * STEP);
+        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::Ahead));
+        // (400 in use under no threshold: doubling to 800, no further, the 900 waiting not let in.)
+        for t in (1200..2400).step_by(10) {
+            at(&mut p, t, 5.0, 400, Some(900));
+        }
+        assert_eq!(p.window(), 800);
+        // (At a threshold: a step past the weight in use.)
+        at(&mut p, 2400, 40.0, 400, Some(900));
+        assert_eq!((p.window(), p.st.threshold), (200, Some(200.0)));
+        for t in (2410..4000).step_by(10) {
+            at(&mut p, t, 5.0, 400, Some(900));
+        }
+        assert_eq!(p.window(), 450, "400 in use and a step");
+        assert_eq!(p.last.as_ref().unwrap().hold, Some(Hold::Ahead));
     }
 
     /// The pacing's bounds are the pool's settings: each within its range, else its default;

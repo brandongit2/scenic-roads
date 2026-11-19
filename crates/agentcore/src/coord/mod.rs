@@ -12699,13 +12699,13 @@ mod tests {
 
     /// Task #1417 follow-up, as the live lead stood on 19 Nov: the window cut to a step by a lone
     /// job's slow answers, a heavy target aged in the budget holding its room, the light ones held
-    /// back behind it, nothing running and no Mac listing the NAS. The light ones' weight fits the
-    /// window, but the room held for the heavy one doesn't: the window is what limits, and grows
-    /// for it (it read the light ones' and held, the pool idle till the lone job's hold ended). The
-    /// lead's own answers near its best end that hold at once, and the heavy one goes beside
-    /// nothing; the lead samples them while work waits for the budget.
+    /// back behind it, nothing running and no Mac listing the NAS (the pool idle till the lone
+    /// job's hold ended). What the next job needs is the room held, not the light ones' weight;
+    /// with no answers the window holds. The lead's own answers near its best (it samples them
+    /// while work waits for the budget) end the hold at once, the heavy one goes beside nothing,
+    /// and the window grows on its answers, never past the load they tested.
     #[test]
-    fn a_cut_window_grows_back_for_the_room_held_once_the_pool_is_idle() {
+    fn a_cut_window_grows_back_on_the_leads_answers_once_the_pool_is_idle() {
         use jobrt::budget::nas::{Hold, State, Tuning, STEP};
         let (_d, c, _w, clock) = every((0, 0));
         heavy_slope(&c);
@@ -12780,21 +12780,39 @@ mod tests {
         assert!(c.nas_waiting(), "held back lately: the lead samples the NAS's answers");
         c.shared.lock().unwrap().leases.cancel(light);
         // (Idle: nothing running, nothing listing. The light ones held back for the heavy one's
-        // room, the heavy one for the lone way's hold.)
-        let mut grew = 0;
+        // room, the heavy one for the lone way's hold; what the next job needs is that room, but
+        // with no answers the window holds.)
         for _ in 0..6 {
             assert!(take("m4", 2).is_empty(), "40 leaves no room for the aged 500");
             assert!(take("m3", 0).is_empty(), "500 past the window, beside nothing held back");
             let (window, alone, hold) = read(None);
-            assert!(!alone);
-            assert_ne!(hold, Some(Hold::NotLimiting), "the room held for the aged one is what the window lacks");
-            grew = window;
+            assert_eq!((window, alone, hold), (STEP, false, Some(Hold::NoAnswer)), "no answers: no growth");
+            let wants = c.shared.lock().unwrap().nas_pace.last.as_ref().unwrap().wants;
+            assert_eq!(wants, Some(500), "the room held for the aged one, not the light ones' 40");
         }
-        assert_eq!(grew, 2 * STEP, "at the threshold: a step a minute");
         // (The lead's own answers near its best: the hold ends, and the heavy one goes alone.)
-        let (_, alone, _) = read(Some(2.5));
-        assert!(alone, "near the best: a job beside nothing goes");
+        let (window, alone, _) = read(Some(2.5));
+        assert_eq!((window, alone), (STEP, true), "near the best: a job beside nothing goes");
         assert_eq!(take("m3", 0).len(), 1, "the aged heavy one goes beside nothing");
+        let heavy = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let ts = vec![(offer.targets[0].0.clone(), String::new())];
+            s.leases.grant("m3", Work::Job { step: "slope-hi".into(), targets: ts }, now)
+        };
+        // (Beside it, answers near the best: the window grows to the load they test, a step a
+        // minute past the threshold to a step past the 500 in use, no further.)
+        let mut last = (0, None);
+        for _ in 0..70 {
+            take("m4", 2);
+            let (window, _, hold) = read(Some(2.5));
+            last = (window, hold);
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            assert!(s.leases.renew(heavy, "m3", None, now));
+        }
+        // (Held there: the light one fits now, so the window no longer limits.)
+        assert_eq!(last, (500 + STEP, Some(Hold::NotLimiting)), "grown on its answers to a step past what's in use");
     }
 
     /// A stale answer from a Mac holding no leased jobs (paused, or gone quiet) is left out: it
