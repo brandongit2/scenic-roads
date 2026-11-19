@@ -513,11 +513,10 @@ impl std::ops::DerefMut for Slots {
 /// as long, its lease ended as failed).
 const GUARD_BACKOFF_S: u64 = 3600;
 
-/// How often this Mac's caches are counted, at most (`resources`'s count on a thread of its own,
-/// `freeable`'s walk): a chosen duty cycle, not a derived one. Each count is a walk of their files,
-/// seconds on a Mac with a few hundred thousand of them, so not each loop; ten minutes keeps that a
-/// small share of the time. What a freeing could do more is known no sooner, so it times the waits
-/// below.
+/// How often this Mac's caches are counted when nothing asks sooner (`count_start`, on a thread of
+/// its own; a job that ran, room-making, a clear or a freeing asks again: `count_caches`): a chosen
+/// duty cycle, not a derived one. Each count is a walk of their files with a lock test of each, so
+/// not each loop. What a freeing could do more is known no sooner, so it times the waits below.
 const CACHE_COUNT: Duration = Duration::from_secs(600);
 
 /// How long a freeing that fell short of its goal waits before it's tried toward as much again
@@ -631,7 +630,7 @@ fn task_kind<'a>(the_plan: &dyn seam::Plan, spec: &'a JobSpec) -> &'a str {
 
 /// The work a member asks for (the shared steps, and "tail", "bldtile", "treeblock" and "terrainsub" for tasks): what its disk has free for
 /// (a step's need and its margin), or can have, from the caches it may empty (`free` the disk's free
-/// bytes, `cheap` what `make_room` can delete there: room::member_cheap_bytes). A job granted that
+/// bytes, `cheap` what `make_room` can delete there: `Agent::cheap_now`). A job granted that
 /// still can't have its room once the caches are emptied is given back (`run_once`). With the
 /// owner's disk room target (`floor`, room::Target), that much more stays free.
 fn member_steps(the_plan: &dyn seam::Plan, free: u64, cheap: u64, floor: u64) -> Vec<String> {
@@ -1716,8 +1715,6 @@ pub struct Agent {
     /// The folders of the jobs that ended out of the pool, by lease: their hand-offs go to the lead
     /// to journal (`journaled: false`), and each folder goes once the lead answers (`told`).
     unjournaled: BTreeMap<u64, PathBuf>,
-    /// What room-making can free here for a job (`freeable`) and when it was counted.
-    cheap: Option<(Instant, u64)>,
     /// The build's pause as this agent knows it (jobrt::control): its coordinator's on the
     /// lead; a member's as heard in its asks and beats, or as asked for here and not yet passed on
     /// (`pause_local`). Kept in `pause.json`.
@@ -1750,7 +1747,7 @@ pub struct Agent {
     cache_sized: (std::sync::mpsc::Sender<(Instant, room::Sizes)>, std::sync::mpsc::Receiver<(Instant, room::Sizes)>),
     /// The count under way on its thread (`count_start`): one at a time.
     count_thread: std::cell::RefCell<Option<std::thread::JoinHandle<()>>>,
-    /// A clear,a freeing toward the room target or room-making under way.
+    /// A clear, a freeing toward the room target or room-making under way.
     caches_task: Option<CachesTask>,
     /// The lead's: the pass's answers this Mac has sent to the NAS as the agent starts
     /// (crate::answers::seed), on a thread of its own; and whether it was started (once an agent).
@@ -1863,13 +1860,20 @@ type CacheCount = (Option<Instant>, Option<room::Sizes>);
 /// thread counted them after it (room::Freeable, bytes): the goal it ended at, what running jobs
 /// held, and what it could have deleted now but didn't (`unfreed`, of what an ask counts past its
 /// disk, `Agent::toward_now`: a loose raw tile it couldn't pack, a canopy square it couldn't copy,
-/// the NAS's handle stale, say). The freeing's own result is what the caches can do: it stands
-/// until a count shows less of that `now` than it left (some went: the next freeing says again).
+/// the NAS's handle stale, say), and of that, on a member with a room target, what its ask's
+/// disk would count (`cheap`, room::Freeable::cheap: `Agent::disk_room`, `cheap_now`); and when it
+/// ended (`at`, unix s). The freeing's own result is what the caches can do: it stands until a
+/// count shows less of either than it left (some went: the next freeing says again), or for
+/// `TOWARD_RETRY` at most (`Agent::left`: what stopped it, a tile too new to pack or a stale
+/// handle, may be gone with no change to the caches, and the disk may have its goal meanwhile, so
+/// no freeing says again).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TowardLeft {
     goal: u64,
     held: u64,
     unfreed: u64,
+    cheap: u64,
+    at: u64,
 }
 /// What the build page's regions were made of: the regions' accepted version and the catalogue.
 type RegionsKey = (String, Option<u64>);
@@ -2159,7 +2163,6 @@ impl Agent {
             noted_start: false,
             broker_noted: 0,
             unjournaled: BTreeMap::new(),
-            cheap: None,
             pause,
             pause_local: false,
             pause_pushed: false,
@@ -2493,8 +2496,8 @@ impl Agent {
             self.end_answer_hold();
             return Vec::new();
         }
-        // The work its disk has room for, with what its caches can free (`freeable`).
-        let cheap = self.freeable();
+        // The work its disk has room for, with what its caches can free (`cheap_now`).
+        let cheap = self.cheap_now();
         // (A job given back for the owner's disk room target lately: no work asked for until a job
         // ends, the target changes or `FLOOR_SHORT_HOLD` passes; the caches are freed toward it meanwhile,
         // its room held each loop it waits: `hold_room`.)
@@ -3071,11 +3074,11 @@ impl Agent {
     /// recorded its targets, and what its z6 tiles cost learned; a member's: its result in its outbox
     /// folder, to send.
     fn end_lease(&mut self, k: usize, outcome: Outcome, done: &[(String, String)], note: &str) {
-        // (A job that ran ended: what the caches can free is counted again before it next asks.
+        // (A job that ran ended: the caches are counted again, on their thread (`count_caches`).
         // Not for a lease given back before its job ran: the caches are as they were, and a start
         // that waits gives one back each loop.)
         if self.slots[k].running.is_some() {
-            self.cheap = None;
+            self.count_caches();
         }
         let pid = self.slots[k].running.as_ref().map(|r| r.pgid as u32);
         // What its targets took at least, as the guard's sampler saw them (crate::agent::memguard),
@@ -5730,7 +5733,7 @@ impl Agent {
                         n >> 30,
                         sized.saturating_add(margin) >> 30
                     );
-                    self.cheap = None;
+                    self.count_caches();
                 }
                 Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
             }
@@ -6502,7 +6505,7 @@ impl Agent {
     }
 
     /// The disk a job could have (bytes): the free space, on a member with a room target with what
-    /// its caches can free (as last counted, `freeable`), less the owner's room target and the jobs'
+    /// its caches can free (as last counted, `cheap_now`), less the owner's room target and the jobs'
     /// reservations (`reserved`): what an ask says (`disk_mb`). A member's job starts with the room
     /// past the target and the other jobs' reservations (a shared step's, `need_of`), and its caches
     /// are freed toward its reservation while it runs (`goal`, `tend_caches`), the disk guard behind
@@ -6517,30 +6520,28 @@ impl Agent {
     /// be given back each loop. Instead one its coordinator holds back for its disk alone has the
     /// caches freed toward its room (`held_room`), and is granted once the disk has it.
     fn disk_room(&self) -> u64 {
-        let cheap = if self.is_member() && self.floor() > 0 { self.cheap.map_or(0, |c| c.1) } else { 0 };
+        let cheap = if self.is_member() && self.floor() > 0 { self.cheap_now() } else { 0 };
         self.disk_free().saturating_add(cheap).saturating_sub(self.floor() + self.reserved(None))
     }
 
-    /// What a member's caches can free on its disk for a job (bytes): its cheap caches
-    /// (room::member_cheap_bytes) but the whole copies (buildstore::localread::is_shared: held by
+    /// What a member's caches can free on its disk for a job (bytes), as last counted on a thread
+    /// of their own (`count_start`, again after a job that ran, room-making, a clear or a freeing):
+    /// its cheap caches (room::Freeable::cheap: room-making's, its loose raw tiles and the
+    /// pageview months left out) but the whole copies (buildstore::localread::is_shared: held by
     /// their own rule, a Mac holding one granted no fill for it, so not free twice; the lead counts
     /// them from its capacity's `caches` for a job reading none of them, crate::coord::sched's
-    /// `Copies`, and room-making frees them for it like the others) and the files a job holds
-    /// now (store::cachefile::in_use: room-making leaves them). Counted at most every `CACHE_COUNT`
-    /// (a walk of thousands of files), and again after a job that ran, room-making or a freeing that
-    /// freed some.
-    fn freeable(&mut self) -> u64 {
-        match self.cheap {
-            Some((at, n)) if at.elapsed() < CACHE_COUNT => n,
-            _ => {
-                let cache = self.o.home.join("cache");
-                let n = room::member_cheap_bytes(&cache, &|p| {
-                    buildstore::localread::is_shared(&cache, p) || store::cachefile::in_use(p)
-                });
-                self.cheap = Some((Instant::now(), n));
-                n
-            }
-        }
+    /// `Copies`, and room-making frees them for it like the others) and the files a job holds now
+    /// (store::cachefile::held_by_job: room-making leaves them), less what the last freeing that
+    /// fell short left of them (`left`: a canopy square it couldn't copy). None counted yet: 0.
+    fn cheap_now(&self) -> u64 {
+        let left = self.left().map_or(0, |l| l.cheap);
+        self.cache_size.borrow().1.as_ref().map_or(0, |s| s.free.cheap.saturating_sub(left))
+    }
+
+    /// What the last freeing that fell short left (`toward_left`), while it stands: `TOWARD_RETRY`
+    /// at most.
+    fn left(&self) -> Option<TowardLeft> {
+        self.toward_left.get().filter(|l| now_s().saturating_sub(l.at) < TOWARD_RETRY.as_secs())
     }
 
     /// What a freeing toward a held room can free of this Mac's caches past what its ask's disk
@@ -6549,7 +6550,7 @@ impl Agent {
     /// couldn't (`toward_left`), as last counted on a thread of their own (`count_start`, or the
     /// freeing's; room::Freeable: not what no freeing deletes). None: not counted yet.
     fn towardable(&self) -> Option<u64> {
-        let unfreed = self.toward_left.get().map_or(0, |l| l.unfreed);
+        let unfreed = self.left().map_or(0, |l| l.unfreed);
         self.cache_size.borrow().1.as_ref().map(|s| s.free.held + self.toward_now(&s.free).saturating_sub(unfreed))
     }
 
@@ -6742,7 +6743,11 @@ impl Agent {
         while let Ok((at, n)) = self.cache_sized.1.try_recv() {
             let mut c = self.cache_size.borrow_mut();
             if c.0 == Some(at) {
-                if self.toward_left.get().is_some_and(|l| self.toward_now(&n.free) < l.unfreed) {
+                if self
+                    .toward_left
+                    .get()
+                    .is_some_and(|l| self.toward_now(&n.free) < l.unfreed || n.free.cheap < l.cheap)
+                {
                     self.toward_left.set(None);
                 }
                 c.1 = Some(n);
@@ -6965,7 +6970,7 @@ impl Agent {
         // (A job ended since: tried again, but after a freeing toward as much that fell short only
         // once the caches, as counted since on a thread of their own (no walk here), can do more
         // than it left.)
-        let Some(l) = self.toward_left.get().filter(|l| l.goal >= target) else { return Some(target) };
+        let Some(l) = self.left().filter(|l| l.goal >= target) else { return Some(target) };
         let more = self
             .cache_size
             .borrow()
@@ -7122,7 +7127,6 @@ impl Agent {
         if let Some((t, at)) = self.toward_tried {
             self.toward_tried = Some((t.min(ended_at), at));
         }
-        let freed = f.bytes() > 0;
         let free = self.disk_free();
         let note = format!("freed its caches {}: {}; {} free", toward_words(toward), f.say(), room::size(free));
         eprintln!("agent: {note}");
@@ -7138,12 +7142,8 @@ impl Agent {
         // making, which frees no more than this did, isn't tried again within `FLOOR_SHORT_HOLD`, or until a
         // job ends. Nor is a freeing toward as much: `toward_due`.)
         self.save();
-        // (Its thread's count of the caches as it left them taken in; what the caches can free
-        // counted again only when it freed some.)
+        // (Its thread's count of the caches as it left them taken in.)
         self.counts_in();
-        if freed {
-            self.cheap = None;
-        }
         // (Short of its goal: what running jobs hold and what it could have deleted now but didn't,
         // as that count says, so what the caches can free is said less that (`towardable`), and a
         // job's end tries again only once they can do more: `toward_due`.)
@@ -7151,7 +7151,7 @@ impl Agent {
         let left = (free < goal)
             .then(|| self.cache_size.borrow().1.as_ref().map(|s| s.free))
             .flatten()
-            .map(|n| TowardLeft { goal, held: n.held, unfreed: self.toward_now(&n) });
+            .map(|n| TowardLeft { goal, held: n.held, unfreed: self.toward_now(&n), cheap: n.cheap, at: now_s() });
         self.toward_left.set(left);
     }
 
@@ -7204,26 +7204,24 @@ impl Agent {
     }
 
     /// A job of `id` ran here: this Mac's caches may hold more, so a freeing toward the room target
-    /// is tried again (not after the backup and GC: they read no cache). After a freeing that fell
-    /// short, once a count says they can do more (`toward_due`): counted again, while the disk is
-    /// short of the goal still and no freeing or clear runs (its end counts them).
+    /// is tried again (not after the backup and GC: they read no cache); after a freeing that fell
+    /// short, once a count says they can do more (`toward_due`; its end counts them: `end_lease`).
     fn worked(&mut self, id: &str) {
         if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
             self.mem.worked_at = now_s();
-            if self.toward_left.get().is_some() && self.caches_task.is_none() && self.disk_free() < self.goal() {
-                self.count_caches();
-            }
         }
     }
 
-    /// Asks for this Mac's caches to be counted again (after a clear, room-making, or a job's end
-    /// while a freeing fell short), for the status and what they can free: on the counting thread
-    /// with the NAS, as the loop's status next takes up (`resources`, `count_start`: a walk of their
-    /// files with a lock test of each, seconds, never on the loop); a count under way passed over.
-    /// What a member's ask counts again before it next asks (`freeable`).
-    fn count_caches(&mut self) {
-        self.cache_size.borrow_mut().0 = None;
-        self.cheap = None;
+    /// Asks for this Mac's caches to be counted again (after a clear, room-making or a job that
+    /// ran), for the status and what they can free (`cheap_now`, `towardable`): on the counting
+    /// thread with the NAS, as the loop's status next takes up (`resources`, `count_start`: a walk
+    /// of their files with a lock test of each, never on the loop); a count under way passed over.
+    /// Not while a freeing toward the target runs: its thread counts them as it ends, and that
+    /// count, what it left, isn't to be passed over (`toward_record`).
+    fn count_caches(&self) {
+        if !self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
+            self.cache_size.borrow_mut().0 = None;
+        }
     }
 
     /// Counts this Mac's caches on a thread of their own (room::sizes, with the NAS at `root`: the
@@ -12354,7 +12352,7 @@ mod tests {
         a.counted(Some(&nas));
         assert_eq!(a.toward_due(), Some(60 * g), "it reached its goal: a job's end tries again");
         let now = |a: &Agent| a.cache_size.borrow().1.as_ref().unwrap().free.now;
-        let left = |held, unfreed| Some(TowardLeft { goal: 60 * g, held, unfreed });
+        let left = |held, unfreed| Some(TowardLeft { goal: 60 * g, held, unfreed, cheap: 0, at: now_s() });
         a.toward_left.set(left(0, now(&a)));
         assert_eq!(a.toward_due(), None, "fell short, the caches as it left them");
         a.toward_left.set(left(1000, now(&a)));
@@ -12378,11 +12376,10 @@ mod tests {
         put(&cache.join("blobs/sources/x/y.bin"), &[0; 1000]);
         put(&cache.join("base/p.pack"), &[0; 5000]);
         put(&cache.join("heritage-merged-2026-10-01-cover.osm.pbf"), &[0; 7000]);
-        m2.freeable();
+        m2.counted(Some(&nas));
         assert_eq!(m2.disk_room(), 6 * g + 1000);
         // What it reports freeable past that (task #1478): the part only a freeing empties, the
         // base packs, not the copy its ask's disk has counted, nor the clip.
-        m2.counted(Some(&nas));
         assert_eq!(m2.towardable(), Some(5000));
     }
 
@@ -12524,14 +12521,23 @@ mod tests {
         a.tend_caches(Some(&nas));
         assert_eq!(a.mem.toward.as_ref().map(|f| f.bytes()), Some(0));
         assert!(tile.exists());
-        assert_eq!(a.toward_left.get(), Some(TowardLeft { goal: target, held: 0, unfreed: n }));
+        assert_eq!(a.toward_left.get().map(|l| (l.goal, l.held, l.unfreed)), Some((target, 0, n)));
         assert_eq!(a.towardable(), Some(0), "what the freeing left isn't freeable");
-        // A job's end: counted again, off the loop; unchanged, nothing tried again.
+        // A job's end: counted again, off the loop (`end_lease`'s `count_caches`); unchanged,
+        // nothing tried again.
         a.worked("terrain-hi 3/1/1");
+        a.count_caches();
         a.mem.worked_at = now_s() + 1;
         assert_eq!(a.cache_size.borrow().0, None, "a count asked for");
         a.counted(Some(&nas));
         assert_eq!((a.toward_due(), a.towardable()), (None, Some(0)), "an unchanged count");
+        // What it left stands `TOWARD_RETRY` at most: past that, with no change to the caches,
+        // counted whole again (the tile may be packable now, and the disk may have its goal, so no
+        // freeing says again).
+        let l = a.toward_left.get().unwrap();
+        a.toward_left.set(Some(TowardLeft { at: l.at - TOWARD_RETRY.as_secs(), ..l }));
+        assert_eq!((a.toward_due(), a.towardable()), (Some(target), Some(n)), "aged out");
+        a.toward_left.set(Some(l));
         // A copy more: freeable, and tried again.
         put(&home.join("cache/blobs/sources/x/y.bin"), &[0; 1000]);
         a.counted(Some(&nas));
@@ -12540,6 +12546,52 @@ mod tests {
         std::fs::remove_file(&tile).unwrap();
         a.counted(Some(&nas));
         assert_eq!((a.toward_left.get(), a.towardable()), (None, Some(1000)));
+    }
+
+    /// Task #1478 review: a member with a room target counts its cheap caches in its ask's disk
+    /// (`disk_room`), as the off-loop count has them; a canopy square a freeing couldn't copy onto
+    /// the NAS (its folder not to be written) is what it left, so the disk isn't promised it, until
+    /// `TOWARD_RETRY` passes.
+    #[cfg(unix)]
+    #[test]
+    fn a_member_promises_no_square_a_freeing_couldnt_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: true,
+        })
+        .unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let target = 50u64 << 30;
+        room::set_target(&home, Some(target), "a test").unwrap();
+        a.room_target = room::target(&home);
+        let tif = codecs::whole::testfiles::tiff(false);
+        let n = tif.len() as u64;
+        // (A disk whose free space follows the squares: half the square short of the target.)
+        let _disk = room::TestDisk::set(home.join("cache/chm10"), target + n / 2);
+        put(&home.join("cache/chm10/a.tif"), &tif);
+        a.counted(Some(&nas));
+        assert_eq!((a.cheap_now(), a.disk_room(), a.towardable()), (n, n / 2, Some(0)));
+        // (The NAS's sources not to be written: the square stays.)
+        std::fs::set_permissions(root.join("sources"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(a.toward_due(), Some(target));
+        a.tend_caches(Some(&nas));
+        std::fs::set_permissions(root.join("sources"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(a.mem.toward.as_ref().map(|f| f.bytes()), Some(0));
+        assert!(home.join("cache/chm10/a.tif").exists());
+        assert_eq!(a.toward_left.get().map(|l| (l.unfreed, l.cheap)), Some((0, n)));
+        assert_eq!((a.cheap_now(), a.disk_room(), a.towardable()), (0, 0, Some(0)), "not promised");
+        let l = a.toward_left.get().unwrap();
+        a.toward_left.set(Some(TowardLeft { at: l.at - TOWARD_RETRY.as_secs(), ..l }));
+        assert_eq!((a.cheap_now(), a.disk_room()), (n, n / 2), "aged out");
     }
 
     /// Task #1478: the caches are counted on a thread of their own, with the NAS, never on the
@@ -12856,8 +12908,9 @@ mod tests {
         store::cachefile::lock_shared(&reading).unwrap();
         a.free_set = Some(37 * g);
         a.room_target = Some(room::Target { bytes: 30 * g, by: String::new(), at: 0 });
+        a.counted(None);
         assert_eq!(
-            a.freeable(),
+            a.cheap_now(),
             68 * g,
             "the canopy and the records' copies; the basemap's and the depth pack's copies, and the square a job reads, held"
         );

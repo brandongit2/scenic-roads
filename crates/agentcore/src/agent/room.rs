@@ -159,7 +159,7 @@ const CHEAP: [(&str, &str); 4] =
 pub const MONTHS: &str = "items/months";
 
 /// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
-/// `member_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
+/// `Freeable::cheap`): of the pageview months, the indexes the NAS's `sources` has at their size
 /// (`months_bytes`), none without it.
 pub fn cheap_bytes(cache: &Path, sources: Option<&NasPath>) -> u64 {
     let mut files = Vec::new();
@@ -182,19 +182,6 @@ fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
     };
     let index = |p: &Path| p.to_string_lossy().ends_with(".tsv.zst");
     files.iter().filter(|f| !index(&f.2) || there(&f.2, f.1)).map(|f| f.1).sum()
-}
-
-/// What `make_room` can free on a member, and on any Mac without asking the NAS (what an ask counts,
-/// crate::agent's `freeable`): the cheap caches but the loose raw tiles (`aws-terrarium/<z>/…`),
-/// which a member keeps until a job of its own packs them onto the NAS (it can't: only a job
-/// handing off packs; the NAS lacks them), and the pageview months (the NAS is asked which it has).
-/// The copies of the NAS's archives (`aws-terrarium/packs/`) count. Not the files `keep` names.
-pub fn member_cheap_bytes(cache: &Path, keep: &dyn Fn(&Path) -> bool) -> u64 {
-    let mut files = Vec::new();
-    for d in ["chm10", "blobs", "aws-terrarium/packs"] {
-        walk_cheap(cache, d, None, &mut files);
-    }
-    files.iter().filter(|f| !keep(&f.2)).map(|f| f.1).sum()
 }
 
 /// Whether `p`, in the agent's cache, is this Mac's own to count and delete from: not a link (a
@@ -1244,7 +1231,7 @@ impl Freeable {
 }
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
-/// member's, `member_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
+/// member's its loose raw tiles left out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`
 /// ones, as far as the NAS can be asked: the heritage clip while it can be made again, the answers
 /// the NAS has all of, only when `root` is given); and what a freeing can do with them
