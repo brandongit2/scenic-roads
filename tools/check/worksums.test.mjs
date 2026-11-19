@@ -396,6 +396,12 @@ test('settings: an answer lacking a setting shows "not set" for it alone, the ot
   const away = poolRows({ mac: 'm1', nas_room: null, batch: { minutes: 20, default: 15, set: true, by: 'the build page', had: true }, overdue: { factor: 3, default: 3, set: false, had: false } });
   assert.deepEqual(away.map((r) => [r.key, r.now, !!r.input]), [['nas_room', 'not here', false], ['batch_minutes', '20 min', true], ['overdue_factor', '3×', true], ['hold_catalog', 'not set', false], ['near_slope', 'not set', false]]);
   assert.match(away[1].note, /set by the build page/);
+  // (Task #1417 review: the NAS pacing's bounds, each settable within its range, its default until set.)
+  const pace = poolRows({ nas_room: null, nas_pace: [
+    { name: 'nas-slow', key: 'nas_slow', what: 'the knee', unit: '×', value: 2.5, default: 3, least: 1.5, most: 10, set: true, by: 'x', had: true },
+    { name: 'nas-step', key: 'nas_step', what: 'the step', unit: '‰', value: 50, default: 50, least: 10, most: 500, set: false, had: true }] }).slice(5);
+  assert.deepEqual(pace.map((r) => [r.key, r.now, r.input.min, r.input.max]), [['nas_slow', '2.5 ×', 1.5, 10], ['nas_step', '50 ‰', 10, 500]]);
+  assert.ok(/set by x/.test(pace[0].note) && /the default, 50 ‰/.test(pace[1].note));
 });
 
 test("schedule's view: 12 h each side of now at first, held in the domain, zoomed about the pointer (#787)", () => {

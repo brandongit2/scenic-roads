@@ -355,10 +355,14 @@ pub enum PoolCmd {
     /// <minutes>|off` (the measured time a job of a shared step is sized to on its Mac; off: 15),
     /// `overdue-factor <times>|off` (the status flags a job past that many times its sized time),
     /// `hold-catalog on|off` (publishing held for review: the map kept back on the lead's disk),
-    /// `near-slope on|off` (a done region's slope and tree cover by the z6 tiles near it)
+    /// `near-slope on|off` (a done region's slope and tree cover by the z6 tiles near it), and the
+    /// NAS pacing's bounds, each `<number>|off` (jobrt::budget::nas::KNOBS: `nas-step`,
+    /// `nas-small`, `nas-decrease`, `nas-floor-hours`, `nas-slow`, `nas-near`, `nas-grow-seconds`,
+    /// `nas-read-seconds`, `nas-span-seconds`, `nas-restore-minutes`; the lead takes each at its
+    /// next reading)
     Set {
         /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,
-        /// hold-catalog or near-slope
+        /// hold-catalog, near-slope, or one of the NAS pacing's bounds
         name: Option<String>,
         /// Its value; off: its default (placement, hold-catalog and near-slope off)
         value: Option<String>,

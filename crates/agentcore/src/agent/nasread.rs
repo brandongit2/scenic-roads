@@ -21,7 +21,6 @@ use crate::pool::nas::{Created, Nas};
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use store::deadline;
@@ -191,27 +190,34 @@ pub fn with_big<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T
 
 /// How long the NAS takes to list folder `p` (the latency series, crate::agent::live: a listing,
 /// which macOS's SMB client asks the server for, where a stat may come from its cache), within
-/// `DEADLINE`: None when it didn't answer in time, or when the last probe is still stuck in its
-/// call (never two at once, so a hung share holds one call at most).
-pub fn probe(p: &NasPath) -> Option<Duration> {
-    static PROBING: AtomicBool = AtomicBool::new(false);
+/// `DEADLINE`. A listing that fails or passes its deadline counts as the deadline, and while the
+/// last is still stuck in its call (never two at once, so a hung share holds one call at most) as
+/// that call's age: a NAS past its cliff is the slowest answer of all, never no answer (task #1417
+/// review: a probe that said nothing read as a NAS that was fine).
+pub fn probe(p: &NasPath) -> Duration {
+    /// When the probe in its call began (None: none is).
+    static PROBING: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     /// Clears `PROBING` as the call's closure is dropped: once it ran, or refused unrun.
     struct Done;
     impl Drop for Done {
         fn drop(&mut self) {
-            PROBING.store(false, Ordering::SeqCst);
+            *PROBING.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
-    if PROBING.swap(true, Ordering::SeqCst) {
-        return None;
+    let t0 = std::time::Instant::now();
+    {
+        let mut g = PROBING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(since) = *g {
+            return since.elapsed().max(DEADLINE);
+        }
+        *g = Some(t0);
     }
     let (owned, done) = (p.clone(), Done);
     let r = deadline::call(&label(p).display(), &"list", DEADLINE, move || {
         let _done = done;
-        let t = std::time::Instant::now();
-        Ok(owned.read_dir().is_ok().then(|| t.elapsed()))
+        Ok(owned.read_dir().is_ok().then(|| t0.elapsed()))
     });
-    r.ok().flatten()
+    r.ok().flatten().unwrap_or(DEADLINE)
 }
 
 /// A phase of a round that takes this long or longer is logged by name as it ends (`phase`).
@@ -301,12 +307,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_probe_times_a_listing_and_one_that_fails_is_none() {
+    fn a_probe_times_a_listing_and_one_that_fails_is_the_deadline() {
         let d = tempfile::tempdir().unwrap();
-        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())).is_some_and(|t| t < DEADLINE));
-        assert_eq!(probe(&store::nasfs::NasPath::local_for_test(&d.path().join("missing"))), None);
+        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())) < DEADLINE);
+        assert_eq!(probe(&store::nasfs::NasPath::local_for_test(&d.path().join("missing"))), DEADLINE);
         // (Its flag cleared each time: a third answers too.)
-        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())).is_some());
+        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())) < DEADLINE);
     }
 
     /// A NAS whose calls on paths starting with `stuck` never return (until `release` drops),

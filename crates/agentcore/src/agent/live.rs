@@ -26,7 +26,11 @@
 //!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder under nasread's deadline (crate::agent::nasread::probe;
-//!   a stat would be answered from the SMB client's cache), never two at once.
+//!   a stat would be answered from the SMB client's cache), never two at once; one that fails or
+//!   passes its deadline counts as the deadline, one still stuck as its age. Its mean and its floor
+//!   for the lead's pacing (`Store::nas_answers`): the floor the least of its means over the
+//!   pacing's floor span on the 10-s ring, since the NAS's link last changed (`Store::set_link`:
+//!   at home or not, the mount; kept in `LINK_FILE` beside the store's file).
 //! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
 //!   the build may use now (all; while the owner uses the Mac, less those kept for them), the
 //!   Mac's memory floor (crate::agent::memfloor), the owner's disk room target and the jobs' disk
@@ -166,6 +170,8 @@ pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
 /// jobrt::budget::nas::Pace): its window and the weight the pool's leased jobs hold (% of the NAS
 /// as probed), and the worst Mac's NAS answer time over its floor.
 pub const POOL_PACE: [&str; 3] = ["pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x"];
+/// The most `pool_nas_answer_x` records: a Mac missing its deadlines, its ratio past any knee.
+pub const ANSWER_X_MOST: f64 = 100.0;
 
 /// The NAS files kept for the file stream (the newest).
 pub const FILES: usize = 200;
@@ -348,7 +354,20 @@ pub struct Store {
     sampling: AtomicBool,
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
+    /// The NAS's link and since when (`set_link`; None: not said yet).
+    link: Mutex<Option<Link>>,
 }
+
+/// The NAS's link as a Mac reaches it (`Store::set_link`): its key (at home or not, and the
+/// share's mount) and since when (unix s; 0: since before it was first kept).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Link {
+    key: String,
+    since: u64,
+}
+
+/// The file the NAS's link is kept in, beside the store's.
+pub const LINK_FILE: &str = "nas-link.json";
 
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -371,6 +390,10 @@ impl Store {
                 }
             })
             .unwrap_or_default();
+        let link = file
+            .as_deref()
+            .and_then(|f| std::fs::read(f.with_file_name(LINK_FILE)).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok());
         Arc::new(Store {
             series: Mutex::new(series),
             file,
@@ -381,7 +404,55 @@ impl Store {
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
+            link: Mutex::new(link),
         })
+    }
+
+    /// The NAS reached at home (`home`) or not, by the share's mount as the store has it (`set_nas`)
+    /// at `now`: a change starts this Mac's NAS floor again (`nas_answers`), kept beside the store's
+    /// file. A Mac's first key, with none kept, takes the floor's whole span.
+    pub fn set_link(&self, home: bool, now: u64) {
+        let mount = self.nas.lock().ok().and_then(|n| n.as_ref().map(|r| r.unchecked_path().display().to_string()));
+        let key = format!("{} {}", if home { "home" } else { "away" }, mount.unwrap_or_default());
+        let mut g = self.link.lock().unwrap_or_else(|e| e.into_inner());
+        if g.as_ref().is_some_and(|l| l.key == key) {
+            return;
+        }
+        let l = Link { since: if g.is_some() { now } else { 0 }, key };
+        if let Some(f) = self.file.as_deref().map(|f| f.with_file_name(LINK_FILE)) {
+            if let Err(e) = serde_json::to_vec(&l).map_err(std::io::Error::other).and_then(|b| std::fs::write(&f, b)) {
+                eprintln!("agent: keeping the NAS's link: {e}");
+            }
+        }
+        *g = Some(l);
+    }
+
+    /// This Mac's NAS answers for its lead at `now`, by the pacing's bounds `k`
+    /// (jobrt::budget::nas::Answer): its answer time, the mean of `NAS_MS` over `k.span_s`; its
+    /// floor, the least such mean over `k.floor_s` on the 10-s ring since its link last changed
+    /// (`set_link`), never under store::aimd::NAS_LEAST. None: not measured over the span.
+    pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64)> {
+        let ms = self.mean(NAS_MS, now, k.span_s)?;
+        let since = self.link.lock().ok().and_then(|l| l.as_ref().map(|l| l.since)).unwrap_or(0);
+        let (step, _) = TIERS[1];
+        let b = self.series.lock().ok()?.get(NAS_MS)?.buckets(1, now.saturating_sub(k.floor_s).max(since), now + 1);
+        let m = (k.span_s / step).max(1) as usize;
+        let least = b
+            .windows(m)
+            .filter(|w| w[m - 1].slot - w[0].slot == m as u64 - 1)
+            .map(|w| w.iter().map(|x| x.sum).sum::<f64>() / w.iter().map(|x| f64::from(x.n)).sum::<f64>())
+            .fold(ms, f64::min);
+        Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0)))
+    }
+
+    /// `cap`'s NAS answers (crate::coord::Capacity's `nas_ms`, `nas_floor_ms`, `nas_at`) and NAS
+    /// calls at `now` as this store has them (`nas_answers`, `calls_now`): a member's beat sets them
+    /// as it goes, the lead's prober its own Mac's as it reads.
+    pub fn answer_in(&self, cap: &mut crate::coord::Capacity, now: u64, k: &jobrt::budget::nas::Tuning) {
+        let a = self.nas_answers(now, k);
+        (cap.nas_ms, cap.nas_floor_ms) = (a.map(|a| a.0), a.map(|a| a.1));
+        cap.nas_at = now;
+        cap.nas_calls = self.calls_now(now);
     }
 
     /// This Mac's room for the pool's jobs at its quietest sustained state (task #951; the forecast's
@@ -456,15 +527,16 @@ impl Store {
         }
     }
 
-    /// The pacing's reading at `t` (`POOL_PACE`): its window, the weight in use, and the worst
-    /// Mac's NAS answer time over its floor where one was read.
+    /// The pacing's reading at `t` (`POOL_PACE`): its window, the weight in use, and the counted
+    /// Mac's NAS answer time over its floor where one was read (a Mac missing its deadlines at
+    /// `ANSWER_X_MOST`: jobrt::budget::nas::Answer::ratio).
     pub fn record_pace(&self, t: u64, p: &jobrt::budget::nas::Pace) {
         let pct = |w: u32| f64::from(w) / 10.0;
         self.record(POOL_PACE[0], t, pct(p.window()));
         if let Some(r) = &p.last {
             self.record(POOL_PACE[1], t, pct(r.in_use));
-            if let Some(a) = &r.worst {
-                self.record(POOL_PACE[2], t, a.ratio());
+            if let Some(a) = &r.counted {
+                self.record(POOL_PACE[2], t, a.ratio().min(ANSWER_X_MOST));
             }
         }
     }
@@ -867,9 +939,7 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                 let root = store.nas.lock().ok().and_then(|n| n.clone());
                 if let Some(r) = root {
                     let t = now_s();
-                    if let Some(d) = super::nasread::probe(&r.path()) {
-                        store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
-                    }
+                    store.record(NAS_MS, t, super::nasread::probe(&r.path()).as_secs_f64() * 1000.0);
                 }
                 // (The days archived, an hour apart: tried again an hour on when the NAS failed.)
                 let root = store.root.lock().ok().and_then(|n| n.clone());
@@ -1437,6 +1507,43 @@ mod tests {
         assert!(s.latest(NAS_MISSED, t + 1, 5).is_some(), "missed over the second, from the second read");
         let c = s.calls_now(t + 1).unwrap();
         assert!(c[2] > 0.0, "its threads said");
+    }
+
+    /// Task #1417 review: a Mac's NAS answers for its lead: its mean over the span against its
+    /// floor, the least such mean over the day on its link. Two hours at twice its best never
+    /// become the floor (a half hour's would have); a link change starts it again, kept beside
+    /// the store's file across a restart.
+    #[test]
+    fn a_macs_nas_floor_is_its_days_least_on_its_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join(FILE);
+        let k = jobrt::budget::nas::Tuning::default();
+        let s = Store::new(Some(f.clone()), "m1");
+        let t0 = 1_700_000_000;
+        s.set_link(true, t0);
+        for t in (t0..t0 + 3 * 3600).step_by(5) {
+            s.record(NAS_MS, t, if t < t0 + 3600 { 5.0 } else { 10.0 });
+        }
+        let now = t0 + 3 * 3600 - 1;
+        assert_eq!(s.nas_answers(now, &k), Some((10.0, 5.0)), "the day's least");
+        let half = jobrt::budget::nas::Tuning { floor_s: 1800, ..k };
+        assert_eq!(s.nas_answers(now, &half), Some((10.0, 10.0)), "a half hour's drifts up under load");
+        // (Away now: a floor of its own from the change.)
+        let moved = t0 + 4 * 3600;
+        s.set_link(false, moved);
+        for t in (moved..moved + 120).step_by(5) {
+            s.record(NAS_MS, t, 40.0);
+        }
+        assert_eq!(s.nas_answers(moved + 119, &k), Some((40.0, 40.0)));
+        let mut cap = crate::coord::Capacity::default();
+        s.answer_in(&mut cap, moved + 119, &k);
+        assert_eq!((cap.nas_ms, cap.nas_floor_ms, cap.nas_at), (Some(40.0), Some(40.0), moved + 119));
+        // (Restarted on the same link: its change kept.)
+        s.save();
+        let back = Store::new(Some(f), "m1");
+        back.set_link(false, moved + 200);
+        assert_eq!(back.nas_answers(moved + 119, &k), Some((40.0, 40.0)));
+        assert_eq!(Store::new(None, "m1").nas_answers(now, &k), None, "nothing measured");
     }
 
     #[test]

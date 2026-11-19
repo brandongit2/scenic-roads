@@ -1089,7 +1089,18 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
 fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> {
     use agentcore::coord::asks::{self, SettingAsk};
     if let Some(name) = name {
-        anyhow::ensure!(asks::NAMES.contains(&name), "the pool's settings: {}, not {name}", asks::NAMES.join(", "));
+        anyhow::ensure!(
+            asks::known(name),
+            "the pool's settings: {}, {}, not {name}",
+            asks::NAMES.join(", "),
+            jobrt::budget::nas::KNOBS.map(|k| k.name).join(", ")
+        );
+        if let (Some(_), Some(v)) = (jobrt::budget::nas::knob(name), value) {
+            let by = format!("scenic pool set on {}", store::sys::host_name());
+            agent::settings::set_pace(home, name, v, &by)?;
+            println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
+            return Ok(());
+        }
         if let (asks::BATCH | asks::OVERDUE, Some(v)) = (name, value) {
             let by = format!("scenic pool set on {}", store::sys::host_name());
             match name {
@@ -1129,6 +1140,15 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
             None => println!("{n}: the default"),
         }
     }
+    let pace = s.nas_pace();
+    for k in jobrt::budget::nas::KNOBS.iter().filter(|k| name.is_none_or(|m| m == k.name)) {
+        let (now, default) = ((k.get)(&pace), (k.get)(&Default::default()));
+        match s.values.get(k.name).filter(|v| !v.value.is_null()) {
+            Some(v) => println!("{}: {now} {} ({}; set {} by {})", k.name, k.unit, k.what, ago(v.at), v.by),
+            None => println!("{}: {default} {}, the default ({}; {} to {})", k.name, k.unit, k.what, k.least, k.most),
+        }
+    }
+
     println!(
         "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",
         jobrt::budget::nas::target_pct(s.nas_target().as_ref())

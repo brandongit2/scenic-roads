@@ -72,6 +72,7 @@ mod tests {
             listed: Instant::now(),
             sent: crate::coord::held::sent(),
             cap: None,
+            answers: None,
             beats,
             home: d.join("member"),
         };

@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 /// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
 /// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`); and two of publishing's
 /// switches, booleans read by the lead's plan (agentcore's agent::plan): `HOLD_CATALOG` and
-/// `NEAR_SLOPE`.
+/// `NEAR_SLOPE`; and the NAS pacing's bounds (crate::budget::nas::KNOBS, numbers within their
+/// ranges: `Settings::nas_pace`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
@@ -33,6 +34,11 @@ pub const HOLD_CATALOG: &str = "hold-catalog";
 /// Publishing::near). Off while not set.
 pub const NEAR_SLOPE: &str = "near-slope";
 pub const NAMES: [&str; 7] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE, HOLD_CATALOG, NEAR_SLOPE];
+/// Whether the lead keeps a setting named `name`: one of `NAMES`, or a NAS pacing bound.
+pub fn known(name: &str) -> bool {
+    NAMES.contains(&name) || crate::budget::nas::knob(name).is_some()
+}
+
 /// The settings that are on or off (a boolean; not set: off).
 pub const SWITCHES: [&str; 3] = [PLACEMENT, HOLD_CATALOG, NEAR_SLOPE];
 /// The batch lengths the lead takes (minutes): a minute to a day.
@@ -94,6 +100,11 @@ impl Settings {
         Some(crate::budget::nas::Target { pct, by: s.by.clone(), at: s.at })
     }
 
+    /// The NAS pacing's bounds, each as set (its default where not, or out of its range).
+    pub fn nas_pace(&self) -> crate::budget::nas::Tuning {
+        crate::budget::nas::Tuning::of(|n| self.get(n).and_then(Value::as_f64))
+    }
+
     /// The batch length, as set (s).
     pub fn batch_s(&self) -> Option<u64> {
         self.get(BATCH).and_then(Value::as_u64).map(|m| m * 60)
@@ -132,7 +143,7 @@ impl SettingAsk {
     /// Whether the lead takes it: a setting it knows, a value of its kind.
     pub fn check(&self) -> Result<()> {
         let ok = match (self.name.as_str(), &self.value) {
-            (_, Value::Null) => NAMES.contains(&self.name.as_str()),
+            (_, Value::Null) => known(&self.name),
             (n, Value::Bool(_)) => SWITCHES.contains(&n),
             (NAS_BUDGET, Value::String(t)) => t.len() <= 200,
             (NAS_TARGET, Value::Number(n)) => {
@@ -140,6 +151,9 @@ impl SettingAsk {
             }
             (BATCH, Value::Number(n)) => n.as_u64().is_some_and(|m| BATCH_RANGE.contains(&m)),
             (OVERDUE, Value::Number(n)) => n.as_f64().is_some_and(|f| OVERDUE_RANGE.contains(&f)),
+            (k, Value::Number(n)) => {
+                crate::budget::nas::knob(k).zip(n.as_f64()).is_some_and(|(k, v)| (k.least..=k.most).contains(&v))
+            }
             _ => false,
         };
         ensure!(ok, "{}: not a setting the lead takes, or not of its kind ({})", self.name, self.value);

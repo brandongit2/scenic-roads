@@ -3394,6 +3394,10 @@ impl Agent {
             listed: Instant::now(),
             sent: crate::coord::held::sent(),
             cap: self.last_cond.map(|cond| self.capacity(&cond)),
+            answers: self.live.clone().map(|l| {
+                let k = self.pace_tuning();
+                std::sync::Arc::new(move |c: &mut crate::coord::Capacity| l.answer_in(c, now_s(), &k)) as beat::Answers
+            }),
             beats,
             home: self.o.home.clone(),
         })
@@ -5893,7 +5897,8 @@ impl Agent {
     /// (`need_mb`: the larger of what it holds and the peak its grant was packed at), what of that is reserved for their growth to come, and the
     /// most its jobs could hold (`jobs_ceiling`); the cores the load leaves, the disk's free space
     /// less the owner's room target and its jobs' reservations (`reserved`), the owner's use, power
-    /// and the NAS as `c` says, and its jobs' leases with what each holds.
+    /// and the NAS as `c` says, its NAS answers (live::Store::answer_in, by the pool's pacing
+    /// bounds; `c.home` its link), and its jobs' leases with what each holds.
     fn capacity(&self, c: &Conditions) -> crate::coord::Capacity {
         let (mut held_mb, mut need, mut leases, mut waiting, mut idle, mut old_app, mut held_each, mut threads) =
             (0u64, 0u64, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -5951,7 +5956,7 @@ impl Agent {
         let reserved_mb = self.reserved(None) >> 20;
         let r = self.mem_reading();
         let build_mb = self.build_room();
-        crate::coord::Capacity {
+        let mut cap = crate::coord::Capacity {
             at: now_s(),
             limit_mb: self.jobs_ceiling(),
             held_mb,
@@ -5991,10 +5996,20 @@ impl Agent {
                 let v: Option<Vec<f64>> = live::NAS_TRAFFIC.iter().map(|n| l.latest(n, t, 5)).collect();
                 v?.try_into().ok()
             }),
-            nas_calls: self.live.as_ref().and_then(|l| l.calls_now(now_s())),
-            nas_ms: self.live.as_ref().and_then(|l| l.mean(live::NAS_MS, now_s(), crate::coord::NAS_MS_SPAN)),
             best: self.live.as_ref().and_then(|l| l.best(now_s(), self.mem_total(), cores)),
+            ..Default::default()
+        };
+        if let Some(l) = &self.live {
+            l.set_link(c.home, now_s());
+            l.answer_in(&mut cap, now_s(), &self.pace_tuning());
         }
+        cap
+    }
+
+    /// The NAS pacing's bounds as the pool's settings give them (jobrt::budget::nas::Tuning; the
+    /// defaults before any are had): this Mac's NAS answers are taken by them.
+    fn pace_tuning(&self) -> jobrt::budget::nas::Tuning {
+        self.pool_settings().map(|s| s.nas_pace()).unwrap_or_default()
     }
 
     /// The memory this Mac's jobs may hold together for a job to start (MB: `Reading::admit_mb`,

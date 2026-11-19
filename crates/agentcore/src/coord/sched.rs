@@ -243,6 +243,10 @@ pub struct Sched {
     /// When each quiet step's job (jobrt::budget::nas::QUIET_STEPS) was first held back for a
     /// quiet NAS since it was last granted: past `QUIET_AGE` it goes as an aged job (task #451).
     pub quiet_since: Mutex<BTreeMap<String, Instant>>,
+    /// The quiet steps' jobs held back for a quiet NAS (step → when last, its weight): noted for
+    /// the pacing alone (`nas_wants`: a clean-up waiting for the window grows it as any job held
+    /// back does), never holding room.
+    pub quiet_waits: Mutex<BTreeMap<String, (Instant, u32)>>,
     /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
     /// just after it in plan order when it can (`pick_every`).
     pub last: BTreeMap<(String, String), String>,
@@ -1350,9 +1354,8 @@ impl Sched {
     }
 
     /// Whether a job of `step` over `targets` of weight `w`, beside leased jobs weighing `running`,
-    /// leaves the room held for an aged target (`reserved`, `nas_reserved`'s): it weighs less than
-    /// a step (not paced), nothing's held, it's the one held for, or both fit within the window
-    /// `win`.
+    /// leaves the room held for an aged target (`reserved`, `nas_reserved`'s): it weighs nothing,
+    /// nothing's held, it's the one held for, or both fit within the window `win`.
     pub(super) fn nas_reserve_ok(
         reserved: Option<&(String, String, u32)>,
         step: &str,
@@ -1361,26 +1364,35 @@ impl Sched {
         w: u32,
         win: u32,
     ) -> bool {
-        w < jobrt::budget::nas::STEP
+        w == 0
             || reserved.is_none_or(|(st, t, rw)| {
                 (st == step && targets.contains(t)) || running.saturating_add(w).saturating_add(*rw) <= win
             })
     }
 
-    /// The least a target passed over for the NAS budget alone in the last two minutes weighs, a
-    /// step or more (at the lead's pace, `nw`'s weights): what the pacing's window must leave room
-    /// for beside what's in use to be what limits (jobrt::budget::nas::Pace::read). None: none waits.
+    /// The least a job passed over for the NAS budget alone in the last two minutes weighs, more
+    /// than nothing (at the lead's pace, `nw`'s weights), a quiet step's held back for a quiet NAS
+    /// among them (`quiet_waits`): what the pacing's window must leave room for beside what's in
+    /// use to be what limits (jobrt::budget::nas::Pace::read). None: none waits.
     pub(super) fn nas_wants(&self, nw: &NasWeigher, now: Instant) -> Option<u32> {
-        let fresh_from = now.checked_sub(Duration::from_secs(120));
+        let fresh = |last: &Instant| now.saturating_duration_since(*last) < Duration::from_secs(120);
         let waits: Vec<(String, String)> = self
             .nas_waits
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|(_, (_, last))| fresh_from.is_none_or(|f| *last > f))
+            .filter(|(_, (_, last))| fresh(last))
             .map(|(k, _)| k.clone())
             .collect();
-        waits.iter().map(|(st, t)| nw.weight(st, t, None)).filter(|&w| w >= jobrt::budget::nas::STEP).min()
+        let quiet: Vec<u32> = self
+            .quiet_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|q| fresh(&q.0))
+            .map(|q| q.1)
+            .collect();
+        waits.iter().map(|(st, t)| nw.weight(st, t, None)).chain(quiet).filter(|&w| w > 0).min()
     }
 
     /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).
@@ -2139,6 +2151,7 @@ impl Sched {
                 }
             }
             self.quiet_since.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
+            self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
         }
         // (The wait kept let go: worked out again.)
         let mut kept = self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner());
@@ -2376,9 +2389,9 @@ impl Sched {
             };
             let waited = waited || (quiet_step && measured && !quiet);
             let fits = if quiet {
-                jobrt::budget::nas::Limits::fits_quiet(running, w, nw.limits.window)
+                jobrt::budget::nas::Limits::fits_quiet(running, w, nw.limits.win())
             } else {
-                jobrt::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited, nw.limits.window)
+                jobrt::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited, nw.limits.win())
             } && nw.limits.paced(running, w)
                 && (alone
                     || Self::nas_reserve_ok(
@@ -2393,6 +2406,10 @@ impl Sched {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
                 }
+            }
+            // (A quiet step held back: for the pacing's growth alone, `nas_wants`.)
+            if !fits && !alone && quiet {
+                self.quiet_waits.lock().unwrap_or_else(|e| e.into_inner()).insert(o.step.clone(), (now, w));
             }
             fits
         })
@@ -2486,9 +2503,9 @@ impl Sched {
                 };
                 if lead {
                     let own = running.saturating_sub(*members);
-                    jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited, nw.limits.window)
+                    jobrt::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited, nw.limits.win())
                 } else {
-                    jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited, nw.limits.window)
+                    jobrt::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited, nw.limits.win())
                 }
             })
         };
@@ -2965,6 +2982,7 @@ impl Sched {
             ),
             nas_reserved_at: Default::default(),
             quiet_since: Mutex::new(s.quiet_since.iter().map(|(st, a)| (st.clone(), ago(now, *a))).collect()),
+            quiet_waits: Default::default(),
             last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
             measured_steps: Default::default(),
             measured_of: Default::default(),

@@ -501,6 +501,7 @@ impl Mac {
             listed: std::time::Instant::now(),
             sent,
             cap: None,
+            answers: None,
             beats: self.beats.clone(),
             home: self.sim.quiet(|w| w.macs[k].dir.clone())?,
         };

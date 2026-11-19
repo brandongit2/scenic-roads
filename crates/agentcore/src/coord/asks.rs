@@ -25,7 +25,7 @@ pub const QUEUE: &str = "asks.json";
 // The pool's settings, their names and an ask to set one: the runtime crate's (task #916 step 3,
 // docs/crates.md: control queues a Mac's asks), kept at these paths.
 pub use jobrt::settings::{
-    Setting, SettingAsk, Settings, BATCH, HOLD_CATALOG, NAMES, NAS_BUDGET, NAS_TARGET, NEAR_SLOPE, OVERDUE,
+    known, Setting, SettingAsk, Settings, BATCH, HOLD_CATALOG, NAMES, NAS_BUDGET, NAS_TARGET, NEAR_SLOPE, OVERDUE,
     OVERDUE_DEFAULT, OVERDUE_RANGE, PLACEMENT, SWITCHES,
 };
 
@@ -174,6 +174,13 @@ mod tests {
         assert!(l.set(&t).unwrap().is_some());
         assert_eq!(l.settings.nas_target().unwrap().pct, 70);
         assert!(l.set(&SettingAsk { value: Value::from(100), at: 9, ..t }).is_err(), "never 100 %");
+        // (Task #1417 review: the NAS pacing's bounds, each a number in its range; cleared, its default.)
+        let k = SettingAsk { name: "nas-slow".into(), value: Value::from(2.5), by: "t".into(), at: 8 };
+        assert!(l.set(&k).unwrap().is_some());
+        assert_eq!(l.settings.nas_pace().slow, 2.5);
+        assert!(l.set(&SettingAsk { value: Value::from(11), at: 9, ..k.clone() }).is_err(), "past its range");
+        assert!(l.set(&SettingAsk { value: Value::Null, at: 9, ..k }).unwrap().is_some());
+        assert_eq!(l.settings.nas_pace(), jobrt::budget::nas::Tuning::default());
         // (Task #927: the batch length, in minutes, a minute to a day.)
         let b = SettingAsk { name: BATCH.into(), value: Value::from(20), by: "t".into(), at: 8 };
         assert_eq!(l.settings.batch_s(), None);

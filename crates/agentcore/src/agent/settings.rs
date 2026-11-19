@@ -3,8 +3,9 @@
 //! NAS reserve (buildstore::room::NAS_RESERVE), batch length and overdue factor (the lead's
 //! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), the dev sweep's margin
 //! (`SWEEP_MARGIN`), and the NAS calls a process of this Mac holds past their deadline
-//! (store::deadline's cap, `set_nas_held`). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
-//! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor`, and the
+//! (store::deadline's cap, `set_nas_held`), and the NAS pacing's bounds (`set_pace`,
+//! jobrt::budget::nas::KNOBS). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
+//! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor|<a pacing bound>`, and the
 //! build page's
 //! POST /api/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
 //! build page alone). The map server's mirror reads the room target through buildstore::room's
@@ -244,6 +245,57 @@ fn overdue_view(home: &Path) -> serde_json::Value {
     })
 }
 
+/// Asks one of the NAS pacing's bounds (`name`, jobrt::budget::nas::KNOBS) of this Mac's agent in
+/// `home`, which sends it to the lead with its next beat (as `scenic pool set <name>`): `what` a
+/// number within the bound's range, or "off" (its default again). The lead takes it at its next
+/// reading.
+pub fn set_pace(home: &Path, name: &str, what: &str, by: &str) -> Result<()> {
+    let k = jobrt::budget::nas::knob(name).with_context(|| format!("{name}: not one of the NAS pacing's bounds"))?;
+    let value = match what.trim() {
+        "off" => serde_json::Value::Null,
+        v => v
+            .trim_end_matches(k.unit)
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| (k.least..=k.most).contains(v))
+            .with_context(|| format!("{name}: {} to {} {}, or off, not {what}", k.least, k.most, k.unit))?
+            .into(),
+    };
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let ask = crate::coord::asks::SettingAsk { name: name.into(), value, by: by.to_string(), at: super::jobs::now_s() };
+    jobrt::control::request_setting(home, &ask)
+}
+
+/// The NAS pacing's bounds as this Mac's agent last had the pool's settings from the lead (in
+/// `home`): each one's name (its key on the page: `-` as `_`), what it is, its unit, its value, its
+/// default, its range, and who set it when.
+fn pace_view(home: &Path) -> serde_json::Value {
+    let s = jobrt::control::read_pool_settings(home);
+    let now = s.as_ref().map(|s| s.nas_pace()).unwrap_or_default();
+    let all: Vec<serde_json::Value> = jobrt::budget::nas::KNOBS
+        .iter()
+        .map(|k| {
+            let v = s.as_ref().and_then(|s| s.values.get(k.name)).filter(|v| !v.value.is_null());
+            serde_json::json!({
+                "name": k.name,
+                "key": k.name.replace('-', "_"),
+                "what": k.what,
+                "unit": k.unit,
+                "value": (k.get)(&now),
+                "default": (k.get)(&Default::default()),
+                "least": k.least,
+                "most": k.most,
+                "set": v.is_some(),
+                "by": v.map(|v| v.by.clone()),
+                "at": v.map(|v| v.at),
+                "had": s.is_some(),
+            })
+        })
+        .collect();
+    all.into()
+}
+
 /// Asks one of the pool's switches (`asks::SWITCHES`: `hold-catalog`, `near-slope`, `placement`)
 /// of this Mac's agent in `home`, which sends it to the lead with its next beat (as `scenic pool
 /// set <name> on|off`): `what` "on" or "off".
@@ -333,6 +385,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         "overdue": overdue_view(home),
         "hold_catalog": switch_view(home, crate::coord::asks::HOLD_CATALOG),
         "near_slope": switch_view(home, crate::coord::asks::NEAR_SLOPE),
+        "nas_pace": pace_view(home),
     })
 }
 

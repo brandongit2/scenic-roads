@@ -623,20 +623,27 @@ impl Shared {
     }
 
     /// One reading of the pacing (jobrt::budget::nas::Pace, task #1417), the lead's prober's every
-    /// `READ_EVERY_S`: every Mac's NAS answer time (`pool_answers`, its fresh capacities with `me`'s
-    /// own) and the NAS's disks (`disks`; None: not read) against the target `pct`, beside the weight
-    /// the pool's leased jobs hold now and the least a target waiting for the budget weighs
-    /// (`Sched::nas_wants`), weighed by the limits as probed; the window it gives set in `nas` and
-    /// `nas_own`.
-    fn pace_nas(&mut self, me: &str, disks: Option<&[f64]>, pct: u32) {
-        let now = self.now();
+    /// `Tuning::read_s`, by the bounds the pool's settings give (`k`): every Mac's NAS answers
+    /// (`pool_answers`: its fresh capacities with `me`'s own, read from this Mac's live store now),
+    /// whether a Mac holding leased jobs gave none fresh, and the NAS's disks (`disks`; None: not
+    /// read) against the target `pct`, beside the weight the pool's leased jobs hold now and the
+    /// least a target waiting for the budget weighs (`Sched::nas_wants`), weighed by the limits as
+    /// probed; the window it gives set in `nas` and `nas_own`.
+    fn pace_nas(&mut self, me: &str, disks: Option<&[f64]>, pct: u32, k: &jobrt::budget::nas::Tuning) {
+        let (now, t) = (self.now(), self.wall_s());
+        if let (Some(l), Some(c)) = (&self.live, self.own_cap.as_mut()) {
+            l.answer_in(c, t, k);
+        }
         let (in_use, wants) =
             self.nas_room(now, true).map_or((0, None), |(nw, running, _, _)| (running, self.nas_wants(&nw, now)));
-        let (t, answers) = (self.wall_s(), pool_answers(&self.capacities(me)));
-        self.nas_pace.read(t, &answers, disks, pct, in_use, wants);
+        let answers = pool_answers(&self.capacities(me), t, k);
+        let holding: BTreeSet<&str> = self.leases.live(now).map(|l| crate::paces::mac_of(&l.worker)).collect();
+        let blind = holding.iter().any(|m| !answers.iter().any(|a| a.mac == *m && a.fresh));
+        let s = jobrt::budget::nas::Sample { t, answers: &answers, blind, busy: disks, pct, in_use, wants };
+        self.nas_pace.read(&s, k);
         let (window, sc) = (self.nas_pace.window(), &mut self.sched);
         for l in [&mut sc.nas, &mut sc.nas_own].into_iter().flatten() {
-            l.window = window;
+            (l.window, l.small) = (window, k.small);
         }
     }
 
@@ -1308,10 +1315,17 @@ pub struct Capacity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_calls: Option<[f64; 3]>,
     /// The NAS's answer time as it measures it (ms: crate::agent::live::NAS_MS, its mean over the
-    /// last `NAS_MS_SPAN`): the lead paces the pool's NAS work by every Mac's against its own best
-    /// (jobrt::budget::nas::Pace). None: not measured then (no build running there, an older app).
+    /// pacing's span) and its floor (ms: the least such mean over the pacing's floor span on its
+    /// link, crate::agent::live::Store::nas_answers), as of `nas_at` (unix s, its clock): the lead
+    /// paces the pool's NAS work by every Mac's against its own best (jobrt::budget::nas::Pace).
+    /// Set as each beat goes (crate::agent::beat), so a Mac too busy to ask still answers fresh.
+    /// None: not measured then (no build running there, an older app).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_floor_ms: Option<f64>,
+    #[serde(default)]
+    pub nas_at: u64,
     /// Its room at its quietest sustained state over the last 48 hours (crate::agent::live::Store::best,
     /// task #951): what the forecast takes it to have from now on; the scheduler never reads it.
     /// None: not measured (an older app's, or not 30 minutes of samples yet).
@@ -1384,10 +1398,9 @@ pub struct WaitingJob {
 
 /// The NAS as the lead sees it, for the status (`Coordinator::nas_view`): the day's probes kept
 /// (its store's, `kept::PROBES`), the limits they give the lead's own jobs, the pacing (the
-/// busiest disk smoothed and its target, its last reading, its window, and the bounds it holds the
-/// NAS's answers to: past `knee` times a Mac's floor it cuts, within `near` it grows, by `step`
-/// thousandths a minute, the least a paced job weighs) and the disks' last busy shares, and the
-/// pool's NAS traffic, the fresh members' summed.
+/// busiest disk smoothed and its target, its last reading, its window, and its bounds as the
+/// pool's settings give them, `tuning`) and the disks' last busy shares, and the pool's NAS
+/// traffic, the fresh members' summed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NasView {
@@ -1400,9 +1413,7 @@ pub struct NasView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pace: Option<jobrt::budget::nas::Reading>,
     pub window: u32,
-    pub knee: f64,
-    pub near: f64,
-    pub step: u32,
+    pub tuning: jobrt::budget::nas::Tuning,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disks_pct: Vec<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1465,13 +1476,28 @@ pub fn pool_calls(caps: &[(String, Capacity)]) -> Option<[f64; 3]> {
     caps.iter().filter_map(|(_, c)| c.nas_calls).reduce(|a, b| std::array::from_fn(|i| a[i] + b[i]))
 }
 
-/// The span a Mac's NAS answer time is averaged over for its lead (`Capacity::nas_ms`, s): its
-/// listings every 5 s, six of them, so one slow answer isn't the NAS loaded.
-pub const NAS_MS_SPAN: u64 = 30;
-
-/// Each Mac's NAS answer time now (`Capacity::nas_ms`), by its name: those measuring it.
-pub fn pool_answers(caps: &[(String, Capacity)]) -> Vec<(String, f64)> {
-    caps.iter().filter_map(|(n, c)| Some((crate::paces::mac_of(n).to_string(), c.nas_ms?))).collect()
+/// Each Mac's NAS answers at `t` (unix s; jobrt::budget::nas::Answer), by its name, from its
+/// capacity: those measuring them; fresh when no older than the pacing's span and a beat
+/// (crate::agent::beat::EVERY: each beat sets them), its calls missed when it missed any a second
+/// lately (`nas_calls`).
+pub fn pool_answers(
+    caps: &[(String, Capacity)],
+    t: u64,
+    k: &jobrt::budget::nas::Tuning,
+) -> Vec<jobrt::budget::nas::Answer> {
+    let fresh_s = k.span_s + crate::agent::beat::EVERY.as_secs();
+    caps.iter()
+        .filter_map(|(n, c)| {
+            Some(jobrt::budget::nas::Answer {
+                mac: crate::paces::mac_of(n).to_string(),
+                home: c.home,
+                ms: c.nas_ms?,
+                floor_ms: c.nas_floor_ms?,
+                missed: c.nas_calls.is_some_and(|x| x[1] > 0.0),
+                fresh: c.nas_at + fresh_s >= t,
+            })
+        })
+        .collect()
 }
 
 /// The NAS probes failed in a row from which they count as failing (`Coordinator::nas_failing`).
@@ -1905,6 +1931,7 @@ impl Coordinator {
                 nas_waits: Default::default(),
                 nas_reserved_at: Default::default(),
                 quiet_since: Default::default(),
+                quiet_waits: Default::default(),
                 last: BTreeMap::new(),
                 measured_steps: Default::default(),
                 measured_of: Default::default(),
@@ -2495,9 +2522,7 @@ impl Coordinator {
             target_pct: p.target,
             pace: p.last.clone(),
             window: p.window(),
-            knee: store::aimd::SLOW,
-            near: store::aimd::NEAR,
-            step: jobrt::budget::nas::STEP,
+            tuning: p.tuning,
             // (Finite alone: a NaN would be written null and the status read back not at all.)
             disks_pct: s.nas_disks.iter().copied().filter(|v| v.is_finite()).collect(),
             traffic: pool_traffic(&s.capacities(&self.me)),
@@ -3718,14 +3743,21 @@ fn app_when(v: &str) -> String {
     }
 }
 
+/// How often the pacing's state is saved while it doesn't change (s): so its time stays within the
+/// restore's span (`nas_prober`).
+const PACE_SAVE_S: u64 = 300;
+
 /// The NAS budget's probes (jobrt::budget::nas), on a thread of their own while the coordinator
-/// runs: while the NAS's project folder is known (`root`), each 10 s the switch is read; on, the NAS
+/// runs: while the NAS's project folder is known (`root`), each reading (the pool's
+/// `nas-read-seconds`) the switch is read; on, the NAS
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
 /// the best of the last day's probes, within the pacing's window (nas::Pace), read each round from
 /// every Mac's NAS answer time and the NAS's own disk load; off, the members' limits are let go,
 /// the lead's own kept. A probe that fails leaves them.
 /// The probes are kept in its store (`kept::PROBES`) and read once it's open (the day's best
-/// outlive a restart).
+/// outlive a restart), and so is the pacing's state (`kept::PACE`: taken up once the store is
+/// open if younger than the pool's `nas-restore-minutes`, saved as it changes and every
+/// `PACE_SAVE_S`).
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
@@ -3735,8 +3767,9 @@ fn nas_prober(
     use jobrt::budget::nas;
     let run = move || {
         let mut probes = nas::Probes::default();
-        // (The kept probes read: till then, read again each round and never saved over.)
+        // (The kept probes and pacing read: till then, read again each round and never saved over.)
         let mut loaded = false;
+        let mut saved: Option<nas::State> = None;
         // (The disks read last round: their loss said once.)
         let mut read_disks = false;
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
@@ -3745,6 +3778,7 @@ fn nas_prober(
         let mut last: Option<std::time::Instant> = None;
         let mut cleaned = false;
         let mut mounted: Option<std::time::Instant> = None;
+        let mut every = nas::READ_EVERY_S;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             let r = root.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(r) = r {
@@ -3761,15 +3795,27 @@ fn nas_prober(
                 if !loaded && keep.store().is_some() {
                     loaded = true;
                     probes.merge(&keep.probes().unwrap_or_default(), unix_now());
+                    let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    let k = s.asks.settings.nas_pace();
+                    if let Some(p) = keep.pace() {
+                        if s.nas_pace.restore(&p, unix_now(), k.restore_s) {
+                            eprintln!(
+                                "coordinator: the NAS pacing taken up as kept: a window of {}",
+                                s.nas_pace.window()
+                            );
+                        }
+                        saved = Some(p);
+                    }
                 }
                 // (Probed whatever the switch says: the lead's own jobs are always held to the
                 // budget, `nas_own`; the members' only while it's on, `nas`.)
                 // (The switch as the lead keeps it, crate::coord::asks; the NAS's file taken in by its
                 // agent while an older app may still set it there.)
-                let (sw, target) = {
+                let (sw, target, k) = {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    (s.asks.settings.nas_budget(), s.asks.settings.nas_target())
+                    (s.asks.settings.nas_budget(), s.asks.settings.nas_target(), s.asks.settings.nas_pace())
                 };
+                every = k.read_s;
                 let mut failed = None;
                 if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(nas::EVERY_S)) {
                     last = Some(std::time::Instant::now());
@@ -3841,7 +3887,17 @@ fn nas_prober(
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                 s.nas_own = probes.limits(sw.as_ref().and_then(|w| w.downloads));
                 s.nas = sw.and_then(|w| probes.limits(w.downloads));
-                s.pace_nas(&me, disks.as_deref(), nas::target_pct(target.as_ref()));
+                s.pace_nas(&me, disks.as_deref(), nas::target_pct(target.as_ref()), &k);
+                // (Kept as it changes, and every `PACE_SAVE_S`: a restart takes it up.)
+                let t = unix_now();
+                let st = s.nas_pace.state(t);
+                let changed = saved.as_ref().is_none_or(|o| nas::State { at: o.at, ..st.clone() } != *o);
+                if loaded && (changed || saved.as_ref().is_some_and(|o| o.at + PACE_SAVE_S <= t)) {
+                    if let Ok(v) = serde_json::to_value(&st) {
+                        keep.put(kept::PACE, v);
+                        saved = Some(st);
+                    }
+                }
                 s.nas_probes.clone_from(&probes.0);
                 let caps = s.capacities(&me);
                 let disks = disks.unwrap_or_default();
@@ -3868,7 +3924,7 @@ fn nas_prober(
                     None => {}
                 }
             }
-            for _ in 0..nas::READ_EVERY_S {
+            for _ in 0..every.max(1) {
                 if stopped.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
@@ -4835,7 +4891,8 @@ fn route(
             // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}` set this Mac's,
             // `{"nas_room": <GB> | "off"}`,
             // `{"batch_minutes": <minutes> | "off"}`, `{"overdue_factor": <times> | "off"}`,
-            // `{"hold_catalog": "on" | "off"}` and `{"near_slope": "on" | "off"}` the pool's (all but
+            // `{"hold_catalog": "on" | "off"}`, `{"near_slope": "on" | "off"}` and the NAS pacing's
+            // bounds (`{"nas_step": <number> | "off"}`, … jobrt::budget::nas::KNOBS) the pool's (all but
             // the reserve asked of the lead with this Mac's agent's next beat), each through
             // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
             // the NAS calls held have none). Answered with them as they stand.
@@ -4889,6 +4946,12 @@ fn route(
             for (key, name) in [("hold_catalog", asks::HOLD_CATALOG), ("near_slope", asks::NEAR_SLOPE)] {
                 if let Some(v) = said(key)? {
                     settings::set_switch(&home, name, &v, &by)?;
+                }
+            }
+            // (The NAS pacing's bounds, by their names with `_`: `nas_step`, `nas_slow`, …)
+            for k in &jobrt::budget::nas::KNOBS {
+                if let Some(v) = said(&k.name.replace('-', "_"))? {
+                    settings::set_pace(&home, k.name, &v, &by)?;
                 }
             }
             let mut v = settings::view(&home, root.as_ref());
@@ -7490,6 +7553,8 @@ mod tests {
             at: unix_now(),
             nas_traffic: Some(tr),
             nas_ms: Some(6.5),
+            nas_floor_ms: Some(6.5),
+            nas_at: unix_now(),
             ..Default::default()
         }));
         w.ask(&Ask {
@@ -7504,9 +7569,27 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             s.nas_probes = vec![p];
             s.nas_own = jobrt::budget::nas::Probes(vec![p]).limits(None);
-            let answers = super::pool_answers(&s.capacities(&c.me));
-            assert_eq!(answers, [("m4".to_string(), 6.5)], "the lead's own; m1 and old measuring none");
-            s.nas_pace.read(unix_now(), &answers, Some(&[60.0, 91.0]), 85, 600, None);
+            let k = jobrt::budget::nas::Tuning::default();
+            let answers = super::pool_answers(&s.capacities(&c.me), unix_now(), &k);
+            let m4 = jobrt::budget::nas::Answer {
+                mac: "m4".into(),
+                ms: 6.5,
+                floor_ms: 6.5,
+                fresh: true,
+                ..Default::default()
+            };
+            assert_eq!(answers, [m4], "the lead's own; m1 and old measuring none");
+            let busy = [60.0, 91.0];
+            let sample = jobrt::budget::nas::Sample {
+                t: unix_now(),
+                answers: &answers,
+                blind: false,
+                busy: Some(&busy),
+                pct: 85,
+                in_use: 600,
+                wants: None,
+            };
+            s.nas_pace.read(&sample, &k);
             s.nas_disks = vec![60.0, 91.0];
         }
         let v = c.nas_view().unwrap();
@@ -7519,8 +7602,8 @@ mod tests {
             (600, jobrt::budget::nas::Verdict::Cut, 300),
             "started at what is in use, over the target: half"
         );
-        assert_eq!(r.worst.as_ref().map(|a| (a.mac.as_str(), a.ms, a.floor_ms)), Some(("m4", 6.5, 6.5)));
-        assert_eq!((v.knee, v.near, v.step), (store::aimd::SLOW, store::aimd::NEAR, jobrt::budget::nas::STEP));
+        assert_eq!(r.counted.as_ref().map(|a| (a.mac.as_str(), a.ms, a.floor_ms)), Some(("m4", 6.5, 6.5)));
+        assert_eq!(v.tuning, jobrt::budget::nas::Tuning::default(), "the bounds as set: none, the defaults");
         assert_eq!(v.disks_pct, vec![60.0, 91.0]);
         let t = v.traffic.unwrap();
         assert_eq!((t[0], t[3], t[2]), (25.0, 8.0, 0.0), "the lead's and m1's summed; the unmeasured left out");
@@ -9059,8 +9142,14 @@ mod tests {
             clock.advance(Duration::from_secs(jobrt::budget::nas::READ_EVERY_S));
             let mut s = c.shared.lock().unwrap();
             let at = s.wall_s();
-            s.own_cap = Some(Capacity { at, nas_ms: Some(ms), ..Default::default() });
-            s.pace_nas("m4", None, 85);
+            // (Each Mac's answers as its beat carries them: m1 holds the jobs, and with none fresh
+            // from it the window wouldn't grow.)
+            let cap = Capacity { at, nas_ms: Some(ms), nas_floor_ms: Some(5.0), nas_at: at, ..Default::default() };
+            s.own_cap = Some(cap.clone());
+            if let Some(w) = s.workers.get_mut("m1") {
+                w.cap = Some(cap);
+            }
+            s.pace_nas("m4", None, 85, &jobrt::budget::nas::Tuning::default());
             assert_eq!(s.nas.map(|l| l.window), s.nas_own.map(|l| l.window));
             s.nas_own.unwrap().window
         };
@@ -9076,24 +9165,27 @@ mod tests {
                 break;
             }
         }
-        assert!((26..=28).contains(&readings), "doubling a minute from a step: {readings} readings");
+        assert!(
+            (28..=31).contains(&readings),
+            "doubling a minute from a step, once the job out has run a span: {readings} readings"
+        );
         let g2 = w.ask(&a).unwrap().expect("two halves now");
         // (The NAS answering four times its best: half what's in use.)
         assert_eq!(read(20.0), 500);
         let why = c.nas_paced().unwrap();
         assert!(
-            why.starts_with("NAS work paced to 50 % of the NAS, 100 % in use (the NAS answering m4 in 20 ms"),
+            why.starts_with("NAS work paced to 50 % of the NAS, 100 % in use (the NAS answering m1 in 20 ms"),
             "{why}"
         );
         c.finish(g1.lease, &[]);
         assert!(w.ask(&a).unwrap().is_none(), "a half beside a half: past the cut window");
         let mut win = 0;
-        for _ in 0..6 {
+        for _ in 0..8 {
             assert!(w.beat(g2.lease, None).unwrap());
             assert!(w.ask(&a).unwrap().is_none());
             win = read(5.0);
         }
-        assert_eq!(win, 550, "calm again: a step a minute");
+        assert_eq!(win, 550, "calm again, once the job granted last has run a span: a step a minute");
     }
 
     /// Task #939: a job of several targets is weighed by what they move over their times together,
@@ -9332,7 +9424,7 @@ mod tests {
             stats_s: 289_083.5,
             deletes_s: 685.4,
             downloads: None,
-            window: jobrt::budget::nas::WHOLE,
+            ..Default::default()
         }));
         // (terrain-hi's target: 30 MB/s for ten minutes, 356 thousandths.)
         let cost = Cost {
@@ -10524,7 +10616,7 @@ mod tests {
             stats_s: 500.0,
             deletes_s: 40.0,
             downloads: None,
-            window: jobrt::budget::nas::WHOLE,
+            ..Default::default()
         };
         {
             let mut s = c.shared.lock().unwrap();
@@ -10607,8 +10699,17 @@ mod tests {
         let g2 = w.ask(&m2).unwrap().expect("the clean-up gone: it goes");
         assert!(matches!(&g2.work, Granted::Job { targets, .. } if targets[0].0 == "6/1/2"));
         members.borrow_mut().push(g2.lease);
-        // Beside 800 it waits, however long.
+        // Beside 800 it waits, however long, holding no room; but held back all the same for the
+        // pacing (task #1417 review): a window under what it needs grows for it.
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
+        {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            assert_eq!(s.quiet_waits.lock().unwrap().get("gc").map(|q| q.1), Some(400));
+            let (nw, ..) = s.nas_room(now, true).unwrap();
+            assert!(s.nas_wants(&nw, now).is_some_and(|w| w <= 400), "its wait counted");
+            assert!(s.nas_reserved(&nw, now).is_none_or(|r| r.0 != "gc"), "never holding room");
+        }
         age(jobrt::budget::nas::OWN_AGE * 3);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never urgent");
     }
@@ -10627,7 +10728,7 @@ mod tests {
             stats_s: 500.0,
             deletes_s: 40.0,
             downloads: None,
-            window: jobrt::budget::nas::WHOLE,
+            ..Default::default()
         };
         {
             let mut s = c.shared.lock().unwrap();

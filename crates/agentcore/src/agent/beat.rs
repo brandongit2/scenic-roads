@@ -75,11 +75,18 @@ pub struct ToLead {
     /// Its Mac's capacity as its loop last measured it: the lead counts its running jobs at the
     /// threads it says (`held::Beat::cap`).
     pub cap: Option<crate::coord::Capacity>,
+    /// Sets the capacity's NAS answers as each beat goes (crate::agent::live::Store::answer_in):
+    /// a Mac whose loop is slow, or too busy to ask, still answers the lead's pacing fresh (task
+    /// #1417 review). None: as the loop measured them.
+    pub answers: Option<Answers>,
     /// Its pool heartbeat (`Beats::own`) and where the answer goes.
     pub beats: Arc<Beats>,
     /// The agent's folder: where the lead's answers to its asks are kept (crate::agent::answered).
     pub home: PathBuf,
 }
+
+/// `ToLead::answers`: the capacity's NAS answers set as of now.
+pub type Answers = Arc<dyn Fn(&mut crate::coord::Capacity) + Send + Sync>;
 
 impl ToLead {
     /// The lead's answer to queued ask `a`, kept: taken, or refused (`refused`).
@@ -110,7 +117,12 @@ impl ToLead {
             heartbeat,
             status: serde_json::to_value(&status).ok(),
             handoffs: Vec::new(),
-            cap: self.cap.clone(),
+            cap: self.cap.clone().map(|mut c| {
+                if let Some(a) = &self.answers {
+                    a(&mut c);
+                }
+                c
+            }),
             progress: self.beats.progress(),
             sent: None,
             spans: Vec::new(),
@@ -524,6 +536,7 @@ mod tests {
                         listed: Instant::now(),
                         sent: crate::coord::held::sent(),
                         cap: None,
+                        answers: None,
                         beats: beats.clone(),
                         home: d.path().join(&*id),
                     }),
@@ -642,9 +655,25 @@ mod tests {
             listed: Instant::now(),
             sent: crate::coord::held::sent(),
             cap: None,
+            answers: None,
             beats,
             home,
         }
+    }
+
+    /// Task #1417 review: each beat sets its capacity's NAS answers as it goes (`ToLead::answers`),
+    /// the rest of it as the loop measured it: a Mac too busy to ask still answers the pacing fresh.
+    #[test]
+    fn a_beat_carries_its_nas_answers_as_it_goes() {
+        let d = tempfile::tempdir().unwrap();
+        let mut to = member(d.path(), "m1", 1, "t");
+        to.cap = Some(crate::coord::Capacity { at: 1, nas_ms: Some(9.0), ..Default::default() });
+        assert_eq!(to.body(&Status::default()).cap.unwrap().nas_ms, Some(9.0), "none: as the loop had it");
+        to.answers = Some(Arc::new(|c: &mut crate::coord::Capacity| {
+            (c.nas_ms, c.nas_floor_ms, c.nas_at) = (Some(5.0), Some(4.0), 42);
+        }));
+        let c = to.body(&Status::default()).cap.unwrap();
+        assert_eq!((c.nas_ms, c.nas_floor_ms, c.nas_at, c.at), (Some(5.0), Some(4.0), 42, 1));
     }
 
     /// One beat of `to` posted, as its poster posts it: whether it failed.

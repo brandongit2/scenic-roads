@@ -11,7 +11,7 @@
 //!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
 //!   the lead (crate::coord::inbox: `inbox/<member>`), the answers' lease and the members'
 //!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), and the NAS
-//!   budget's probes (`nas-probes`, `PROBES`);
+//!   budget's probes (`nas-probes`, `PROBES`) and pacing (`nas-pace`, `PACE`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -47,6 +47,10 @@ pub struct Beat {
 /// The NAS budget's probes, the lead's prober's (crate::coord's `nas_prober`): the last day's, so
 /// a restart keeps the day's best.
 pub const PROBES: &str = "nas-probes";
+
+/// The NAS pacing's state (jobrt::budget::nas::State), the lead's prober's: a restart takes its
+/// window, threshold and cut up again (task #1417 review).
+pub const PACE: &str = "nas-pace";
 
 /// The store's documents no code keeps any more, deleted as it opens (`Kept::open`).
 const GONE: [&str; 1] = ["map-head"];
@@ -218,6 +222,11 @@ impl Kept {
     /// The NAS budget's probes the store holds (`PROBES`; none without a store or before any).
     pub fn probes(&self) -> Option<jobrt::budget::nas::Probes> {
         serde_json::from_value(self.store.get()?.doc(PROBES)?).ok()
+    }
+
+    /// The NAS pacing's state the store holds (`PACE`; none without a store or before any).
+    pub fn pace(&self) -> Option<jobrt::budget::nas::State> {
+        serde_json::from_value(self.store.get()?.doc(PACE)?).ok()
     }
 
     /// Document `key` deleted (crate::coord::budgets's answers' lease given up, a member's progress
