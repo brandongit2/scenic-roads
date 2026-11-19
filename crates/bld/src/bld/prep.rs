@@ -1116,18 +1116,27 @@ mod tests {
         };
         let fresh = file(&mut Pieces::none(), "fresh").unwrap();
         let mut stops = 0;
+        // (Task #1414: each resume on the other of two Macs, given back and its log carried there
+        // through the NAS.)
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let macs = [d.path().join("a/bldprep"), d.path().join("b/bldprep")];
+        jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
         let resumed = loop {
+            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+            let here = &macs[stops % 2];
             STOP_AFTER.set(Some(1));
-            let r = file(&mut Pieces::open(d.path(), (6, t.x, t.y), "bldprep", "a", true), "paused");
+            let r = file(&mut Pieces::open(here, (6, t.x, t.y), "bldprep", "a", true), "paused");
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
                     assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
+                    assert_eq!(jobrt::resume_log::carry_out(&nas, here, since).len(), 1);
                 }
                 Ok(b) => break b,
             }
         };
+        jobrt::resume_log::CARRY_ROOT.set(None);
         assert_eq!(stops, 4, "a chunk a safe point");
         assert!(resumed == fresh, "paused at each of its {stops} safe points");
     }

@@ -934,8 +934,9 @@ mod tests {
     }
 
     /// Task #889: a z6 tile's buildings paused at every one of their safe points (each z8 tile
-    /// kept), resumed each time, upload the same packs and mid as a run never paused; and its z3
-    /// tile's field likewise (each z6 tile's levels kept).
+    /// kept), resumed each time, upload the same packs and mid as a run never paused, each resume
+    /// on the other of two Macs (task #1414: given back, its log carried); and its z3 tile's field
+    /// likewise (each z6 tile's levels kept), on one Mac.
     #[test]
     fn bldtiles_and_bldfield_lo_paused_at_every_safe_point_resume_to_the_same_bytes() {
         use jobrt::resume_log::STOP_AFTER;
@@ -981,7 +982,14 @@ mod tests {
         build_lo_keeping(&mut fresh, q, false).unwrap();
         let mut out = open("paused");
         let mut stops = 0;
+        // (Task #1414: given back at each and taken up on the other of two Macs in turn, its log
+        // carried between them through the NAS: jobrt::resume_log::carry_out.)
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let macs = [out.scratch.clone(), d.path().join("other").join(out.scratch.file_name().unwrap())];
+        std::fs::create_dir_all(&macs[1]).unwrap();
+        jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
         loop {
+            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
             STOP_AFTER.set(Some(1));
             let r = build_later_keeping(&mut out, &Asking::new(&c), t, None, true);
             STOP_AFTER.set(None);
@@ -989,10 +997,13 @@ mod tests {
                 Err(e) => {
                     assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
+                    assert_eq!(jobrt::resume_log::carry_out(&nas, &out.scratch, since).len(), 1);
+                    out.scratch = macs[stops % 2].clone();
                 }
                 Ok(_) => break,
             }
         }
+        jobrt::resume_log::CARRY_ROOT.set(None);
         out.save().unwrap();
         assert!(stops >= 3, "a z8 tile a safe point: {stops}");
         assert!(outputs(&out, &hi) == outputs(&fresh, &hi), "paused at each of its {stops} safe points");

@@ -93,6 +93,8 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/tools/polar.rs", "main"),
     // (A unit test's root, `TEST_ROOT`, only while `buildstore::out::testing`: refused when live.)
     ("crates/agentcore/src/agent/mod.rs", "find_root"),
+    // (A job's carried logs' root, its agent's `--root` for it: jobrt::resume_log::CARRY_ENV.)
+    ("crates/jobrt/src/resume_log.rs", "carry_root"),
     ("crates/server/src/main.rs", "serve"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),

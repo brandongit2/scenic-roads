@@ -145,7 +145,8 @@ lead by HTTP (docs/coordination.md §5.3), which merges them; no step
 writes the records directly once a lead is declared
 (`crate::out::check_writer`); the planet is fetched so too, by the lead's `planet-fetch` job (docs/steps.md
 §1). Other writers: the lead's agent, under `state/` (the records' snapshot and brief, the forecasts' and their
-inputs' archives), each Mac's agent (its live measures' days, `state/live-archive/`), the lead's coordinator's NAS
+inputs' archives), each Mac's agent (its live measures' days, `state/live-archive/`; a given-back job's resume logs,
+`state/pool/carried/`, docs/pool.md §7.2, Resuming), the lead's coordinator's NAS
 probes (`state/pool/nas-probe/`), the first agent to find no token (`state/coord/token`), and the owner's inputs
 folders. The map's server writes nothing on the NAS.
 

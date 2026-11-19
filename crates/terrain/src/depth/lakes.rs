@@ -951,39 +951,48 @@ pub fn small_lakes(
 
 /// The small lakes' grids of z6 tile `t`, a z10 tile at a time (`small_lakes`, `small_grid`): its
 /// z14 tiles and a ring of one read from `water`, HydroLAKES' lakes `hl` (lon/lat) left out; each
-/// grid given to `sink` as it's made (64 MB of floats each: a z6 tile has 256), `progress` told
-/// each z10 tile done.
+/// grid encoded as depth source `id`'s (`Tif::of`: 64 MB of floats each, a z6 tile has 256) and
+/// given to `sink` as it's made, `progress` told each z10 tile done. Each z10 tile is a piece kept
+/// in `pieces` (task #1414: jobrt::resume_log, `(10, x, y)`, its grid or none; a safe point once
+/// kept): a resumed run takes those its last kept, counting in `counts` only those it makes.
+#[allow(clippy::too_many_arguments)]
 pub fn small_grids(
     water: &dyn codecs::terrain_water::WaterSource,
     hl: &[(u64, Rings)],
     terrain: &dyn Terrain,
     t: (u32, u32),
+    id: &str,
+    pieces: &mut jobrt::resume_log::Pieces,
     counts: &mut Counts,
-    sink: &mut dyn FnMut(Canvas) -> Result<()>,
+    sink: &mut dyn FnMut(Tif) -> Result<()>,
     progress: &dyn Fn(u64, u64),
 ) -> Result<()> {
     let hl: Vec<geos::Geometry> = hl.iter().filter_map(|(_, r)| polygon(&to_pixels(r, SMALL_Z)).ok()).collect();
     let (k, f) = (10 - 6, 1u32 << (SMALL_Z - 10));
     let n = 1i64 << SMALL_Z;
-    let pieces: Vec<(u32, u32)> =
+    let tens: Vec<(u32, u32)> =
         (t.1 << k..(t.1 + 1) << k).flat_map(|y| (t.0 << k..(t.0 + 1) << k).map(move |x| (x, y))).collect();
-    for (i, &(px, py)) in pieces.iter().enumerate() {
-        let tiles: Vec<(u8, u32, u32)> = (i64::from(py * f) - 1..=i64::from((py + 1) * f))
-            .filter(|y| (0..n).contains(y))
-            .flat_map(|y| {
-                (i64::from(px * f) - 1..=i64::from((px + 1) * f))
-                    .filter(|x| (0..n).contains(x))
-                    .map(move |x| (SMALL_Z, x as u32, y as u32))
-            })
-            .collect();
-        let polys = water.depth_polys_many(&tiles)?;
-        let read: Vec<((u32, u32), Vec<codecs::terrain_water::Poly>)> =
-            tiles.iter().zip(polys).map(|(&(_, x, y), p)| ((x, y), p)).collect();
-        let lakes = small_lakes(&read, &hl, terrain, (px, py), counts)?;
-        if let Some(c) = small_grid(&lakes, (px, py)) {
-            sink(c)?;
+    for (i, &(px, py)) in tens.iter().enumerate() {
+        let kept = pieces.piece((10, px, py), || {
+            let tiles: Vec<(u8, u32, u32)> = (i64::from(py * f) - 1..=i64::from((py + 1) * f))
+                .filter(|y| (0..n).contains(y))
+                .flat_map(|y| {
+                    (i64::from(px * f) - 1..=i64::from((px + 1) * f))
+                        .filter(|x| (0..n).contains(x))
+                        .map(move |x| (SMALL_Z, x as u32, y as u32))
+                })
+                .collect();
+            let polys = water.depth_polys_many(&tiles)?;
+            let read: Vec<((u32, u32), Vec<codecs::terrain_water::Poly>)> =
+                tiles.iter().zip(polys).map(|(&(_, x, y), p)| ((x, y), p)).collect();
+            let lakes = small_lakes(&read, &hl, terrain, (px, py), counts)?;
+            let tif = small_grid(&lakes, (px, py)).map(|c| Tif::of(id, &c)).transpose()?;
+            Ok(Tif::put(tif.as_ref()))
+        })?;
+        if let Some(g) = Tif::get(&kept)? {
+            sink(g)?;
         }
-        progress(i as u64 + 1, pieces.len() as u64);
+        progress(i as u64 + 1, tens.len() as u64);
     }
     Ok(())
 }
@@ -1046,6 +1055,38 @@ impl Tif {
             h,
             bytes: buildstore::geotiff::write_f32_mercator(g.zoom, g.c0, g.r0, w, h, &g.v)?,
         })
+    }
+
+    /// A piece's payload (`small_grids`): a grid, or none.
+    fn put(g: Option<&Tif>) -> Vec<u8> {
+        let mut p = jobrt::resume_log::Put::default();
+        if let Some(g) = g {
+            p.u8(1);
+            p.bytes(g.file.as_bytes());
+            p.u8(g.zoom);
+            p.u64(g.c0 as u64);
+            p.u64(g.r0 as u64);
+            p.u32(g.w);
+            p.u32(g.h);
+            p.bytes(&g.bytes);
+        } else {
+            p.u8(0);
+        }
+        p.0
+    }
+
+    /// `put`'s grid back.
+    fn get(b: &[u8]) -> Result<Option<Tif>> {
+        let mut g = jobrt::resume_log::Get(b);
+        if g.u8()? == 0 {
+            g.end()?;
+            return Ok(None);
+        }
+        let file = String::from_utf8(g.bytes()?)?;
+        let (zoom, c0, r0, w, h) = (g.u8()?, g.u64()? as i64, g.u64()? as i64, g.u32()?, g.u32()?);
+        let t = Tif { file, zoom, c0, r0, w, h, bytes: g.bytes()? };
+        g.end()?;
+        Ok(Some(t))
     }
 }
 

@@ -7541,6 +7541,11 @@ impl Agent {
         // opens: buildstore::out::Out), and its progress noted as this Mac's.
         if self.resume_on() {
             env.push((resume::RESUME_ENV.into(), "1".into()));
+            // (Where its targets' logs given back on another Mac wait for it: its own `--root`,
+            // jobrt::resume_log::take_carried.)
+            if let Some(r) = self.last_root.as_ref() {
+                env.push((jobrt::resume_log::CARRY_ENV.into(), jobs::root_arg(r)));
+            }
             if resume::resumable(&spec.id) {
                 if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
                     let step = step_of(&spec.id).unwrap_or_default();
@@ -7730,6 +7735,34 @@ impl Agent {
             _ => e,
         };
         self.note(e);
+        if !ok {
+            self.carry_logs(k);
+        }
+    }
+
+    /// Slot `k`'s job ended short of its targets (given back, stopped, failed; a cancel drops its
+    /// work instead): the resume logs it wrote carried to the NAS on a thread of their own
+    /// (jobrt::resume_log::carry_out), so its targets' next run resumes them on whichever Mac it
+    /// goes to (docs/pool.md §7.2, Resuming).
+    fn carry_logs(&self, k: usize) {
+        let (Some(r), Some(root)) = (self.slots[k].running.as_ref(), self.last_root.as_ref()) else { return };
+        let Some(scratch) = scratch_of(&r.spec).filter(|_| self.resume_on()) else { return };
+        // (Its logs are those written since it began: a second's margin for the file times.)
+        let since = std::time::SystemTime::now() - r.elapsed() - Duration::from_secs(2);
+        let (root, id) = (root.long_retry(), r.spec.id.clone());
+        let carry = move || {
+            let v = jobrt::resume_log::carry_out(&root, &scratch, since);
+            if !v.is_empty() {
+                let mb = v.iter().map(|(_, n)| n).sum::<u64>() >> 20;
+                eprintln!(
+                    "agent: {id}: {} resume logs carried to the NAS for its targets' next run ({mb} MB)",
+                    v.len()
+                );
+            }
+        };
+        if let Err(e) = std::thread::Builder::new().name("carry".into()).spawn(carry) {
+            eprintln!("agent: carrying the resume logs: {e}");
+        }
     }
 
     /// Notes the lead's conditions as they change (mains or battery, the NAS, home or away, a
@@ -20489,6 +20522,82 @@ mod membership_tests {
             1,
             "caught up: granted {w:?}"
         );
+    }
+
+    /// Task #1414: a job given back short of its targets has the resume logs it wrote carried to the
+    /// NAS (jobrt::resume_log::carry_out), for its targets' next run on any Mac; one it didn't write
+    /// stays here alone; and its jobs are told where to look (`CARRY_ENV`).
+    #[test]
+    fn a_job_given_back_carries_its_resume_logs_to_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root.clone());
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(nas.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: true,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let side = membership::Side::open(
+            &home,
+            &home.join("pool"),
+            d.path(),
+            "development",
+            std::sync::Arc::new(nas.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(membership::Run::new(
+            crate::agent::seam::for_tests(),
+            side,
+            membership::Role::Lead,
+            membership::Gates { leads: Some(1), duties: true, ..Default::default() },
+        ))));
+        a.last_root = Some(nas.clone());
+        let scratch = home.join("scratch/bldtiles");
+        std::fs::create_dir_all(&scratch).unwrap();
+        // (A log of an earlier job's, older than this one: never this job's to carry.)
+        let older = scratch.join("6_1_1.resume");
+        std::fs::write(&older, b"older").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&older).unwrap().set_modified(an_hour_ago).unwrap();
+        let spec = JobSpec {
+            id: "bldtiles 6/9/9".into(),
+            what: "bldtiles".into(),
+            cmd: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf %s \"$SCENIC_RESUME_CARRY\" > \"$1/6_9_9.resume\"; sleep 3600".into(),
+                "--scratch".into(),
+                scratch.to_string_lossy().into_owned(),
+            ],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/9/9".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        a.start(0, spec, &cond, None).unwrap();
+        let log = scratch.join("6_9_9.resume");
+        let until = Instant::now() + Duration::from_secs(20);
+        while std::fs::metadata(&log).map_or(0, |m| m.len()) == 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), jobs::root_arg(&nas), "told where carried logs wait");
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.stopped(0, "stopped: the test's give-back");
+        a.slots[0].running = None;
+        let copy = root.join(jobrt::resume_log::CARRIED).join("bldtiles");
+        let until = Instant::now() + Duration::from_secs(20);
+        while !copy.join("6_9_9.resume").exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read(copy.join("6_9_9.resume")).unwrap(), std::fs::read(&log).unwrap());
+        assert!(!copy.join("6_1_1.resume").exists() && older.exists());
     }
 
     #[test]

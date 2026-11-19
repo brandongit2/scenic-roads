@@ -327,11 +327,38 @@ impl Pyramid<'_> {
     }
 
     /// The tiles `tops` at zoom `z`, each with those under it among `tiles` (`tile`), the tops in
-    /// parallel and each one's subtree on one thread; their quadrants, in turn.
-    pub fn tops(&self, z: u8, tops: &[(u32, u32)]) -> Vec<Option<Vec<Px>>> {
+    /// parallel and each one's subtree on one thread; their quadrants, in turn. Each top is a piece
+    /// of `pieces` (task #1414: its subtree's tiles and its quadrant, kept once made, a safe point;
+    /// one an earlier run kept taken, its tiles stored as made). A keep that stops the run (a
+    /// pause) is returned once the tops under way are kept too.
+    pub fn tops(
+        &self,
+        z: u8,
+        tops: &[(u32, u32)],
+        pieces: &mut jobrt::resume_log::Pieces,
+    ) -> Result<Vec<Option<Vec<Px>>>> {
+        let pieces = Mutex::new(pieces);
+        // (Kept on the pool's threads, under the caller's count: a test's stop.)
+        let carry = jobrt::resume_log::StopCarry::here();
+        let top = |&(x, y): &(u32, u32)| -> Result<Option<Vec<Px>>> {
+            let b = (z, x, y);
+            if let Some((made, q)) = pieces.lock().unwrap().take(b).and_then(|p| top_of(&p).ok()) {
+                made.iter().for_each(|_| (self.tick)());
+                self.out.lock().unwrap().extend(made);
+                return Ok(q);
+            }
+            let mine = Mutex::new(Vec::new());
+            let q = Pyramid { out: &mine, ..*self }.node(z, x, y, z);
+            let made = mine.into_inner().unwrap();
+            let kept = carry.on(|| pieces.lock().unwrap().keep(b, &put_top(&made, &q)));
+            self.out.lock().unwrap().extend(made);
+            kept.map(|()| q)
+        };
         // (Each top a task of its own: split into a chunk a thread, the chunks of uneven tops left
         // threads idle at the end.)
-        on_pool(|| tops.par_iter().with_max_len(1).map(|&(x, y)| self.node(z, x, y, z)).collect())
+        let qs = on_pool(|| tops.par_iter().with_max_len(1).map(top).collect::<Vec<_>>());
+        carry.back();
+        qs.into_iter().collect()
     }
 
     /// `tile`: its children in parallel above zoom `par_until`, one after another from it.
@@ -360,6 +387,42 @@ impl Pyramid<'_> {
         self.out.lock().unwrap().push((z, x, y, blob));
         (z > 0).then_some(q)
     }
+}
+
+/// A pyramid's top kept (`Pyramid::tops`): its subtree's tiles and its quadrant.
+fn put_top(made: &[Made], q: &Option<Vec<Px>>) -> Vec<u8> {
+    let mut p = jobrt::resume_log::Put::default();
+    p.u64(made.len() as u64);
+    for (z, x, y, b) in made {
+        p.u8(*z);
+        p.u32(*x);
+        p.u32(*y);
+        p.bytes(b);
+    }
+    match q {
+        Some(q) => {
+            p.u8(1);
+            p.f32s(&q.iter().flat_map(|c| [c.s, c.u[0], c.u[1]]).collect::<Vec<_>>());
+        }
+        None => p.u8(0),
+    }
+    p.0
+}
+
+/// `put_top`'s top back.
+fn top_of(b: &[u8]) -> Result<(Vec<Made>, Option<Vec<Px>>)> {
+    let mut g = jobrt::resume_log::Get(b);
+    let n = g.count(13)?;
+    let mut made = Vec::with_capacity(n);
+    for _ in 0..n {
+        made.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?));
+    }
+    let q = match g.u8()? {
+        0 => None,
+        _ => Some(g.f32s()?.chunks_exact(3).map(|c| Px { s: c[0], u: [c[1], c[2]] }).collect()),
+    };
+    g.end()?;
+    Ok((made, q))
 }
 
 /// A tile as stored and its quadrant for its parent, from its pixels at full precision: inside a
@@ -650,16 +713,22 @@ fn piece(
 
 /// A z10 tile's part of the pyramid (its tiles `tiles`: `deep_tiles`), as its z6 tile's run would
 /// make it: its deep tiles (z13–16, for its deep pack) and its mid
-/// (`DeepMid`: its z13 tiles' quadrants).
-fn deep_part(terrain: &Terrain, tiles: &HashSet<(u8, u32, u32)>, count: &Count) -> (Vec<Made>, DeepMid) {
+/// (`DeepMid`: its z13 tiles' quadrants). Each z13 tile's subtree a piece of `pieces` (task #1414:
+/// `Pyramid::tops`), so a run stopped part way makes only those its last didn't keep.
+fn deep_part(
+    terrain: &Terrain,
+    tiles: &HashSet<(u8, u32, u32)>,
+    count: &Count,
+    pieces: &mut jobrt::resume_log::Pieces,
+) -> Result<(Vec<Made>, DeepMid)> {
     let own = |z: u8, x: u32, y: u32| shade_tile(terrain, z, x, y);
     let tick = || count.one();
     let mine = Mutex::new(Vec::new());
     let tops = deep_tops(tiles);
-    let qs = Pyramid { own: &own, tiles, out: &mine, tick: &tick, done: &none_done }.tops(FIRST_Z, &tops);
+    let qs = Pyramid { own: &own, tiles, out: &mine, tick: &tick, done: &none_done }.tops(FIRST_Z, &tops, pieces)?;
     let mut deep = mine.into_inner().unwrap();
     deep.sort_by_key(|m| (m.0, m.1, m.2));
-    (deep, DeepMid { quadrants: tops.into_iter().zip(qs).collect() })
+    Ok((deep, DeepMid { quadrants: tops.into_iter().zip(qs).collect() }))
 }
 
 /// A z3 tile's assembly (z3 tile `q`, its z6 tiles `ts`): its lo tiles (z3–8), sorted. Each z6 tile's
@@ -1007,6 +1076,8 @@ pub struct Batch {
     copied: fn((u32, u32)) -> (u8, u32, u32),
     /// The thread copying the next target's pack ahead.
     ahead: Option<std::thread::JoinHandle<()>>,
+    /// Its targets' pieces kept (slope-deep's: jobrt::resume_log::on(); a test's say).
+    keep: bool,
 }
 
 impl Batch {
@@ -1022,14 +1093,15 @@ impl Batch {
 
     fn new(out: &Out, targets: &[(u32, u32)], copied: fn((u32, u32)) -> (u8, u32, u32)) -> Self {
         let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
-        Batch { terr: Arc::new(terr), targets: targets.to_vec(), copied, ahead: None }
+        Batch { terr: Arc::new(terr), targets: targets.to_vec(), copied, ahead: None, keep: jobrt::resume_log::on() }
     }
 
     /// Makes z10 tile `t` (`build_deep`), its uploads put off (buildstore::out::Out::put_file_later):
     /// they go on beside what the job does next, and the target is saved (and noted done) by a later
     /// save (`Out::save_upto` the mark after it). Around it, `around`'s copies.
     pub fn build_deep(&mut self, out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
-        self.around(t, |terr| build_deep_with(out, terr, t, on))
+        let keep = self.keep;
+        self.around(t, |terr| build_deep_with(out, terr, t, keep, on))
     }
 
     /// Makes z6 tile `t` (`build_piece`), its uploads put off as `build_deep`'s are. Around it,
@@ -1107,6 +1179,7 @@ fn build_deep_with(
     out: &mut Out,
     terr: &ManifestTiles,
     t: (u32, u32),
+    keep: bool,
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
     use jobrt::timings::phase;
@@ -1122,7 +1195,9 @@ fn build_deep_with(
     // (The terrain tiles it reads from the NAS, its neighbours' edge tiles, read on a thread beside
     // its compute, task #1096.)
     let want = terrain_wanted(&tiles, |_| true, &has);
-    let (made, mid) = terr.reading_ahead(&want, || deep_part(&terrain, &tiles, &count));
+    let mut pieces =
+        jobrt::resume_log::Pieces::open(&out.scratch, (PACK_Z, t.0, t.1), "slope-deep", &deep_id(out, t), keep);
+    let (made, mid) = terr.reading_ahead(&want, || deep_part(&terrain, &tiles, &count, &mut pieces))?;
     drop(terrain);
     drop(p);
     let p = phase("writing its deep pack and deep mid");
@@ -1145,8 +1220,29 @@ fn build_deep_with(
         None => rep.deep_dropped = crate::layers::drop(out, &[deep_logical(t.0, t.1)]),
     }
     out.put_file_later(&ml, "sect", &path)?;
+    // (Its outputs written here and put: its pieces done with.)
+    pieces.finish();
     count.one();
     Ok(rep)
+}
+
+/// Slope-deep target `t`'s resumed run's identity (jobrt::resume_log::job_id): the slope's version
+/// and codec, and the terrain deep packs it reads (its own and its eight neighbours', whose edge
+/// tiles it reads).
+fn deep_id(out: &Out, t: (u32, u32)) -> String {
+    let n = 1i64 << PACK_Z;
+    let around = (-1..=1i64).flat_map(|dy| (-1..=1i64).map(move |dx| (dx, dy))).filter_map(|(dx, dy)| {
+        let y = i64::from(t.1) + dy;
+        (0..n)
+            .contains(&y)
+            .then(|| crate::terrain_deep::pack_logical((i64::from(t.0) + dx).rem_euclid(n) as u32, y as u32))
+    });
+    jobrt::resume_log::job_id(
+        "slope-deep",
+        &format!("slope {SLOPE_V} {}", codecs::shade_codec::version()),
+        &format!("{PACK_Z}/{}/{}", t.0, t.1),
+        &[&jobrt::resume_log::names(out, around)],
+    )
 }
 
 /// Z10 tile `t` no slope-deep target any more: its deep pack and deep mid dropped (not saved); how
@@ -1844,6 +1940,65 @@ mod tests {
         }
     }
 
+    /// Task #1414: a slope-deep target stopped part way (a give-back) keeps the z13 tiles' subtrees
+    /// it made, and its next run makes only the rest: the same deep pack and deep mid as a run that
+    /// never stopped, on its own Mac and on another its log was carried to through the NAS.
+    #[test]
+    fn a_deep_target_stopped_part_way_resumes_where_it_stopped() {
+        use jobrt::resume_log::{carry_out, CARRY_ROOT, STOP_AFTER};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("root"));
+        let t = (448, 256);
+        let deep = |out: &Out| {
+            out.manifest
+                .iter()
+                .filter(|(l, _)| l.starts_with(DEEP_PREFIX) || l.starts_with(DEEP_MID_PREFIX))
+                .map(|(l, c)| (l.clone(), c.clone()))
+                .collect::<Vec<_>>()
+        };
+        // (Made once, never stopped.)
+        let whole = {
+            let mut out = Out::unbound(&root, &d.path().join("whole/scratch")).unwrap();
+            terrain(&mut out, true);
+            build_deep(&mut out, t, &|_, _, _| {}).unwrap();
+            deep(&out)
+        };
+        assert_eq!(whole.len(), 2, "{whole:?}");
+        let run = |scratch: &str, stop: Option<usize>| -> (Result<Report>, Vec<(String, String)>) {
+            let mut out = Out::unbound(&root, &d.path().join(scratch)).unwrap();
+            terrain(&mut out, true);
+            let mut b = Batch::deep(&out, &[t]);
+            b.keep = true;
+            STOP_AFTER.set(stop);
+            let r = b.build_deep(&mut out, t, &|_, _, _| {});
+            STOP_AFTER.set(None);
+            if r.is_ok() {
+                out.save().unwrap();
+            }
+            (r, deep(&out))
+        };
+        // Stopped after two of its four z13 tiles, as a pause stops it, and made again here.
+        let (r, _) = run("a/scratch", Some(2));
+        assert!(jobrt::control::is_paused(&r.unwrap_err()));
+        let log = jobrt::resume_log::path(&d.path().join("a/scratch"), (PACK_Z, t.0, t.1));
+        assert!(log.exists(), "its z13 tiles kept");
+        let (r, got) = run("a/scratch", None);
+        r.unwrap();
+        assert_eq!(got, whole);
+        assert!(!log.exists(), "done with once its outputs are put");
+        // Stopped again, given back, and taken up on another Mac: the log carried there.
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        let (r, _) = run("a/scratch", Some(2));
+        assert!(jobrt::control::is_paused(&r.unwrap_err()));
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        assert_eq!(carry_out(&nas, &d.path().join("a/scratch"), since).len(), 1);
+        CARRY_ROOT.set(Some(nas));
+        let (r, got) = run("b/scratch", None);
+        CARRY_ROOT.set(None);
+        r.unwrap();
+        assert_eq!(got, whole);
+    }
+
     /// Task #928: a batch's targets (`Batch::deep`) come out as each made alone (`build_deep`); the
     /// next target's terrain deep pack is copied ahead while one is made, read there by that target
     /// (copied once), and kept for it alone: let go once it's made, though a neighbour after reads its
@@ -2078,7 +2233,9 @@ mod tests {
         // same tiles from z2 down, their quadrants those the z1 tiles are made from.
         let tops: Vec<(u32, u32)> = (0..4u32).flat_map(|x| (0..4u32).map(move |y| (x, y))).collect();
         let out = Mutex::new(Vec::new());
-        let qs = Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &none_done }.tops(2, &tops);
+        let qs = Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &none_done }
+            .tops(2, &tops, &mut jobrt::resume_log::Pieces::none())
+            .unwrap();
         let mut v = out.into_inner().unwrap();
         v.sort_by_key(|m| (m.0, m.1, m.2));
         assert!(v == first.iter().filter(|m| m.0 >= 2).cloned().collect::<Vec<_>>());
@@ -2341,7 +2498,9 @@ mod tests {
                     }
                     terr.copy_here(FIRST_Z, x << 3, y << 3);
                     let tiles = deep_tiles(&deep, (x, y));
-                    let (d, mid) = deep_part(&terrain, &tiles, &Count::new(1, &none));
+                    let (d, mid) =
+                        deep_part(&terrain, &tiles, &Count::new(1, &none), &mut jobrt::resume_log::Pieces::none())
+                            .unwrap();
                     put(&d);
                     write_deep_mid(&mid_path(x, y), (x, y), &mid).unwrap();
                     tops.insert((x, y), deep_tops(&tiles));
@@ -2431,7 +2590,8 @@ mod tests {
                 let terrain = Terrain::new(&counted, &has);
                 let p = jobrt::timings::phase("working out the slope tiles");
                 let tiles = deep_tiles(&deep_terrain(&terr, t).unwrap(), t);
-                let (d, mid) = deep_part(&terrain, &tiles, &Count::new(1, &none));
+                let (d, mid) =
+                    deep_part(&terrain, &tiles, &Count::new(1, &none), &mut jobrt::resume_log::Pieces::none()).unwrap();
                 drop(p);
                 let path = scratch.path().join("deep-mid.sect");
                 write_deep_mid(&path, t, &mid).unwrap();

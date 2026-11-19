@@ -5,7 +5,7 @@
 //! terrain-deep (crate::terrain_deep, its base tiles), and through `Pieces` (task #889) unit,
 //! pois, peaks, bldtiles, bldprep, bldfield-lo, trees, polar-terrain, polar-slope, slope-lo and lo;
 //! (task #890) polar-root, reach and water; (task #897) regions-extract, names-todo and the
-//! regions' input check.
+//! regions' input check; (task #1414) slope-deep and lake-depth.
 //!
 //! - **On this Mac's disk, never the NAS:** one file per target at the top of the job's scratch
 //!   folder (`<scratch>/<z>_<x>_<y>.resume`, `path`; each step's scratch folder is its own): a line
@@ -23,22 +23,29 @@
 //!   program, so a resume in a newly installed app keeps what was kept. Another identity, the log
 //!   is emptied and the run starts afresh.
 //! - **Where it's found:** the job's scratch folder, or the same step's folder of another of the
-//!   agent's slots (`scratch-2/`, …), moved here.
+//!   agent's slots (`scratch-2/`, …), moved here; or, given back on another Mac, carried on the NAS
+//!   (task #1414): a job that ends without finishing its targets has its agent copy the logs it
+//!   wrote to `CARRIED/<step>/` (`carry_out`), and the next run of the target, on any Mac, takes
+//!   that copy when it holds more of the run's identity than this Mac's own (`take_carried`; the
+//!   copy deleted once looked at, the target this Mac's). A log is one file, so the NAS takes it as
+//!   one stream; what a step keeps beside its log (unit's folders) doesn't follow, and such a step
+//!   resumes on its own Mac alone.
 //! - **Gone:** once its step's packs are written (each step deletes its own); when its job is
 //!   cancelled (the agent clears the target's scratch, `<z>_<x>_<y>.*`); with the slot's step folder
 //!   when room-making deletes a given-back job's; and, a target that never comes back here (made on
 //!   another Mac), as the step's next run here opens its own log: any log in the step's folders
-//!   untouched for `HOLD_S` (`sweep`).
-//! - **Only with resuming on:** the job's agent says so (`RESUME_ENV`, with
-//!   `state/pool/resume` on); a run without it keeps nothing.
+//!   untouched for `HOLD_S` (`sweep`). A carried copy, once a run looks at it, or untouched for
+//!   `HOLD_S` as its step's next copy is carried (`carry_out`).
+//! - **Only with resuming on:** the job's agent says so (`RESUME_ENV`, in the pool); a run without
+//!   it keeps nothing.
 
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// A job's environment: resuming is on (the agent sets it with `state/pool/resume` on:
-/// pipeline's agent::resume): its blocks are kept here, and a pass is complete when its records say
+/// A job's environment: resuming is on (the agent sets it in the pool: agentcore's agent::resume):
+/// its blocks are kept here, and a pass is complete when its records say
 /// so (crate::osmpass's `latest_pass`).
 pub const RESUME_ENV: &str = "SCENIC_RESUME";
 
@@ -48,6 +55,117 @@ pub const HOLD_S: u64 = 24 * 3600;
 
 /// A block: (z, and two numbers its step names it by: its first tile's column and row, …).
 pub type BlockId = (u8, u32, u32);
+
+/// A job's environment: the NAS project folder its target's carried log is looked for in (its
+/// agent's `--root` for it, set with resuming on): `take_carried`.
+pub const CARRY_ENV: &str = "SCENIC_RESUME_CARRY";
+
+/// Where on the NAS a log given back waits for its target's next run: `<CARRIED>/<step>/<log>`.
+pub const CARRIED: &str = "state/pool/carried";
+
+#[cfg(any(test, feature = "testkit"))]
+thread_local! {
+    /// Tests: the NAS root a log is carried through on this thread, in place of `CARRY_ENV`'s.
+    pub static CARRY_ROOT: std::cell::RefCell<Option<store::nasfs::NasRoot>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The NAS root logs are carried through: the job's `CARRY_ENV` (a test's `CARRY_ROOT`); none
+/// for a run by hand.
+fn carry_root() -> Option<store::nasfs::NasRoot> {
+    #[cfg(any(test, feature = "testkit"))]
+    if let Some(r) = CARRY_ROOT.with(|c| c.borrow().clone()) {
+        return Some(r);
+    }
+    static ROOT: std::sync::OnceLock<Option<store::nasfs::NasRoot>> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| std::env::var_os(CARRY_ENV).map(|r| store::nasfs::NasRoot::from_arg(PathBuf::from(r)))).clone()
+}
+
+/// Log `p` (in step folder `scratch`)'s carried copy under `root`.
+fn carried(root: &store::nasfs::NasRoot, scratch: &Path, p: &Path) -> Option<store::nasfs::NasPath> {
+    let step = scratch.file_name()?.to_str()?;
+    let name = p.file_name()?.to_str()?;
+    Some(root.join(format!("{CARRIED}/{step}/{name}")))
+}
+
+/// The logs at the top of step folder `scratch` written since `since` (a job's start: the ones it
+/// kept blocks in), each copied to the NAS under `root` (`CARRIED/<step>/`, replacing an older
+/// copy), for the target's next run wherever it goes (`take_carried`). Its agent's, as a job ends
+/// short of its targets (a give-back, a failure, a stop), off its loop. Each log copied and its
+/// bytes; one that fails is said and left.
+pub fn carry_out(root: &store::nasfs::NasRoot, scratch: &Path, since: std::time::SystemTime) -> Vec<(String, u64)> {
+    let mut v = Vec::new();
+    for e in std::fs::read_dir(scratch).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let fresh = e.metadata().is_ok_and(|m| m.is_file() && m.len() > 0 && m.modified().is_ok_and(|t| t >= since));
+        if !name.ends_with(EXT) || !fresh {
+            continue;
+        }
+        let Some(to) = carried(root, scratch, &e.path()) else { continue };
+        let r = to
+            .parent()
+            .map_or(Ok(()), |d| d.create_dir_all())
+            .map_err(anyhow::Error::from)
+            .and_then(|()| to.copy_from_local(&e.path()));
+        match r {
+            Ok(n) => v.push((name, n)),
+            Err(e) => eprintln!("resume: {} not carried to the NAS: {e:#}", to.display()),
+        }
+    }
+    // (The step's copies no run took within `HOLD_S`, as its folders' logs are swept: their targets
+    // made since without them, or no target any more.)
+    if let Some(d) = scratch.file_name().and_then(|s| s.to_str()).map(|s| root.join(format!("{CARRIED}/{s}"))) {
+        let now = std::time::SystemTime::now();
+        for e in d.read_dir().into_iter().flatten() {
+            let old = e.path.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| now.duration_since(t).ok());
+            if e.name.ends_with(EXT) && old.is_some_and(|a| a.as_secs() >= HOLD_S) && e.path.remove_file().is_ok() {
+                eprintln!("resume: {} left {HOLD_S} s, deleted", e.path.display());
+            }
+        }
+    }
+    v
+}
+
+/// Target log `p`'s copy carried on the NAS (`carry_out`), taken in its place when it holds more of
+/// the run's identity (its first line `head`; a longer log of one identity holds more, as each is
+/// appended to from where the last run left it), then deleted from the NAS either way: the target
+/// is this Mac's. A copy that can't be read is left for a later run.
+fn take_carried(root: Option<&store::nasfs::NasRoot>, scratch: &Path, p: &Path, head: &str) {
+    let Some(c) = root.and_then(|r| carried(r, scratch, p)) else { return };
+    let Ok(m) = c.metadata() else { return };
+    let ours = |f: &Path| -> u64 {
+        let mut first = vec![0u8; head.len()];
+        let same =
+            std::fs::File::open(f).and_then(|mut r| r.read_exact(&mut first)).is_ok() && first == head.as_bytes();
+        if same {
+            std::fs::metadata(f).map_or(0, |m| m.len())
+        } else {
+            0
+        }
+    };
+    if m.len() > ours(p) {
+        let part = p.with_extension("carried");
+        let r = std::fs::create_dir_all(scratch).map_err(anyhow::Error::from).and_then(|()| c.copy_to_local(&part));
+        match r {
+            Err(e) => {
+                eprintln!("resume: {} not taken: {e:#}", c.display());
+                std::fs::remove_file(&part).ok();
+                return;
+            }
+            Ok(n) if ours(&part) > 0 => match std::fs::rename(&part, p) {
+                Ok(()) => {
+                    eprintln!("resume: {}: {} MB carried from the NAS, as another run left it", p.display(), n >> 20)
+                }
+                Err(e) => eprintln!("resume: {} not taken: {e}", part.display()),
+            },
+            // (Another identity's: of no use to this run, nor to any later.)
+            Ok(_) => {}
+        }
+        std::fs::remove_file(&part).ok();
+    }
+    if let Err(e) = c.remove_file() {
+        eprintln!("resume: {} not deleted: {e}", c.display());
+    }
+}
 
 /// Whether this job keeps its blocks: its agent turned resuming on.
 pub fn on() -> bool {
@@ -156,7 +274,8 @@ pub struct Log {
 }
 
 impl Log {
-    /// Target `t`'s log in `scratch` (another slot's moved here) for a run of step kind `kind` and
+    /// Target `t`'s log in `scratch` (another slot's moved here, or a fuller one carried on the NAS
+    /// taken in its place: `take_carried`) for a run of step kind `kind` and
     /// identity `id`: each block it holds given to `take` in the order kept (with what was kept of
     /// it; each record starts where the one before ends, the first after `head`'s line), none when
     /// it has another identity or none. A record `take` refuses ends the log there, as a damaged
@@ -179,6 +298,7 @@ impl Log {
             }
         }
         let head = head(kind, id);
+        take_carried(carry_root().as_ref(), scratch, &p, &head);
         let r = (|| -> Result<Log> {
             std::fs::create_dir_all(scratch)?;
             let (done, good) = match std::fs::File::open(&p) {
@@ -723,6 +843,68 @@ mod tests {
         assert!(other.join("notes.txt").exists(), "only logs");
         sweep(&mine, &path(&mine, (6, 9, 9)), 3600);
         assert!(path(&mine, (6, 1, 1)).exists(), "a fresh one kept");
+    }
+
+    /// Task #1414: a target given back on one Mac resumes on another. The logs its job wrote are
+    /// carried to the NAS as it ends (`carry_out`: not an older one it didn't touch), and the next
+    /// run, wherever it goes, takes the copy when it holds more of the run's identity than the log
+    /// there; a poorer copy or another identity's leaves the log as it is. Either way the copy is
+    /// gone once looked at.
+    #[test]
+    fn a_log_given_back_on_one_mac_resumes_on_another() {
+        let d = tempfile::tempdir().unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let [a, b, c] = ["a/scratch/depth", "b/scratch-2/depth", "c/scratch/depth"].map(|s| d.path().join(s));
+        let t = (6, 19, 23);
+        let copy = d.path().join("nas").join(CARRIED).join("depth/6_19_23.resume");
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        three(&a, t, "a");
+        // (A log of another target, untouched since before the job began: not its, not carried.)
+        let old = path(&a, (6, 1, 1));
+        std::fs::write(&old, b"x").unwrap();
+        let an_hour = std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(since - an_hour).unwrap();
+        let out = carry_out(&nas, &a, since);
+        assert_eq!(out.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(), ["6_19_23.resume"]);
+        assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(path(&a, t)).unwrap());
+        CARRY_ROOT.set(Some(nas.clone()));
+        // The other Mac's run takes it: the three blocks, as kept.
+        let (mut l, m) = opened(&b, t, "a");
+        assert_eq!(m, [((9, 152, 184), vec![1, 2, 3]), ((9, 160, 184), vec![]), ((10, 304, 368), vec![4])].into());
+        assert!(!copy.exists(), "taken");
+        // Given back there with one block more: the first Mac, its own log of three, takes the four.
+        l.keep((9, 168, 184), &[5]).unwrap();
+        drop(l);
+        carry_out(&nas, &b, since);
+        let l = opened(&a, t, "a").0;
+        assert_eq!(l.done.len(), 4);
+        assert!(!copy.exists());
+        drop(l);
+        // A poorer copy (three blocks), or another identity's: the four kept here, the copy gone.
+        for id in ["a", "z"] {
+            std::fs::remove_dir_all(&c).ok();
+            three(&c, t, id);
+            carry_out(&nas, &c, since);
+            assert!(copy.exists());
+            assert_eq!(opened(&a, t, "a").0.done.len(), 4, "{id}");
+            assert!(!copy.exists(), "{id}");
+        }
+        // Another identity's log here, a copy of this run's: the copy taken.
+        assert_eq!(opened(&a, t, "y").0.done.len(), 0);
+        std::fs::remove_dir_all(&c).unwrap();
+        three(&c, t, "a");
+        carry_out(&nas, &c, since);
+        assert_eq!(opened(&a, t, "a").0.done.len(), 3, "the copy, of this identity, over another's");
+        // A copy no run took within the hold: swept as the step's next copy is carried.
+        three(&c, (6, 2, 2), "a");
+        carry_out(&nas, &c, since);
+        let stale = d.path().join("nas").join(CARRIED).join("depth/6_2_2.resume");
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(since - 25 * an_hour).unwrap();
+        std::fs::remove_dir_all(&c).unwrap();
+        three(&c, (6, 3, 3), "a");
+        carry_out(&nas, &c, since);
+        assert!(!stale.exists() && stale.with_file_name("6_3_3.resume").exists());
+        CARRY_ROOT.set(None);
     }
 
     /// Task #889: pieces kept are handed back, not made again, to a run of the same identity; to

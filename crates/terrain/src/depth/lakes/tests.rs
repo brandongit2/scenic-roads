@@ -397,3 +397,68 @@ fn only_the_small_lakes_hydrolakes_lacks_are_drawn() {
     assert_eq!(counts.get("by the area rule"), Some(&2), "{counts:?}");
     assert_eq!(flat.len(), 2);
 }
+
+/// Task #1414: the small lakes' z10 tiles are pieces kept as they're made. A run stopped part way
+/// (a give-back) and run again makes the same grids, estimating only the tiles its last run didn't
+/// keep: on its own Mac, and on another its log was carried to through the NAS.
+#[test]
+fn the_small_lakes_resume_where_a_stop_left_them() {
+    use jobrt::resume_log::{carry_out, Pieces, CARRY_ROOT, STOP_AFTER};
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    /// A pond in every 64th z14 tile each way (16 of the z6 tile's 256 z10 tiles have one), its
+    /// reads counted.
+    struct Ponds(AtomicUsize);
+    impl codecs::terrain_water::WaterSource for Ponds {
+        fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+            self.0.fetch_add(1, Relaxed);
+            let ring = vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]];
+            Ok(if z == SMALL_Z && x % 64 == 5 && y % 64 == 5 {
+                vec![Poly { kind: Kind::Lake, id: u64::from(x) * 100_000 + u64::from(y), rings: vec![ring] }]
+            } else {
+                Vec::new()
+            })
+        }
+        fn pin(&self) -> String {
+            "ponds".into()
+        }
+    }
+    let t = (19, 22);
+    let water = Ponds(AtomicUsize::new(0));
+    let run = |pieces: &mut Pieces| -> Result<Vec<(String, Vec<u8>)>> {
+        let mut v = Vec::new();
+        let mut counts = Counts::new();
+        let mut sink = |g: Tif| {
+            v.push((g.file, g.bytes));
+            Ok(())
+        };
+        small_grids(&water, &[], &Plane { flat: true }, t, "small", pieces, &mut counts, &mut sink, &|_, _| {})?;
+        Ok(v)
+    };
+    let whole = run(&mut Pieces::none()).unwrap();
+    assert_eq!(whole.len(), 16);
+    let all = water.0.swap(0, Relaxed);
+    let d = tempfile::tempdir().unwrap();
+    let [a, b] = ["a/scratch/lake-depth", "b/scratch-3/lake-depth"].map(|s| d.path().join(s));
+    let open = |s: &std::path::Path| Pieces::open(s, (6, t.0, t.1), "lake-depth", "i", true);
+    // Stopped after 100 tiles, as a pause stops it, and run again here: the same grids, the 156
+    // left estimated alone.
+    STOP_AFTER.set(Some(100));
+    assert!(jobrt::control::is_paused(&run(&mut open(&a)).unwrap_err()));
+    water.0.store(0, Relaxed);
+    assert_eq!(run(&mut open(&a)).unwrap(), whole);
+    let rest = water.0.swap(0, Relaxed);
+    assert!(rest < all * 2 / 3, "{rest} of {all} reads");
+    // Stopped again from afresh, given back, and taken up on another Mac: carried there.
+    std::fs::remove_dir_all(&a).unwrap();
+    let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    STOP_AFTER.set(Some(100));
+    assert!(jobrt::control::is_paused(&run(&mut open(&a)).unwrap_err()));
+    let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+    assert_eq!(carry_out(&nas, &a, since).len(), 1);
+    CARRY_ROOT.set(Some(nas));
+    water.0.store(0, Relaxed);
+    let got = run(&mut open(&b));
+    CARRY_ROOT.set(None);
+    assert_eq!(got.unwrap(), whole);
+    assert_eq!(water.0.load(Relaxed), rest, "the same tiles left to estimate");
+}

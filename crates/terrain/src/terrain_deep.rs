@@ -652,8 +652,9 @@ mod tests {
     /// southernmost z14 row: z13 tiles, none at z14, z15–16 tiles south of the edge), so its z13
     /// tiles are sampled, not made from z14 means; stopped at its safe points (a block kept, a
     /// level's end: the first, the empty level's end and the one after it, midway, the last) and
-    /// resumed from its log (crate::terrain_resume::HiLog), each run makes the same tiles and mid as
-    /// one never stopped. Each tile its own height, so a z13 tile from means would differ.
+    /// resumed from its log (crate::terrain_resume::HiLog), on its own Mac or, given back, on another
+    /// its log was carried to (task #1414), each run makes the same tiles and mid as one never
+    /// stopped. Each tile its own height, so a z13 tile from means would differ.
     #[test]
     fn a_target_with_an_empty_level_resumes_to_the_same_tiles() {
         use jobrt::resume_log::STOP_AFTER;
@@ -720,10 +721,24 @@ mod tests {
         };
         let empty_end = blocks(16) + 1 + blocks(15) + 1 + 1;
         assert_eq!(kept, empty_end + blocks(13) + 1, "every block and level's end");
-        for stop in std::collections::BTreeSet::from([1, empty_end - 1, empty_end, empty_end + 1, kept / 2, kept]) {
+        // (Task #1414: each given back and resumed on another Mac, its log carried there through the
+        // NAS; the odd ones on its own.)
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let stops = std::collections::BTreeSet::from([1, empty_end - 1, empty_end, empty_end + 1, kept / 2, kept]);
+        for (k, stop) in stops.into_iter().enumerate() {
             let name = format!("stop-{stop}");
+            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
             assert!(run(&name, Some(stop)).is_none(), "stopped after {stop}");
-            assert!(run(&name, None).unwrap().0 == fresh, "stopped after {stop}, then resumed");
+            let here = if k % 2 == 0 {
+                assert_eq!(jobrt::resume_log::carry_out(&nas, &d.path().join(&name), since).len(), 1);
+                format!("other/{name}")
+            } else {
+                name
+            };
+            jobrt::resume_log::CARRY_ROOT.set(Some(nas.clone()));
+            let r = run(&here, None);
+            jobrt::resume_log::CARRY_ROOT.set(None);
+            assert!(r.unwrap().0 == fresh, "stopped after {stop}, then resumed in {here}");
         }
     }
 

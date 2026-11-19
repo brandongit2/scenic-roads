@@ -5238,6 +5238,33 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
             // (HydroLAKES of the tile and a small margin, by the folder it's read from, once.)
             let mut lakes: std::collections::BTreeMap<String, Vec<(u64, lk::Rings)>> = Default::default();
             let mut gone = had;
+            // (The small lakes' z10 tiles each a piece kept, task #1414: a resumed z6 tile estimates
+            // only those its last run didn't keep. Its identity: the step's version, the sources'
+            // pins, the water's and the terrain hi packs of the tile and its ring, as the depth's.
+            // The first source by the land slope keeps them: one is declared.)
+            let mut pieces = match water.as_ref() {
+                Some(w) => jobrt::resume_log::Pieces::open(
+                    &out.scratch,
+                    (6, t.x, t.y),
+                    STEP,
+                    &jobrt::resume_log::job_id(
+                        STEP,
+                        &lk::V.to_string(),
+                        &t.slash(),
+                        &[
+                            &sources.iter().map(|s| s.pin.as_str()).collect::<Vec<_>>().join("\n"),
+                            &codecs::terrain_water::WaterSource::pin(w),
+                            &jobrt::resume_log::names(
+                                out,
+                                lk::ring((t.x, t.y)).iter().map(|u| format!("layers/terrain/hi/6-{}-{}", u.0, u.1)),
+                            ),
+                        ],
+                    ),
+                    jobrt::resume_log::on(),
+                ),
+                None => jobrt::resume_log::Pieces::none(),
+            };
+            let mut kept = Vec::new();
             for (id, m) in &made {
                 let folder = match m {
                     Method::Globathy => *id,
@@ -5255,10 +5282,6 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                 let mut counts = lk::Counts::new();
                 // (Each grid encoded as it's made: a z6 tile's floats would be gigabytes.)
                 let mut grids: Vec<lk::Tif> = Vec::new();
-                let mut sink = |g: lk::Canvas| -> Result<()> {
-                    grids.push(lk::Tif::of(id, &g)?);
-                    Ok(())
-                };
                 match m {
                     Method::Globathy => {
                         let ids = hl.iter().map(|(h, _)| *h).collect();
@@ -5268,15 +5291,34 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                         };
                         let _p = phase("shaping the lakes' bowls");
                         counts.insert("lakes with a maximum depth", dmax.len() as u64);
+                        let mut sink = |g: lk::Canvas| -> Result<()> {
+                            grids.push(lk::Tif::of(id, &g)?);
+                            Ok(())
+                        };
                         lk::globathy_grids(hl, &dmax, (t.x, t.y), &mut sink)?;
                     }
                     Method::LandSlope { .. } => {
                         let _p = phase("estimating the small lakes");
                         let water = water.as_ref().context("no basemap water")?;
                         let terrain = lk::HiPacks::new(out.root(), &out.manifest);
-                        lk::small_grids(water, hl, &terrain, (t.x, t.y), &mut counts, &mut sink, &|d, n| {
-                            jobrt::jobs::report(d, n, "z10 tiles")
-                        })?;
+                        let mut keeps = std::mem::replace(&mut pieces, jobrt::resume_log::Pieces::none());
+                        let mut sink = |g: lk::Tif| -> Result<()> {
+                            grids.push(g);
+                            Ok(())
+                        };
+                        lk::small_grids(
+                            water,
+                            hl,
+                            &terrain,
+                            (t.x, t.y),
+                            id,
+                            &mut keeps,
+                            &mut counts,
+                            &mut sink,
+                            &|d, n| jobrt::jobs::report(d, n, "z10 tiles"),
+                        )
+                        .map_err(|e| jobrt::control::stop_if_paused(STEP, e))?;
+                        kept.push(keeps);
                     }
                 }
                 let name = lk::logical(id, (t.x, t.y));
@@ -5291,6 +5333,7 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
             }
             let dropped = terrain::layers::drop(out, &gone);
             out.save()?;
+            kept.into_iter().for_each(jobrt::resume_log::Pieces::finish);
             eprintln!("{STEP} {}: {dropped} packs dropped", t.slash());
             jobrt::control::done(STEP, &t.slash());
             note_cost(STEP, &t.slash(), c);
