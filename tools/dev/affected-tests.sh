@@ -167,9 +167,9 @@ except reuse.Doubt as e:
         except reuse.Doubt: ex = []
         members = [d for d in sorted(glob.glob("crates/*")) if os.path.exists(d + "/Cargo.toml") and d not in ex]
     print("affected-tests.sh: %s: every member's tests, whole" % wide, file=sys.stderr)
-# (Wide, a change under the Rust build's own files, check-reuse.py's BUILD, counts: what a build script
-# reads can't be told. One outside them, a script's literal rerun path elsewhere, is missed then.)
-built = wide is not None and any(reuse.under(f, p) for f in changed for p in reuse.BUILD)
+# (Wide, what a build script reads can't be told: any changed file counts but one plainly read by no
+# build, under docs/ or .claude/ or a .md file, whose include_str!s and scan tests are found above.)
+built = wide is not None and any(not (reuse.under(f, "docs") or reuse.under(f, ".claude") or f.endswith(".md")) for f in changed)
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)

@@ -388,7 +388,7 @@ fn t() {}'; done
         case $p in [bcde]) print 'dependencies = ["a"]' ;; f) print 'dependencies = ["xsys"]' ;; g) print 'dependencies = ["x"]' ;;
           h) print 'dependencies = ["f"]' ;; xsys) print 'source = "registry+toy"\ndependencies = ["x"]' ;; esac
       done } > Cargo.lock
-    g add -A; g commit -m b0; $2; g add -A; g commit -m main
+    eval ${base:-}; g add -A; g commit -m b0; $2; g add -A; g commit -m main
     zsh $here/../affected-tests.sh HEAD 2> $d/err ) > $d/out
   out=$(grep -v '^#' $d/out); err=$(<$d/err); rm -rf $d
   if [[ ${(j:|:)${(f)out}} == $3 && $err == *${4:-}* && ( -n ${4:-} || -z $err ) ]]; then ok "affected-tests: $1: ${3:-nothing}"
@@ -407,6 +407,13 @@ affected "a build script's module by its name alone" m 'cargo test -p d --lib'
 m() { rm crates/d/helper.rs }
 wide='cargo test -p a --lib|cargo test -p b --lib|cargo test -p c --lib|cargo test -p d --lib|cargo test -p e --lib|cargo test -p f --lib|cargo test -p g --lib|cargo test -p h --lib'
 affected "a build script's module whose file isn't there: every member's tests, saying why" m $wide 'crates/d/build.rs declares mod helper'
+# (Wide from the start, $base: what a build script reads can't be told, so any change but a doc's runs it all.)
+base='rm crates/d/helper.rs'
+m() { print 2 >> data/x.txt }
+affected "wide, a data file a script may read: every member's tests" m $wide 'crates/d/build.rs declares mod helper'
+m() { w docs/a.md 2 }
+affected "wide, a doc alone: nothing, saying why" m '' 'crates/d/build.rs declares mod helper'
+base=
 m() { sed -i '' 's|"crates/a",|"crates/**",|' Cargo.toml }
 affected "a members list it can't read: every crate with a manifest, but the excluded" m $wide "Cargo.toml's members has a glob"
 m() { print 2 >> crates/x/source/Version.txt }

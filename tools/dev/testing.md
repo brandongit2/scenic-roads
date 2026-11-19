@@ -67,8 +67,9 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   tests of the members whose own dependencies reach it, as Cargo.lock records them (landmarks, and
   terrain through geos and geos-sys), not the members reaching those. Any check-reuse.py Doubt (e.g.
   no Python 3.11 for tomllib, a manifest or Cargo.lock it can't read, a build script's `mod` whose
-  file isn't there, a members list it can't read) runs every member's tests whole when a file under
-  the Rust build's own (check-reuse.py's BUILD) changed, saying why on stderr; the script takes the
+  file isn't there, a members list it can't read) runs every member's tests whole when any file changed
+  but one plainly read by no build script (under docs/ or .claude/, or a .md file), saying why on
+  stderr; the script takes the
   first python3 with tomllib of the PATH's, brew's and mise's. A moved file counts at its old path too (`--no-renames`, as in
   check.sh's own triggers). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
