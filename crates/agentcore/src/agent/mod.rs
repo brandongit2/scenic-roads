@@ -6235,9 +6235,11 @@ impl Agent {
     /// the brake still acting, or the time a pause gives a safe point with the Mac between the two,
     /// it's stopped (given back, as the guard stops one) only if that relieves the Mac
     /// (memguard::worth_stopping: the frozen jobs it's among hold what the Mac is short, and the
-    /// Mac's other processes didn't take that much lately); else it's kept frozen while the brake
-    /// acts, and goes on past that time with the brake no longer acting (the floor then gives it
-    /// back at its next safe point). None: nothing for it to do (the brake not acting and nothing
+    /// Mac's other processes didn't take that much lately; at critical pressure, whatever they
+    /// free); else it's kept frozen while the brake acts, given back as an interrupted job is (not
+    /// failed, not kept from this Mac) once frozen that time with the brake still acting, and goes
+    /// on past it with the brake no longer acting (the floor then gives it back at its next safe
+    /// point). None: nothing for it to do (the brake not acting and nothing
     /// frozen); else whether it stopped a job.
     fn pressure(&mut self, held: &[Option<u64>], r: &memguard::Reading) -> Option<bool> {
         let trouble = r.acts();
@@ -6260,8 +6262,10 @@ impl Agent {
             }
         }
         // (Which frozen jobs a stop would relieve the Mac by: memguard::worth_stopping.)
-        let frozen_held: Vec<Option<u64>> = (0..self.slots.len())
-            .map(|k| self.slots[k].pressure_frozen.as_ref().map(|_| held.get(k).copied().flatten().unwrap_or(0)))
+        // (A footprint unread counts as unknown: worth_stopping fails toward the stop.)
+        let frozen_held: Vec<(usize, Option<u64>)> = (0..self.slots.len())
+            .filter(|&k| self.slots[k].pressure_frozen.is_some())
+            .map(|k| (k, held.get(k).copied().flatten()))
             .collect();
         let worth = memguard::worth_stopping(r, &frozen_held);
         let mut any = false;
@@ -6287,8 +6291,8 @@ impl Agent {
             match &worth {
                 Ok(stop) if stop.contains(&k) => {
                     let why = format!(
-                        "stopped by the memory guard: it held {:.1} GB, frozen {} s{}, the Mac not back above its floor: {}; stopping it frees what the Mac is short ({:.1} GB)",
-                        held.get(k).copied().flatten().unwrap_or(0) as f64 / 1024.0,
+                        "stopped by the memory guard: it held {}, frozen {} s{}, the Mac not back above its floor: {}; stopping it frees what the Mac is short ({:.1} GB)",
+                        held.get(k).copied().flatten().map_or("what its footprint didn't say".into(), |m| format!("{:.1} GB", m as f64 / 1024.0)),
                         at.elapsed().as_secs(),
                         if big == mine { String::new() } else { format!(" for {big}") },
                         r.short_words(),
@@ -6308,12 +6312,24 @@ impl Agent {
                     eprintln!("agent: memory guard: {mine} goes on: {why}");
                     self.guard_last = Some((now_s(), format!("{mine} goes on: {why}")));
                 }
+                // (Kept frozen the drain's grace with the brake still acting: given back as an
+                // interrupted job is, not failed nor kept from this Mac, so its lease ends and its
+                // targets go to a Mac with room rather than wait here for good.)
+                _ if at.elapsed() >= self.grace => {
+                    let why = format!(
+                        "given back by the memory guard: frozen {} min with the brake still acting, stopping it not worth it ({}); given back so another Mac may take its targets",
+                        at.elapsed().as_secs() / 60,
+                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str())
+                    );
+                    return Some(self.guard_stop_as(k, "memory guard", &why, false));
+                }
                 // (Kept frozen under the brake: said once.)
                 _ if !self.slots[k].pressure_kept => {
                     self.slots[k].pressure_kept = true;
                     let why = format!(
-                        "kept frozen, not stopped: {}; it goes on once the Mac is back above its floor",
-                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str())
+                        "kept frozen, not stopped: {}; it goes on once the Mac is back above its floor, or is given back in {} min if the brake still acts then",
+                        worth.as_ref().err().map_or("other frozen jobs free what the Mac is short", |w| w.as_str()),
+                        self.grace.saturating_sub(at.elapsed()).as_secs().div_ceil(60)
                     );
                     eprintln!("agent: memory guard: {mine} {why}");
                     self.guard_last = Some((now_s(), format!("{mine} {why}")));
@@ -14482,23 +14498,45 @@ mod tests {
         // (Twice: the sampler reads the Mac once the loop has told it its memory.)
         assert!(!tick(&mut a, vec![Some(100)], false) && !tick(&mut a, vec![Some(100)], false));
         // The other processes take the Mac's memory (1.5 GB left, the floor 2 GB), the pressure at
-        // warning: the job holding 0.1 GB frozen; past the hold and the drain's grace with the brake
-        // still acting, kept frozen, said why once; the Mac back, it goes on.
+        // warning: the job holding 0.1 GB frozen; past the hold with the brake still acting, kept
+        // frozen, said why once; the Mac back, it goes on.
         a.mem_set = Some((16 << 10, 1536));
         assert!(!tick(&mut a, vec![Some(100)], true));
         assert!(a.sampler.frozen(0) && a.slots[0].pressure_frozen.is_some());
         held_past(&mut a, 0);
-        a.grace = Duration::ZERO;
         for _ in 0..3 {
             assert!(!tick(&mut a, vec![Some(100)], true));
             assert!(a.sampler.frozen(0) && a.slots[0].running.is_some(), "kept frozen, never stopped");
         }
         let w = last(&a);
         assert!(w.contains("kept frozen, not stopped") && w.contains("other processes took"), "{w}");
-        a.grace = DRAIN_GRACE;
         a.mem_set = Some((16 << 10, 14 << 10));
         assert!(!tick(&mut a, vec![Some(100)], false));
         assert!(!a.sampler.frozen(0) && a.slots[0].pressure_frozen.is_none() && a.slots[0].running.is_some());
+        // Frozen again, then the brake no longer acting (warning with room: the Mac between the
+        // two, not back): past the drain's grace, not worth stopping, it goes on.
+        a.mem_set = Some((16 << 10, 1536));
+        assert!(!tick(&mut a, vec![Some(100)], true) && a.sampler.frozen(0));
+        a.mem_set = Some((16 << 10, 14 << 10));
+        a.grace = Duration::ZERO;
+        assert!(!tick(&mut a, vec![Some(100)], true));
+        a.grace = DRAIN_GRACE;
+        assert!(!a.sampler.frozen(0) && a.slots[0].pressure_frozen.is_none() && a.slots[0].running.is_some());
+        assert!(last(&a).contains("goes on: the brake no longer acting"), "{}", last(&a));
+        assert!(!tick(&mut a, vec![Some(100)], false));
+        // Frozen the drain's grace with the brake still acting, stopping it not worth it: given back
+        // as interrupted (not failed, not kept from this Mac), its lease ended, not frozen for good.
+        a.mem_set = Some((16 << 10, 1536));
+        assert!(!tick(&mut a, vec![Some(100)], true) && a.sampler.frozen(0));
+        a.grace = Duration::ZERO;
+        assert!(tick(&mut a, vec![Some(100)], true));
+        a.grace = DRAIN_GRACE;
+        assert!(a.slots[0].running.is_none() && a.guard_backoff.is_empty(), "{:?}", a.guard_backoff);
+        assert!(last(&a).contains("given back so another Mac may take its targets"), "{}", last(&a));
+        a.mem_cool = None;
+        a.mem_set = Some((16 << 10, 14 << 10));
+        assert!(!tick(&mut a, vec![None], false) && !tick(&mut a, vec![None], false));
+        assert!(a.try_start(0, job("bldtiles 6/2/2"), &cond, Some(&nas), &mut Vec::new()), "not kept from this Mac");
         // Its own growth makes the shortfall (13 GB, 1 GB left), the other processes steady: frozen,
         // then stopped once frozen the hold.
         assert!(!tick(&mut a, vec![Some(13 << 10)], true));

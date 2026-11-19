@@ -66,7 +66,11 @@ pub struct Reading {
     pub swap_grown_mb: u64,
     /// What the Mac's other processes (not the jobs) took more within `SWAP_WINDOW`: the memory in
     /// use and the swap, less what the jobs hold, now less the least in the window. A stop weighs
-    /// it (`worth_stopping`): a shortfall the rest of the Mac made isn't the jobs' doing.
+    /// it (`worth_stopping`): a shortfall the rest of the Mac made isn't the jobs' doing. A
+    /// difference, not whose memory it is: what the jobs cause outside their process groups (the
+    /// kernel's and SMB's buffers for their reads, services over XPC) and the swing of
+    /// `compress_mb` as the compressor's ratio moves read as the others'; weighed against the
+    /// Mac's whole deficit, which bounds that.
     pub others_grown_mb: u64,
     /// The kernel's memory pressure level (1 normal, 2 warning, 4 critical; 0 unknown).
     pub pressure: u32,
@@ -252,40 +256,51 @@ pub fn decide_by(held: &[Option<u64>], room: u64, draining: &[bool], yields: &[b
     }
 }
 
-/// Which of the frozen jobs to stop (task #1485), by what each holds now (`frozen`, MB per slot;
-/// None: not frozen): only a stop that brings the Mac back above its floor, and only for a
-/// shortfall that is the jobs' own. A frozen job no longer grows; stopping it frees what it holds
-/// and loses its work, so it's stopped only when that relieves the Mac:
+/// Which of the frozen jobs to stop (task #1485), by what each holds now (`frozen`: each frozen
+/// job's slot and what it holds, MB; None: its footprint unread). A frozen job no longer grows;
+/// stopping it frees what it holds and loses its work, so it's stopped only when that relieves
+/// the Mac:
 /// - the Mac short of its floor (`Reading::short_mb`; at critical pressure any megabyte freed
 ///   counts, the numbers aside);
+/// - a job whose footprint can't be read stopped then (failing toward the stop: what it holds may
+///   be what the Mac is short);
 /// - not by what its other processes took within the swap window (`Reading::others_grown_mb`, at
-///   least what the Mac is short: had they not grown, it wouldn't be short; at critical pressure
-///   the Mac's danger stands whoever made it);
-/// - the frozen jobs, largest first, holding what it's short: those that cover it are stopped, the
-///   rest (holding nothing among them) kept frozen.
+///   least the Mac's deficit: its floor and the swap grown less what's available, not capped at
+///   the floor as `short_mb` is, so a job's own swap growth isn't explained away by a smaller
+///   growth beside it; had they not grown, the Mac wouldn't be short). Skipped at critical
+///   pressure: the Mac's danger stands whoever made it;
+/// - the frozen jobs holding what it's short: largest first until that's covered, those stopped
+///   and the rest kept frozen (of 0.4 and 0.3 GB with 0.35 GB short, the 0.4 alone; a job holding
+///   nothing never). At critical pressure, every frozen job holding anything when together they
+///   don't cover it; else, not covering it, none: stopping them wouldn't bring the Mac back.
 ///
 /// Else why none is, in words: frozen, they hold no new grant back that the brake doesn't already
-/// (admission holds new work under it), and go on once the Mac is back.
-pub fn worth_stopping(r: &Reading, frozen: &[Option<u64>]) -> Result<Vec<usize>, String> {
+/// (admission holds new work under it), and go on once the Mac is back or are given back once
+/// frozen the drain's grace (crate::agent's `pressure`).
+pub fn worth_stopping(r: &Reading, frozen: &[(usize, Option<u64>)]) -> Result<Vec<usize>, String> {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let critical = r.pressure >= 4;
     let need = if critical { r.short_mb().max(1) } else { r.short_mb() };
     if need == 0 {
         return Err("the Mac not short of its floor by the numbers".into());
     }
-    if !critical && r.others_grown_mb >= need {
+    let unread: Vec<usize> = frozen.iter().filter(|(_, m)| m.is_none()).map(|&(k, _)| k).collect();
+    if !unread.is_empty() {
+        return Ok(unread);
+    }
+    let deficit = (r.floor_mb + r.swap_grown_mb).saturating_sub(r.avail_mb);
+    if !critical && r.others_grown_mb >= deficit {
         return Err(format!(
             "the Mac's other processes took {} more in the last {} min, past the {} it is short: not its jobs' doing",
             gb(r.others_grown_mb),
             SWAP_WINDOW.as_secs() / 60,
-            gb(need)
+            gb(deficit)
         ));
     }
-    let mut by: Vec<(usize, u64)> =
-        frozen.iter().enumerate().filter_map(|(k, m)| m.filter(|&m| m > 0).map(|m| (k, m))).collect();
+    let mut by: Vec<(usize, u64)> = frozen.iter().filter_map(|&(k, m)| m.filter(|&m| m > 0).map(|m| (k, m))).collect();
     by.sort_by_key(|&(k, m)| (std::cmp::Reverse(m), k));
     let all: u64 = by.iter().map(|&(_, m)| m).sum();
-    if all < need {
+    if by.is_empty() || (!critical && all < need) {
         return Err(format!(
             "stopping would free {} (what the frozen jobs hold) of the {} the Mac is short: it wouldn't bring it back",
             gb(all),
@@ -1474,7 +1489,8 @@ mod tests {
 
     /// Task #1485 (the M1, 19 Nov: 39 of its last 40 failures jobs of 0.0-0.4 GB stopped by the
     /// brake, its 1.0 GB floor short by the load beside the pool): a frozen job is stopped only when
-    /// that brings the Mac back, for a shortfall that is the jobs' own.
+    /// that brings the Mac back, for a shortfall that is the jobs' own; at critical pressure, as
+    /// much as the frozen jobs can free.
     #[test]
     fn a_frozen_job_is_stopped_only_when_that_relieves_the_mac() {
         // (The M1: 0.4 GB available against its 1.0 GB floor, at warning.)
@@ -1490,30 +1506,103 @@ mod tests {
         // kept, whichever way it's read.
         let r = m1(0, 700);
         assert!(r.acts() && r.short_mb() == 624);
-        let why = worth_stopping(&r, &[Some(0)]).unwrap_err();
+        let why = worth_stopping(&r, &[(0, Some(0))]).unwrap_err();
         assert!(why.contains("other processes took 0.7 GB") && why.contains("not its jobs' doing"), "{why}");
         // (Nothing grown beside it, the load old: stopping 0.0 or 0.4 GB doesn't bring the Mac back.)
-        assert!(worth_stopping(&m1(0, 0), &[Some(0)]).unwrap_err().contains("wouldn't bring it back"));
-        let why = worth_stopping(&m1(400, 0), &[Some(400)]).unwrap_err();
+        assert!(worth_stopping(&m1(0, 0), &[(0, Some(0))]).unwrap_err().contains("wouldn't bring it back"));
+        let why = worth_stopping(&m1(400, 0), &[(0, Some(400))]).unwrap_err();
         assert!(why.contains("free 0.4 GB") && why.contains("of the 0.6 GB the Mac is short"), "{why}");
         // A job whose own growth drives the pressure (3 GB, the others steady): stopped.
-        assert_eq!(worth_stopping(&m1(3 * GB, 20), &[Some(3 * GB)]), Ok(vec![0]));
+        assert_eq!(worth_stopping(&m1(3 * GB, 20), &[(0, Some(3 * GB))]), Ok(vec![0]));
         // Mixed: the one that grew stopped, the one holding nothing beside it kept frozen; of two
-        // that cover it together, both, the largest first; the others' share under the shortfall
-        // (0.3 of 0.6 GB) still leaves it the jobs'.
-        assert_eq!(worth_stopping(&m1(3 * GB, 300), &[Some(0), None, Some(3 * GB)]), Ok(vec![2]));
-        assert_eq!(worth_stopping(&m1(700, 0), &[Some(300), Some(400), Some(0)]), Ok(vec![1, 0]));
+        // that cover it together, both, the largest first; of two where the largest covers it, that
+        // one alone (0.4 GB for 0.35 short); the others' share under the shortfall (0.3 of 0.6 GB)
+        // still leaves it the jobs'.
+        assert_eq!(worth_stopping(&m1(3 * GB, 300), &[(0, Some(0)), (2, Some(3 * GB))]), Ok(vec![2]));
+        assert_eq!(worth_stopping(&m1(700, 0), &[(0, Some(300)), (1, Some(400)), (2, Some(0))]), Ok(vec![1, 0]));
+        let r = Reading { avail_mb: GB - 350, ..m1(700, 0) };
+        assert_eq!(worth_stopping(&r, &[(0, Some(300)), (1, Some(400))]), Ok(vec![1]));
         // (A big job beside an outside spike past what the Mac is short: kept frozen while it
         // lasts; once the window holds no growth of theirs, stopped.)
-        assert!(worth_stopping(&m1(8 * GB, 2 * GB), &[Some(8 * GB)]).is_err());
-        assert_eq!(worth_stopping(&m1(8 * GB, 0), &[Some(8 * GB)]), Ok(vec![0]));
+        assert!(worth_stopping(&m1(8 * GB, 2 * GB), &[(0, Some(8 * GB))]).is_err());
+        assert_eq!(worth_stopping(&m1(8 * GB, 0), &[(0, Some(8 * GB))]), Ok(vec![0]));
+        // The job and the others both growing: the job's 10 GB swapped, Chrome 1.1 GB. The usable
+        // memory stops at nothing (1.0 GB short, the whole floor), but the deficit (10.6 GB) is
+        // what the others' growth is weighed against: the job's, stopped.
+        let r = Reading { swap_grown_mb: 10 * GB, ..m1(12 * GB, 1126) };
+        assert_eq!(r.short_mb(), GB);
+        assert_eq!(worth_stopping(&r, &[(0, Some(12 * GB))]), Ok(vec![0]));
+        // A frozen job whose footprint can't be read, the Mac short: stopped (failing toward the
+        // stop); not short, kept.
+        assert_eq!(worth_stopping(&m1(0, 2 * GB), &[(0, None), (1, Some(0))]), Ok(vec![0]));
+        assert!(worth_stopping(&Reading { pressure: 2, ..m4(20, 10) }, &[(0, None)]).is_err());
         // (Not short by the numbers, warning alone: none.)
         let r = Reading { pressure: 2, ..m4(20, 10) };
-        assert!(worth_stopping(&r, &[Some(10 * GB)]).unwrap_err().contains("not short"));
+        assert!(worth_stopping(&r, &[(0, Some(10 * GB))]).unwrap_err().contains("not short"));
         // Critical: the Mac's danger whoever made it; a job holding nothing still frees nothing.
         let r = Reading { pressure: 4, others_grown_mb: 5 * GB, ..m4(20, 10) };
-        assert_eq!(worth_stopping(&r, &[Some(10 * GB), Some(0)]), Ok(vec![0]));
-        assert!(worth_stopping(&r, &[None, Some(0)]).is_err());
+        assert_eq!(worth_stopping(&r, &[(0, Some(10 * GB)), (1, Some(0))]), Ok(vec![0]));
+        assert!(worth_stopping(&r, &[(1, Some(0))]).is_err());
+        // Critical, the frozen jobs holding less than the shortfall (5 GB of 6 on the M4, and
+        // 5 GB of 5 GB and a megabyte): every one holding anything stopped, the largest first.
+        let r = Reading { pressure: 4, ..m4(0, 5) };
+        assert_eq!(r.short_mb(), 6 * GB);
+        assert_eq!(worth_stopping(&r, &[(0, Some(2 * GB)), (1, Some(0)), (2, Some(3 * GB))]), Ok(vec![2, 0]));
+        let r = Reading { pressure: 4, avail_mb: GB - 1, ..m4(0, 5) };
+        assert_eq!(r.short_mb(), 5 * GB + 1);
+        assert_eq!(worth_stopping(&r, &[(0, Some(2 * GB)), (2, Some(3 * GB))]), Ok(vec![2, 0]));
+    }
+
+    /// Task #1485: the M1's 15 stops by the brake of 18 Nov 23:00Z to 19 Nov 08:00Z (the lead's
+    /// history), each read as the M1's live series had the Mac at its stop (150 s buckets, 20 s for
+    /// the last three: what was available, the swap grown and the other processes' growth over
+    /// the five minutes before; its 1.0 GB floor) and what the job held (its note), decided again:
+    /// one is a stop (0.4 GB held, 0.1 GB short); nine would free nothing near what the Mac was
+    /// short, four were the other processes' growth, one wasn't short by the numbers. The series'
+    /// buckets are coarser than the guard's 5 s readings: the figures are as the series had them.
+    #[test]
+    fn the_m1s_stops_of_19_november_replayed() {
+        // (When, held, available, swap grown, the others' growth, GB; whether it's a stop now.)
+        let stops: [(&str, f64, f64, f64, f64, bool); 15] = [
+            ("23:41", 0.0, 0.92, 0.32, 0.00, false),
+            ("23:47", 0.3, 0.21, 0.30, 1.16, false),
+            ("03:01", 0.0, 0.44, 0.03, 0.09, false),
+            ("03:38", 0.0, 0.36, 0.25, 0.29, false),
+            ("03:38", 0.0, 0.36, 0.25, 0.29, false),
+            ("03:52", 0.3, 0.20, 0.00, 0.41, false),
+            ("04:11", 0.0, 1.12, 0.35, 0.00, false),
+            ("04:31", 0.3, 0.16, 0.00, 1.45, false),
+            ("05:02", 0.4, 0.89, 0.00, 0.09, true),
+            ("06:26", 0.0, 0.53, 0.00, 0.28, false),
+            ("06:26", 0.0, 0.53, 0.00, 0.28, false),
+            ("06:27", 0.0, 0.76, 0.13, 0.24, false),
+            ("06:42", 0.3, 1.42, 0.21, 0.00, false),
+            ("07:08", 0.4, 0.28, 0.22, 1.01, false),
+            ("07:15", 0.4, 0.29, 2.00, 3.13, false),
+        ];
+        let mb = |gb: f64| (gb * 1024.0).round() as u64;
+        let mut why = BTreeMap::new();
+        for (at, held, avail, swap, others, stop) in stops {
+            let r = Reading {
+                avail_mb: mb(avail),
+                held_mb: mb(held),
+                floor_mb: GB,
+                swap_grown_mb: mb(swap),
+                others_grown_mb: mb(others),
+                pressure: 2,
+                ..Default::default()
+            };
+            let got = worth_stopping(&r, &[(0, Some(mb(held)))]);
+            assert_eq!(got.is_ok(), stop, "{at}: {got:?}");
+            let kind = match got {
+                Ok(_) => "stop",
+                Err(w) if w.contains("not short") => "not short",
+                Err(w) if w.contains("other processes") => "others",
+                Err(_) => "frees too little",
+            };
+            *why.entry(kind).or_insert(0) += 1;
+        }
+        assert_eq!(why, BTreeMap::from([("frees too little", 9), ("not short", 1), ("others", 4), ("stop", 1)]));
     }
 
     /// The M4's night of 4 Nov replayed under the floor alone and the available as it is reckoned
