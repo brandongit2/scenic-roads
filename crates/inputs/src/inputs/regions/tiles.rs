@@ -15,7 +15,8 @@
 //!   water, after those its water names whole; its lakes, those in its outline that no other region's
 //!   water names; the three together its area, kept by cell and stored as the cells' rings.
 //! - One coastline: the outlines' coastal edges taken from the coastline (the pass's land).
-//!   What lies in no region along it, land past an outline's coast or sea short of the water's
+//!   What lies in no region along it (the edge of land a remainder gave counts, where it took the
+//!   seaward part of a stretch), land past an outline's coast or sea short of the water's
 //!   parts, joined across the cells' edges, goes, where all of a stretch is within
 //!   `COAST_REACH_M` of regions, to the nearest of them (split at the median line), if it has water.
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
@@ -809,7 +810,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     }
     trace("remainders");
     // 1b. Remainders: what of a folder's `of` no outline takes, to its regions.
-    remainders(folder, ctx, data, &whole, &mut made, &others, out, &mut held, &mut needs);
+    let taken = remainders(folder, ctx, data, &whole, &mut made, &others, out, &mut held, &mut needs);
     for m in made.values_mut() {
         m.outline = TArea::default();
     }
@@ -932,7 +933,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             .collect()
     });
     // 3b. One coastline: what lies in no region between a region's coast and the coastline's.
-    coast(data, folder, &mut made, &others, progress);
+    coast(data, folder, &mut made, &others, &taken, progress);
     // Each region's area by cell: land, water, lakes.
     // (Fanned out over (region, cell) pairs, not regions: one large region still uses every thread
     // allowed, its cells' unions being the work.)
@@ -1468,7 +1469,9 @@ fn remainders(
     out: &mut Outcome,
     held: &mut BTreeSet<String>,
     needs: &mut BTreeSet<Id>,
-) {
+) -> TArea {
+    // (The land and lakes the remainders gave, by cell, for the coast step: `coast`.)
+    let mut taken = TArea::default();
     let mut order: Vec<(&String, &(String, super::file::Remainder))> = folder.remainders.iter().collect();
     order.sort_by_key(|(dir, (p, _))| (std::cmp::Reverse(dir.split('/').count()), p.clone()));
     let progress = &ctx.progress;
@@ -1539,13 +1542,11 @@ fn remainders(
                 for (m, c, a) in v {
                     by.entry(c).or_default().entry(m).or_default().push(a);
                 }
-                type Cut = (Cell, Option<Area>, Vec<(String, Area, Area, Area)>);
+                type Cut = (Cell, Area, Vec<(String, Area, Area, Area)>);
                 let cut: Vec<Cut> = pace::par_map(by.into_iter().collect(), |(c, ms)| {
                     let (land, lakes) = land_and_lakes(data, c);
-                    let all = shared.contains(&c).then(|| {
-                        let all: Vec<Area> = ms.values().flatten().cloned().collect();
-                        geom::union_all(&all).intersect(&land.union(&lakes))
-                    });
+                    let all: Vec<Area> = ms.values().flatten().cloned().collect();
+                    let all = geom::union_all(&all).intersect(&land.union(&lakes));
                     let v = ms
                         .into_iter()
                         .map(|(m, mut ps)| {
@@ -1558,8 +1559,11 @@ fn remainders(
                 });
                 let mut mine = BTreeMap::new();
                 for (c, all, v) in cut {
-                    if let Some(a) = all.filter(|a| !a.is_empty()) {
-                        mine.insert(c, a);
+                    if !all.is_empty() {
+                        taken.set(c, taken.get(c).union(&all));
+                        if shared.contains(&c) {
+                            mine.insert(c, all);
+                        }
                     }
                     for (m, land, lakes, o) in v {
                         let x = made.get_mut(&m).unwrap();
@@ -1581,6 +1585,7 @@ fn remainders(
             }
         }
     }
+    taken
 }
 
 /// A remainder's problem (`rg-ref`), about its folder.
@@ -1943,6 +1948,7 @@ fn coast(
     folder: &Folder,
     made: &mut BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
+    taken: &TArea,
     progress: &Progress,
 ) {
     let cells: BTreeSet<Cell> = made
@@ -2035,6 +2041,9 @@ fn coast(
             return Vec::new();
         }
         let coastline = SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
+        // (The land a remainder gave in the cell: its edge in free land is a coast too, where the
+        // remainder took the seaward part of a stretch, the rest of it no longer borders the sea.)
+        let given = SegIndex::new(taken.get(c).polys.iter().flatten().map(|r| (0, r)));
         let bx = cell_box(c);
         let mut out = Vec::new();
         for (sea, side) in [(false, free.intersect(&land)), (true, free.minus(&land))] {
@@ -2046,7 +2055,8 @@ fn coast(
                         let (a, b) = (r[k], r[(k + 1) % r.len()]);
                         let edge = (a[0] == b[0] && (a[0] == bx[0] || a[0] == bx[2]))
                             || (a[1] == b[1] && (a[1] == bx[1] || a[1] == bx[3]));
-                        !edge && coastline.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]).is_some()
+                        let mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+                        !edge && (coastline.on(mid).is_some() || (!sea && given.on(mid).is_some()))
                     })
                 });
                 if !on_coast {
@@ -2446,15 +2456,58 @@ pub struct Fit {
 /// (`LAND_MIN_KM2`): the hair hid 59 islands of 0.01-0.1 km² in task #1427's run 12.
 pub const HAIR_KM2: f64 = 0.1;
 
-/// The least land in no region the cover check reports (km²), whatever the stretch's whole size:
-/// what the coastline can tell from nothing, a square of the side its rings are simplified within
-/// (`data::SIMPLIFY_M`: land smaller than that is within the coastline's own error). Measured on
-/// the whole input (task #1451, before any piece was given a region): 9 622 stretches with land in
-/// no region, 9 380 of them at most this (0.05 km² of land together: the outlines' snapping
-/// leaves land a few metres wide, cut to the coastline's land alike), 242 over it (islets and
-/// rocks the outlines leave out, and slivers on borders where two sources' lines differ), the
-/// largest 0.098 km².
+/// The least land piece the cover check reports (km²) in no region or in two, whatever the size of the
+/// stretch or overlap it lies in: what the coastline can tell from nothing, a square of the side its
+/// rings are simplified within (`data::SIMPLIFY_M`: land smaller than that is within the coastline's own
+/// error), and at least `SIMPLIFY_M / 2` wide (`solid_pieces`: a strip a few metres wide along a
+/// border is two sources' lines disagreeing, not land). Measured on the whole input (task #1451,
+/// before any piece was given a region), by stretch: 9 622 stretches with land in no region, 9 380
+/// of them at most this (0.05 km² of land together: the outlines' snapping leaves land a few metres
+/// wide, cut to the coastline's land alike); the rest islets and rocks the outlines leave out,
+/// and slivers on borders where two sources' lines differ. A narrower piece, or one smaller, counts
+/// only toward the hair.
 pub const LAND_MIN_KM2: f64 = super::data::SIMPLIFY_M * super::data::SIMPLIFY_M * 1e-6;
+
+/// The pieces of the area `a` in cell `c` that pass `LAND_MIN_KM2` and are at least
+/// `SIMPLIFY_M / 2` wide (twice the area over the perimeter, the cell's edges left out of it: a
+/// piece cut there goes on in the next cell, and is judged by its parts): each one's size (km²), a
+/// point inside it and its box.
+fn solid_pieces(a: &Area, c: Cell) -> Vec<(f64, Pt, [i64; 4])> {
+    let bx = cell_box(c);
+    a.polys
+        .iter()
+        .filter_map(|poly| {
+            let km2 = geom::area_km2(&Area { polys: vec![poly.clone()] });
+            if km2 <= LAND_MIN_KM2 {
+                return None;
+            }
+            let mut perimeter_m = 0.0;
+            for r in poly {
+                for k in 0..r.len() {
+                    let (p, q) = (r[k], r[(k + 1) % r.len()]);
+                    let edge = (p[0] == q[0] && (p[0] == bx[0] || p[0] == bx[2]))
+                        || (p[1] == q[1] && (p[1] == bx[1] || p[1] == bx[3]));
+                    if !edge {
+                        perimeter_m += geom::length_m(p, q);
+                    }
+                }
+            }
+            let wide = perimeter_m <= 0.0 || 2.0 * km2 * 1e6 / perimeter_m >= super::data::SIMPLIFY_M / 2.0;
+            let b = geom::bbox_of(poly.iter().flatten())?;
+            wide.then(|| (km2, interior(poly), b))
+        })
+        .collect()
+}
+
+/// A size for a finding: whole hundredths from 0.1 km², four places under it (a small piece of
+/// land is what it reports).
+fn km2_text(km2: f64) -> String {
+    if km2 >= 0.1 {
+        format!("{km2:.2}")
+    } else {
+        format!("{km2:.4}")
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct OverlapFit {
@@ -2463,6 +2516,11 @@ pub struct OverlapFit {
     /// A point inside its largest piece, and that piece's size (km²).
     pub at: Pt,
     pub largest_km2: f64,
+    /// Its land pieces that `solid_pieces` passes: their size together, the largest's size and a
+    /// point inside it.
+    pub solid_km2: f64,
+    pub largest_solid_km2: f64,
+    pub solid_at: Pt,
 }
 
 #[derive(Debug)]
@@ -2472,7 +2530,10 @@ pub struct GapFit {
     pub zone_km2: f64,
     /// Its land (read where it comes within 100 m of land).
     pub land_km2: f64,
-    /// The box round its land (E7: west, south, east, north), to say where a declaration is wanted.
+    /// Its land pieces that `solid_pieces` passes: their size together.
+    pub solid_km2: f64,
+    /// The box round those pieces, else round its land (E7: west, south, east, north), to say
+    /// where a declaration is wanted.
     pub land_box: Option<[i64; 4]>,
     /// Within 100 m of land.
     pub touches: bool,
@@ -2758,6 +2819,9 @@ struct Gap {
     /// Its land, where it comes within 100 m of land, and a point inside its largest piece of it.
     land_km2: f64,
     land_at: Option<(f64, Pt)>,
+    /// Its land pieces that `solid_pieces` passes: their size together, a point inside the largest,
+    /// and the box round them.
+    solid: Vec<(f64, Pt, [i64; 4])>,
     land_box: Option<[i64; 4]>,
     /// A point inside it.
     at: Pt,
@@ -2806,7 +2870,7 @@ fn cover_check(
         }
         return t;
     }
-    type Pairs = Vec<((String, String), f64, f64, Option<(f64, Pt)>)>;
+    type Pairs = Vec<((String, String), f64, f64, Option<(f64, Pt)>, Vec<(f64, Pt, [i64; 4])>)>;
     let index = by_cell(all);
     progress.begin(Step::Cover, cells.len());
     let done: Vec<(Pairs, Vec<Gap>)> = pace::par_map(cells, |c| {
@@ -2829,9 +2893,11 @@ fn cover_check(
                 if o.is_empty() {
                     continue;
                 }
-                let l = geom::area_km2(&o.intersect(&land));
+                let on_land = o.intersect(&land);
+                let l = geom::area_km2(&on_land);
                 let w = geom::area_km2(&o.minus(&land));
-                pairs.push(((pieces[i].0.clone(), pieces[j].0.clone()), l, w, largest(&o)));
+                let solid = solid_pieces(&on_land, c);
+                pairs.push(((pieces[i].0.clone(), pieces[j].0.clone()), l, w, largest(&o), solid));
             }
         }
         let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
@@ -2873,17 +2939,36 @@ fn cover_check(
                 Some(z) => (geom::area_km2(&z), largest(&z)),
                 None => (0.0, None),
             };
-            let (land_km2, land_at, land_box) = match touches.then(|| part(&land)).flatten() {
-                Some(on) => (geom::area_km2(&on), largest(&on), geom::bbox_of(on.polys.iter().flatten().flatten())),
-                None => (0.0, None, None),
+            let (land_km2, land_at, land_box, solid) = match touches.then(|| part(&land)).flatten() {
+                Some(on) => (
+                    geom::area_km2(&on),
+                    largest(&on),
+                    geom::bbox_of(on.polys.iter().flatten().flatten()),
+                    solid_pieces(&on, c),
+                ),
+                None => (0.0, None, None, Vec::new()),
             };
-            out.push(Gap { c, sides, km2, zone_km2, zone_at, land_km2, land_at, land_box, at, touches, len, area: g });
+            out.push(Gap {
+                c,
+                sides,
+                km2,
+                zone_km2,
+                zone_at,
+                land_km2,
+                land_at,
+                solid,
+                land_box,
+                at,
+                touches,
+                len,
+                area: g,
+            });
         }
         (pairs, out)
     });
     let mut gaps: Vec<Gap> = Vec::new();
     for (pairs, g) in done {
-        for (pair, land, water, at) in pairs {
+        for (pair, land, water, at, solid) in pairs {
             let e = fit.overlaps.entry(pair).or_default();
             e.land_km2 += land;
             e.water_km2 += water;
@@ -2891,12 +2976,22 @@ fn cover_check(
                 e.largest_km2 = k;
                 e.at = p;
             }
+            for (k, p, _) in solid {
+                e.solid_km2 += k;
+                if k > e.largest_solid_km2 {
+                    e.largest_solid_km2 = k;
+                    e.solid_at = p;
+                }
+            }
         }
         gaps.extend(g);
     }
     for ((a, b), o) in &fit.overlaps {
         let km2 = o.land_km2 + o.water_km2;
-        if km2 > HAIR_KM2 {
+        if km2 > HAIR_KM2 || o.solid_km2 > 0.0 {
+            // (At its largest piece of land that passes, else its largest piece.)
+            let (largest, at) =
+                if o.solid_km2 > 0.0 { (o.largest_solid_km2, o.solid_at) } else { (o.largest_km2, o.at) };
             problems.push(Problem {
                 warning: false,
                 check: "rg-cover",
@@ -2904,11 +2999,12 @@ fn cover_check(
                 found: vec!["overlap".into()],
                 files: [a, b].iter().filter_map(|x| folder.regions.get(*x).map(|r| r.0.clone())).collect(),
                 message: format!(
-                    "{a} and {b} both cover {km2:.2} km² ({:.2} km² of land, {:.2} km² of water), the largest piece {:.2} km² by {}: a place is in one region",
-                    o.land_km2,
-                    o.water_km2,
-                    o.largest_km2,
-                    place(o.at)
+                    "{a} and {b} both cover {} km² ({} km² of land, {} km² of water), the largest piece {} km² by {}: a place is in one region",
+                    km2_text(km2),
+                    km2_text(o.land_km2),
+                    km2_text(o.water_km2),
+                    km2_text(largest),
+                    place(at)
                 ),
             });
         }
@@ -2926,10 +3022,16 @@ fn cover_check(
         let km2: f64 = idx.iter().map(|&i| gaps[i].km2).sum();
         let land_km2: f64 = idx.iter().map(|&i| gaps[i].land_km2).sum();
         let touches = idx.iter().any(|&i| gaps[i].touches);
-        let land_box = idx
-            .iter()
-            .filter_map(|&i| gaps[i].land_box)
-            .reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]);
+        let solid: Vec<(f64, Pt, [i64; 4])> = idx.iter().flat_map(|&i| gaps[i].solid.iter().copied()).collect();
+        let solid_km2: f64 = solid.iter().map(|x| x.0).sum();
+        // (The box round the land that passes, else round all of it.)
+        let boxes: Vec<[i64; 4]> = if solid.is_empty() {
+            idx.iter().filter_map(|&i| gaps[i].land_box).collect()
+        } else {
+            solid.iter().map(|x| x.2).collect()
+        };
+        let land_box =
+            boxes.into_iter().reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]);
         let mut len: BTreeMap<&String, f64> = BTreeMap::new();
         for &i in idx {
             for (id, l) in &gaps[i].len {
@@ -2941,11 +3043,11 @@ fn cover_check(
         let biggest = |f: &dyn Fn(&Gap) -> bool| {
             idx.iter().copied().filter(|&i| f(&gaps[i])).max_by(|&a, &b| gaps[a].km2.total_cmp(&gaps[b].km2))
         };
-        let at = idx
+        let at = solid
             .iter()
-            .filter_map(|&i| gaps[i].land_at)
             .max_by(|a, b| a.0.total_cmp(&b.0))
             .map(|x| x.1)
+            .or_else(|| idx.iter().filter_map(|&i| gaps[i].land_at).max_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1))
             .or_else(|| biggest(&|g| g.touches).map(|i| gaps[i].at))
             .or_else(|| biggest(&|_| true).map(|i| gaps[i].at))
             .unwrap_or([0, 0]);
@@ -2958,13 +3060,14 @@ fn cover_check(
             km2,
             zone_km2: idx.iter().map(|&i| gaps[i].zone_km2).sum(),
             land_km2,
+            solid_km2,
             land_box,
             touches,
             at,
             rest: to_rest,
             edges: by_edge(len),
         };
-        (km2 > HAIR_KM2 || land_km2 > LAND_MIN_KM2, fit)
+        (km2 > HAIR_KM2 || solid_km2 > 0.0, fit)
     });
     let mut rest_t: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
     for (idx, (over, g)) in groups.iter().zip(judged) {
@@ -3017,10 +3120,10 @@ fn cover_check(
                 rest_t.entry(gaps[i].c).or_default().push(std::mem::take(&mut gaps[i].area));
             }
         } else if over {
-            let land = match g.land_box.filter(|_| g.land_km2 > 0.0) {
+            let land = match g.land_box {
                 Some(b) => format!(
-                    " ({:.4} km² of it land, within {:.5}° to {:.5}° east, {:.5}° to {:.5}° north)",
-                    g.land_km2,
+                    " ({} km² of it land, within {:.5}° to {:.5}° east, {:.5}° to {:.5}° north)",
+                    km2_text(if g.solid_km2 > 0.0 { g.solid_km2 } else { g.land_km2 }),
                     b[0] as f64 * 1e-7,
                     b[2] as f64 * 1e-7,
                     b[1] as f64 * 1e-7,
@@ -3035,8 +3138,8 @@ fn cover_check(
                 found: vec!["gap".into()],
                 files: files(),
                 message: format!(
-                    "{:.2} km²{land} by {} is in no region ({}): every place is in one region",
-                    g.km2,
+                    "{} km²{land} by {} is in no region ({}): every place is in one region",
+                    km2_text(g.km2),
                     place(g.at),
                     neighbours(&g.edges)
                 ),

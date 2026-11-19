@@ -592,7 +592,7 @@ order where a region comes after those its water names whole (`region:`, `group:
 coastline, with or without `cover`: the outlines' coastal edges are taken from the coastline. What
 lies in no region along the coastline, on either side of it — land where an outline's coast lay
 inland of the coastline's, sea where the water's parts stopped short of it (the coastline: the
-land's edge, the big lakes' shores included, never a cell's edge) — is joined across the cells'
+land's edge, the big lakes' shores included, and the edge of land a remainder gave, where it took the seaward part of a stretch of free land: its rest borders it, no longer the sea; never a cell's edge) — is joined across the cells'
 edges into stretches; a stretch whose every point (its vertices and a point inside each piece) is
 within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or, for a stretch of sea, its
 water and, when it has any water, its land (land dominates the sea: sea off a region's shore is
@@ -627,7 +627,7 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 
 | Field | Type | |
 |---|---|---|
-| `of` | a part: the place (`osm:<relation>`, or a union of it with the islets round its coast: a zone's `eez:` buffered 1 km, which fills the holes the zone's polygon leaves round them), naming no region, land, group, line or `rest` | required |
+| `of` | a part: the place (`osm:<relation>`, or a union of it with the islets round its coast: a zone's `eez:` buffered 1 km, which fills the holes the zone's polygon leaves round them), naming no region, land, group, line or `rest`. The buffer also grows the zone 1 km into its neighbours' zones and onto their land at a land border, where the first remainder (deepest folder, then path) takes what is free: subtract each land neighbour's relation, as `{ union = ["osm:1403916", { minus = [{ buffer = "eez:5677", by = "1 km" }, "osm:1311341", "osm:365331"] }] }` (metropolitan France: its relation, its zone's islets, less Spain and Italy) | required |
 | `[by]` | region id = a part: the official division's piece of each region of the folder that has one (a national boundary file's polygon, its lines run into the lake) | optional |
 | `step` | the median line's grid, as a `nearest`'s (100 m to 20 km) | optional, default `1 km` |
 
@@ -671,13 +671,17 @@ land in no region is. With
 region by the regions' definitions, or the check says where it isn't. Past `HAIR_KM2` (0.1 km²: what
 the outlines' own snapping leaves where two definitions meet exactly, measured on the whole input,
 was at most 0.0093 km² a pair, the largest piece 0.0015 km²; a real disagreement smaller than
-the hair passes too; land in no region is no hair: a `gap` is also any stretch with more land
-than `LAND_MIN_KM2`, 0.0004 km², a square of the 20 m the coastline's rings are simplified within,
-`data::SIMPLIFY_M`: the coastline's own precision), each is an
+the hair passes too; land is judged by its pieces, not the hair: any land piece of a gap or an
+overlap larger than `LAND_MIN_KM2`, 0.0004 km², a square of the 20 m the coastline's rings are
+simplified within, `data::SIMPLIFY_M`, the coastline's own precision, and at least half that wide
+(twice its area over its perimeter, the cells' edges left out), counts whatever the size of
+the stretch or overlap it lies in; narrower or smaller land counts toward the hair only: a strip
+of land a few metres wide along a border is two sources' lines disagreeing), each is an
 error (`rg-cover`), at a point inside it, naming the regions round it by the edge they share with
 it (`tiles::Fit`):
 - `overlap`: two regions both covering a place, land or water (summed over the 2° cells), at a
-  point inside its largest piece, naming the two, each keeping it;
+  point inside its largest piece (its largest piece of land that counts, where one does), naming
+  the two, each keeping it;
 - `gap`: a stretch in no region (its cells' pieces joined across the cells' edges, as the
   stretches are), land or water, its land said with the box round it (west to east, south to
   north), at a point inside its largest piece of land, else of its largest piece touching land,
@@ -1056,7 +1060,7 @@ All errors; ids `rg-<check>.<hash16>`. `rg-cover`'s ids are its regions' and its
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`, each past `HAIR_KM2` (0.1 km²): a place in two regions (`overlap`), a stretch in no region but the open sea (`gap`: also any with land past `LAND_MIN_KM2`, 0.0004 km²), the open sea's part inside a zone (`rest-in-zone`), a region's sea (its water but the big lakes) touching none of its land (`stray`); §6.1.3 "Land and water" |
+| `rg-cover` | with `cover = "earth"`, each past `HAIR_KM2` (0.1 km²): a place in two regions (`overlap`), a stretch in no region but the open sea (`gap`), land in either past `LAND_MIN_KM2` (0.0004 km², at least 10 m wide) whatever the size, the open sea's part inside a zone (`rest-in-zone`), a region's sea (its water but the big lakes) touching none of its land (`stray`); §6.1.3 "Land and water" |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

@@ -188,7 +188,8 @@ impl Got {
 /// land, or inside a 200-nmi zone) goes to the regions with water it borders, never the rest.
 /// 13: #1427: the cover check moves nothing: no fills, no slivers, a hand-out's shared stretch
 /// stays the handing region's. 14: #1451: land in no region is a `gap` past `LAND_MIN_KM2`, not
-/// the hair, and says the box round its land.)
+/// the hair, judged by land pieces (past LAND_MIN_KM2, SIMPLIFY_M / 2 wide), in overlaps as in
+/// gaps; a remainder's edge in free land is coast to the coast step; the gap says the box round its land.)
 pub const RESOLUTION: u32 = 14;
 
 /// The digest of the code `RESOLUTION` covers, as it was when `RESOLUTION` was last set
@@ -196,7 +197,7 @@ pub const RESOLUTION: u32 = 14;
 /// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "4ab3208eb1326724af4b000c22f866e1";
+pub const RESOLUTION_CODE: &str = "17f96a5a217312c9f42142c26c524820";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.

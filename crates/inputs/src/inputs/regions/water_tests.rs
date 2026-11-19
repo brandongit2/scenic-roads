@@ -582,6 +582,71 @@ fn a_small_island_in_no_region_is_an_error_a_speck_is_not() {
     assert!(out.problems.iter().all(|p| p.found != vec!["gap"]), "{:?}", out.problems);
 }
 
+/// Land is judged by its pieces (task #1451 review): a strip of land in no region over
+/// `LAND_MIN_KM2` in size but under `SIMPLIFY_M / 2` wide (5.5 m) is two sources' lines
+/// disagreeing, no finding; the same length 22 m wide is one.
+#[test]
+fn a_strip_of_land_in_no_region_is_judged_by_its_width() {
+    let sea = |n: f64| {
+        format!("id = \"s\"\nname = \"S\"\nwater = [{{ buffer = \"box:30.5,20.5,30.51,{n}\", by = \"10 km\" }}]\n")
+    };
+    for (north, found) in [(20.50005, false), (20.5002, true)] {
+        let s = sea(north);
+        let w = world_more(1.0, vec![bx(30.5, 20.5, 30.51, north)]);
+        let mut files = all();
+        files.push(("s.toml", &s));
+        let out = run(&w, &files);
+        let gaps = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).count();
+        assert_eq!(gaps == 1, found, "{north}: {:?}", out.problems);
+        assert!(gaps <= 1, "{:?}", out.problems);
+    }
+}
+
+/// The same bar for land in two regions: an overlap of two boxes on land 22 m wide (0.0025 km²,
+/// under the hair) is an overlap, one 5.5 m wide is not; both said by the largest land piece.
+#[test]
+fn land_in_two_regions_is_judged_by_its_pieces_too() {
+    let a = "id = \"a2\"\nname = \"A2\"\noutline = [\"box:30.4,20.4,30.5005,20.6\"]\nwater = []\n";
+    for (east, found) in [(30.50055, false), (30.5003, true)] {
+        let b = format!("id = \"b2\"\nname = \"B2\"\noutline = [\"box:{east},20.4,30.6,20.6\"]\nwater = []\n");
+        let w = world_more(1.0, vec![bx(30.5, 20.5, 30.501, 20.501)]);
+        let mut files = all();
+        files.extend([("p/a2.toml", a), ("p/b2.toml", b.as_str())]);
+        let out = run(&w, &files);
+        let ov: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["overlap"]).collect();
+        assert_eq!(ov.len() == 1, found, "{east}: {:?}", out.problems);
+        if found {
+            let o = &out.fit.overlaps[&("a2".to_string(), "b2".to_string())];
+            assert!(o.largest_solid_km2 > tiles::LAND_MIN_KM2 && o.land_km2 + o.water_km2 < tiles::HAIR_KM2, "{o:?}");
+            let at = at_of(&ov[0].message);
+            assert!((30.5003..30.5005).contains(&at[0]) && (20.5..20.501).contains(&at[1]), "{}", ov[0].message);
+        }
+    }
+}
+
+/// A remainder takes a stretch of free land whole or not at all (task #1451 review): a strip of
+/// land 890 m deep between the outlines of three regions and the coast, a remainder over the
+/// seaward half of its middle; the inland half, which borders the regions and the remainder's
+/// piece and no longer the coastline, still goes to the region beside it, as the whole strip would
+/// without the remainder.
+#[test]
+fn a_remainder_over_the_seaward_half_of_a_coast_strip_leaves_no_land_behind() {
+    let w = world_more(1.0, vec![bx(29.9, 20.0, 31.1, 20.508)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,30.2,20.6\"]\nwater = []\n";
+    let m = "id = \"m\"\nname = \"M\"\noutline = [\"box:30.2,19.9,30.8,20.5\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:30.8,19.9,31.1,20.6\"]\nwater = []\n";
+    let rem = "of = \"box:30.2,20.504,30.8,20.6\"\n";
+    let land_left = |files: &[(&str, &str)]| -> f64 {
+        let out = run(&w, files);
+        out.fit.gaps.iter().map(|g| g.land_km2).sum()
+    };
+    let mut files = all();
+    files.extend([("p/l.toml", l), ("p/m.toml", m), ("p/r.toml", r)]);
+    assert!(land_left(&files) < 0.01, "the whole strip goes to the regions beside it, as before");
+    files.push(("p/_remainder.toml", rem));
+    assert!(land_left(&files) < 0.01, "the inland half too, with the remainder");
+}
+
 /// Task #1427: a county missing from a divided place is a gap at a point inside it, naming the
 /// counties round it, and none of them takes it; two counties both having a strip is an overlap
 /// naming them, each keeping it.
