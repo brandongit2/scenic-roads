@@ -634,19 +634,20 @@ no district's relation draws), its folder declares who has it, once, in `_remain
 An unknown field is `rg-toml`; a bad part, `by` id or step `rg-part`. After every region's land is made
 and before any water, the folders' remainders are taken in turn, the deepest folder first (an outer
 place's then holds nothing an inner one gave), cell by cell: the land and big lakes of `of` that no
-region takes (every region's land and lakes as made, every region without water as stored) go to the
-folder's regions with land (every region under the folder but its waters regions): to each region in
-`by` the pieces inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over
-the remainder, hold the folder naming both, `rg-ref`; under it the piece is the first's in id order);
-the rest to the nearest region (its land and lakes), split at the median line as a `nearest` is on a
-grid of `step`. Each piece is its region's land or lake as the coastline's land has it. A speck under 1
-m² (`SPECK_M2`: what the land less the regions' land leaves where one line is cut twice) is no one's,
-and where a remainder gave a region pieces its land and lakes lose their rings and holes under it. So
-the declaration names no member and no neighbour: one region's outline changing moves the remainder's
-lines with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline
-reads a region's land before the remainders. The folder must have a region with land, every region of
-it a `water` key, none be held and every `by` name one of them; and no held region elsewhere may reach
-the remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
+region takes (every region's outline, every region without water as stored) go to the folder's regions
+with land (every region under the folder but its waters regions): to each region in `by` the pieces
+inside its part (a piece once: two parts overlapping there past `HAIR_KM2`, summed over the remainder,
+hold the folder naming both, `rg-ref`; under it the piece is the first's in id order); the rest to the
+nearest region (its land and lakes), split at the median line as a `nearest` is on a grid of `step`.
+Each piece is its region's land or lake as the coastline's land has it. What's free is worked out on
+the regions' outlines before their cut to the coastline's land (each region's outline kept for it in
+the cells an `of` reaches), and a region's pieces are added to its outline before that cut, as one
+outline: the remainder meets each region on its outline's own line, never on a second cut of it. So the
+declaration names no member and no neighbour: one region's outline changing moves the remainder's lines
+with it, and a new region of the folder takes its share. A `land:` or `region:` in an outline reads a
+region's land before the remainders. The folder must have a region with land, every region of it a
+`water` key, none be held and every `by` name one of them; and no held region elsewhere may reach the
+remainder's cells (its outline's relations' boxes, its boxes, the regions and groups it names; one
 naming anything else may reach anywhere: what it would take is free and can't be told). Else each is
 held, the file named (`rg-ref`). A paused check keeps each remainder as a piece (task #897,
 docs/pool.md), by the folder's whole key. Without `by` the whole remainder is split at the median line:

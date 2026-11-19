@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// The pieces' format, in their log's identity (`Regions::keep_in`): a log of another format is
-/// another identity's, never read. 2: a problem's level (`warning`) kept with it.
-pub const FORMAT: u32 = 2;
+/// another identity's, never read. 2: a problem's level (`warning`) kept with it. 3: a region's
+/// land kept with its outline where a remainder reaches (#1448).
+pub const FORMAT: u32 = 3;
 
 /// The stages a piece is of (its block's first number).
 pub const RESOLVED: u8 = 1;
