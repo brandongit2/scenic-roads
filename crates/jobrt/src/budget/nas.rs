@@ -101,14 +101,16 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// under 1 % of the NAS, and 20 to 50 times with the disks 50 to 90 % busy (task #1506's replay of
 /// the lead's readings, `nas_19nov.csv`). So the answers are judged as TCP Vegas judges its round
 /// trips, against those at **the load a step lighter**: whenever the weight in use rises, a
-/// `Level` is taken of the readings since it last rose (at that weight or less, the same Mac's):
-/// their counted ratios' upper quartile, at most `Tuning::slow` (a congested load is no
-/// baseline). Levels heavier than the load are let go as it falls, and those of another Mac once
-/// a level is taken of a new one. While the load is a step or more over a level it is judged
+/// `Level` is taken of the readings since it last rose (at that weight or less, whichever Mac
+/// counted: each ratio is over the least floor among those answering, so Macs' compare, and the
+/// counted one changes with the noise): their counted ratios' upper quartile, at most
+/// `Tuning::slow` (a congested load is no baseline). Levels heavier than the load are let go as
+/// it falls. While the load is a step or more over a level it is judged
 /// (`Judging`) against the heaviest such, from a `Tuning::span_s` after the rise that began it
 /// (its jobs' answers in the readings), through further rises and falls alike: each ratio is kept
-/// with the weight it was read at, and those read a step or more over the level are judged. They
-/// are **rising** while their lower quartile is past the level's upper quartile (the quicker
+/// with the weight it was read at, and those of the last `Tuning::grow_s` read a step or more over
+/// the level are judged (a NAS recovered clears it within a cadence). They are **rising** while
+/// their lower quartile is past the level's upper quartile (the quicker
 /// quarter now slower than all but the slowest quarter then: the day's noise, a minute of slow
 /// answers now and then whatever the load, passes under it). Once a `Tuning::grow_s` of them is
 /// read the judging is decided: congested if they're rising and their lower quartile is past
@@ -125,8 +127,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   cut until the weight in use has fallen to the window and its answers had a `span_s` since to
 ///   show it (store::aimd's once a window: a cut compounding on readings of the jobs out before it
 ///   takes the pool to nothing);
-/// - **spare** (a Mac's answers read, not rising, and the last `span_s`'s lower quartile under
-///   `Tuning::slow`, the knee, whatever brought them there; and the disks with room for the next
+/// - **spare** (a Mac's answers read, not rising, and under `Tuning::slow`, the knee, whatever
+///   brought them there: this reading's, and the last `span_s`'s lower quartile; and the disks with room for the next
 ///   job: their busy share and the room it needs, a share of the NAS as probed, within the target;
 ///   the disks not read, the answers alone say): it grows, only while it's what limits (the
 ///   weight in use and the least a job waiting for the budget weighs past it; none waiting, the
@@ -167,10 +169,12 @@ pub struct Pace {
     /// last started have run a span).
     prev_in_use: u32,
     rose_at: Option<u64>,
-    /// The readings with a Mac's answers since the weight in use last rose, and those of the last
-    /// `Tuning::span_s` (the knee's), within `Tuning::floor_s`: when, the weight in use, the
-    /// counted ratio and Mac (a `Level` is taken of them as it rises again).
-    seen: std::collections::VecDeque<(u64, u32, f64, String)>,
+    /// The readings with a Mac's answers since the weight in use last rose, within
+    /// `Tuning::floor_s`: when, the weight in use and the counted ratio (a `Level` is taken of
+    /// them as it rises again).
+    seen: std::collections::VecDeque<(u64, u32, f64)>,
+    /// The counted ratios of the last `Tuning::span_s` (the knee's), when each was read.
+    recent: std::collections::VecDeque<(u64, f64)>,
     /// The load judged against the level a step lighter, from the rise that began it until it's
     /// decided or falls under a step over every level (None: not judged).
     judging: Option<Judging>,
@@ -229,21 +233,21 @@ impl Default for State {
 /// The answers at a load the pool's jobs held (`Pace::read`): the weight in use (thousandths), the
 /// upper quartile of the counted ratios read from when the load last rose to when it rose past
 /// this one (at this weight or less; at most `Tuning::slow`: a congested load is no baseline),
-/// and the Mac whose answers counted (answers are judged against the same Mac's alone).
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// whichever Mac counted (each ratio is over the least floor among those answering).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Level {
     pub in_use: u32,
     pub q3: f64,
-    pub mac: String,
 }
 
 /// A load the pool's jobs rose to, judged against the answers a step lighter (`Pace::read`): when
-/// it rose (unix s; its ratios read from a `Tuning::span_s` on), and each ratio since with the
-/// weight in use it was read at (those a step over the level judged).
+/// it rose (unix s; its ratios read from a `Tuning::span_s` on), and the last `Tuning::grow_s`'s
+/// ratios, each with when and the weight in use it was read at (those a step over the level
+/// judged).
 #[derive(Clone, Debug, PartialEq)]
 struct Judging {
     since: u64,
-    ratios: Vec<(u32, f64)>,
+    ratios: Vec<(u64, u32, f64)>,
 }
 
 /// The `q`-th quartile of `v` (the ⌈qn/4⌉-th least: 1 the lower, 3 the upper); None when it's
@@ -297,7 +301,8 @@ pub enum Hold {
     /// The answers rising with the load: the lower quartile of those judged past the upper
     /// quartile of those a step lighter.
     Rising,
-    /// The last span's answers past the knee (their lower quartile), whatever brought them.
+    /// This reading's answers past the knee, or the last span's (their lower quartile), whatever
+    /// brought them.
     Slow,
     /// The disks' busy share and the room the next job needs past the target.
     Busy,
@@ -759,21 +764,22 @@ impl Pace {
         let ratio = counted.as_ref().map(|a| a.ratio(least));
         let fresh = !s.blind && each.iter().all(|a| a.fresh);
         // (The answers at the lighter loads: a level taken of the readings since the load last
-        // rose, at that weight or less and of the Mac counted now, as it rises past them; let go
-        // as it falls under them. A rise a step or more over a level is judged against the
-        // heaviest such, re-picked as the load moves; its ratios tagged with the weight they were
-        // read at, so a rise or fall meanwhile neither restarts nor ends it while the load stays a
-        // step over a level. Not on a lead's first reading: what ran before it is unknown.)
+        // rose, at that weight or less, as it rises past them; let go as it falls under them.
+        // Whichever Mac counted: each ratio is over the least floor among those answering, so
+        // Macs' compare, and the counted one changes with the noise. A rise a step or more over a
+        // level is judged against the heaviest such, re-picked as the load moves; its ratios
+        // tagged with the weight they were read at, so a rise or fall meanwhile neither restarts
+        // nor ends it while the load stays a step over a level. Not on a lead's first reading:
+        // what ran before it is unknown.)
         let prev = self.prev_in_use;
-        let mac = counted.as_ref().map(|a| a.mac.clone());
         let first = self.last.is_none();
         if s.in_use > prev && !first {
             self.rose_at = Some(t);
-            let taken = self.seen.drain(..).filter(|x| x.1 <= prev && Some(&x.3) == mac.as_ref()).map(|x| x.2);
-            if let (Some(q3), Some(m)) = (quartile(taken, 3), &mac) {
+            let taken = self.seen.drain(..).filter(|x| x.1 <= prev).map(|x| x.2);
+            if let Some(q3) = quartile(taken, 3) {
                 // (Never a congested baseline: a level past the knee is taken at the knee.)
-                self.st.levels.retain(|l| l.in_use < prev && l.mac == *m);
-                self.st.levels.push(Level { in_use: prev, q3: q3.min(k.slow), mac: m.clone() });
+                self.st.levels.retain(|l| l.in_use < prev);
+                self.st.levels.push(Level { in_use: prev, q3: q3.min(k.slow) });
             }
             if self.judging.is_none() {
                 self.judging = Some(Judging { since: t, ratios: Vec::new() });
@@ -784,41 +790,42 @@ impl Pace {
             self.st.levels.retain(|l| l.in_use < s.in_use);
         }
         self.prev_in_use = s.in_use;
-        if let (Some(r), Some(m)) = (ratio, &mac) {
-            self.seen.push_back((t, s.in_use, r, m.clone()));
+        if let Some(r) = ratio {
+            self.seen.push_back((t, s.in_use, r));
+            self.recent.push_back((t, r));
         }
         while self.seen.front().is_some_and(|x| x.0 + k.floor_s <= t) {
             self.seen.pop_front();
         }
-        let below = self
-            .st
-            .levels
-            .iter()
-            .rev()
-            .find(|l| l.in_use.saturating_add(k.step) <= s.in_use && Some(&l.mac) == mac.as_ref())
-            .cloned();
+        while self.recent.front().is_some_and(|x| x.0 + k.span_s <= t) {
+            self.recent.pop_front();
+        }
+        let below = self.st.levels.iter().rev().find(|l| l.in_use.saturating_add(k.step) <= s.in_use).copied();
         if below.is_none() {
             self.judging = None;
         }
         let started = self.rose_at.is_some_and(|r| t < r + k.span_s);
         if let (Some(j), Some(r)) = (self.judging.as_mut(), ratio) {
             if t >= j.since + k.span_s {
-                j.ratios.push((s.in_use, r));
+                j.ratios.push((t, s.in_use, r));
             }
+            j.ratios.retain(|x| x.0 + k.grow_s > t);
         }
-        // (Rising: the quicker quarter of the answers judged, those at a step or more over the
-        // level, slower than all but the slowest quarter at it. A growth cadence of readings
-        // judged: past the knee too, congested (and judged on); else the load is taken.)
-        let judged: Vec<f64> = match (&self.judging, &below) {
+        // (Rising: the quicker quarter of the last growth cadence's answers judged, those at a
+        // step or more over the level, slower than all but the slowest quarter at it. A growth
+        // cadence of readings judged: past the knee too, congested (and judged on); else the load
+        // is taken.)
+        let judged: Vec<(u64, f64)> = match (&self.judging, &below) {
             (Some(j), Some(l)) => {
-                j.ratios.iter().filter(|x| x.0 >= l.in_use.saturating_add(k.step)).map(|x| x.1).collect()
+                j.ratios.iter().filter(|x| x.1 >= l.in_use.saturating_add(k.step)).map(|x| (x.0, x.2)).collect()
             }
             _ => Vec::new(),
         };
-        let quick = quartile(judged.iter().copied(), 1);
+        let quick = quartile(judged.iter().map(|x| x.1), 1);
         let rising = matches!((quick, &below), (Some(q), Some(l)) if q > l.q3);
-        let spans = |n: usize, secs: u64| n as u64 * k.read_s.max(1) >= secs;
-        let done = spans(judged.len(), k.grow_s);
+        // (Decided once the readings judged span a growth cadence, each counting its `read_s`:
+        // a reading missed meanwhile doesn't put it off.)
+        let done = judged.first().is_some_and(|x| t + k.read_s.max(1) >= x.0 + k.grow_s);
         let slow = rising && done && quick.is_some_and(|q| q > k.slow);
         if done && !slow {
             self.judging = None;
@@ -826,9 +833,10 @@ impl Pace {
         let over = self.load.is_some_and(|l| l > s.pct as f64);
         let missed = counted.as_ref().is_some_and(|a| a.missed);
         let past = over || missed || slow;
-        // (The knee, whatever brought it: the last span's answers past it, their lower quartile.)
-        let knee =
-            quartile(self.seen.iter().filter(|x| x.0 + k.span_s > t).map(|x| x.2), 1).is_some_and(|q| q > k.slow);
+        // (The knee, whatever brought it: this reading's answers past it, or the last span's,
+        // their lower quartile.)
+        let knee = ratio.is_some_and(|r| r > k.slow)
+            || quartile(self.recent.iter().map(|x| x.1), 1).is_some_and(|q| q > k.slow);
         // (Room for a job of weight `w`: the disks' busy share and its weight, a share of the NAS as
         // probed, within the target; the disks not read, the answers alone say. Spare: a step's
         // room, the answers read, not rising, not past the knee.)
@@ -1481,7 +1489,7 @@ mod tests {
 
     /// A level of m1's answers.
     fn lvl(in_use: u32, q3: f64) -> Level {
-        Level { in_use, q3, mac: "m1".into() }
+        Level { in_use, q3 }
     }
 
     /// A reading of `answers`, the disks at `busy`, by the default tuning.
@@ -1672,7 +1680,8 @@ mod tests {
     #[test]
     fn an_idle_nas_grows_the_window_and_one_slowing_with_the_load_cuts_it() {
         let (mut p, mut t, mut jobs, w) = (Pace::default(), 0, 0u32, 100);
-        for i in 0..360 {
+        // (Ending on a reading under the knee: one past it holds whatever the disks.)
+        for i in 0..361 {
             t += READ_EVERY_S;
             let ms = if i % 3 == 2 { 80.0 } else { 2.8 };
             let busy = 3.0 + f64::from(jobs * w) / 10.0;
@@ -2557,13 +2566,13 @@ mod tests {
     }
 
     /// What a replay came to: the window at each reading, when it was cut and why, the readings
-    /// it grew on, those of them while the last span's answers were past the knee, the jobs it
-    /// started, and the readings at the model's cliff.
+    /// it grew on, those of them whose own answers were past the knee, the jobs it started, and
+    /// the readings at the model's cliff.
     #[derive(Debug, Default)]
     struct Replayed {
         windows: Vec<(u64, u32)>,
         cuts: Vec<(u64, &'static str)>,
-        grew_at_knee: Vec<u64>,
+        grew_past_knee: Vec<u64>,
         grew: Vec<u64>,
         started: usize,
         cliff: usize,
@@ -2588,15 +2597,15 @@ mod tests {
     /// slow the recorded answers by the simulated NAS's curve at the disks' share with them over
     /// its slowing at the share without (`simulated`), so the noise is the day's and the slowing
     /// past it the jobs'; one Mac, its floor 2 ms, missing its deadlines at the cliff or where the
-    /// recorded one did.
-    fn replay(before: bool, w: u32, admit: bool) -> Replayed {
+    /// recorded one did. `two`: two Macs answering, the one counted (the quicker, at the recorded
+    /// ratio; the other 5 % slower) changing at random, half the readings.
+    fn replay(before: bool, w: u32, admit: bool, two: bool) -> Replayed {
         let k = Tuning::default();
         let rows = readings_19nov();
         let (per, times) = (disk_per_weight(&rows), jobs_19nov());
         let (mut p, mut b) = (Pace::default(), Before::default());
         let mut running: Vec<u64> = Vec::new();
         let mut out = Replayed::default();
-        let mut span: std::collections::VecDeque<(u64, f64)> = Default::default();
         for &(t, x, disk, used, _) in &rows {
             running.retain(|&end| end > t);
             let busy = disk + per * f64::from(running.len() as u32 * w);
@@ -2604,13 +2613,15 @@ mod tests {
             let ratio = (x * simulated(rho) / simulated(outside)).min(RATIO_MOST);
             let missed = x >= RATIO_MOST || rho >= 1.0;
             out.cliff += usize::from(rho >= 1.0);
-            let answers = [Answer { missed, ..ans("m6", 2.0 * ratio, 2.0) }];
+            let flip = two && (t / 10).wrapping_mul(2_654_435_761) % 1000 < 500;
+            let (quick, slow) = if flip { ("m1", "m6") } else { ("m6", "m1") };
+            let answers = [
+                Answer { missed, ..ans(quick, 2.0 * ratio, 2.0) },
+                Answer { missed, ..ans(slow, 2.0 * ratio * 1.05, 2.0) },
+            ];
+            let answers = &answers[..if two { 2 } else { 1 }];
             let in_use = used + running.len() as u32 * w;
-            let s = Sample { t, answers: &answers, blind: false, busy: Some(&[busy]), pct: 85, in_use, wants: Some(w) };
-            span.push_back((t, if missed { RATIO_MOST } else { ratio }));
-            while span.front().is_some_and(|x| x.0 + k.span_s <= t) {
-                span.pop_front();
-            }
+            let s = Sample { t, answers, blind: false, busy: Some(&[busy]), pct: 85, in_use, wants: Some(w) };
             let (v, window, alone) = if before {
                 let v = b.read(&s, &k);
                 (v, b.window.round() as u32, b.lone(t, &k))
@@ -2628,8 +2639,8 @@ mod tests {
                 }
                 Verdict::Grew => {
                     out.grew.push(t);
-                    if quartile(span.iter().map(|x| x.1), 1).is_some_and(|q| q > k.slow) {
-                        out.grew_at_knee.push(t)
+                    if missed || ratio > k.slow {
+                        out.grew_past_knee.push(t)
                     }
                 }
                 _ => {}
@@ -2650,11 +2661,15 @@ mod tests {
     /// risen and the answers 18 to 21 times their best, the disks 49 to 80 % busy, it cut. What
     /// the rule must do, each checked: on the idle NAS (before 19:05) grow past one job (its median
     /// window more than a job's weight, and over #1417's); let more of the work waiting go;
-    /// never grow while the last span's answers are past the knee; cut no more often than #1417;
+    /// never grow on a reading whose answers are past the knee; cut no more often than #1417;
     /// and, the readings as they were, cut on the answers by 19:15 (cut at 19:10:30 on the
-    /// deadlines missed, then on the answers rising with the load once its hold-off passed); and
-    /// at 20:00 to 20:10 no cut. Printed: the window every 5 minutes, the cuts and why, the jobs
-    /// started, the readings at the cliff, when it grew at 20:00 to 20:10.
+    /// deadlines missed, then on the answers rising with the load once its hold-off passed),
+    /// with one Mac answering or two, the one counted changing at random; and at 20:00 to 20:10
+    /// no cut. Printed: the window every 5 minutes, the cuts and why, the jobs started, the
+    /// readings at the cliff, when it grew at 20:00 to 20:10. The jobs here are near free (a
+    /// thousandth of weight adds 0.03 % to the disks), so this shows the rule tolerates the day's
+    /// noise, not that it keeps the NAS off its cliff: that is `Burst`'s
+    /// (`a_burst_of_nas_heavy_jobs_settles_below_the_knee`).
     #[test]
     fn the_readings_of_19_nov_grow_on_the_idle_nas_and_cut_at_its_load() {
         let rows = readings_19nov();
@@ -2676,45 +2691,54 @@ mod tests {
                 r.started,
                 r.cliff,
                 median(r),
-                r.grew_at_knee.len()
+                r.grew_past_knee.len()
             );
             eprintln!("  window: {}", line.join(", "));
             eprintln!("  cuts ({}): {}", cuts.len(), cuts.join(", "));
         };
         for w in [100, 250] {
-            let new = replay(false, w, true);
-            let old = replay(true, w, true);
+            let new = replay(false, w, true, false);
+            let old = replay(true, w, true, false);
             say(&format!("jobs of {w}"), &new);
             say(&format!("jobs of {w}, #1417's rule"), &old);
             assert!(median(&new) > w && median(&new) > median(&old), "jobs of {w}");
             assert!(new.started > old.started, "jobs of {w}: {} against {}", new.started, old.started);
-            assert!(new.grew_at_knee.is_empty(), "jobs of {w}: grew past the knee at {:?}", new.grew_at_knee);
+            assert!(new.grew_past_knee.is_empty(), "jobs of {w}: grew past the knee at {:?}", new.grew_past_knee);
             assert!(new.cuts.len() <= old.cuts.len(), "jobs of {w}");
         }
         // (The readings as they were, a step's job waiting throughout.)
-        let r = replay(false, STEP, false);
+        let r = replay(false, STEP, false, false);
         say("as recorded", &r);
-        assert!(r.grew_at_knee.is_empty(), "grew past the knee at {:?}", r.grew_at_knee);
-        assert!(
-            r.cuts.iter().any(|c| (nov19(19, 10)..nov19(19, 15)).contains(&c.0) && c.1 == "answers"),
-            "{:?}",
-            r.cuts
-        );
+        let two = replay(false, STEP, false, true);
+        say("as recorded, two Macs", &two);
+        for r in [&r, &two] {
+            assert!(r.grew_past_knee.is_empty(), "grew past the knee at {:?}", r.grew_past_knee);
+            assert!(
+                r.cuts.iter().any(|c| (nov19(19, 10)..nov19(19, 15)).contains(&c.0) && c.1 == "answers"),
+                "{:?}",
+                r.cuts
+            );
+        }
+        assert_eq!(r.cuts, two.cuts, "whichever Mac counted, the same ratios");
         // (20:00 to 20:10: the load rose 5 to 883 thousandths, the answers 20 times their best
-        // in bursts between runs at it. Their lower quartile judged stayed at the best, so not the
-        // load's doing: no cut. It grew only on readings whose span was under the knee (a gate
-        // holding on any answer past the knee over a span and a cadence would grow there once,
-        // but held the idle NAS's window at 18:50 to 106, jobs of 100, against 520), and never to
-        // where it let work go while the load held: under the weight in use, 20:02 to 20:09.)
+        // in bursts between runs at it, judged over each growth cadence: cut only where a whole
+        // cadence's lower quartile was past the knee (20:08, 20 to 23 times for 50 s, the pool
+        // holding 258 to 291), never on a burst between runs at the best. It grew only on
+        // readings under the knee whose span was too, and never to where it let work go while
+        // the load held: under the weight in use, 20:02 to 20:09.)
         let ten = nov19(20, 0)..nov19(20, 10);
-        assert!(!r.cuts.iter().any(|c| ten.contains(&c.0)), "{:?}", r.cuts);
+        let k = Tuning::default();
+        for &(c, why) in r.cuts.iter().filter(|c| ten.contains(&c.0)) {
+            let cadence = rows.iter().filter(|x| x.0 <= c && x.0 + k.grow_s > c).map(|x| x.1);
+            assert!(why == "answers" && quartile(cadence, 1).is_some_and(|q| q > k.slow), "{} {why}", hms(c));
+        }
         let mut grew: Vec<String> = r.grew.iter().filter(|t| ten.contains(t)).map(|t| hms(*t)).collect();
         eprintln!("as recorded, grew 20:00-20:10 at {grew:?}");
         for (&(t, .., used, _), &(_, w)) in rows.iter().zip(&r.windows) {
             assert!(!(nov19(20, 2)..nov19(20, 9)).contains(&t) || w < used, "{} window {w}, {used} in use", hms(t));
         }
         for w in [100, 250] {
-            grew = replay(false, w, true).grew.iter().filter(|t| ten.contains(t)).map(|t| hms(*t)).collect();
+            grew = replay(false, w, true, false).grew.iter().filter(|t| ten.contains(t)).map(|t| hms(*t)).collect();
             eprintln!("jobs of {w}, grew 20:00-20:10 at {grew:?}");
         }
         let mut old: Vec<u32> = rows.iter().filter(|r| (idle.0..idle.1).contains(&r.0)).map(|r| r.4).collect();
