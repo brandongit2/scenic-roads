@@ -454,8 +454,10 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 - **A row of tree cover blocks** (`trees::trees::task`, docs/steps.md §2, Trees): `coverage.json`
   (`{"shapes": [[ring, …], …]}`, rings `[[lon, lat], …]`, only those whose box meets the row's box
   grown by 0.01°). `trees --blocks` writes `8-<x>-<y>/` per block: `trees-cover.tiles`,
-  `trees-height.tiles`, `trees-leaf.tiles` (RDTILES, meta `trees::META`: zoom 8–12 tiles) and
-  `trees-tops.bin` (`pyramid::Tops::to_bytes`).
+  `trees-height.tiles`, `trees-leaf.tiles` (RDTILES, meta `trees::META`: zoom 8–12 tiles),
+  `trees-tops.bin` (`pyramid::Tops::to_bytes`) and `trees-live.bin` (the block's live cells,
+  `trees::BlockOut::live`: 128 × 128 bits, row by row, as little-endian u64s; a z6 run's own,
+  every block's, is u32 x, u32 y and those bytes per block).
 - **A terrain z6 tile's subtrees** (`terrain::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
   `{"fmt": 2, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
   "levels": [[z, [[x, y], …]], …] (z12 → z9), "water", "native": [[z, x, y], …] (its tiles at their
@@ -1479,7 +1481,8 @@ the id with the clicked point. A reader takes version 8 only.
   "countries": [[x, y]…], "country_cells": [[x, y]…]}, "also": [[question, answer]…], "answers",
   "version", "line"}`, E7, cells z14 tiles, the last three only when asked; docs/steps.md §12) and
   `work/asked/<step>/<z-x-y>.json.zst` (the same, of a z6 tile of pois, unit, trees or bldtiles,
-  `version` its key's geometric line); `work/rail/used.json`
+  `version` its key's geometric line; a trees tile's one `also` question `mask <x>,<y>:<hex>;…`, each
+  block's live cells as its `trees-live.bin` holds them, none where none is live); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,

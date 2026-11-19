@@ -1054,20 +1054,19 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 if u.z == 3 {
                     ::trees::treepacks::build_with(&mut out, &cov, u, &chm, &scratch, workers, &writing)?;
                 } else {
-                    // (What it reads of the coverage, its mask, recorded with its packs: its key
-                    // moves only once the mask does, buildstore::asked.)
-                    use pipeline::agent::idents::{inside_geo, mask_answer, MASK_QUESTION};
+                    // (What it reads of the coverage that could change what it makes, its mask in
+                    // its blocks' live cells, recorded with its packs: its key moves only once
+                    // that does, buildstore::asked.)
+                    use ::trees::treepacks::{mask_answer, mask_question};
                     let reask = |q: &str| mask_answer(&cov, u, q);
-                    let asked = buildstore::asked::Run::start_target(
+                    let mut asked = Some(buildstore::asked::Run::start_target(
                         &out,
                         "trees",
                         &u.slash(),
                         &cov,
-                        inside_geo(&cov, u),
+                        pipeline::agent::idents::inside_geo(&cov, u),
                         &reask,
-                    )?;
-                    let mask = ::trees::treepacks::mask_digest(&cov, u);
-                    asked.put(&mut out, vec![(MASK_QUESTION.to_string(), mask)])?;
+                    )?);
                     ::trees::treepacks::build_piece(
                         &mut out,
                         &cov,
@@ -1077,6 +1076,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         workers,
                         same.contains(&u.slash()),
                         &writing,
+                        &mut |out, live| {
+                            let q = mask_question(live);
+                            let a = mask_answer(&cov, u, &q).context("a mask question")?;
+                            asked.take().context("a run's record put once")?.put(out, vec![(q, a)])
+                        },
                     )
                     // (The trees program paused at a row it kept, exiting PAUSED_EXIT: the job
                     // ends paused, the z6 tile resumed from its rows.)

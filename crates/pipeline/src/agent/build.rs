@@ -4861,7 +4861,6 @@ mod tests {
         }
         // Each step's run: its questions asked of Reykjavik under the line it has no record for.
         let none = |_: &str| None;
-        let mask = |c: &Coverage, q: &str| idents::mask_answer(c, u, q);
         let geos: [(&str, fn(&Coverage, TileId) -> String); 3] =
             [("pois", idents::clip_geo), ("trees", idents::inside_geo), ("bldtiles", idents::shapes_geo)];
         let mut lines = BTreeMap::new();
@@ -4875,7 +4874,9 @@ mod tests {
                     assert!(a.contains(middle) && !a.contains(east));
                 }
                 "trees" => {
-                    also.push((idents::MASK_QUESTION.to_string(), mask(&reykjavik, idents::MASK_QUESTION).unwrap()))
+                    // (No block's live cells: each block's pixels, all of them.)
+                    let q = trees::treepacks::mask_question(&Default::default());
+                    also.push((q.clone(), trees::treepacks::mask_answer(&reykjavik, u, &q).unwrap()))
                 }
                 _ => {
                     assert!(a.country_at(middle).is_some() && a.country_at(east).is_none());

@@ -649,21 +649,11 @@ pub fn inside_geo(cov: &buildstore::coverage::Coverage, u: TileId) -> String {
     cov.fingerprint(codecs::hipack::tile_bounds(u.z, u.x, u.y))
 }
 
-/// A tree cover z6 tile's one question of the coverage asked whole
-/// (buildstore::asked::Record::also), answered by `mask_answer`.
-pub const MASK_QUESTION: &str = "mask";
-
-/// The answer to a tree cover z6 tile's `MASK_QUESTION`: its pixels inside the coverage, as the
-/// trees program burns them (trees::treepacks::mask_digest).
-pub fn mask_answer(cov: &buildstore::coverage::Coverage, u: TileId, q: &str) -> Option<String> {
-    (q == MASK_QUESTION).then(|| trees::treepacks::mask_digest(cov, u))
-}
-
-/// The coverage inside a tree cover z6 tile: its mask (`target_asked`, its `inside_geo` the cheap
-/// test).
+/// The coverage inside a tree cover z6 tile: its mask in its blocks' live cells, as its run asked
+/// it (`target_asked`, trees::treepacks::mask_answer; its `inside_geo` the cheap test).
 pub fn coverage_inside(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(vec![target_asked("trees", t, inside_geo(x.cov, u), x, &|q| mask_answer(x.cov, u, q))?])
+    Some(vec![target_asked("trees", t, inside_geo(x.cov, u), x, &|q| trees::treepacks::mask_answer(x.cov, u, q))?])
 }
 
 /// The canopy and leaf-type declarations a tree cover z6 tile reads where they aren't as staged

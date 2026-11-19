@@ -8,11 +8,15 @@
 //! - `case <root> <scratch> <old regions index> <new regions index> <step>:<z/x/y> …`: each tile's
 //!   run's questions asked of the old regions' coverage as its run asks them (a pois or unit tile's
 //!   extract made by `scenic-build tool extract` beside this program, its candidates or its ways;
-//!   a bldtiles tile's buildings from the normalized files; a trees tile's mask), its record put
+//!   a bldtiles tile's buildings from the normalized files; a trees tile's mask in its blocks'
+//!   live cells, from the trees program run under the old coverage: `trees_live`), its record put
 //!   under the line it then had (its geometry's), and the line the new regions give it: kept or
 //!   moved. Beside it: whether the geometry its key had before moved, and whether what its run
 //!   reads of the coverage changed, exactly (its candidates kept, its ways kept, its own buildings'
-//!   countries, its mask), with the record's size and the times to ask and to ask again. The
+//!   countries, its mask in its live cells), with the record's size and the time to ask again.
+//!   `<step>:moved[@k]` (trees, bldtiles): each (k-th) of its targets whose geometry moved, with a
+//!   sum; a trees tile's mid made beside the build's (made under the new regions once run again):
+//!   one differing, its output changed, with its line kept would be unsound. The
 //!   indexes are content hashes (`sources/inputs/regions/@index.<hash>.json`); the coverages are
 //!   kept in `<scratch>/coverage` (mapped, not held).
 //!
@@ -115,6 +119,9 @@ struct Asked {
     record: Record,
     /// What its run reads of the coverage, exactly, under the old regions and the new.
     exact: (String, String),
+    /// A trees tile's: whether its run under the old regions made the mid the build has (made
+    /// under the new, once it ran again since).
+    same_mid: Option<bool>,
 }
 
 /// `step`'s questions of tile `u` asked of `old`, and what its run reads exactly of `old` and `new`.
@@ -145,10 +152,21 @@ fn asked(
     let g = geo(old)?;
     let a = Asking::new(old);
     let mut also = Vec::new();
+    let mut same_mid = None;
     let exact = match step {
         "trees" => {
-            let (o, n) = (trees::treepacks::mask_digest(old, u), trees::treepacks::mask_digest(new, u));
-            also.push((idents::MASK_QUESTION.to_string(), o.clone()));
+            let (live, same) = trees_live(root, m, scratch, u, old)?;
+            same_mid = Some(same);
+            let q = trees::treepacks::mask_question(&live);
+            let ans = |c: &Coverage| trees::treepacks::mask_answer(c, u, &q).context("a mask question");
+            let (o, n) = (ans(old)?, ans(new)?);
+            let whole = trees::treepacks::mask_question(&Default::default());
+            let all = |c: &Coverage| trees::treepacks::mask_answer(c, u, &whole).context("a mask question");
+            if all(old)? != all(new)? {
+                let cells: usize = live.values().flatten().map(|w| w.count_ones() as usize).sum();
+                eprintln!("trees {}: its whole mask moved: {}; {cells} live cells", u.slash(), mask_diff(old, new, u)?);
+            }
+            also.push((q, o.clone()));
             (o, n)
         }
         "pois" | "unit" => {
@@ -225,7 +243,7 @@ fn asked(
         }
     };
     let record = Record::read_as(old, g.clone(), a.asked(), also, g);
-    Ok(Asked { record, exact })
+    Ok(Asked { record, exact, same_mid })
 }
 
 fn case(root: &NasRoot, scratch: &Path, old: &str, new: &str, tiles: &[String]) -> Result<()> {
@@ -234,11 +252,54 @@ fn case(root: &NasRoot, scratch: &Path, old: &str, new: &str, tiles: &[String]) 
     let date = pass(root)?;
     let cache = scratch.to_path_buf();
     let (old_c, new_c) = (coverage(root, &m, old, Some(&cache))?, coverage(root, &m, new, Some(&cache))?);
-    println!("step tile | geometry moved | read exactly changed | key line moved | record (bytes: points, cells, countries, country cells) | ask again");
+    // (`<step>:moved`, trees or bldtiles: each of its targets whose geometry moved.)
+    let mut each: Vec<(String, TileId)> = Vec::new();
     for st in tiles {
         let (step, t) = st.split_once(':').context("<step>:<z/x/y>")?;
-        let u = TileId::parse(t).context("a tile")?;
-        let a = asked(root, &m, &date, scratch, step, u, &old_c, &new_c)?;
+        let Some(every) = t.strip_prefix("moved") else {
+            each.push((step.to_string(), TileId::parse(t).context("a tile")?));
+            continue;
+        };
+        // (`moved@k`: every k-th of them.)
+        let every: usize = match every.strip_prefix('@') {
+            Some(k) => k.parse().context("moved@<k>")?,
+            None => 1,
+        };
+        let mut n = 0usize;
+        let geo: fn(&Coverage, TileId) -> String = match step {
+            "trees" => idents::inside_geo,
+            "bldtiles" => idents::shapes_geo,
+            s => bail!("{s}:moved: trees or bldtiles"),
+        };
+        eprintln!("{step}:moved: every {every}");
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                let u = TileId { z: 6, x, y };
+                if new_c.meets_rect(codecs::hipack::tile_bounds(6, x, y)) && geo(&old_c, u) != geo(&new_c, u) {
+                    if n % every == 0 {
+                        each.push((step.to_string(), u));
+                    }
+                    n += 1;
+                }
+            }
+        }
+    }
+    println!("step tile | geometry moved | read exactly changed | key line moved | record (bytes: points, cells, countries, country cells) | ask again | trees: the build's mid (made under the new regions once run again) differs from the old regions' run's");
+    // By step: tiles, geometry moved, read changed, line moved, line moved with nothing read changed,
+    // read changed with the line kept (never: it would be unsound); trees: mids differing, those
+    // with the line kept (never), those with it moved.
+    let mut sums: BTreeMap<String, [usize; 9]> = BTreeMap::new();
+    for (step, u) in each {
+        let (step, u) = (step.as_str(), u);
+        // (One that can't be asked here, left out, said: a trees tile whose run would fetch or
+        // make squares on the NAS.)
+        let a = match asked(root, &m, &date, scratch, step, u, &old_c, &new_c) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{step} {}: left out: {e:#}", u.slash());
+                continue;
+            }
+        };
         let geo_new = match step {
             "pois" => idents::clip_geo(&new_c, u),
             "trees" => idents::inside_geo(&new_c, u),
@@ -252,21 +313,45 @@ fn case(root: &NasRoot, scratch: &Path, old: &str, new: &str, tiles: &[String]) 
         let bytes = a.record.to_bytes();
         let content = store::naming::hash16(&bytes);
         let t0 = Instant::now();
-        let reask = |q: &str| idents::mask_answer(&new_c, u, q);
+        let reask = |q: &str| trees::treepacks::mask_answer(&new_c, u, q);
         let line = target_line(&new_c, &geo_new, Some((&content, &a.record)), &reask).context("can't ask again")?;
         let r = &a.record.asked;
+        let (geo_moved, read, moved) = (geo_new != a.record.version, a.exact.0 != a.exact.1, line != a.record.line);
+        let s = sums.entry(step.to_string()).or_default();
+        let differs = a.same_mid == Some(false);
+        let flags = [
+            true,
+            geo_moved,
+            read,
+            moved,
+            moved && !read,
+            read && !moved,
+            differs,
+            differs && !moved,
+            differs && moved,
+        ];
+        for (k, b) in flags.into_iter().enumerate() {
+            s[k] += usize::from(b);
+        }
         println!(
-            "{step} {} | {} | {} | {} | {} ({}, {}, {}, {}) | {:.0?}",
+            "{step} {} | {} | {} | {} | {} ({}, {}, {}, {}) | {:.0?} | {}",
             u.slash(),
-            yes(geo_new != a.record.version),
-            yes(a.exact.0 != a.exact.1),
-            yes(line != a.record.line),
+            yes(geo_moved),
+            yes(read),
+            yes(moved),
             bytes.len(),
             r.points.len(),
             r.cells.len(),
             r.countries.len(),
             r.country_cells.len(),
-            t0.elapsed()
+            t0.elapsed(),
+            a.same_mid.map_or("-", |s| yes(!s))
+        );
+    }
+    for (step, s) in sums {
+        println!(
+            "{step}: {} tiles, geometry moved {}, read changed {}, line moved {} ({} with nothing read changed, {} read changed and kept); trees: mid differs {} ({} with the line kept, {} moved)",
+            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8]
         );
     }
     Ok(())
@@ -278,4 +363,112 @@ fn yes(b: bool) -> &'static str {
     } else {
         "no"
     }
+}
+
+/// Where a trees tile's masks under the two coverages part: its blocks (`blocks_of`) under each,
+/// those only one has and how many of their pixels are inside, and the shared ones whose pixels
+/// differ, with how many.
+fn mask_diff(old: &Coverage, new: &Coverage, u: TileId) -> Result<String> {
+    use trees::trees::{blocks_of, mask, ZBLOCK};
+    let masks = |c: &Coverage| -> Result<BTreeMap<(u32, u32), Vec<u64>>> {
+        let s = mask::Shapes::parse(&trees::treepacks::coverage_json(c, u).to_string())?;
+        Ok(blocks_of(&s, u.z, u.x, u.y)
+            .into_iter()
+            .map(|(bx, by)| {
+                let b = roadcore::geo::tile_box(ZBLOCK, bx, by);
+                ((bx, by), mask::inside(&s.meeting(b), b))
+            })
+            .collect())
+    };
+    let (o, n) = (masks(old)?, masks(new)?);
+    let ones = |m: &[u64]| m.iter().map(|w| w.count_ones() as u64).sum::<u64>();
+    let only = |a: &BTreeMap<(u32, u32), Vec<u64>>, b: &BTreeMap<(u32, u32), Vec<u64>>| {
+        let k: Vec<_> = a.keys().filter(|k| !b.contains_key(k)).collect();
+        (k.len(), k.iter().map(|k| ones(&a[k])).sum::<u64>())
+    };
+    let (oo, no) = (only(&o, &n), only(&n, &o));
+    let mut differ = (0, 0u64, 0u64);
+    for (k, m) in &o {
+        if let Some(m2) = n.get(k) {
+            if m != m2 {
+                differ.0 += 1;
+                differ.1 += m.iter().zip(m2).map(|(a, b)| (a ^ b).count_ones() as u64).sum::<u64>();
+                differ.2 += ones(m);
+            }
+        }
+    }
+    Ok(format!(
+        "blocks {} then {}; only before {} ({} pixels inside), only now {} ({} pixels inside); shared and differing {} ({} pixels differ of {} inside)",
+        o.len(),
+        n.len(),
+        oo.0,
+        oo.1,
+        no.0,
+        no.1,
+        differ.0,
+        differ.1,
+        differ.2
+    ))
+}
+
+/// Trees z6 tile `u`'s blocks' live cells under coverage `old` (trees::trees::BlockOut::live), from
+/// the trees program (`scenic-build tool trees` beside this program, this tree's) run in
+/// `scratch` as its job runs it, reading the NAS's canopy and leaf-type squares where they lie.
+/// Refused unless every square it reads is there already (the program would download or make it
+/// on the NAS) and the leaf-type squares are none it makes. Beside them, whether the mid it made is
+/// the one the build has.
+fn trees_live(
+    root: &NasRoot,
+    m: &BTreeMap<String, String>,
+    scratch: &Path,
+    u: TileId,
+    old: &Coverage,
+) -> Result<(trees::trees::Live, bool)> {
+    use trees::trees::{blocks_of, chm_name, mask, squares_of, RunSources, ZBLOCK};
+    let dir = scratch.join(format!("trees-{}", u.dash()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir)?;
+    let cj = trees::treepacks::coverage_json(old, u);
+    std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&cj)?)?;
+    let sources = RunSources::of(&inputs::inputs::sources::read(root, m)?)?;
+    std::fs::write(dir.join("sources.json"), serde_json::to_vec(&sources)?)?;
+    let shapes = mask::Shapes::parse(&cj.to_string())?;
+    let mut sqs: Vec<(i32, i32)> = blocks_of(&shapes, u.z, u.x, u.y)
+        .into_iter()
+        .flat_map(|(bx, by)| squares_of(roadcore::geo::tile_box(ZBLOCK, bx, by)))
+        .collect();
+    sqs.sort_unstable();
+    sqs.dedup();
+    let store = root.join("sources/canopy").unchecked_path();
+    let meets = |b: [f64; 4], (top, left): (i32, i32)| {
+        (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1]
+    };
+    for &sq in &sqs {
+        for kind in ["cover5m", "p95"] {
+            let f = store.join(chm_name(sq.0, sq.1, kind));
+            anyhow::ensure!(f.exists(), "{}: {} isn't on the NAS (the run would download it)", u.slash(), f.display());
+        }
+        anyhow::ensure!(
+            !meets(sources.leaf.europe_box, sq) && !meets(sources.leaf.north_america_box, sq),
+            "{}: square {sq:?} has leaf types (the run might make them on the NAS)",
+            u.slash()
+        );
+    }
+    let bin = std::env::current_exe()?.parent().context("bin")?.join("scenic-build");
+    let mut c = store::spawn::command(&bin);
+    c.args(["tool", "trees", "--tile", &u.slash()]);
+    c.arg("--coverage").arg(dir.join("coverage.json")).arg("--sources").arg(dir.join("sources.json"));
+    c.arg("--chm").arg(dir.join("chm")).arg("--chm-store").arg(&store);
+    c.arg("--leaf").arg(trees::treepacks::leaf_dir(root).unchecked_path()).arg("--out").arg(&dir);
+    c.args(["--workers", "4"]);
+    c.env_remove("SCENIC_CACHE");
+    let t = Instant::now();
+    let st = store::spawn::status(&mut c)?;
+    anyhow::ensure!(st.success(), "{}: the trees program: {st}", u.slash());
+    let live = trees::trees::read_live(&dir.join(trees::trees::LIVE))?;
+    let l = trees::treepacks::mid_logical(u.x, u.y);
+    let made = store::naming::content_name(&l, &store::naming::hash16_file(&dir.join(trees::trees::MID))?, "sect");
+    eprintln!("trees {}: its run under the old coverage ({:.0?})", u.slash(), t.elapsed());
+    std::fs::remove_dir_all(&dir).ok();
+    Ok((live, m.get(&l) == Some(&made)))
 }

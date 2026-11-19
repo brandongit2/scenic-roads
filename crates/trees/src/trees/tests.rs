@@ -422,11 +422,16 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     let m = read_mid(&mids[3]).unwrap();
     assert_eq!((m.tile, m.tops.keys().copied().collect::<Vec<_>>()), ((33, 22), vec![(132, 88), (133, 88), (134, 88)]));
     assert!(m.z8.iter().all(|t| t.z == 8) && m.z8.iter().any(|t| (t.x, t.y) == (132, 88)));
+    // Its blocks' live cells beside it: every block's, some where the squares have trees.
+    let live = read_live(&o.path().join("z6-33-22").join(LIVE)).unwrap();
+    assert!(live.keys().eq(m.tops.keys()));
+    assert!(live[&(132, 88)].iter().any(|&w| w != 0));
     // The same on one thread and on three: the same mid, byte for byte, and the same tiles.
     for n in [1, 3] {
         let again = format!("again-{n}");
         pool(n).install(|| z6(&run((6, 33, 22), &again))).unwrap();
         assert_eq!(std::fs::read(o.path().join(&again).join(MID)).unwrap(), std::fs::read(&mids[3]).unwrap());
+        assert_eq!(read_live(&o.path().join(&again).join(LIVE)).unwrap(), live);
         for l in LAYERS {
             let f = format!("trees-{l}.tiles");
             assert_eq!(tiles_of(&o.path().join(&again).join(&f)), tiles_of(&o.path().join("z6-33-22").join(&f)));
@@ -473,7 +478,8 @@ fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
         keep,
     };
     let files = |out: &str| {
-        std::iter::once(MID.to_string())
+        [MID.to_string(), LIVE.to_string()]
+            .into_iter()
             .chain(LAYERS.iter().map(|l| format!("trees-{l}.tiles")))
             .map(|f| std::fs::read(o.path().join(out).join(f)).unwrap())
             .collect::<Vec<_>>()

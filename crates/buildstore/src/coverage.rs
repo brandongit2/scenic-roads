@@ -1483,11 +1483,6 @@ impl Coverage {
     pub fn fingerprint(&self, b: [i32; 4]) -> String {
         fingerprint_of(&self.shapes, b)
     }
-
-    /// Whether a way (its vertices) touches the coverage.
-    pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
-        verts.iter().any(|&p| self.contains(p))
-    }
 }
 
 /// Shapes `shapes` as they are inside the box w, s, e, n (E7), as `Coverage::fingerprint` reads a
@@ -1585,7 +1580,7 @@ impl<'a> Asking<'a> {
         self.cov.contains(p)
     }
 
-    /// `Coverage::touches`: each vertex asked until one is in.
+    /// Whether a way (its vertices) touches the coverage: each vertex asked until one is in.
     pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
         verts.iter().any(|&p| self.contains(p))
     }
@@ -2552,7 +2547,7 @@ mod tests {
         let r = |x: f64| [e7(x, 50.5)[0], e7(x, 50.5)[1], e7(x + 0.1, 50.5)[0], e7(x, 50.6)[1]];
         assert!(c.meets_rect(r(0.4)) && c.meets_rect_depth(r(0.4)));
         assert!(!c.meets_rect(r(1.4)) && c.meets_rect_depth(r(1.4)) && c.contains(e7(1.5, 50.5)));
-        assert!(!c.meets_box(r(1.4)) && c.touches(&[e7(1.5, 50.5)]));
+        assert!(!c.meets_box(r(1.4)) && Asking::new(&c).touches(&[e7(1.5, 50.5)]));
         let alone = Coverage { shapes: vec![land], depth_only: Vec::new() };
         assert_ne!(c.fingerprint(r(1.4)), alone.fingerprint(r(1.4)));
         let back = kept_back(&c).unwrap();

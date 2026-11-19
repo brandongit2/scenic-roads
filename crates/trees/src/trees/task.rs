@@ -10,10 +10,10 @@
 //! NAS's `sources/canopy/`) and the leaf-type squares (`{sources}/trees/leaf`), a range at a time.
 //! It's told the canopy squares the job found there (`--squares`): one a worker doesn't find fails
 //! the task, never a block without its trees. It writes `8-<x>-<y>/` for each block
-//! (`trees-{cover,height,leaf}.tiles`, `trees-tops.bin`: `trees::write_block`'s), which the job
+//! (`trees-{cover,height,leaf}.tiles`, `trees-tops.bin`, `trees-live.bin`: `trees::write_block`'s), which the job
 //! takes into the z6 tile in the blocks' turn, as if made here: the same bytes (`trees::blocks`).
 
-use super::{block_dir, mask, Inputs, Tile, LAYERS, TOPS, ZBLOCK, ZMAX};
+use super::{block_dir, mask, Inputs, Made, Tile, LAYERS, LIVE, TOPS, ZBLOCK, ZMAX};
 use anyhow::{ensure, Context, Result};
 use offload::{Offered, Offload, Patience, Settled};
 use roadcore::archive::Archive;
@@ -176,9 +176,9 @@ pub fn mem_mb(blocks: usize) -> u64 {
 }
 
 /// A block's results in its folder (`trees::write_block`'s): its tiles, layer by layer in the
-/// order it made them, and its zoom-8 values as written. A tile outside the block, or not of zoom
-/// 8–12, or values of another block, refused.
-pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<(Vec<Tile>, Vec<u8>)> {
+/// order it made them, its zoom-8 values as written and its live cells. A tile outside the block,
+/// or not of zoom 8–12, or values of another block, refused.
+pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<Made> {
     let mut tiles = Vec::new();
     for (i, l) in LAYERS.iter().enumerate() {
         let p = dir.join(format!("trees-{l}.tiles"));
@@ -196,12 +196,13 @@ pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<(Vec<Tile>, Vec<u8
     }
     let tops = std::fs::read(dir.join(TOPS)).with_context(|| dir.join(TOPS).display().to_string())?;
     ensure!(super::pyramid::Tops::block_of(&tops)? == (bx, by), "block 8/{bx}/{by}'s values are another block's");
-    Ok((tiles, tops))
+    let live = super::live_of(&std::fs::read(dir.join(LIVE)).with_context(|| dir.join(LIVE).display().to_string())?)?;
+    Ok((tiles, tops, live))
 }
 
 /// The files of a block's results.
 fn block_files() -> Vec<String> {
-    LAYERS.iter().map(|l| format!("trees-{l}.tiles")).chain([TOPS.to_string()]).collect()
+    LAYERS.iter().map(|l| format!("trees-{l}.tiles")).chain([TOPS.to_string(), LIVE.to_string()]).collect()
 }
 
 /// Whether two rows' results (folders of `block_dir`s) are the same bytes, every file of every
@@ -321,8 +322,8 @@ impl<'a> Offers<'a> {
     }
 
     /// Block `b`'s results, its row settled first if it isn't yet (with the patience its time here
-    /// allows; `here` runs a row here): its tiles and values (`read_block`), its folder removed.
-    pub fn take(&self, b: (u32, u32), here: Here) -> Result<(Vec<Tile>, Vec<u8>)> {
+    /// allows; `here` runs a row here): what it made (`read_block`), its folder removed.
+    pub fn take(&self, b: (u32, u32), here: Here) -> Result<Made> {
         let first = *self.of.get(&b).context("a block not out")?;
         let out = self.out.lock().unwrap().remove(&first);
         if let Some((task, row)) = out {

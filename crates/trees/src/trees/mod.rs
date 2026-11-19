@@ -245,6 +245,12 @@ pub const LAYERS: [&str; 3] = ["cover", "height", "leaf"];
 pub const META: &str = r#"{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}"#;
 /// A block's zoom-8 values beside its archives (`block`).
 pub const TOPS: &str = "trees-tops.bin";
+/// A block's live cells beside its archives (`write_block`), and a z6 run's, all its blocks', beside
+/// its mid (`write_live`): `BlockOut::live`.
+pub const LIVE: &str = "trees-live.bin";
+/// A live cell's side in a block's pixels: a block is `LIVE_N` by `LIVE_N` cells.
+pub const LIVE_CELL: usize = 32;
+pub const LIVE_N: usize = BS / LIVE_CELL;
 /// The canopy squares' and the leaf-type squares' pixels (degrees).
 const CHM_RES: f64 = 0.00025;
 const LEAF_RES: f64 = 0.0005;
@@ -635,6 +641,11 @@ fn sorted(mut v: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
 pub struct BlockOut {
     pub tiles: Vec<Tile>,
     pub tops: Tops,
+    /// Its live cells (`LIVE_CELL` pixels a side, row by row, a bit each, 64 a word): those with a
+    /// pixel whose canopy cover is 0.1–100 % or whose leaf type is known, the only pixels whose
+    /// values the coverage's mask can change (pyramid::Pyramid::band). Outside them, whatever the
+    /// mask, the block's tiles and values are the same bytes.
+    pub live: Vec<u64>,
     /// Bytes read of the squares (kept in the mirror, with `record`; a row's: all its blocks', said
     /// by its first).
     pub kept: u64,
@@ -649,7 +660,19 @@ pub fn block(shapes: &mask::Shapes, inp: &Inputs, bx: u32, by: u32) -> Result<Bl
 struct Doing {
     src: Sources,
     inside: Vec<u64>,
+    live: Vec<u64>,
     pyr: pyramid::Pyramid,
+}
+
+/// Marks in `live` (`BlockOut::live`) the cells of band `r0`'s pixels (rows `r0` on, `TS` of them)
+/// that `cover` and `leaf` make live.
+fn mark_live(live: &mut [u64], r0: usize, cover: &[u16], leaf: &[u8]) {
+    for (i, (&c, &l)) in cover.iter().zip(leaf).enumerate() {
+        if (1..=1000).contains(&c) || l != 255 {
+            let k = (r0 + i / BS) / LIVE_CELL * LIVE_N + i % BS / LIVE_CELL;
+            live[k / 64] |= 1 << (k % 64);
+        }
+    }
 }
 
 /// Blocks `list`'s tiles and values (`block`'s each), made together a band at a time: blocks of
@@ -669,7 +692,12 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
         let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
         let b = roadcore::geo::tile_box(ZBLOCK, bx, by);
         let src = sources(&mut files, bx, by, &lon, &lat)?;
-        doing.push(Doing { src, inside: mask::inside(&shapes.meeting(b), b), pyr: pyramid::Pyramid::new(bx, by) });
+        doing.push(Doing {
+            src,
+            inside: mask::inside(&shapes.meeting(b), b),
+            live: vec![0; LIVE_N * LIVE_N / 64],
+            pyr: pyramid::Pyramid::new(bx, by),
+        });
     }
     drop(turn);
     const BAND: usize = TS;
@@ -688,6 +716,7 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
                     l.sample(r0, &mut leaf, 255, |b| b.u8s(), "leaf type")?;
                 }
             }
+            mark_live(&mut d.live, r0, &cover, &leaf);
             d.pyr.band(&cover, &height, &leaf, &d.inside[r0 * BS / 64..(r0 + BAND) * BS / 64]);
             Ok(())
         })
@@ -700,7 +729,7 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
         .enumerate()
         .map(|(i, d)| {
             let (tiles, tops) = d.pyr.finish();
-            BlockOut { tiles, tops, kept: if i == 0 { kept } else { 0 } }
+            BlockOut { tiles, tops, live: d.live, kept: if i == 0 { kept } else { 0 } }
         })
         .collect())
 }
@@ -755,7 +784,47 @@ pub fn write_block(b: &BlockOut, out: &Path) -> Result<()> {
     }
     w.finish()?;
     store::whole::write(&out.join(TOPS), &b.tops.to_bytes()?)?;
+    store::whole::write(&out.join(LIVE), &live_bytes(&b.live))?;
     Ok(())
+}
+
+/// A block's live cells (`BlockOut::live`) as its `LIVE` file holds them: little-endian words.
+pub fn live_bytes(live: &[u64]) -> Vec<u8> {
+    live.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// A block's live cells from `live_bytes`'s.
+pub fn live_of(b: &[u8]) -> Result<Vec<u64>> {
+    ensure!(b.len() == LIVE_N * LIVE_N / 8, "a block's live cells are {} bytes, not {}", LIVE_N * LIVE_N / 8, b.len());
+    Ok(b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+/// A z6 run's blocks' live cells (`BlockOut::live`), as `write_live` writes them beside its mid.
+pub type Live = BTreeMap<(u32, u32), Vec<u64>>;
+
+/// Writes `live` to `path`: per block, by column then row, its column and row (u32s) and its cells
+/// (`live_bytes`), all little-endian.
+pub fn write_live(path: &Path, live: &Live) -> Result<()> {
+    let mut b = Vec::new();
+    for (&(x, y), l) in live {
+        b.extend(x.to_le_bytes());
+        b.extend(y.to_le_bytes());
+        b.extend(live_bytes(l));
+    }
+    store::whole::write(path, &b)
+}
+
+/// `write_live`'s file read back.
+pub fn read_live(path: &Path) -> Result<Live> {
+    let b = std::fs::read(path).with_context(|| path.display().to_string())?;
+    let n = 8 + LIVE_N * LIVE_N / 8;
+    ensure!(b.len() % n == 0, "{}: not whole blocks' live cells", path.display());
+    b.chunks_exact(n)
+        .map(|c| {
+            let at = (u32::from_le_bytes(c[..4].try_into().unwrap()), u32::from_le_bytes(c[4..8].try_into().unwrap()));
+            Ok((at, live_of(&c[8..])?))
+        })
+        .collect()
 }
 
 /// A block's folder in a row's results (`blocks_files`): `8-<x>-<y>`.
@@ -1145,7 +1214,7 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
                 "trees",
                 &crate::treepacks::TREES_V.to_string(),
                 &format!("6/{}/{}", a.tile.1, a.tile.2),
-                &[&coverage, &sources],
+                &[&coverage, &sources, ROW_PIECE_FMT],
             );
             jobrt::resume_log::Pieces::open(d, (6, a.tile.1, a.tile.2), "trees", &id, true)
         }
@@ -1177,7 +1246,7 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
     // (As many rows under way as keep the threads busy, a row as wide as its blocks, and one
     // ahead: each holds its strips decoded, so no more.)
     let wide = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
-    let mut made_all: BTreeMap<(u32, u32), (Vec<Tile>, Vec<u8>)> = BTreeMap::new();
+    let mut made_all: BTreeMap<(u32, u32), Made> = BTreeMap::new();
     in_order_by(
         rows.len(),
         rayon::current_num_threads().div_ceil(wide) + 1,
@@ -1201,8 +1270,10 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
         |i, made| {
             let row = &rows[i];
             let p = pieces.piece(row_id(row), || {
-                let made: Vec<(Vec<Tile>, Vec<u8>)> = match made {
-                    Some(m) => m.into_iter().map(|b| Ok((b.tiles, b.tops.to_bytes()?))).collect::<Result<_>>()?,
+                let made: Vec<Made> = match made {
+                    Some(m) => {
+                        m.into_iter().map(|b| Ok((b.tiles, b.tops.to_bytes()?, b.live))).collect::<Result<_>>()?
+                    }
                     // (Its task: its worker's result, or made here, in its turn.)
                     None => row.iter().map(|&at| offers.take(at, &here)).collect::<Result<_>>()?,
                 };
@@ -1214,8 +1285,10 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
     )?;
     // (Written in the blocks' order, by column then row, as they were made one by one: the same
     // archives.)
+    let mut live = Live::new();
     for at in &blocks {
-        let (tiles, tops) = made_all.remove(at).context("a block not made")?;
+        let (tiles, tops, l) = made_all.remove(at).context("a block not made")?;
+        live.insert(*at, l);
         let (z8, hi): (Vec<Tile>, Vec<Tile>) = tiles.into_iter().partition(|t| t.z == ZBLOCK);
         for t in &hi {
             w.add(t)?;
@@ -1227,16 +1300,25 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
     drop(p);
     let _p = phase("writing its mid and archives");
     write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;
+    write_live(&a.out.join(LIVE), &live)?;
     // (Its log goes once its job has uploaded what it made: crate::treepacks::build_piece.)
     drop(pieces);
     Ok(end(a, w.finish()?, t0))
 }
 
-/// A row's blocks made (each its tiles and zoom-8 values) as a piece kept (`z6_with`).
-fn row_piece(made: &[(Vec<Tile>, Vec<u8>)]) -> Vec<u8> {
+/// A block made: its tiles, its zoom-8 values (`Tops::to_bytes`) and its live cells
+/// (`BlockOut::live`).
+pub type Made = (Vec<Tile>, Vec<u8>, Vec<u64>);
+
+/// A row piece's format, in its job's id (`z6_with`): a run resumed from rows kept in another
+/// format makes them again.
+const ROW_PIECE_FMT: &str = "rows 2";
+
+/// A row's blocks made (each `Made`) as a piece kept (`z6_with`).
+fn row_piece(made: &[Made]) -> Vec<u8> {
     let mut p = jobrt::resume_log::Put::default();
     p.u64(made.len() as u64);
-    for (tiles, tops) in made {
+    for (tiles, tops, live) in made {
         p.u64(tiles.len() as u64);
         for t in tiles {
             p.u8(t.layer);
@@ -1246,11 +1328,12 @@ fn row_piece(made: &[(Vec<Tile>, Vec<u8>)]) -> Vec<u8> {
             p.bytes(&t.webp);
         }
         p.bytes(tops);
+        p.bytes(&live_bytes(live));
     }
     p.0
 }
 
-fn row_unpiece(p: &[u8]) -> Result<Vec<(Vec<Tile>, Vec<u8>)>> {
+fn row_unpiece(p: &[u8]) -> Result<Vec<Made>> {
     let mut g = jobrt::resume_log::Get(p);
     let mut v = Vec::new();
     for _ in 0..g.count(16)? {
@@ -1258,7 +1341,8 @@ fn row_unpiece(p: &[u8]) -> Result<Vec<(Vec<Tile>, Vec<u8>)>> {
         for _ in 0..g.count(18)? {
             tiles.push(Tile { layer: g.u8()?, z: g.u8()?, x: g.u32()?, y: g.u32()?, webp: g.bytes()? });
         }
-        v.push((tiles, g.bytes()?));
+        let tops = g.bytes()?;
+        v.push((tiles, tops, live_of(&g.bytes()?)?));
     }
     g.end()?;
     Ok(v)

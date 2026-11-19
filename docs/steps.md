@@ -298,7 +298,10 @@ makes the same bytes on every Mac.
 - **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`trees::treepacks`,
   running the `trees` program, `trees::trees`):
   - **trees**, a run per z6 tile the coverage meets (`trees --tile 6/x/y`): its zoom 9–12 hi packs and its
-    mid (`work/trees-mid/6-x-y`: zoom-8 tiles and values).
+    mid (`work/trees-mid/6-x-y`: zoom-8 tiles and values). Beside them in its scratch it writes its
+    blocks' live cells (`trees-live.bin`, `trees::trees::BlockOut::live`: the 32-pixel cells with a
+    pixel of 0.1–100 % canopy cover or a known leaf type, the only pixels the mask changes), which
+    its job asks the coverage by (§12) and doesn't upload.
   - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
   - Together the same bytes as a z3 tile's whole run (`trees --tile 3/x/y`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
@@ -909,8 +912,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **polar-points (a pole):** `landmarks::polar::POINTS_V`, the labels', candidates' and z6 tiles'
   versions (`LABELS_V`, `POIS_V`, `UNIT_V`: the rules it draws by), the pole, and the pass's filtered
   planet by content.
-- **trees (a z6 tile):** the coverage inside the tile as its run reads it, its mask (`in
-  coverage:inside`: the z6 tiles' coverage as their runs asked it, below); `TREES_V` changes with any change to the bytes
+- **trees (a z6 tile):** the coverage inside the tile as its run reads it, its mask where it can
+  change what the run makes (`in coverage:inside`: the z6 tiles' coverage as their runs asked it,
+  below); `TREES_V` changes with any change to the bytes
   a z6 tile writes. A z6 tile the coverage has left, with tree hi packs or a mid still named, is
   keyed on the version and the tile (`steps::none_key`): a drop.
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`. A z3 tile with no z6 tile the coverage meets, and
@@ -962,8 +966,10 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   `work/asked/<step>/<z-x-y>` (`asked::Run::start_target`): pois its candidates' points and ways'
   nodes (`contains`), unit its ways' points (`touches`), bldtiles its buildings' countries as the
   fill reads them (`shape_at`'s: `bld::job::ask`, each block's z14 tile asked whole where it's one
-  answer, else its centroids and vertices), trees its mask, asked whole (`treepacks::mask_digest`:
-  the blocks its rings' boxes meet and their pixels inside). A point is kept by its z14 cell: a
+  answer, else its centroids and vertices), trees its mask in its blocks' live cells, asked whole
+  (`treepacks::mask_question` and `mask_answer`: the blocks its rings' boxes meet, and each one's
+  pixels inside in the cells its run found live; a block it has no cells of, all its pixels), so a
+  mask that moves over the sea keeps its key. A point is kept by its z14 cell: a
   cell whose neighbourhood and the ring of cells around it answer every point alike is kept as
   that one answer (`coverage::cell_box`), so a record holds points only near an edge; a cell no
   longer one answer counts as an answer flipped. The record's cheap test is the line the key had

@@ -504,7 +504,7 @@ mod tests {
         )
         .unwrap();
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
-        assert!(!cov.touches(&road.verts));
+        assert!(!buildstore::coverage::Asking::new(&cov).touches(&road.verts));
         assert!(road.touches(&cov, &Uniform(15.0)));
         // A ferry isn't densified: its nodes only.
         assert!(!LongWay { ferry: true, ..road.clone() }.touches(&cov, &Uniform(15.0)));
