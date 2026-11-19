@@ -1697,7 +1697,7 @@ the id with the clicked point. A reader takes version 8 only.
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
     always true, for a lead on the app before #1036).
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
-    carry `ahead`), `nas-budget`, `nas-target`, the NAS pacing's bounds (`nas-step` … `nas-restore-minutes`,
+    carry `ahead`), `nas-budget`, `nas-target`, the NAS pacing's bounds (`nas-step` … `nas-lone-minutes`,
     docs/pool.md §7.7), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2, The map
     updates' switches) are the lead's settings (`/pool/settings`).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'

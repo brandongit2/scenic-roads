@@ -29,8 +29,10 @@
 //!   a stat would be answered from the SMB client's cache), never two at once; one that fails or
 //!   passes its deadline counts as the deadline, one still stuck as its age. Its mean and its floor
 //!   for the lead's pacing (`Store::nas_answers`): the floor the least of its means over the
-//!   pacing's floor span on the 10-s ring, since the NAS's link last changed (`Store::set_link`:
-//!   at home or not, the mount; kept in `LINK_FILE` beside the store's file).
+//!   pacing's floor span on the 10-s ring, over that link's own stints (`Store::set_link`: at
+//!   home or not, the mount; kept in `LINK_FILE` beside the store's file), so a return to a link
+//!   takes its floor up again; a link with less than `LINK_YOUNG_SPANS` of its spans measured says
+//!   its floor is young.
 //! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
 //!   the build may use now (all; while the owner uses the Mac, less those kept for them), the
 //!   Mac's memory floor (crate::agent::memfloor), the owner's disk room target and the jobs' disk
@@ -168,10 +170,9 @@ pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
 
 /// The pacing of the pool's NAS work on the lead, every 10 s (`record_pace`; task #1417,
 /// jobrt::budget::nas::Pace): its window and the weight the pool's leased jobs hold (% of the NAS
-/// as probed), and the worst Mac's NAS answer time over its floor.
+/// as probed), and the counted Mac's ratio (one more than its excess over the least floor: a Mac
+/// missing its deadlines at jobrt::budget::nas::RATIO_MOST).
 pub const POOL_PACE: [&str; 3] = ["pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x"];
-/// The most `pool_nas_answer_x` records: a Mac missing its deadlines, its ratio past any knee.
-pub const ANSWER_X_MOST: f64 = 100.0;
 
 /// The NAS files kept for the file stream (the newest).
 pub const FILES: usize = 200;
@@ -362,19 +363,33 @@ pub struct Store {
 #[derive(Default)]
 struct Reach {
     root: Option<store::nasfs::NasRoot>,
-    link: Option<Link>,
+    links: Vec<Stint>,
 }
 
-/// The NAS's link as a Mac reaches it (`Store::set_link`): its key (at home or not, and the
-/// share's mount) and since when (unix s; 0: since before it was first kept).
+/// A stint on one of the NAS's links as a Mac reaches it (`Store::set_link`): its key (at home or
+/// not, and the share's mount), from when and until when (unix s; from 0: since before links were
+/// first kept; until None: the link now).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-struct Link {
+struct Stint {
     key: String,
-    since: u64,
+    from: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<u64>,
 }
 
-/// The file the NAS's link is kept in, beside the store's.
+/// The file the NAS's links are kept in, beside the store's: its stints, those ended within
+/// `LINK_KEEP_S`.
 pub const LINK_FILE: &str = "nas-link.json";
+
+/// How long an ended stint is kept (s): the longest floor span a pool setting can ask
+/// (jobrt::budget::nas::FLOOR_S, nas-floor-hours' most).
+const LINK_KEEP_S: u64 = jobrt::budget::nas::FLOOR_S;
+
+/// How much of its link's history a Mac's floor needs before it counts (spans of the pacing's,
+/// measured: 20 at the default 30 s, ten minutes of listings): younger, its answers may cut the
+/// pool's window, never grow it (jobrt::budget::nas::Answer::fresh; a floor taken on a new link
+/// under load would read the load as its best).
+pub const LINK_YOUNG_SPANS: u64 = 20;
 
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -397,16 +412,17 @@ impl Store {
                 }
             })
             .unwrap_or_default();
-        let link = file
+        let links = file
             .as_deref()
             .and_then(|f| std::fs::read(f.with_file_name(LINK_FILE)).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok());
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         Arc::new(Store {
             series: Mutex::new(series),
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
-            root: Mutex::new(Reach { root: None, link }),
+            root: Mutex::new(Reach { root: None, links }),
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
@@ -415,49 +431,77 @@ impl Store {
     }
 
     /// The NAS reached at home (`home`) or not, by the share's mount as the store has it (`set_root`)
-    /// at `now`: a change starts this Mac's NAS floor again (`nas_answers`), kept beside the store's
-    /// file. A Mac's first key, with none kept, takes the floor's whole span; the NAS away (no
-    /// mount known), the link stands as it was.
+    /// at `now`: a change ends the link's stint and starts the new one's, this Mac's NAS floor then
+    /// that link's own (`nas_answers`), kept beside the store's file. A Mac's first key, with none
+    /// kept, takes the floor's whole span; the NAS away (no mount known), the link stands as it was.
     pub fn set_link(&self, home: bool, now: u64) {
         let mut g = self.root.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mount) = g.root.as_ref().map(|r| r.display().to_string()) else { return };
         let key = format!("{} {mount}", if home { "home" } else { "away" });
-        if g.link.as_ref().is_some_and(|l| l.key == key) {
+        if g.links.last().is_some_and(|l| l.key == key && l.to.is_none()) {
             return;
         }
-        let l = Link { since: if g.link.is_some() { now } else { 0 }, key };
+        let from = if g.links.is_empty() { 0 } else { now };
+        g.links.retain(|l| l.to.is_none_or(|to| to + LINK_KEEP_S > now));
+        if let Some(l) = g.links.last_mut().filter(|l| l.to.is_none()) {
+            l.to = Some(now);
+        }
+        g.links.push(Stint { key, from, to: None });
         if let Some(f) = self.file.as_deref().map(|f| f.with_file_name(LINK_FILE)) {
-            if let Err(e) = serde_json::to_vec(&l).map_err(std::io::Error::other).and_then(|b| std::fs::write(&f, b)) {
-                eprintln!("agent: keeping the NAS's link: {e}");
+            let b = serde_json::to_vec(&g.links).map_err(std::io::Error::other);
+            if let Err(e) = b.and_then(|b| std::fs::write(&f, b)) {
+                eprintln!("agent: keeping the NAS's links: {e}");
             }
         }
-        g.link = Some(l);
     }
 
     /// This Mac's NAS answers for its lead at `now`, by the pacing's bounds `k`
     /// (jobrt::budget::nas::Answer): its answer time, the mean of `NAS_MS` over `k.span_s`; its
-    /// floor, the least such mean over `k.floor_s` on the 10-s ring since its link last changed
-    /// (`set_link`), never under store::aimd::NAS_LEAST. None: not measured over the span.
-    pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64)> {
+    /// floor, the least such mean over `k.floor_s` on the 10-s ring within its link's own stints
+    /// (`set_link`; none kept: the whole span), never under store::aimd::NAS_LEAST; and whether
+    /// that floor is young (under `LINK_YOUNG_SPANS` of spans measured on the link within
+    /// `k.floor_s`). None: not measured over the span.
+    pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
         let ms = self.mean(NAS_MS, now, k.span_s)?;
-        let since = self.root.lock().ok().and_then(|g| g.link.as_ref().map(|l| l.since)).unwrap_or(0);
+        let from = now.saturating_sub(k.floor_s);
+        let spans: Vec<(u64, u64)> = {
+            let g = self.root.lock().ok()?;
+            match g.links.last() {
+                None => vec![(from, now + 1)],
+                Some(cur) => g
+                    .links
+                    .iter()
+                    .filter(|l| l.key == cur.key)
+                    .map(|l| (l.from.max(from), l.to.unwrap_or(now + 1)))
+                    .filter(|(a, b)| a < b)
+                    .collect(),
+            }
+        };
         let (step, _) = TIERS[1];
-        let b = self.series.lock().ok()?.get(NAS_MS)?.buckets(1, now.saturating_sub(k.floor_s).max(since), now + 1);
         let m = (k.span_s / step).max(1) as usize;
-        let least = b
-            .windows(m)
-            .filter(|w| w[m - 1].slot - w[0].slot == m as u64 - 1)
-            .map(|w| w.iter().map(|x| x.sum).sum::<f64>() / w.iter().map(|x| f64::from(x.n)).sum::<f64>())
-            .fold(ms, f64::min);
-        Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0)))
+        let (mut least, mut measured) = (ms, 0u64);
+        let s = self.series.lock().ok()?;
+        let series = s.get(NAS_MS)?;
+        for (a, b) in spans {
+            let b = series.buckets(1, a, b);
+            measured += b.len() as u64;
+            least = b
+                .windows(m)
+                .filter(|w| w[m - 1].slot - w[0].slot == m as u64 - 1)
+                .map(|w| w.iter().map(|x| x.sum).sum::<f64>() / w.iter().map(|x| f64::from(x.n)).sum::<f64>())
+                .fold(least, f64::min);
+        }
+        let young = measured * step < LINK_YOUNG_SPANS * k.span_s;
+        Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0), young))
     }
 
-    /// `cap`'s NAS answers (crate::coord::Capacity's `nas_ms`, `nas_floor_ms`, `nas_at`) and NAS
-    /// calls at `now` as this store has them (`nas_answers`, `calls_now`): a member's beat sets them
-    /// as it goes, the lead's prober its own Mac's as it reads.
+    /// `cap`'s NAS answers (crate::coord::Capacity's `nas_ms`, `nas_floor_ms`, `nas_young`,
+    /// `nas_at`) and NAS calls at `now` as this store has them (`nas_answers`, `calls_now`): a
+    /// member's beat sets them as it goes, the lead's prober its own Mac's as it reads.
     pub fn answer_in(&self, cap: &mut crate::coord::Capacity, now: u64, k: &jobrt::budget::nas::Tuning) {
         let a = self.nas_answers(now, k);
         (cap.nas_ms, cap.nas_floor_ms) = (a.map(|a| a.0), a.map(|a| a.1));
+        cap.nas_young = a.is_some_and(|a| a.2);
         cap.nas_at = now;
         cap.nas_calls = self.calls_now(now);
     }
@@ -535,15 +579,14 @@ impl Store {
     }
 
     /// The pacing's reading at `t` (`POOL_PACE`): its window, the weight in use, and the counted
-    /// Mac's NAS answer time over its floor where one was read (a Mac missing its deadlines at
-    /// `ANSWER_X_MOST`: jobrt::budget::nas::Answer::ratio).
+    /// Mac's ratio where one was read (jobrt::budget::nas::Reading::ratio).
     pub fn record_pace(&self, t: u64, p: &jobrt::budget::nas::Pace) {
         let pct = |w: u32| f64::from(w) / 10.0;
         self.record(POOL_PACE[0], t, pct(p.window()));
         if let Some(r) = &p.last {
             self.record(POOL_PACE[1], t, pct(r.in_use));
-            if let Some(a) = &r.counted {
-                self.record(POOL_PACE[2], t, a.ratio().min(ANSWER_X_MOST));
+            if let Some(x) = r.ratio {
+                self.record(POOL_PACE[2], t, x);
             }
         }
     }
@@ -1528,7 +1571,7 @@ mod tests {
         let s = Store::new(Some(f.clone()), "m1");
         let t0 = 1_700_000_000;
         s.set_link(true, t0);
-        assert!(s.root.lock().unwrap().link.is_none(), "the NAS away: no link said");
+        assert!(s.root.lock().unwrap().links.is_empty(), "the NAS away: no link said");
         let root = store::nasfs::NasRoot::from_arg("/Volumes/p/scenic");
         s.set_root(Some(&root));
         s.set_link(true, t0);
@@ -1536,25 +1579,57 @@ mod tests {
             s.record(NAS_MS, t, if t < t0 + 3600 { 5.0 } else { 10.0 });
         }
         let now = t0 + 3 * 3600 - 1;
-        assert_eq!(s.nas_answers(now, &k), Some((10.0, 5.0)), "the day's least");
+        assert_eq!(s.nas_answers(now, &k), Some((10.0, 5.0, false)), "the day's least");
         let half = jobrt::budget::nas::Tuning { floor_s: 1800, ..k };
-        assert_eq!(s.nas_answers(now, &half), Some((10.0, 10.0)), "a half hour's drifts up under load");
-        // (Away now: a floor of its own from the change.)
+        assert_eq!(s.nas_answers(now, &half), Some((10.0, 10.0, false)), "a half hour's drifts up under load");
+        // (Away now: a floor of its own from the change, young until ten minutes are measured.)
         let moved = t0 + 4 * 3600;
         s.set_link(false, moved);
         for t in (moved..moved + 120).step_by(5) {
             s.record(NAS_MS, t, 40.0);
         }
-        assert_eq!(s.nas_answers(moved + 119, &k), Some((40.0, 40.0)));
+        assert_eq!(s.nas_answers(moved + 119, &k), Some((40.0, 40.0, true)));
         let mut cap = crate::coord::Capacity::default();
         s.answer_in(&mut cap, moved + 119, &k);
-        assert_eq!((cap.nas_ms, cap.nas_floor_ms, cap.nas_at), (Some(40.0), Some(40.0), moved + 119));
-        // (Restarted on the same link: its change kept.)
+        assert_eq!(
+            (cap.nas_ms, cap.nas_floor_ms, cap.nas_young, cap.nas_at),
+            (Some(40.0), Some(40.0), true, moved + 119)
+        );
+        for t in (moved + 120..moved + 900).step_by(5) {
+            s.record(NAS_MS, t, 40.0);
+        }
+        assert_eq!(s.nas_answers(moved + 899, &k), Some((40.0, 40.0, false)), "measured long enough");
+        // (Restarted on the same link: its stints kept.)
         s.save();
-        let back = Store::new(Some(f), "m1");
+        let back = Store::new(Some(f.clone()), "m1");
         back.set_root(Some(&root));
-        back.set_link(false, moved + 200);
-        assert_eq!(back.nas_answers(moved + 119, &k), Some((40.0, 40.0)));
+        back.set_link(false, moved + 900);
+        assert_eq!(back.nas_answers(moved + 899, &k), Some((40.0, 40.0, false)));
+        // (Home again, under load: its own floor, the stint at home's, taken up, not the load's;
+        // then flapping away and back never makes it the load.)
+        let home = moved + 1000;
+        back.set_link(true, home);
+        for t in (home..home + 120).step_by(5) {
+            back.record(NAS_MS, t, 30.0);
+        }
+        assert_eq!(back.nas_answers(home + 119, &k), Some((30.0, 5.0, false)), "its floor at home again");
+        back.set_link(false, home + 120);
+        back.set_link(true, home + 130);
+        for t in (home + 130..home + 250).step_by(5) {
+            back.record(NAS_MS, t, 30.0);
+        }
+        assert_eq!(back.nas_answers(home + 249, &k), Some((30.0, 5.0, false)));
+        let kept: Vec<Stint> = serde_json::from_slice(&std::fs::read(f.with_file_name(LINK_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            kept.iter().map(|l| (&l.key[..4], l.from, l.to)).collect::<Vec<_>>(),
+            [
+                ("home", 0, Some(moved)),
+                ("away", moved, Some(home)),
+                ("home", home, Some(home + 120)),
+                ("away", home + 120, Some(home + 130)),
+                ("home", home + 130, None),
+            ]
+        );
         assert_eq!(Store::new(None, "m1").nas_answers(now, &k), None, "nothing measured");
     }
 

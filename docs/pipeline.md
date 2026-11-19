@@ -500,8 +500,8 @@ The Jobs tab's stages are the one exception.
   `pool_nas_window_pct`, the pacing's window, both shares of the NAS as probed; what its last
   reading did, `nas.pace.verdict`, whether its readings were fresh, `nas.pace.fresh`, and the
   least a paced job weighs, `nas.tuning.small`: docs/pool.md §7.7), **answers vs best**
-  (`pool_nas_answer_x`, the counted Mac's NAS answer time over its floor (the second-slowest's
-  with two Macs or more), against `nas.tuning.slow` and `nas.tuning.near` dashed; the Mac, its time
+  (`pool_nas_answer_x`, the counted Mac's ratio: one more than its answer time less its floor,
+  over the least floor among those answering (the second-highest with two Macs or more), against `nas.tuning.slow` and `nas.tuning.near` dashed; the Mac, its time
   and its floor, or that it misses its deadlines, `nas.pace.counted`), **NAS disks busy** (`nas_disk_busy_pct` against the owner's target dashed),
   then the pool's use against the limits its probes give (`nas.limits`, dashed,
   with its share of each): **data moved** (`pool_nas_read_mbs` and `pool_nas_write_mbs` stacked),
