@@ -6791,6 +6791,31 @@ mod tests {
             }
             out
         }
+
+        /// For each of `steps`, every target's key (`step_keys_all`; None: unknown) in this build
+        /// with manifest `m` and `inputs`, derived with one memo as a plan's (`keys`), recording
+        /// (`KeyMemo::recording`) or not: by (step, target), with what each read when recorded, and
+        /// the terrain's load state then (`TerrainTiles::load_state`).
+        fn derived(
+            &self,
+            steps: &[&str],
+            m: &BTreeMap<String, String>,
+            inputs: &BTreeMap<String, String>,
+            recording: bool,
+        ) -> (BTreeMap<(String, String), Option<String>>, Option<ReadSets>, u64) {
+            let tiles = (self.tiles)(m);
+            let memo = if recording { KeyMemo::recording() } else { KeyMemo::default() };
+            let x = KeyCtx::new(&self.c, "d", m, inputs, self.reach.as_ref(), &tiles).memo(&memo);
+            let mut keys = BTreeMap::new();
+            for &step in steps {
+                for (t, _) in step_keys_all(step, &x).unwrap_or_default() {
+                    let k = crate::agent::steps::derived_key(step, &t, &x);
+                    keys.insert((step.to_string(), t), k);
+                }
+            }
+            let load = tiles.load_state();
+            (keys, memo.read_sets(), load)
+        }
     }
 
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
@@ -7060,6 +7085,76 @@ mod tests {
         }
         let unkeyed: Vec<&str> = derived_steps().into_iter().filter(|s| !keyed.contains(s)).collect();
         assert!(unkeyed.is_empty(), "no fixture keys a target of {unkeyed:?}");
+    }
+
+    /// What a key's derivation records reading (docs/incremental-planning.md §4.1, task #880 step 3)
+    /// sees every change that moves the key: in each fixture, each manifest entry changed, removed
+    /// and added (to the build without it) alone, and each input changed, every key that comes out
+    /// otherwise after it is one the diff of what it read moves (buildstore::reads::Graph::moved).
+    /// The other way, a key moved that comes out the same (a read that changed under it, the key
+    /// not naming it so), is the diff's imprecision: not a stale key, so counted, not failed.
+    #[test]
+    fn the_recorded_reads_see_every_change_that_moves_a_key() {
+        use buildstore::reads::{Changes, Diff};
+        type State = (BTreeMap<String, String>, BTreeMap<String, String>);
+        let steps = derived_steps();
+        let (mut checked, mut imprecise) = (0usize, 0usize);
+        for f in &fixtures() {
+            let base: State = (f.m.clone(), f.inputs.clone());
+            let mut cases: Vec<(String, State, State)> =
+                f.one_changed().into_iter().map(|(l, m, i)| (l, base.clone(), (m, i))).collect();
+            for l in f.m.keys() {
+                let mut less = f.m.clone();
+                less.remove(l);
+                cases.push((format!("{l} removed"), base.clone(), (less.clone(), f.inputs.clone())));
+                cases.push((format!("{l} added"), (less, f.inputs.clone()), base.clone()));
+            }
+            // (On threads of their own, as `a_key_names_exactly_its_reads`.)
+            let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let counts = std::thread::scope(|s| {
+                let hs: Vec<_> = cases
+                    .chunks(cases.len().div_ceil(n).max(1))
+                    .map(|some| {
+                        let steps = &steps;
+                        s.spawn(move || {
+                            let (mut checked, mut imprecise) = (0usize, 0usize);
+                            for (what, (m1, i1), (m2, i2)) in some {
+                                let (before, sets, load1) = f.derived(steps, m1, i1, true);
+                                let (after, _, load2) = f.derived(steps, m2, i2, false);
+                                let sets = sets.unwrap();
+                                let d = Diff {
+                                    manifest: Changes::of(m1, m2),
+                                    inputs: Changes::of(i1, i2),
+                                    load: load1 != load2,
+                                };
+                                let moved = sets.graph.moved(&d);
+                                for (id, k) in &before {
+                                    let (Some(k), Some(Some(a))) = (k, after.get(id)) else { continue };
+                                    let node = sets.keys[id].1;
+                                    let mv = moved[node as usize];
+                                    assert!(
+                                        a == k || mv,
+                                        "{} {} {}: {what} changed its key, not what it read: {:#?}",
+                                        f.name,
+                                        id.0,
+                                        id.1,
+                                        sets.graph.reads_of(node)
+                                    );
+                                    checked += 1;
+                                    imprecise += usize::from(a == k && mv);
+                                }
+                            }
+                            (checked, imprecise)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+            });
+            checked += counts.0;
+            imprecise += counts.1;
+        }
+        eprintln!("{checked} keys over the changes, {imprecise} moved though they came out the same");
+        assert!(checked > 10_000, "{checked}");
     }
 
     /// Task #668: the polar caps' points (`polar-points`) are a step of their own, keyed by the

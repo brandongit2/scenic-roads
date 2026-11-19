@@ -3910,15 +3910,10 @@ mod tests {
     /// there and ran this test again in a child under `sandbox-exec`, whose profile denies every
     /// write under /Volumes and the app's own home, and found its `out` written.
     fn sandboxed(root: &str, test: &str, out: &str) -> Option<PathBuf> {
-        let real = std::fs::canonicalize(root).unwrap();
-        assert!(!store::nasfs::is_live_path(&real), "the root leads to a live path: {}", real.display());
-        let state = std::fs::symlink_metadata(real.join("state")).unwrap();
-        assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
+        let real = frozen_root(root);
         if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_some() {
             return Some(real);
         }
-        let share = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).expect("the NAS's share mounted");
-        link_the_rest(&real, &share.point.join(store::nas::PROJECT));
         let app_home = std::env::var("HOME").unwrap() + "/Library/Application Support/scenic";
         let profile =
             format!("(version 1)(allow default)(deny file-write* (subpath \"/Volumes\") (subpath \"{app_home}\"))");
@@ -4222,6 +4217,123 @@ mod tests {
             eprintln!("frozen: {l}");
         }
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();
+    }
+
+    /// The keys' read sets in shadow (task #880 step 3, docs/incremental-planning.md §6), on recorded
+    /// states: two frozen copies of the lead's state minutes apart (`SCENIC_FROZEN_ROOT`, then
+    /// `SCENIC_FROZEN_ROOT_B`), sandboxed alike (`sandboxed`, `SCENIC_FROZEN_HOME`,
+    /// `SCENIC_FROZEN_APP`), planned as the lead plans. A plan of the first, its keys recording what
+    /// they read; then a plan of the second: of the first's keys derived again, those its diff would
+    /// keep (`PlanHeld::shadow`) are those that came out unchanged. Then the second again, its keys
+    /// not recorded, and again recorded: what recording costs, in time and in bytes asked for and
+    /// held (`allocs`); and once more, its diff from the same state keeping every key. The shadow's
+    /// lines, the times and each key kept but changed (`kept-changed`) or moved but unchanged
+    /// (`moved-unchanged`) to `SCENIC_FROZEN_OUT`; any of the latter two fails it.
+    #[test]
+    #[ignore]
+    fn frozen_read_sets_keep_the_unchanged_keys() {
+        use crate::agent::allocs;
+        let (Ok(root), Ok(root_b), Ok(home), Ok(out)) = (
+            std::env::var("SCENIC_FROZEN_ROOT"),
+            std::env::var("SCENIC_FROZEN_ROOT_B"),
+            std::env::var("SCENIC_FROZEN_HOME"),
+            std::env::var("SCENIC_FROZEN_OUT"),
+        ) else {
+            return;
+        };
+        let b = frozen_root(&root_b);
+        let Some(real) = sandboxed(&root, "frozen_read_sets_keep_the_unchanged_keys", &out) else {
+            let lines = std::fs::read_to_string(&out).unwrap();
+            assert!(!lines.lines().any(|l| l.starts_with("kept-changed") || l.starts_with("moved-unchanged")), "{out}");
+            return;
+        };
+        allocs::counting();
+        let (root, root_b) = (store::nasfs::NasRoot::local_for_test(real), store::nasfs::NasRoot::local_for_test(b));
+        let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
+        let hold = bus::Snap::new(jobrt::control::HoldState::default());
+        let mut p =
+            Planner::new(frozen_options(&root, &home), "frozen".into(), app, 0, None, false, hold, Default::default());
+        p.inp.pool_seen = Some(PoolView {
+            member: "frozen".into(),
+            role: membership::Role::Lead,
+            gates: membership::Gates::default(),
+            members: Vec::new(),
+            unacked: 0,
+            restart: None,
+            lead: None,
+        });
+        // (No forecast: a thread that never ends holds its place.)
+        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
+            loop {
+                std::thread::park()
+            }
+        }));
+        let mut lines = Vec::new();
+        let mut say = |l: String| {
+            eprintln!("frozen: {l}");
+            lines.push(l);
+        };
+        let coverage = |p: &Planner, root: &store::nasfs::NasRoot| {
+            let (manifest, _) = p.planning_records(root).unwrap();
+            let t = Instant::now();
+            while let Err(why) = p.coverage(root, &manifest, false) {
+                assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+        // (A plan: its time, the bytes it asked for and the most it held at once.)
+        let plan = |p: &Planner, root: &store::nasfs::NasRoot| {
+            allocs::climb();
+            let (t, a) = (Instant::now(), allocs::asked());
+            let mut waiting = Vec::new();
+            let c = p.inp.conditions;
+            p.plan(root, &c, &mut waiting);
+            nasread::PLAN.enter("");
+            let (took, b, (most, _)) = (t.elapsed(), allocs::asked(), allocs::climb());
+            format!(
+                "{:.1} s, asked for {} MB in {} blocks, at most {} MB more live; footprint {} MB",
+                took.as_secs_f64(),
+                (b.0 - a.0) >> 20,
+                b.1 - a.1,
+                most >> 20,
+                allocs::Memory::now().footprint >> 20
+            )
+        };
+        coverage(&p, &root);
+        say(format!("the first state, first plan: {}", plan(&p, &root)));
+        assert!(p.held_plan.shadow().is_none(), "no plan before the first");
+        coverage(&p, &root_b);
+        say(format!("the second state: {}", plan(&p, &root_b)));
+        let s = p.held_plan.shadow().expect("the first plan's keys diffed");
+        say(s.said.clone());
+        let mut bad: Vec<String> = s.kept_changed.iter().map(|k| format!("kept-changed {k}")).collect();
+        bad.extend(s.moved_unchanged.iter().map(|k| format!("moved-unchanged {k}")));
+        p.held_plan.record_for_test(false);
+        say(format!("the second again, not recording: {}", plan(&p, &root_b)));
+        p.held_plan.record_for_test(true);
+        say(format!("the second again, recording: {}", plan(&p, &root_b)));
+        say(format!("the second again, recording, its diff from itself: {}", plan(&p, &root_b)));
+        let s = p.held_plan.shadow().expect("the plan before's keys diffed");
+        say(s.said.clone());
+        bad.extend(s.kept_changed.iter().map(|k| format!("kept-changed (the same state) {k}")));
+        bad.extend(s.moved_unchanged.iter().map(|k| format!("moved-unchanged (the same state) {k}")));
+        lines.extend(bad);
+        std::fs::write(&out, lines.join("\n") + "\n").unwrap();
+    }
+
+    /// Frozen root `root` checked as `sandboxed` checks its own (never one that is, or leads to, a
+    /// live path; its `state/` a folder of its own), the rest of the NAS's project folder linked
+    /// there (in the parent, before its child is sandboxed): a second state a test plans.
+    fn frozen_root(root: &str) -> PathBuf {
+        let real = std::fs::canonicalize(root).unwrap();
+        assert!(!store::nasfs::is_live_path(&real), "the root leads to a live path: {}", real.display());
+        let state = std::fs::symlink_metadata(real.join("state")).unwrap();
+        assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
+        if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_none() {
+            let share = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).expect("the NAS's share mounted");
+            link_the_rest(&real, &share.point.join(store::nas::PROJECT));
+        }
+        real
     }
 
     /// The planner's memory over plans in a row (task #1251), on a frozen root as

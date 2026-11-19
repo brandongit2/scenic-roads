@@ -198,6 +198,7 @@ impl Plan for ThePlan {
             kept: RefCell::default(),
             memo: RefCell::default(),
             read_sets: RefCell::default(),
+            recording: std::cell::Cell::new(true),
         })
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -347,6 +348,8 @@ struct Held {
     memo: RefCell<Option<KeyMemo>>,
     /// The read sets, in shadow (docs/incremental-planning.md step 3).
     read_sets: RefCell<ReadSetsHeld>,
+    /// Whether the plans' keys record what they read (off only in a test of what that costs).
+    recording: std::cell::Cell<bool>,
 }
 
 /// What a plan's keys read their context as, for the next plan's diff: the manifest and the
@@ -578,7 +581,7 @@ impl PlanHeld for Held {
         let (planned, memo) = match reused {
             Some(k) => k,
             None => {
-                let memo = KeyMemo::recording();
+                let memo = if self.recording.get() { KeyMemo::recording() } else { KeyMemo::default() };
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
                 let p = build::plan_with(
@@ -649,6 +652,10 @@ impl PlanHeld for Held {
             let x = KeyCtx::new(&covs.all, &date, &manifest, &inputs, reach.as_deref(), &tiles);
             build::region_steps(&x, &covs.each, &keys)
         })
+    }
+    #[cfg(test)]
+    fn record_for_test(&self, on: bool) {
+        self.recording.set(on);
     }
     #[cfg(test)]
     fn keep_for_test(&self, p: Planned) {

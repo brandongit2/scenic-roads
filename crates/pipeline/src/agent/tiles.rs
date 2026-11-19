@@ -658,8 +658,11 @@ impl TerrainTiles {
     /// there's none, or they can't be read now (the z6 tiles' and tree cover's keys wait). Tests holding
     /// none: the staged declarations' (nothing beside the release).
     pub fn keyed<'a>(&self, m: impl Manifest<'a>) -> Option<&KeyedSources> {
+        // (Tests holding none: the staged declarations', held by the index the manifest names, read
+        // so as a build reads it.)
         #[cfg(test)]
         if self.buildings.is_none() {
+            m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT));
             static TEST: std::sync::OnceLock<KeyedSources> = std::sync::OnceLock::new();
             return Some(TEST.get_or_init(|| KeyedSources {
                 release: bld::buildtiles::TEST_RELEASE.into(),
@@ -687,9 +690,11 @@ impl TerrainTiles {
     /// north): the held datasets meeting it (inputs::dem::declared::meeting), as the roads' keys
     /// name them; None while they can't be told (the terrain's keys wait).
     pub fn terrain_datasets<'a>(&self, m: impl Manifest<'a>, b: [f64; 4]) -> Option<String> {
-        // (Tests holding none: `TEST_SOURCES`.)
+        // (Tests holding none: `TEST_SOURCES`, held by the index the manifest names, read so as a
+        // build reads it.)
         #[cfg(test)]
         if self.elevation.is_none() {
+            m.get(&inputs::inputs::logical(inputs::inputs::elevation::UNIT));
             return Some(TEST_SOURCES.into());
         }
         let e = self.elevation(m).ok()??;

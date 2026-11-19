@@ -451,6 +451,10 @@ pub trait PlanHeld: Send {
     /// the plan without them.)
     #[cfg(any(test, feature = "testkit"))]
     fn keep_for_test(&self, _p: Planned) {}
+    /// Whether the plans' keys record what they read (they do: `shadow`; off, for a test measuring
+    /// what recording costs).
+    #[cfg(any(test, feature = "testkit"))]
+    fn record_for_test(&self, _on: bool) {}
 }
 
 impl std::fmt::Debug for dyn Plan {
