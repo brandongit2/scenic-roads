@@ -6160,7 +6160,10 @@ impl Agent {
         // (Below the floor, a job is given back only when that relieves the Mac, as a frozen one
         // is stopped: the jobs here, sampled, hold what it's short, and the shortfall is theirs,
         // not the other processes' growth (memguard::worth_stopping). Else none: admission holds
-        // the Mac's new work off (`Reading::held_back`), not the jobs running.)
+        // the Mac's new work off (`Reading::held_back`), not the jobs running. A job whose
+        // footprint is unread is left out: unlike the brake's frozen jobs it neither covers the
+        // shortfall nor fails toward the stop, as a job not yet sampled has only just started and
+        // holds little.)
         let sampled: Vec<(usize, Option<u64>)> =
             held.iter().enumerate().filter_map(|(k, m)| m.map(|m| (k, Some(m)))).collect();
         let relieves = memguard::worth_stopping(&r, &sampled).map(|_| ());

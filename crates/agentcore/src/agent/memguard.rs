@@ -16,8 +16,10 @@
 //!   swap grown lately off, under the floor; or the brake acting, `Reading::acts`), jobs are given back by measure
 //!   (`decide_by`, against what the jobs may hold before the Mac is below: `Reading::room_mb`),
 //!   and only when that relieves the Mac (`worth_stopping`: the jobs hold what it's short, and the
-//!   shortfall is theirs, not the other processes' growth; outside pressure holds new work off
-//!   through admission, `Reading::held_back`, never the jobs running): when the largest fits
+//!   shortfall is theirs, not the other processes' growth; the floor's drain never gives a running
+//!   job back for outside pressure, which holds new work off through admission,
+//!   `Reading::held_back`; the brake still freezes running jobs under it, and gives one back past
+//!   the drain's grace): when the largest fits
 //!   alone, another stops at its next safe point (the newest, then the least progressed, one at a
 //!   time while those left still pass); the largest, past it by itself, stops
 //!   at once only while the brake is on (`Reading::brake`: the kernel's memory pressure at warning
