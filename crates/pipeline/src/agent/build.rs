@@ -2107,6 +2107,27 @@ pub struct ReadSets {
     pub graph: buildstore::reads::Graph,
 }
 
+impl ReadSets {
+    /// The bytes its keys hold, about: each one's step, target and key, and its slot (the graph's
+    /// apart: `Graph::size`).
+    pub fn bytes(&self) -> usize {
+        self.keys
+            .iter()
+            .map(|((s, t), (k, _))| 88 + s.capacity() + t.capacity() + k.as_ref().map_or(0, String::capacity))
+            .sum()
+    }
+}
+
+/// What of a plan's context every key reads besides its entries and inputs (theplan's read sets:
+/// changed, the diff moves every key): the coverage's version, the pass, and the reaches the keys
+/// read, by what they were read from (`reach`; None: the keys had none).
+pub fn context_rest(cov: &Coverage, date: &str, reach: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (cov.version(), date, reach).hash(&mut h);
+    h.finish()
+}
+
 impl KeyMemo {
     /// A memo keeping what each key derived with it read.
     pub fn recording() -> KeyMemo {
@@ -6780,19 +6801,24 @@ mod tests {
         }
 
         /// For each of `steps`, every target's key (`step_keys_all`; None: unknown) in this build
-        /// with manifest `m` and `inputs`, derived with one memo as a plan's (`keys`), recording
-        /// (`KeyMemo::recording`) or not: by (step, target), with what each read when recorded, and
-        /// the terrain's load state then (`TerrainTiles::load_state`).
+        /// with manifest `m`, `inputs`, reaches `reach` and terrain `tiles`, derived with one memo
+        /// as a plan's (`keys`), after the plan's warm passes (`plan_with`: their memos in `tiles`
+        /// the keys find), recording (`KeyMemo::recording`) or not: by (step, target), with what
+        /// each read when recorded, and the terrain's load state then (`TerrainTiles::load_state`).
+        #[allow(clippy::too_many_arguments)]
         fn derived(
             &self,
             steps: &[&str],
             m: &BTreeMap<String, String>,
             inputs: &BTreeMap<String, String>,
+            reach: Option<&Reaches>,
+            tiles: &TerrainTiles,
             recording: bool,
         ) -> (BTreeMap<(String, String), Option<String>>, Option<ReadSets>, u64) {
-            let tiles = (self.tiles)(m);
             let memo = if recording { KeyMemo::recording() } else { KeyMemo::default() };
-            let x = KeyCtx::new(&self.c, "d", m, inputs, self.reach.as_ref(), &tiles).memo(&memo);
+            let x = KeyCtx::new(&self.c, "d", m, inputs, reach, tiles).memo(&memo);
+            crate::agent::idents::warm_asked(&x);
+            crate::agent::idents::warm_lakes(&x);
             let mut keys = BTreeMap::new();
             for &step in steps {
                 for (t, _) in step_keys_all(step, &x).unwrap_or_default() {
@@ -7004,6 +7030,86 @@ mod tests {
         ]
     }
 
+    /// The tests' plans' build (`fixtures`' "built") with its declarations held as a load holds
+    /// them (`TerrainTiles::load`), each by the entry it's read from, so its keys run the
+    /// derivations' own branches, not the tests' stand-ins for holding none: the geoid sources and
+    /// the keys' sources by the accepted sources, the elevation datasets by their index with their
+    /// heights converted by that geoid (`declared::line` names the conversion), the depth sources,
+    /// the declared sets, the enclosed seas; and the coverage records of a z6 tile's roads and
+    /// candidates and of its lake depth (`hold_asked`), which the plan's warm passes read.
+    pub(crate) fn held_fixture() -> Fixture {
+        use buildstore::asked::{target_line, target_logical, Record};
+        use inputs::inputs::{elevation, logical, sources};
+        let built = fixtures().into_iter().find(|f| f.name == "built").unwrap();
+        let (c, mut m) = (built.c, built.m);
+        let su = logical(sources::UNIT);
+        m.insert(su.clone(), "sources/inputs/sources/@index.7d7d7d7d7d7d7d7d.json".into());
+        m.insert(inputs::water::ENCLOSED.into(), format!("{}.7171717171717171.bin", inputs::water::ENCLOSED));
+        let declared = move |m: &BTreeMap<String, String>| {
+            let mut t = tiles_for(m);
+            let Some(s) = m.get(&su) else { return t };
+            t.hold_geoid(s, Vec::new());
+            if let Some(i) = m.get(&logical(elevation::UNIT)) {
+                let (mut a, cover) = dataset("world", "w1", None);
+                a.convert = Some(inputs::dem::geoid::Conversion {
+                    hops: Vec::new(),
+                    digest: store::naming::hash16(format!("geoid of {s}").as_bytes()),
+                });
+                t.hold_elevation(i, vec![(a, cover)]);
+            }
+            t.hold_keyed(
+                s,
+                crate::agent::tiles::KeyedSources {
+                    release: bld::buildtiles::TEST_RELEASE.into(),
+                    unit: Some(format!("unit of {s}")),
+                    trees: Some(format!("trees of {s}")),
+                },
+            );
+            t.hold_depth(s, depth_sources());
+            t.hold_zoom_sets(m, terrain::terrain_zoom::test_world(12));
+            if let Some(e) = m.get(inputs::water::ENCLOSED) {
+                t.hold_enclosed(e, inputs::water::Enclosed::default());
+            }
+            t
+        };
+        // (The records, put as their runs put them against this build, held while it names them.)
+        let (u, reach) = (TileId { z: 6, x: 28, y: 16 }, reach());
+        let t = u.slash();
+        let fine = declared(&m).spacing(&m);
+        // (The candidates' run asked a point inside; the roads' asked nothing.)
+        let a = buildstore::coverage::Asking::new(&c);
+        a.contains([-219_000_000, 641_300_000]);
+        let unit_geo = reach.get(u).unwrap().coverage_key(&c, u, &*fine);
+        let pois_geo = crate::agent::idents::clip_geo(&c, u);
+        let lake_geo = crate::agent::idents::lake_ring_geo(&m, (u.x, u.y));
+        let hi = &m["layers/terrain/hi/6-28-16"];
+        let read = (28 * 64 + 5, 16 * 64 + 5);
+        let h = store::naming::xxh3(format!("{hi} 12/{}/{}", read.0, read.1).as_bytes());
+        let answers = vec![(terrain::depth::lakes::tile_question(read), terrain::depth::lakes::tile_answer(Some(h)))];
+        let records = [
+            ("unit", unit_geo, buildstore::coverage::Asking::new(&c).asked(), Vec::new()),
+            ("pois", pois_geo, a.asked(), Vec::new()),
+            ("lake-depth", lake_geo, Default::default(), answers),
+        ];
+        let mut held = Vec::new();
+        for (step, geo, asked, also) in records {
+            let line = target_line(&c, &geo, None, &|_| None);
+            let content = format!("{}.6262626262626262.json.zst", target_logical(step, &t));
+            m.insert(target_logical(step, &t), content.clone());
+            held.push((content, Record::read_as(&c, geo, asked, also, line)));
+        }
+        let tiles = move |m: &BTreeMap<String, String>| {
+            let mut t = declared(m);
+            for (content, r) in &held {
+                if m.values().any(|v| v == content) {
+                    t.hold_asked(content, r.clone());
+                }
+            }
+            t
+        };
+        Fixture { name: "held", c, m, inputs: built.inputs, reach: Some(reach), tiles: Box::new(tiles) }
+    }
+
     /// The steps whose keys scheme 2 derives (a version declared: crate::agent::steps::key_lines).
     fn derived_steps() -> Vec<&'static str> {
         crate::agent::steps::TABLE.iter().filter(|r| !r.versions.is_empty()).map(|r| r.name).collect()
@@ -7075,26 +7181,58 @@ mod tests {
     }
 
     /// What a key's derivation records reading (docs/incremental-planning.md §4.1, task #880 step 3)
-    /// sees every change that moves the key: in each fixture, each manifest entry changed, removed
-    /// and added (to the build without it) alone, and each input changed, every key that comes out
-    /// otherwise after it is one the diff of what it read moves (buildstore::reads::Graph::moved).
-    /// The other way, a key moved that comes out the same (a read that changed under it, the key
-    /// not naming it so), is the diff's imprecision: not a stale key, so counted, not failed.
+    /// sees every change that moves the key: in each fixture, and in one holding its declarations
+    /// and coverage records as a load does (`held_fixture`), each manifest entry changed, removed
+    /// and added (to the build without it) alone, each input changed, and the reaches gone with
+    /// their entry the same (the reach job due again: the context's rest, `context_rest`, of the
+    /// reaches the keys read), every key that comes out otherwise after it is one the diff of what
+    /// it read moves (buildstore::reads::Graph::moved). In the held build, each change again with
+    /// the keys before it derived on terrain whose memos a plan before filled (one `TerrainTiles`
+    /// for both: the warm passes' and the terrain's memos hit). The other way, a key moved that
+    /// comes out the same (a read that changed under it, the key not naming it so), is the diff's
+    /// imprecision: not a stale key, so counted, not failed.
     #[test]
     fn the_recorded_reads_see_every_change_that_moves_a_key() {
         use buildstore::reads::{Changes, Diff};
-        type State = (BTreeMap<String, String>, BTreeMap<String, String>);
+        // (A build's manifest, inputs, and whether the keys read its reaches.)
+        type State = (BTreeMap<String, String>, BTreeMap<String, String>, bool);
+        struct Case {
+            what: String,
+            before: State,
+            after: State,
+            // (The keys before derived on terrain a plan of the same state filled the memos of.)
+            warmed: bool,
+        }
         let steps = derived_steps();
-        let (mut checked, mut imprecise) = (0usize, 0usize);
-        for f in &fixtures() {
-            let base: State = (f.m.clone(), f.inputs.clone());
-            let mut cases: Vec<(String, State, State)> =
-                f.one_changed().into_iter().map(|(l, m, i)| (l, base.clone(), (m, i))).collect();
+        let (mut checked, mut imprecise, mut by_fixture) = (0usize, 0usize, Vec::new());
+        let mut all = fixtures();
+        all.push(held_fixture());
+        for f in &all {
+            let reach = f.reach.is_some();
+            let base: State = (f.m.clone(), f.inputs.clone(), reach);
+            let case = |what: String, before: State, after: State| Case { what, before, after, warmed: false };
+            let mut cases: Vec<Case> =
+                f.one_changed().into_iter().map(|(l, m, i)| case(l, base.clone(), (m, i, reach))).collect();
             for l in f.m.keys() {
                 let mut less = f.m.clone();
                 less.remove(l);
-                cases.push((format!("{l} removed"), base.clone(), (less.clone(), f.inputs.clone())));
-                cases.push((format!("{l} added"), (less, f.inputs.clone()), base.clone()));
+                cases.push(case(format!("{l} removed"), base.clone(), (less.clone(), f.inputs.clone(), reach)));
+                cases.push(case(format!("{l} added"), (less, f.inputs.clone(), reach), base.clone()));
+            }
+            if reach {
+                cases.push(case("the reaches gone".into(), base.clone(), (f.m.clone(), f.inputs.clone(), false)));
+            }
+            if f.name == "held" {
+                let warmed: Vec<Case> = cases
+                    .iter()
+                    .map(|c| Case {
+                        what: format!("{} (warmed)", c.what),
+                        before: c.before.clone(),
+                        after: c.after.clone(),
+                        warmed: true,
+                    })
+                    .collect();
+                cases.extend(warmed);
             }
             // (On threads of their own, as `a_key_names_exactly_its_reads`.)
             let n = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -7105,30 +7243,42 @@ mod tests {
                         let steps = &steps;
                         s.spawn(move || {
                             let (mut checked, mut imprecise) = (0usize, 0usize);
-                            for (what, (m1, i1), (m2, i2)) in some {
-                                let (before, sets, load1) = f.derived(steps, m1, i1, true);
-                                let (after, _, load2) = f.derived(steps, m2, i2, false);
+                            let reaches = |on: bool| f.reach.as_ref().filter(|_| on);
+                            // (The reaches by their entry, as the plan's by what they're read from.)
+                            let rest = |m: &BTreeMap<String, String>, on: bool| {
+                                let r =
+                                    reaches(on).map(|_| m.get(&roads::reach::logical("d")).map_or("", String::as_str));
+                                context_rest(&f.c, "d", r)
+                            };
+                            for Case { what, before: (m1, i1, r1), after: (m2, i2, r2), warmed } in some {
+                                let tiles = (f.tiles)(m1);
+                                if *warmed {
+                                    f.derived(steps, m1, i1, reaches(*r1), &tiles, false);
+                                }
+                                let (before, sets, load1) = f.derived(steps, m1, i1, reaches(*r1), &tiles, true);
+                                let (after, _, load2) = f.derived(steps, m2, i2, reaches(*r2), &(f.tiles)(m2), false);
                                 let sets = sets.unwrap();
                                 let d = Diff {
                                     manifest: Changes::of(m1, m2),
                                     inputs: Changes::of(i1, i2),
                                     load: load1 != load2,
                                 };
+                                let every = rest(m1, *r1) != rest(m2, *r2);
                                 let moved = sets.graph.moved(&d);
                                 for (id, k) in &before {
-                                    let (Some(k), Some(Some(a))) = (k, after.get(id)) else { continue };
-                                    let node = sets.keys[id].1;
-                                    let mv = moved[node as usize];
+                                    // (A key unknown after: changed too, as the plan's diff has
+                                    // it; a target no longer listed: none to compare.)
+                                    let (Some(k), Some(a)) = (k, after.get(id)) else { continue };
+                                    let (same, mv) = (a.as_ref() == Some(k), every || moved[sets.keys[id].1 as usize]);
                                     assert!(
-                                        a == k || mv,
-                                        "{} {} {}: {what} changed its key, not what it read: {:#?}",
+                                        same || mv,
+                                        "{} {} {}: {what} changed its key, not what it read: {k} became {a:?}",
                                         f.name,
                                         id.0,
                                         id.1,
-                                        sets.graph.reads_of(node)
                                     );
                                     checked += 1;
-                                    imprecise += usize::from(a == k && mv);
+                                    imprecise += usize::from(same && mv);
                                 }
                             }
                             (checked, imprecise)
@@ -7139,9 +7289,39 @@ mod tests {
             });
             checked += counts.0;
             imprecise += counts.1;
+            by_fixture.push(format!("{} {}", f.name, counts.0));
         }
-        eprintln!("{checked} keys over the changes, {imprecise} moved though they came out the same");
+        eprintln!(
+            "{checked} keys over the changes ({}), {imprecise} moved though they came out the same",
+            by_fixture.join(", ")
+        );
         assert!(checked > 10_000, "{checked}");
+    }
+
+    /// The declared elevation datasets are held by the geoid sources too, which converted their
+    /// heights (`TerrainTiles::load_elevation`): reading them reads the accepted sources, so a key
+    /// naming a converted dataset moves when only the sources' entry changes (task #1076 review).
+    #[test]
+    fn the_elevation_datasets_are_read_with_their_geoid_sources() {
+        use buildstore::reads::{Changes, Diff, Reads, Recorder};
+        let su = inputs::inputs::logical(inputs::inputs::sources::UNIT);
+        let mut m = BTreeMap::new();
+        elevation_inputs(&mut m);
+        m.insert(su.clone(), "sources/inputs/sources/@index.7d7d7d7d7d7d7d7d.json".into());
+        let mut tiles = TerrainTiles::new(None);
+        tiles.hold_geoid(&m[&su], Vec::new());
+        let (mut a, cover) = dataset("world", "w1", None);
+        a.convert = Some(inputs::dem::geoid::Conversion { hops: Vec::new(), digest: "g1".into() });
+        tiles.hold_elevation(&m[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)], vec![(a, cover)]);
+        let rec = Recorder::default();
+        rec.begin();
+        let line = tiles.terrain_datasets(Reads::plain(&m).recording(&rec), [-22.0, 64.0, -21.0, 65.0]);
+        assert!(line.is_some_and(|l| l.contains("g1")), "the conversion named");
+        let n = rec.end() as usize;
+        let mut m2 = m.clone();
+        m2.insert(su.clone(), "sources/inputs/sources/@index.7e7e7e7e7e7e7e7e.json".into());
+        let d = Diff { manifest: Changes::of(&m, &m2), ..Default::default() };
+        assert!(rec.graph().moved(&d)[n], "a change of the sources alone moves it");
     }
 
     /// Task #668: the polar caps' points (`polar-points`) are a step of their own, keyed by the

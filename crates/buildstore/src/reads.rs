@@ -94,7 +94,7 @@ impl<'a> Manifest<'a> for &'a Map {
 
 /// Which map a read is of: the manifest, or the planner's inputs (`KeyCtx::inputs`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Space {
+enum Space {
     Manifest,
     Inputs,
 }
@@ -285,16 +285,16 @@ impl Recorder {
     }
 }
 
-/// What each key of a plan read (`Recorder::graph`): its nodes' reads and the reverse index
-/// (read → nodes, kid → readers).
+/// What each key of a plan read (`Recorder::graph`), as the reverse index alone: (read, node) by
+/// read, (kid, reader) by kid. A node's own reads aren't kept apart (the diff asks only who read
+/// what changed).
 pub struct Graph {
     preds: Vec<fn(&str, bool) -> bool>,
-    /// Node `i`'s reads: `reads[at[i]..at[i + 1]]`.
-    at: Vec<u32>,
-    reads: Vec<u64>,
-    /// The reverse index: (read, node) by read; (kid, reader) by kid.
+    nodes: usize,
     by_read: Vec<(u64, u32)>,
     parents: Vec<(u32, u32)>,
+    /// The bytes held while it was built (`of`: the nodes' reads and the index beside them).
+    peak: usize,
 }
 
 /// How big a plan's read sets are (`Graph::size`).
@@ -305,40 +305,42 @@ pub struct Size {
     pub distinct: usize,
     pub reads: usize,
     pub edges: usize,
-    /// The bytes held: the reads and edges, the reverse index.
+    /// The bytes held: the reverse index and the edges.
     pub bytes: usize,
+    /// The bytes held at most while it was built (`Recorder::graph`).
+    pub peak: usize,
 }
 
 impl Graph {
     fn of(r: Rec) -> Graph {
         assert!(r.stack.is_empty(), "a derivation left unended");
         let n: usize = r.nodes.iter().map(|n| n.reads.len()).sum();
-        let (mut at, mut reads, mut by_read) = (vec![0u32], Vec::with_capacity(n), Vec::with_capacity(n));
+        let held: usize = std::mem::size_of::<Node>() * r.nodes.capacity()
+            + r.nodes.iter().map(|n| 8 * n.reads.capacity() + 4 * n.kids.capacity()).sum::<usize>();
+        let nodes = r.nodes.len();
+        let mut by_read = Vec::with_capacity(n);
         let mut parents: Vec<(u32, u32)> = Vec::new();
         for (i, n) in r.nodes.into_iter().enumerate() {
             by_read.extend(n.reads.iter().map(|&x| (x, i as u32)));
-            reads.extend_from_slice(&n.reads);
-            at.push(reads.len() as u32);
             parents.extend(n.kids.iter().map(|&k| (k, i as u32)));
         }
+        let peak = held + 16 * by_read.capacity() + 8 * parents.capacity();
         by_read.sort_unstable();
         parents.sort_unstable();
         parents.shrink_to_fit();
-        Graph { preds: r.preds, at, reads, by_read, parents }
+        Graph { preds: r.preds, nodes, by_read, parents, peak }
     }
 
     /// Its size and the bytes it holds.
     pub fn size(&self) -> Size {
         let distinct = self.by_read.chunk_by(|a, b| a.0 == b.0).count();
         Size {
-            nodes: self.at.len() - 1,
+            nodes: self.nodes,
             distinct,
-            reads: self.reads.len(),
+            reads: self.by_read.len(),
             edges: self.parents.len(),
-            bytes: 4 * self.at.capacity()
-                + 8 * self.reads.capacity()
-                + 16 * self.by_read.capacity()
-                + 8 * self.parents.capacity(),
+            bytes: 16 * self.by_read.capacity() + 8 * self.parents.capacity(),
+            peak: self.peak,
         }
     }
 
@@ -348,16 +350,10 @@ impl Graph {
         self.by_read[i..].iter().take_while(move |&&(r, _)| r == read).map(|&(_, n)| n)
     }
 
-    /// Node `n`'s reads, as `<kind> <hash>` (`read`), for a log or a test.
-    pub fn reads_of(&self, n: u32) -> Vec<String> {
-        let (a, b) = (self.at[n as usize] as usize, self.at[n as usize + 1] as usize);
-        self.reads[a..b].iter().map(|&r| said(r)).collect()
-    }
-
     /// Which nodes `d` moves: those that read something it changed, and those that read a node it
     /// moves (a key found inside them). Each node's, by node id.
     pub fn moved(&self, d: &Diff) -> Vec<bool> {
-        let n = self.at.len() - 1;
+        let n = self.nodes;
         let mut moved = vec![false; n];
         let mut todo: Vec<u32> = Vec::new();
         let hit = |read: u64, moved: &mut Vec<bool>, todo: &mut Vec<u32>| {
@@ -421,22 +417,6 @@ impl Graph {
         }
         moved
     }
-}
-
-/// The kinds of read as `reads_of` names them, in `Kind`'s order.
-const KINDS: [&str; 7] = ["entry", "has", "under", "holds", "matching", "all", "load"];
-
-/// Read `r` as `<kind> <hash>` (`in ` before the inputs').
-fn said(r: u64) -> String {
-    let (k, id) = (r >> KIND_SHIFT, r & ID);
-    let space = if k >= INPUTS { "in " } else { "" };
-    format!("{space}{} {id:015x}", KINDS[(k % INPUTS) as usize])
-}
-
-/// A manifest read of `name` of kind `kind` (`KINDS`'), as `Graph::reads_of` says it.
-pub fn read(kind: &str, name: &str) -> String {
-    let k = KINDS.iter().position(|&x| x == kind).expect("a kind of read") as u64;
-    said((k << KIND_SHIFT) | hashed(name))
 }
 
 /// What changed in one map between two plans (`Diff::of`): each name added, removed or whose
@@ -506,6 +486,27 @@ pub struct Diff {
 mod tests {
     use super::*;
 
+    /// The kinds of read as `reads_of` names them, in `Kind`'s order.
+    const KINDS: [&str; 7] = ["entry", "has", "under", "holds", "matching", "all", "load"];
+
+    /// Read `r` as `<kind> <hash>` (`in ` before the inputs').
+    fn said(r: u64) -> String {
+        let (k, id) = (r >> KIND_SHIFT, r & ID);
+        let space = if k >= INPUTS { "in " } else { "" };
+        format!("{space}{} {id:015x}", KINDS[(k % INPUTS) as usize])
+    }
+
+    /// A manifest read of `name` of kind `kind` (`KINDS`'), as `reads_of` says it.
+    fn read(kind: &str, name: &str) -> String {
+        let k = KINDS.iter().position(|&x| x == kind).expect("a kind of read") as u64;
+        said((k << KIND_SHIFT) | hashed(name))
+    }
+
+    /// Node `n`'s reads in `g`, as `<kind> <hash>` (`said`), from the reverse index.
+    fn reads_of(g: &Graph, n: u32) -> Vec<String> {
+        g.by_read.iter().filter(|&&(_, i)| i == n).map(|&(r, _)| said(r)).collect()
+    }
+
     fn map(es: &[(&str, &str)]) -> Map {
         es.iter().map(|(l, c)| (l.to_string(), c.to_string())).collect()
     }
@@ -555,8 +556,8 @@ mod tests {
         // (Nothing read outside a derivation.)
         v.get("c");
         let g = rec.graph();
-        assert_eq!(g.reads_of(entry), [read("entry", "a/1")]);
-        assert!(g.reads_of(none).is_empty());
+        assert_eq!(reads_of(&g, entry), [read("entry", "a/1")]);
+        assert!(reads_of(&g, none).is_empty());
         let moved = |new: &Map| {
             let d = Diff { manifest: Changes::of(&m, new), ..Default::default() };
             let mv = g.moved(&d);
@@ -590,7 +591,7 @@ mod tests {
         iv.get("k");
         let n = rec.end() as usize;
         let g = rec.graph();
-        assert_eq!(g.reads_of(n as u32), [format!("in {}", read("entry", "k"))]);
+        assert_eq!(reads_of(&g, n as u32), [format!("in {}", read("entry", "k"))]);
         let changed = map(&[("k", "2")]);
         let d = Diff { manifest: Changes::of(&m, &changed), ..Default::default() };
         assert!(!g.moved(&d)[n]);

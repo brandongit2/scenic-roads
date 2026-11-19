@@ -334,6 +334,12 @@ impl TerrainTiles {
         }
     }
 
+    /// Holds `g` as the declared geoid sources of accepted sources index `content` (tests).
+    #[cfg(test)]
+    pub fn hold_geoid(&mut self, content: &str, g: Vec<inputs::inputs::sources::Source>) {
+        self.geoid = Some((content.to_string(), Some(std::sync::Arc::new(g))));
+    }
+
     /// Holds the declared buildings source's release of the accepted sources `m` names.
     fn load_buildings(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         let Some(want) = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT)) else {
@@ -712,7 +718,12 @@ impl TerrainTiles {
             Unread("the build reads the declared elevation datasets, but the records name no accepted version".into())
         })?;
         match &self.elevation {
-            Some((c, e, _)) if c == want => Ok(Some(e.clone())),
+            // (Held by the geoid sources too, which converted their heights (`load_elevation`): read,
+            // so a key naming them moves when the accepted sources do.)
+            Some((c, e, _)) if c == want => {
+                self.geoid(m);
+                Ok(Some(e.clone()))
+            }
             _ => {
                 m.met_load();
                 Err(Unread(format!(

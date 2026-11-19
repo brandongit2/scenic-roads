@@ -384,17 +384,42 @@ pub type RegionCounts = BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>;
 
 /// What the last plan's diff would have kept of the round before's keys, by what each read
 /// (docs/incremental-planning.md step 3, in shadow: the plan is made whole all the same), against
-/// how they came out (`PlanHeld::shadow`). `said`: the line the agent's log has of it. The keys the
-/// diff would have kept that came out changed (a read the recording missed), and those it moved that
-/// came out the same (a read that changed under a key it didn't move), "<step> <target>" each;
-/// apart from these, those moved by their own coverage record put (`own_record`: a target's first
-/// run records what it asked, buildstore::asked, which its key reads: the same key, read again).
+/// how they came out (`PlanHeld::shadow`). `said`: the line the agent's log has of it. For the
+/// tests, the keys the diff would have kept that came out changed (a read the recording missed),
+/// and those it moved that came out the same (a read that changed under a key it didn't move),
+/// "<step> <target>" each; apart from these, those moved by their own coverage record put
+/// (`own_record`: a target's first run records what it asked, buildstore::asked, which its key
+/// reads: the same key, read again).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shadow {
     pub said: String,
+    #[cfg(any(test, feature = "testkit"))]
     pub kept_changed: Vec<String>,
+    #[cfg(any(test, feature = "testkit"))]
     pub moved_unchanged: Vec<String>,
+    #[cfg(any(test, feature = "testkit"))]
     pub own_record: Vec<String>,
+}
+
+impl Shadow {
+    /// The line `said`, with its lists kept for the tests alone.
+    #[cfg_attr(not(any(test, feature = "testkit")), allow(unused_variables))]
+    pub fn new(
+        said: String,
+        kept_changed: Vec<String>,
+        moved_unchanged: Vec<String>,
+        own_record: Vec<String>,
+    ) -> Shadow {
+        Shadow {
+            said,
+            #[cfg(any(test, feature = "testkit"))]
+            kept_changed,
+            #[cfg(any(test, feature = "testkit"))]
+            moved_unchanged,
+            #[cfg(any(test, feature = "testkit"))]
+            own_record,
+        }
+    }
 }
 
 /// What the planner carries for the plan, opaque to it (docs/crates.md §6.3, 6f2), for its life:
@@ -421,9 +446,12 @@ pub trait PlanHeld: Send {
     /// The plan of this round, with the depth's targets for GC. `refilter`: the kept plan again,
     /// while its keys' context reads the same, instead of planning.
     fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<super::gc::DepthKeep>);
-    /// What the last plan's diff would have kept of the keys before it (`Shadow`); None before a
-    /// second plan, or after a filtering again (no keys derived).
-    fn shadow(&self) -> Option<Shadow>;
+    /// What the last plan's diff would have kept of the keys before it (`Shadow`), for the tests;
+    /// None before a second plan. A filtering again derives no keys: the plan before's still.
+    #[cfg(any(test, feature = "testkit"))]
+    fn shadow(&self) -> Option<Shadow> {
+        None
+    }
     /// Why the regions' z6 tiles wait for the heritage registers.
     fn heritage_waits(&self, r: &Round) -> Option<String>;
     /// The timetables' to-do list's work.

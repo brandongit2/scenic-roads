@@ -336,8 +336,8 @@ struct Held {
     tiles: RefCell<TerrainTiles>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: RefCell<Option<(String, Arc<Reaches>)>>,
-    /// The reaches this round reads (`begin_round`).
-    reach_now: RefCell<Option<Arc<Reaches>>>,
+    /// The reaches this round reads (`begin_round`), by what they were read from (`reach`'s name).
+    reach_now: RefCell<Option<(String, Arc<Reaches>)>>,
     /// The last `build::plan` result as it came: what "its jobs" filters again on a lease change,
     /// instead of planning (docs/incremental-planning.md step 2). Dropped as a plan starts.
     kept: RefCell<Option<Planned>>,
@@ -353,9 +353,9 @@ struct Held {
 }
 
 /// What a plan's keys read their context as, for the next plan's diff: the manifest and the
-/// planner's inputs as its round read them, the rest of its context as one digest (`rest`: the
-/// coverage's version, the pass, the reaches' content name: what changing moves every key) and what
-/// of the terrain's state the entries don't show (`TerrainTiles::load_state`).
+/// planner's inputs as its round read them, the rest of its context as one digest
+/// (`build::context_rest` of the reaches the plan's keys read: what changing moves every key) and
+/// what of the terrain's state the entries don't show (`TerrainTiles::load_state`).
 struct Context {
     manifest: BTreeMap<String, String>,
     inputs: BTreeMap<String, String>,
@@ -365,21 +365,29 @@ struct Context {
 
 impl Context {
     fn of(r: &Round, reach: Option<&str>, load: u64) -> Context {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (r.cov.version(), r.date, reach).hash(&mut h);
-        Context { manifest: r.manifest.clone(), inputs: r.inputs.clone(), rest: h.finish(), load }
+        let rest = build::context_rest(r.cov, r.date, reach);
+        Context { manifest: r.manifest.clone(), inputs: r.inputs.clone(), rest, load }
+    }
+
+    /// The bytes it holds, about: each entry's two strings and its slot.
+    fn bytes(&self) -> usize {
+        [&self.manifest, &self.inputs]
+            .iter()
+            .flat_map(|m| m.iter())
+            .map(|(k, v)| 48 + k.capacity() + v.capacity())
+            .sum()
     }
 }
 
 /// The read sets in shadow (docs/incremental-planning.md step 3): the context of the last plan made
 /// (`round`, while its keys serve its round); once the next starts, its round's keys and what each
 /// read (`last`, `KeyMemo::read_sets`: the reverse index built), until that plan's diff tells which
-/// it would have kept (`said`); then let go.
+/// it would have kept (logged; for the tests, `said`); then let go.
 #[derive(Default)]
 struct ReadSetsHeld {
     round: Option<Context>,
     last: Option<(Context, build::ReadSets, std::time::Duration)>,
+    #[cfg(test)]
     said: Option<Shadow>,
 }
 
@@ -398,9 +406,13 @@ impl ReadSetsHeld {
     /// A plan of context `now` made with `memo`: of the round before's keys, those its diff would
     /// have kept, against what came out (`Shadow`), logged; `now` kept for the next.
     fn planned(&mut self, now: Context, memo: &KeyMemo) {
-        self.said = self.last.take().map(|(at, sets, built)| compare(&at, &sets, built, &now, memo));
-        if let Some(s) = &self.said {
+        let said = self.last.take().map(|(at, sets, built)| compare(&at, &sets, built, &now, memo));
+        if let Some(s) = &said {
             eprintln!("agent: {}", s.said);
+        }
+        #[cfg(test)]
+        {
+            self.said = said;
         }
         self.round = Some(now);
     }
@@ -455,8 +467,9 @@ fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now
     };
     let said = format!(
         concat!(
-            "read sets (shadow): the round before's {} keys made {} reads ({} told apart, {} kids; the reverse ",
-            "index likewise), {:.1} MB, in {} ms; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; ",
+            "read sets (shadow): the round before's {} keys made {} reads ({} told apart, {} kids), its reverse ",
+            "index {:.1} MB (at most {:.1} MB as it was built), in {} ms; the keys {:.1} MB, their context ",
+            "{:.1} MB, now's {:.1} MB; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; ",
             "of the {} derived again, {} unchanged; kept but changed {}; moved but unchanged {}, and by their ",
             "own coverage record put {}"
         ),
@@ -465,7 +478,11 @@ fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now
         size.distinct,
         size.edges,
         size.bytes as f64 / 1e6,
+        size.peak as f64 / 1e6,
         built.as_millis(),
+        sets.bytes() as f64 / 1e6,
+        at.bytes() as f64 / 1e6,
+        now.bytes() as f64 / 1e6,
         d.manifest.names.len(),
         d.inputs.names.len(),
         if d.load { ", the load" } else { "" },
@@ -478,7 +495,7 @@ fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now
         by_step(&moved_unchanged),
         by_step(&own_record),
     );
-    Shadow { said, kept_changed, moved_unchanged, own_record }
+    Shadow::new(said, kept_changed, moved_unchanged, own_record)
 }
 
 impl Held {
@@ -506,7 +523,7 @@ impl Held {
         manifest: &BTreeMap<String, String>,
         keys: &Keys,
         date: &str,
-    ) -> Result<Option<Arc<Reaches>>, roads::reach::LoadError> {
+    ) -> Result<Option<(String, Arc<Reaches>)>, roads::reach::LoadError> {
         let cx = build::PassCtx::default();
         if build::reach_work(&cx.ctx(date, manifest), keys).is_some() {
             return Ok(None);
@@ -515,15 +532,12 @@ impl Held {
         // (Read again when the base packs' extents kept with them change too: codecs::extents.)
         let c = &format!("{c} {}", codecs::extents::stamp(root));
         let mut cached = self.reach.borrow_mut();
-        if let Some((have, r)) = cached.as_ref() {
-            if have == c {
-                return Ok(Some(r.clone()));
-            }
+        if let Some(have) = cached.as_ref().filter(|(have, _)| have == c) {
+            return Ok(Some(have.clone()));
         }
         let Some(r) = Reaches::load(root, manifest, date)? else { return Ok(None) };
-        let r = Arc::new(r);
-        *cached = Some((c.clone(), r.clone()));
-        Ok(Some(r))
+        *cached = Some((c.clone(), Arc::new(r)));
+        Ok(cached.clone())
     }
 
     /// `f` of the round's keying context, with the plan's keys.
@@ -531,7 +545,7 @@ impl Held {
         let reach = self.reach_now.borrow().clone();
         let tiles = self.terrain_tiles(r.root, r.manifest);
         let memo = self.memo.borrow();
-        let x = KeyCtx::new(r.cov, r.date, r.manifest, r.inputs, reach.as_deref(), &tiles);
+        let x = KeyCtx::new(r.cov, r.date, r.manifest, r.inputs, reach.as_ref().map(|(_, r)| &**r), &tiles);
         match memo.as_ref() {
             Some(m) => f(&x.memo(m)),
             None => f(&x),
@@ -570,7 +584,8 @@ impl PlanHeld for Held {
         *self.reach_now.borrow_mut() = self.current_reach(root, manifest, done, date).ok().flatten();
     }
     fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<agentcore::agent::gc::DepthKeep>) {
-        let reach = self.reach_now.borrow().clone();
+        let reach_now = self.reach_now.borrow().clone();
+        let reach = reach_now.as_ref().map(|(_, r)| &**r);
         let reused = if refilter { self.kept.borrow_mut().take().zip(self.memo.borrow_mut().take()) } else { None };
         let reused = reused.filter(|(_, memo)| {
             memo.serves(&KeyCtx::new(
@@ -578,7 +593,7 @@ impl PlanHeld for Held {
                 r.date,
                 r.manifest,
                 r.inputs,
-                reach.as_deref(),
+                reach,
                 &self.terrain_tiles(r.root, r.manifest),
             ))
         });
@@ -590,20 +605,12 @@ impl PlanHeld for Held {
                 let memo = if self.recording.get() { KeyMemo::recording() } else { KeyMemo::default() };
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
-                let p = build::plan_with(
-                    &memo,
-                    r.cov,
-                    r.date,
-                    r.manifest,
-                    r.done,
-                    r.inputs,
-                    reach.as_deref(),
-                    &tiles,
-                    publish,
-                );
+                let p = build::plan_with(&memo, r.cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
                 nasread::PLAN.enter("the read sets");
-                let at = self.reach.borrow().as_ref().map(|(c, _)| c.clone());
-                self.read_sets.borrow_mut().planned(Context::of(r, at.as_deref(), tiles.load_state()), &memo);
+                // (The reaches as the plan's keys read them: none while the reach job is due, the
+                // last read still cached.)
+                let at = reach_now.as_ref().map(|(c, _)| c.as_str());
+                self.read_sets.borrow_mut().planned(Context::of(r, at, tiles.load_state()), &memo);
                 drop(tiles);
                 (p, memo)
             }
@@ -612,6 +619,7 @@ impl PlanHeld for Held {
         *self.memo.borrow_mut() = Some(memo);
         (planned, depth)
     }
+    #[cfg(test)]
     fn shadow(&self) -> Option<Shadow> {
         self.read_sets.borrow().said.clone()
     }
@@ -640,7 +648,7 @@ impl PlanHeld for Held {
         served: &BTreeMap<String, String>,
         tiles: &[String],
     ) -> BTreeMap<String, Vec<String>> {
-        build::restaled_by(manifest, self.reach_now.borrow().as_deref(), served, tiles)
+        build::restaled_by(manifest, self.reach_now.borrow().as_ref().map(|(_, r)| &**r), served, tiles)
     }
     fn region_counts(
         &self,
@@ -650,7 +658,7 @@ impl PlanHeld for Held {
         covs: Arc<agentcore::agent::Coverages>,
         keys: Keys,
     ) -> Box<dyn FnOnce() -> RegionCounts + Send> {
-        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
+        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten().map(|(_, r)| r);
         let tiles = self.terrain_tiles(root, &manifest).clone();
         let root = root.clone();
         Box::new(move || {
