@@ -61,12 +61,13 @@ pub struct Pick {
 pub struct Held {
     pub rule: Rule,
     pub words: String,
-    /// The job held back for its disk alone, its memory and cores fitting the room left (the
-    /// first refused for its room, `Rule::Room`, or the one room is held for, `Rule::Waiting`): the
+    /// The job held back with its disk short now (the first refused for its room, `Rule::Room`, or
+    /// the one room is held for, `Rule::Waiting`) whose memory and cores fit its Mac once its jobs
+    /// end, the disk left out (the ask's memory, its cores less those busy outside the pool: short
+    /// of memory now beside running jobs, it's held for by `Backfill` once its disk is there): the
     /// disk it needs (MB: its step's disk floor and its shared cache's fill among it, the whole
     /// copies counted free for it taken off), which its Mac's agent frees its caches toward past
-    /// its room target and reservations (crate::agent's `goal`). None: no job held for its disk
-    /// alone.
+    /// its room target and reservations (crate::agent's `held_room`). None: no such job.
     pub disk_mb: Option<u64>,
 }
 
@@ -459,13 +460,13 @@ impl Backfill {
     }
 
     /// The refusal of `room` and the `cores` left (`words`'s), held as `Rule::Waiting`: with the
-    /// disk the waiting job needs when its disk is short now and the rest fits, now (its memory and
-    /// cores) or once the jobs it waits for end (`beside`): freed now, the disk isn't what it
-    /// waits for then (`Held::disk_mb`).
-    fn held(&self, room: &Ask, cores: u32, later: bool) -> Held {
+    /// disk the waiting job needs when its disk is short now and its memory and cores fit its Mac
+    /// once its jobs end (`whole`: `Sched::fits_whole`), so the disk freed now isn't what it waits
+    /// for then (`Held::disk_mb`).
+    fn held(&self, room: &Ask, cores: u32, whole: (u64, u32), later: bool) -> Held {
         let w = &self.w;
         let short = room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
-        let rest = (w.mem_mb <= room.mem_mb && w.cores <= cores) || self.beside.is_some();
+        let rest = w.mem_mb <= whole.0 && w.cores <= whole.1;
         Held {
             disk_mb: (short && rest).then(|| w.disk_mb.saturating_sub(w.credit)),
             ..held_by(Rule::Waiting, self.words(room, cores, later))
@@ -582,12 +583,13 @@ struct Refused {
 
 impl Refused {
     /// The disk the blocked target needs (MB, the whole copies counted for it, `copies`, taken off)
-    /// when its disk alone is past the room left `room` (`Held::disk_mb`), its memory and its cores
-    /// (`cores_fit`, as `Backfill::held` weighs them) fitting; None when another is short too, or
-    /// none is blocked.
-    fn disk_alone(&self, room: &Ask, copies: u64, cores_fit: impl FnOnce(&str, &str) -> bool) -> Option<u64> {
+    /// when its disk is past the room left `room` (`Held::disk_mb`) and its memory and cores fit its
+    /// Mac once its jobs end (`fits_whole`, as `Backfill::held` weighs them: short of memory now
+    /// beside them, it's held for once the disk is freed, `room_wait`); None when it would never
+    /// fit there, or none is blocked.
+    fn disk_alone(&self, room: &Ask, copies: u64, fits_whole: impl FnOnce(&str, &str, u64) -> bool) -> Option<u64> {
         let (step, target, m) = self.blocked.as_ref()?;
-        (m.mem_mb <= room.mem_mb && room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && cores_fit(step, target))
+        (room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && fits_whole(step, target, m.mem_mb))
             .then(|| m.disk_mb - copies)
     }
 
@@ -1609,6 +1611,9 @@ impl Sched {
         let ours = tenths_to_cores((total * 10).saturating_sub(cores));
         let outside = outside_cores(a, ours);
         cores = cores.saturating_sub(outside * 10);
+        // (Its Mac's memory and cores (tenths) once its jobs end, the disk left out: what a job held
+        // back for its disk must fit for its disk to be named, `Held::disk_mb`.)
+        let whole = (a.mem_mb, total.saturating_sub(outside) * 10);
         // (The jobs it holds as room held for a waiting job weighs them (`Backfill`): how long each
         // has run, `Lease::ran`.)
         let mut runs: Vec<Run> = jobs
@@ -1826,7 +1831,7 @@ impl Sched {
                 }
                 let p90 = || self.batch_p90(&o.step, ts.iter().map(String::as_str), &a.worker);
                 if let Some(w) = waiting.as_ref().filter(|w| !w.lets(&n.m, fill, need, p90)) {
-                    held_why.get_or_insert_with(|| w.held(&room, cores, true));
+                    held_why.get_or_insert_with(|| w.held(&room, cores, whole, true));
                     continue;
                 }
                 // (One counted for no cores (a records-only step's, task #838) adds no load to wait
@@ -1868,15 +1873,15 @@ impl Sched {
                     // said only the room left, and no hold.)
                     None if nas_waits == 0 && waiting.is_some() => waiting
                         .as_ref()
-                        .map_or_else(|| held_by(Rule::Waiting, String::new()), |w| w.held(&room, cores, false)),
+                        .map_or_else(|| held_by(Rule::Waiting, String::new()), |w| w.held(&room, cores, whole, false)),
                     None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
-                        let cores_fit = |st: &str, t: &str| {
+                        let fits_whole = |st: &str, t: &str, mem_mb: u64| {
                             let n = self.pack_need(st, &[t.to_string()]);
-                            self.need_cores(st, &n, total).1 <= cores
+                            mem_mb <= whole.0 && self.need_cores(st, &n, total).1 <= whole.1
                         };
-                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit, cores_fit) } else { None };
+                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit, fits_whole) } else { None };
                         let held = held_by(
                             if nas_waits == 0 { Rule::Room } else { Rule::Nas },
                             format!(

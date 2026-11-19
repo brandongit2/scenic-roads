@@ -9608,7 +9608,7 @@ mod tests {
         assert!(why.contains("disk short by"), "{why}");
         let need = c.own_held_disk_mb().expect("held for its disk alone");
         assert!(need >= 7_000, "its measured disk at least: {need} MB");
-        // Short of memory too: none.
+        // Past the whole memory of its Mac too: it never fits there, none.
         assert!(c.ask_own(&ask(1_000, 0), &BTreeSet::new(), 0).is_none());
         assert_eq!(c.own_held_disk_mb(), None);
         // The disk it needs there: granted, none held.
@@ -9626,7 +9626,7 @@ mod tests {
         let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
         assert!(g.is_none() && held.is_some_and(|mb| mb >= 30_000), "{held:?}");
         assert!(w.ask(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap().is_none());
-        // Short of memory too: nothing named.
+        // Past the whole memory of its Mac too: nothing named.
         assert!(matches!(w.ask_held(&every_ask("m1", "slope-hi", 1_000, 20_000)).unwrap(), (None, None)));
     }
 

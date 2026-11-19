@@ -1242,14 +1242,26 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
             let st = own_status(&home).filter(|s| now_s().saturating_sub(s.beat) < 6 * 60);
             match st.as_ref().and_then(|s| s.caches.as_ref()).and_then(|c| c.room.as_ref()) {
                 Some(r) => {
-                    if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes)))
+                    // (The last freeing toward this target, or, with none, toward a job held for its
+                    // room: a member with no target told the disk it needs, crate::coord::HELD_DISK.)
+                    let now_target = t.as_ref().map_or(0, |t| t.bytes);
+                    if let Some(f) = r
+                        .toward
+                        .as_ref()
+                        .filter(|f| f.target.unwrap_or(0) == now_target && (now_target > 0 || f.goal.is_some()))
                     {
                         // (Its goal said only when a job held for its room set it: Freed::goal.)
-                        let past = f
-                            .goal
-                            .map(|g| format!(" (and the {} free a job held for its room needs)", size(g)))
-                            .unwrap_or_default();
-                        println!("Freed toward it{past} {}: {}", ago(f.at), f.say());
+                        let (it, past) = match (now_target, f.goal) {
+                            (0, Some(g)) => {
+                                (format!("the {} free a job held for its room needs", size(g)), String::new())
+                            }
+                            (_, g) => (
+                                "it".to_string(),
+                                g.map(|g| format!(" (and the {} free a job held for its room needs)", size(g)))
+                                    .unwrap_or_default(),
+                            ),
+                        };
+                        println!("Freed toward {it}{past} {}: {}", ago(f.at), f.say());
                     }
                     if let Some(why) = &r.short {
                         println!("Short of it: {why}");
