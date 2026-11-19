@@ -180,14 +180,17 @@ Common rules:
   past that many times its usual still stretch, and one whose progress goes on that many times
   slower than its step's slowest tenth of jobs, docs/pool.md §10, Flags), and the map updates' two
   switches, on or off (holding map updates for review, `hold-catalog`, and slope near regions,
-  `near-slope`: docs/building.md §2), all but the reserve as that Mac's agent last had them from the
+  `near-slope`: docs/building.md §2), and the pool's knobs, each a number in its range (the NAS
+  pacing's bounds and the needs model's percentiles and windows: docs/pool.md §7.7), all but the
+  reserve as that Mac's agent last had them from the
   lead, set through any Mac's agent. The pool box is set through the
   first Mac on the page that reaches the NAS, else the first that answered. Each Mac's `POST /api/settings`
   (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
   `in_use` (cores), `memory`, `room`, `sweep_margin` or `nas_room` (GB), `batch_minutes` or
-  `overdue_factor` (times), each a number or `"off"`, or `hold_catalog` or `near_slope`, `"on"` or
-  `"off"`, sets them through the same functions as `scenic in-use`, `scenic memory`, `scenic room`,
-  `scenic nas-room` and `scenic pool set batch-minutes|overdue-factor|hold-catalog|near-slope` (the
+  `overdue_factor` (times), or a knob by its name with `_` (`nas_step`, `needs_work_pct`, …), each
+  a number or `"off"`, or `hold_catalog` or `near_slope`, `"on"` or `"off"`, sets them through the
+  same functions as `scenic in-use`, `scenic memory`, `scenic room`, `scenic nas-room` and `scenic
+  pool set batch-minutes|overdue-factor|hold-catalog|near-slope|<a knob>` (the
   sweep's margin has no command; the pool's are asks of the agent, sent to the lead with its next
   beat)
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they

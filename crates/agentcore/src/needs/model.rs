@@ -9,9 +9,10 @@
 //!
 //! - **work per unit**: the CPU it took, in the lead's CPU seconds (its instructions over the
 //!   lead's speed where its record counted them, else its CPU on its Mac at the lead's speed by the
-//!   two Macs' speeds, task #1418: crate::paces), over its size; the step's the `work_pct`
-//!   percentile of its runs' (the median of the fastest twice that share): crowding only adds
-//!   time, and one freak can't set it. Its waits per unit likewise.
+//!   two Macs' speeds, task #1418: crate::paces), over its size; a target's the `work_pct`
+//!   percentile of its step's runs of about its size (`about`; the median of the fastest twice that
+//!   share): crowding only adds time, and one freak can't set it. The rest of its time per unit
+//!   (`Obs::rest`: its waits, and what its CPU doesn't count) likewise.
 //! - **parallelism** (`Par`): a run that kept every thread busy while not waiting is a floor, at
 //!   least its threads; one that didn't, what it kept busy; its waits left out.
 //! - **memory**: the `high_pct` percentile of the peaks of its runs of about the target's size
@@ -24,7 +25,8 @@
 //!
 //! The size a target is predicted by is the first of the step's sizes, best first (`by`: the least
 //! spread of its runs' work per unit), that the target has (its own earlier run's sizes, its tile's
-//! area, the measure its plan offered it by; "target" always).
+//! area, the measure its plan offered it by, its source's time: crate::needs::SOURCE; "target"
+//! always) and a run of about its size has (`PerUnit::ran_about`).
 //!
 //! **Prediction against what came** (`Off`): each run, in the order they came, against what the
 //! runs before it predicted: off by more than `off` times on its work, or on its time past what its
@@ -677,6 +679,20 @@ mod tests {
         runs.pop();
         runs.push(slow);
         assert_eq!(Model::of(runs, &[], &[], &t).off.len(), 1);
+    }
+
+    /// A target's work per unit is its runs' of about its size: small targets here take ten times
+    /// a large one's work per unit, and neither sets the other's; past every run's size, its size
+    /// says nothing, and the target's own count does.
+    #[test]
+    fn work_per_unit_is_read_of_runs_of_about_its_size() {
+        let t = Tuning::default();
+        let mut runs: Vec<Obs> = (0..20).map(|i| obs(i, 1.0, 1.0, 1, 100)).collect();
+        runs.extend((20..40).map(|i| obs(i, 100.0, 10.0, 1, 100)));
+        let m = Model::of(runs, &[], &[], &t);
+        let at = |u: f64| m.work(&[(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into()).unwrap();
+        assert!((at(1.0) - 1.0).abs() < 1e-9 && (at(100.0) - 10.0).abs() < 1e-9, "{} {}", at(1.0), at(100.0));
+        assert_eq!(m.unit(&[(TARGET.to_string(), 1.0), ("km2".to_string(), 1e6)].into()).unwrap().0.size, TARGET);
     }
 
     /// A target is predicted by the best of the step's sizes it has: its work spread least.

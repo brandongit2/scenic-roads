@@ -1048,10 +1048,9 @@ impl Sched {
     }
 
     /// How long `target` of `step` is measured to take `worker` on `threads` (s; 0: as it ran), and
-    /// whether by its Mac's own runs of the step: a drop its own run hasn't measured, its step's
-    /// drops' (`drop_of`); else crate::needs::Book::secs_on (its own run at the worker's Mac's
-    /// pace, its source's bin of the step's runs, its step's model; a Mac with no runs of the step,
-    /// as before task #927); None when none of its step's has run the way it runs now.
+    /// whether at its Mac's measured speed: a drop its own run hasn't measured, its step's drops'
+    /// (`drop_of`); else crate::needs::Book::secs_on (its own run at the worker's Mac's speed, else
+    /// its step's model there); None when none of its step's has run the way it runs now.
     pub(super) fn secs_on(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<(u64, bool)> {
         let b = self.book();
         match self.drop_of(&b, step, target) {

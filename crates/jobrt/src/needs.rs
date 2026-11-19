@@ -10,8 +10,9 @@ use crate::settings::Knob;
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Tuning {
-    /// A step's time per unit of work, and its waits per unit: this percentile of its runs' (the
-    /// median of the fastest twice this share: crowding only adds time, and one freak can't set it).
+    /// A step's work per unit, and the rest of its time per unit: this percentile of its runs' of
+    /// about a target's size (the median of the fastest twice this share: crowding only adds time,
+    /// and one freak can't set it).
     pub work_pct: f64,
     /// A step's memory, its disk and an update drain's wait: this percentile of its runs at the
     /// target's size or more.
@@ -44,7 +45,7 @@ impl Default for Tuning {
 pub const KNOBS: [Knob<Tuning>; 6] = [
     Knob {
         name: "needs-work-pct",
-        what: "a step's time per unit of work and its waits: this percentile of its runs (the median of the fastest twice this share)",
+        what: "a step's work and the rest of its time per unit: this percentile of its runs of about a target's size",
         unit: "%",
         least: 5.0,
         most: 95.0,

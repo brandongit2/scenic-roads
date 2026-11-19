@@ -329,13 +329,14 @@ pub struct Offer {
     pub job: Option<String>,
 }
 
-/// How a grant was sized, for its log line (`Shared::pack`): "; sized to N min by its Mac's runs",
-/// or, its Mac having none of the step, by the rule before task #927 (another Mac's run twice).
+/// How a grant was sized, for its log line (`Shared::pack`): "; sized to N min at its Mac's
+/// speed", or, its Mac's speed (or a target's own run's Mac's) not measured, at the lead's (another
+/// Mac's run counted twice; crate::needs::Book::secs_on).
 fn sized_words(p: &sched::Pick, worker: &str) -> String {
     match p.sized {
-        Some((s, true)) => format!("; sized to {:.1} min by its Mac's runs", s as f64 / 60.0),
+        Some((s, true)) => format!("; sized to {:.1} min at its Mac's speed", s as f64 / 60.0),
         Some((s, false)) => format!(
-            "; sized to {:.1} min as before task #927: {} has no runs of {} (another Mac's run counted twice)",
+            "; sized to {:.1} min at the lead's speed: {}'s isn't measured (another Mac's run of {} counted twice)",
             s as f64 / 60.0,
             crate::paces::mac_of(worker),
             p.step

@@ -81,7 +81,7 @@ from the first (`edit_held`).
   starts the new one. A job reaching no safe point in time is left running then, and the new agent
   takes it over (Restarts, below), its time spent kept (`Agent::update_wait`):
   the time its target under way is expected to need, by its progress's pace, else its expected time
-  (its own measured run, its step's fit or prior, `needs::Book::secs`, from the coordinator's costs;
+  (its own measured run, else its step's model, `needs::Book::secs`, from the coordinator's costs;
   else its step's time on this Mac lately) less the time since the job last noted a target done (or
   began), ×1.5 (a target's time varies by about a third between runs), at most 3 hours, never under
   15 minutes; 15 minutes for a target with no estimate. A member, without the coordinator's costs,
@@ -365,7 +365,7 @@ from the first (`edit_held`).
   a closing line naming every such kind. Background phases are marked, and a phase's uncertain CPU
   is said (`scenic timings` marks its CPU/wall `~` past a tenth, `UNSURE_MARK`). Each phase keeps the most memory the job held
   while it was open (`peak_mb`, sampled four times a second over the job's process group), shown in
-  the log's table and as `scenic timings`' peak column; `scenic pool needs --fit` ends with each
+  the log's table and as `scenic timings`' peak column; `scenic pool needs` ends with each
   step's heaviest phase over its last 20 timed runs (`timings::peak_holders`). A run also keeps
   what it needed apart from what its Mac supplied (task #1419): the instructions and cycles its
   processes retired, the performance cores' apart (`work`), its peak with the threads then, its NAS

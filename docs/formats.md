@@ -1698,7 +1698,8 @@ the id with the clicked point. A reader takes version 8 only.
     always true, for a lead on the app before #1036).
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
     carry `ahead`), `nas-budget`, `nas-target`, the NAS pacing's bounds (`nas-step` … `nas-young-spans`,
-    docs/pool.md §7.7), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2, The map
+    docs/pool.md §7.7), the needs model's (`needs-work-pct` … `needs-relearn`, docs/pool.md §7.7, What
+    a step needs), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2, The map
     updates' switches) are the lead's settings (`/pool/settings`).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).

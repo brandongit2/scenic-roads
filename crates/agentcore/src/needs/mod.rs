@@ -17,10 +17,10 @@
 //!   on two Macs, no Mac's the higher by more than 2 %, and 2 % run on one, measured on the lead's
 //!   runs of 15 Oct – 4 Nov).
 //! - **Model** (`model::Model`): the step's needs by the size of the target's input, learned from
-//!   its runs whose job's record is clean: its work per unit (a low percentile), its parallelism,
-//!   its waits, its memory and disk (a high percentile of the runs its size or more), its NAS bytes
-//!   per unit; its time on a Mac its work at that Mac's speed over the cores it can use, plus its
-//!   waits.
+//!   its runs whose job's record is clean: its work and the rest of its time per unit (a low
+//!   percentile of its runs of about its size), its parallelism, its memory and disk (a high
+//!   percentile of the runs its size or more), its NAS bytes per unit; its time on a Mac its work at
+//!   that Mac's speed over the cores it can use, plus the rest.
 //! - **Guess first** (z6 tiles and landmark candidates, `GUESS_FIRST`): while the model has fewer than
 //!   `MIN_RUNS` runs, the caller's guess scaled by the target's extract comes before it, so one dense
 //!   z6 tile doesn't set every other's need.
