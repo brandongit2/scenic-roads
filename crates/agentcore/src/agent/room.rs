@@ -86,7 +86,10 @@
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
 //! A job starts only with the target free past its own room, so nothing a job copies back crosses
 //! it; the jobs wait, saying why, until it's lowered or off (the daily backup and GC keep none).
-//! Whenever the disk is short of the target, or of the room a job waiting for it needs past it,
+//! Whenever the disk is short of the target and the jobs' reservations, or of the room a job held
+//! for its room needs (alone or beside other jobs, the target set or not: one the lead's
+//! coordinator held back for its disk alone, or one short of its room as it starts; crate::agent's
+//! `held_room`, kept until the next ask or start decides again, not dropped as another job ends),
 //! the agent frees its caches toward that on a thread of its own, jobs running or not,
 //! whether or not the build has work left: the cheap caches by room-making's rules and order (the
 //! canopy squares too), then a clear's others, the cheapest to fill again first (`TOWARD_ORDER`:

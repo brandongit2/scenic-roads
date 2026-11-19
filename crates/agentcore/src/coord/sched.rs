@@ -61,6 +61,13 @@ pub struct Pick {
 pub struct Held {
     pub rule: Rule,
     pub words: String,
+    /// The job held back for its disk alone, its memory and cores fitting the room left (the
+    /// first refused for its room, `Rule::Room`, or the one room is held for, `Rule::Waiting`): the
+    /// disk it needs (MB: its step's disk floor and its shared cache's fill among it, the whole
+    /// copies counted free for it taken off), which its Mac's agent frees its caches toward past
+    /// its room target and reservations (crate::agent's `goal`). None: no job held for its disk
+    /// alone.
+    pub disk_mb: Option<u64>,
 }
 
 /// The grant rule that held an ask back (`Held`).
@@ -130,7 +137,7 @@ impl Rule {
 pub const EMPTY: &str = "no job is offered";
 
 fn held_by(rule: Rule, words: String) -> Held {
-    Held { rule, words }
+    Held { rule, words, disk_mb: None }
 }
 
 /// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
@@ -451,6 +458,18 @@ impl Backfill {
             || p90().is_some_and(|s| s < self.shadow)
     }
 
+    /// The refusal of `room` and the `cores` left (`words`'s), held as `Rule::Waiting`: with the
+    /// disk the waiting job needs when its disk alone is short (`Held::disk_mb`).
+    fn held(&self, room: &Ask, cores: u32, later: bool) -> Held {
+        let w = &self.w;
+        let disk_alone =
+            w.mem_mb <= room.mem_mb && w.cores <= cores && room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
+        Held {
+            disk_mb: disk_alone.then(|| w.disk_mb.saturating_sub(w.credit)),
+            ..held_by(Rule::Waiting, self.words(room, cores, later))
+        }
+    }
+
     /// The refusal in words, of `room` and the `cores` left; `later`: an offer after it was held
     /// back for it (else nothing after it was free to take or fitted anyway).
     fn words(&self, room: &Ask, cores: u32, later: bool) -> String {
@@ -560,6 +579,14 @@ struct Refused {
 }
 
 impl Refused {
+    /// The disk the blocked target needs (MB, the whole copies counted for it, `copies`, taken off)
+    /// when its disk alone is past the room left `room` (`Held::disk_mb`); None when its memory is
+    /// too, or none is blocked.
+    fn disk_alone(&self, room: &Ask, copies: u64) -> Option<u64> {
+        let (_, _, m) = self.blocked.as_ref()?;
+        (m.mem_mb <= room.mem_mb && room.disk_mb.is_some_and(|d| m.disk_mb > d + copies)).then(|| m.disk_mb - copies)
+    }
+
     /// The room rule's refusal in words, of `a` and the room left `room` (its disk with the whole
     /// copies counted for the blocked target, `copies` of it): the target refused for its room, what
     /// it needs and what its Mac is short of, each by how much; then what became of the other
@@ -1723,7 +1750,7 @@ impl Sched {
             // before its room frees (`Backfill`, task #973: the mini ran one 40-minute-old
             // terrain-hi job, 7 of its 12 cores idle, while room was held for timetables-todo).)
             let mut waiting: Option<Backfill> = None;
-            let mut held_why: Option<String> = None;
+            let mut held_why: Option<Held> = None;
             // (The offers granted nothing, each with its fill and the whole copies counted for it:
             // the room rule's words, `refused`.)
             let mut refused: Vec<(&Offer, u64, u64)> = Vec::new();
@@ -1795,7 +1822,7 @@ impl Sched {
                 }
                 let p90 = || self.batch_p90(&o.step, ts.iter().map(String::as_str), &a.worker);
                 if let Some(w) = waiting.as_ref().filter(|w| !w.lets(&n.m, fill, need, p90)) {
-                    held_why.get_or_insert_with(|| w.words(&room, cores, true));
+                    held_why.get_or_insert_with(|| w.held(&room, cores, true));
                     continue;
                 }
                 // (One counted for no cores (a records-only step's, task #838) adds no load to wait
@@ -1817,7 +1844,7 @@ impl Sched {
             let Some((o, pick, n)) = got else {
                 let nas_waits = self.nas_waits_at(now);
                 why = Some(match short {
-                    _ if held_why.is_some() => held_by(Rule::Waiting, held_why.unwrap_or_default()),
+                    _ if held_why.is_some() => held_why.unwrap_or_else(|| held_by(Rule::Waiting, String::new())),
                     None if cold_why.is_some() => held_by(Rule::Cold, cold_why.unwrap_or_default()),
                     None if ramp_why.is_some() => held_by(Rule::Settle, ramp_why.unwrap_or_default()),
                     Some((st, c)) if outside > 0 => held_by(
@@ -1835,14 +1862,14 @@ impl Sched {
                     // (Room held for the first offer refused for its room, nothing after it held
                     // back for it: that hold is why, task #1170; a lead whose last offer waited had
                     // said only the room left, and no hold.)
-                    None if nas_waits == 0 && waiting.is_some() => held_by(
-                        Rule::Waiting,
-                        waiting.as_ref().map(|w| w.words(&room, cores, false)).unwrap_or_default(),
-                    ),
+                    None if nas_waits == 0 && waiting.is_some() => waiting
+                        .as_ref()
+                        .map_or_else(|| held_by(Rule::Waiting, String::new()), |w| w.held(&room, cores, false)),
                     None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
-                        held_by(
+                        let disk_mb = if nas_waits == 0 { r.disk_alone(&room, credit) } else { None };
+                        let held = held_by(
                             if nas_waits == 0 { Rule::Room } else { Rule::Nas },
                             format!(
                                 "{}{}",
@@ -1860,7 +1887,8 @@ impl Sched {
                                 },
                                 r.words(a, &disk_with(&room, 0, credit), credit)
                             ),
-                        )
+                        );
+                        Held { disk_mb, ..held }
                     }
                 });
                 break;

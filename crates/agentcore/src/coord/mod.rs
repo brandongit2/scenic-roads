@@ -2427,6 +2427,13 @@ impl Coordinator {
         self.refusals_with(|_, _, w| w.to_string())
     }
 
+    /// The disk (MB) the job this Mac's own last ask (`ask_own`) was refused for its disk alone
+    /// needs (`sched::Held::disk_mb`): what its agent frees its caches toward past its room target
+    /// and reservations. None: that ask held no job back for its disk alone.
+    pub fn own_held_disk_mb(&self) -> Option<u64> {
+        self.shared.lock().unwrap().refused.get(&self.me).and_then(|(_, h)| h.disk_mb)
+    }
+
     /// Why nothing more runs on each worker, as its last ask was packed (`Shared::refused`), the
     /// refusal itself younger than `CAP_FRESH_S` (older ones dropped here): the status's, per Mac,
     /// each said by `say` of its worker, its rule and its words: the lead's status words a refusal
@@ -4548,7 +4555,7 @@ fn route(
             if s.pass.is_empty() {
                 // (No pass: nothing offered, the refusal said so, never an earlier one's.)
                 let at = s.wall_s();
-                let held = sched::Held { rule: sched::Rule::Empty, words: sched::EMPTY.to_string() };
+                let held = sched::Held { rule: sched::Rule::Empty, words: sched::EMPTY.to_string(), disk_mb: None };
                 s.refused.insert(a.worker.clone(), (at, held.clone()));
                 let answer =
                     Answer { at, want: a.want.max(1), got: 0, offered: Vec::new(), held: Some(held), refused: None };
@@ -9561,6 +9568,39 @@ mod tests {
         c.finish(h1, &[]);
         let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("10 GB left: it goes");
         assert_eq!(g.job.as_deref(), Some("terrain-water terrain-water"));
+    }
+
+    /// Task #1477 (the mini, 18 Nov: 56 GB free, its 50 GB target and 6 GB of reservations
+    /// leaving 0 GB for jobs, a job of 7.1 GB waiting while its caches held 485 GB, none freed for
+    /// it): the lead's own ask refused for a job's disk alone says the disk that job needs
+    /// (`Held::disk_mb`), which its agent frees its caches toward; short of memory too (freeing
+    /// the disk wouldn't start it), or granted, none.
+    #[test]
+    fn a_job_held_for_its_disk_alone_says_the_disk_it_needs() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((4000, 7_000, 60)))]);
+        let cap = Capacity {
+            at: unix_now(),
+            cores: 8,
+            cores_free: 8,
+            free_mb: 56 << 10,
+            target_mb: 50 << 10,
+            reserved_mb: 6 << 10,
+            ..Default::default()
+        };
+        let ask =
+            |mem_mb: u64, disk_mb: u64| Ask { cap: Some(cap.clone()), ..every_ask("m4", "slope-hi", mem_mb, disk_mb) };
+        assert!(c.ask_own(&ask(30_000, 0), &BTreeSet::new(), 0).is_none());
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why.contains("disk short by"), "{why}");
+        let need = c.own_held_disk_mb().expect("held for its disk alone");
+        assert!(need >= 7_000, "its measured disk at least: {need} MB");
+        // Short of memory too: none.
+        assert!(c.ask_own(&ask(1_000, 0), &BTreeSet::new(), 0).is_none());
+        assert_eq!(c.own_held_disk_mb(), None);
+        // The disk it needs there: granted, none held.
+        assert!(c.ask_own(&ask(30_000, need), &BTreeSet::new(), 0).is_some());
+        assert_eq!(c.own_held_disk_mb(), None);
     }
 
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,

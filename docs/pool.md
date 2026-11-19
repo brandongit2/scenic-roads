@@ -530,7 +530,12 @@ only a full disk while the freeing runs beside the job's writes, so a member's c
 only with one (task #1000: counted without its caches, the M4, 37 GB free against its 30 GB
 target and 77 GB of caches, was offered 7 GB for jobs and ran one, 11 of its 14 cores idle). The lead's caches aren't counted: it asks alone with its
 disk unbounded, and beside its jobs a job of its own needs its measured room free as it starts or
-is given back, so one granted for its caches would be granted and given back each loop. There is no
+is given back, so one granted for its caches would be granted and given back each loop. Instead a
+job its coordinator holds back for its disk alone (its memory and cores fitting: the answer's
+`disk_mb`) has the lead's caches freed toward its room, the target and reservations among it
+(`Agent::held_room`, task #1477), as has a job that waits for its room as it starts, alone or
+beside others; that room stays the freeing's goal until the next ask or start decides again (a job
+ending doesn't drop it), and once the disk has it the job is granted. There is no
 fixed reserve: the room target is the only floor (a Mac with 49 GB free, a 20 GB target and no
 caches offers 29 GB, less its reservations). An older agent's `reserve_mb`
 (a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,

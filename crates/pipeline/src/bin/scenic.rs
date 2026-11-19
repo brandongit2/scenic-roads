@@ -1248,7 +1248,7 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
                             .goal
                             .map(|g| {
                                 format!(
-                                    " (and the {} a job waiting for it needs past it)",
+                                    " (and the {} past it the jobs here and one held for its room need)",
                                     size(g.saturating_sub(f.target.unwrap_or(0)))
                                 )
                             })

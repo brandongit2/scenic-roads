@@ -1545,6 +1545,15 @@ pub struct Agent {
     mem_floor: Option<memfloor::Floor>,
     toward_tried: Option<(u64, u64)>,
     floor_short: Option<(u64, u64, Instant)>,
+    /// The room on the disk a job held for it needs (bytes free: the owner's room target, the other
+    /// jobs' reservations and its own disk; of several, the least), and when that was decided: what
+    /// this Mac's caches are freed toward past the target and reservations (`goal`), so a job the
+    /// caches hold the room for gets it, alone or beside other jobs (task #1477). Decided by each
+    /// ask of the lead's own coordinator (the job it held back for its disk alone,
+    /// `Coordinator::own_held_disk_mb`; none: gone), and by a job waiting for its room as it starts
+    /// (`hold_room`); not by a job ending (the held job still waits), only by the next decision.
+    /// Gone when the target changes, and on a member when it's granted a job or ten minutes pass.
+    held_room: Option<(u64, Instant)>,
     /// What a freeing under way frees toward (`goal`): set again each loop, so a target lowered or
     /// cleared midway stops it (room::toward reads it as it goes).
     toward_goal: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -2049,6 +2058,7 @@ impl Agent {
             mem_floor: None,
             toward_tried: None,
             floor_short: None,
+            held_room: None,
             toward_goal: Default::default(),
             mem_set: None,
             guard_hold: None,
@@ -2516,9 +2526,13 @@ impl Agent {
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
-        // (Work given: the build isn't paused.)
+        // (Work given: the build isn't paused, and no job is held for its room here now; else the
+        // room one was held for lately, ten minutes at most, is still freed toward: `held_room`.)
         if matches!(asked, Ok(Some(_))) {
             self.know_pause(None);
+            self.held_room = None;
+        } else {
+            self.held_room = self.held_room.filter(|h| h.1.elapsed() < Duration::from_secs(600));
         }
         match asked {
             Ok(Some(mut g)) => {
@@ -2835,7 +2849,14 @@ impl Agent {
         };
         // (The coordinator's lock waited on here; its packing is `ask_own`'s own phase.)
         nasread::phase("the grants: the coordinator's lock");
-        let Some(mut g) = co.ask_own(&ask, &skip, plan) else { return Vec::new() };
+        let got = co.ask_own(&ask, &skip, plan);
+        // (A job held back for its disk alone: the caches freed toward its room past the target and
+        // the reservations its ask's disk left out (`disk_room`), as far as they can give it,
+        // beside other jobs too; none held, none freed for one: `held_room`.)
+        self.held_room = co
+            .own_held_disk_mb()
+            .map(|mb| (self.floor().saturating_add(self.reserved(None)).saturating_add(mb << 20), Instant::now()));
+        let Some(mut g) = got else { return Vec::new() };
         nasread::phase("the grants: the leases held in slots");
         let more = std::mem::take(&mut g.more);
         let mut got = Vec::new();
@@ -3677,17 +3698,19 @@ impl Agent {
     }
 
     /// What the caches are freed toward (0: nothing): the target and the jobs' reservations past
-    /// it (`reserved`), or, while a job waits for it (`floor_short`), the room it needs past it,
-    /// when more.
+    /// it (`reserved`: room made for each, a member's job granted for what the caches can free
+    /// among them, `disk_room`), or, while a job is held for its room (`held_room`, with a target
+    /// or without), the room it needs, when more.
     fn goal(&self) -> u64 {
         let target = self.floor();
-        match self.floor_short {
-            Some((t, n, _)) if target > 0 && t == target => target.max(n),
-            // (With a target, the jobs' reservations past it: room made for each, `reserved`, a job
-            // granted for what the caches can free among them, `disk_room`.)
-            _ if target > 0 => target.saturating_add(self.reserved(None)),
-            _ => target,
-        }
+        let reserved = if target > 0 { target.saturating_add(self.reserved(None)) } else { 0 };
+        reserved.max(self.held_room.map_or(0, |h| h.0))
+    }
+
+    /// A job held for `room` free on the disk (its own, the other jobs' reservations and the
+    /// owner's target), now: the caches are freed toward it (`held_room`; of several, the least).
+    fn hold_room(&mut self, room: u64) {
+        self.held_room = Some((self.held_room.map_or(room, |h| h.0.min(room)), Instant::now()));
     }
 
     /// The owner's disk room target in a waiting's words: ", the disk room target 100.0 GB kept
@@ -4433,7 +4456,7 @@ impl Agent {
         self.control.look();
         let set = self.control.settings.get();
         if set.room.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
-            (self.toward_tried, self.floor_short) = (None, None);
+            (self.toward_tried, self.floor_short, self.held_room) = (None, None, None);
         }
         self.room_target = set.room.clone();
         self.in_use_share = set.share.clone();
@@ -5553,8 +5576,11 @@ impl Agent {
         // (By measure, the first slot alone waits for the target, when room-making fell short of it: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
         // likewise, each kept from this Mac an hour.)
+        // (Each wait for room below holds it for the job: the caches are freed toward it on a thread
+        // of their own, `held_room`, `tend_caches`.)
         if !(k > 0 || other) && self.leads() && short && self.disk_free() < room {
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
+            self.hold_room(room);
             return false;
         }
         if k > 0 || other {
@@ -5566,7 +5592,8 @@ impl Agent {
                 } else {
                     String::new()
                 };
-                waiting.push(Waiting { step: Some(step), what: what.clone(), why: format!("needs {} GB free on the disk ({} GB free{held}{}; beside another job, room is made only toward the disk room target)", room >> 30, free >> 30, if floor > 0 { self.floor_words() } else { String::new() }) });
+                waiting.push(Waiting { step: Some(step), what: what.clone(), why: format!("needs {} GB free on the disk ({} GB free{held}{}; beside another job, it starts once this Mac's caches are freed toward it)", room >> 30, free >> 30, if floor > 0 { self.floor_words() } else { String::new() }) });
+                self.hold_room(room);
                 return false;
             }
         } else if let Some(r) = root.filter(|_| self.caches_task.is_none() && self.locks_kept()) {
@@ -5629,11 +5656,13 @@ impl Agent {
                     self.floor_short.filter(|f| f.0 == floor).map_or(room, |f| f.1.min(room)),
                     Instant::now(),
                 ));
+                self.hold_room(room);
                 return false;
             }
         } else if self.leads() && self.disk_free() < room {
             // (Without the NAS no room is made, nor while a freeing runs: it waits for it.)
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
+            self.hold_room(room);
             return false;
         }
         // A member's job its disk still has no room for (the caches emptied as far as they could
@@ -5649,10 +5678,11 @@ impl Agent {
                 );
                 waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
                 // (Held by the owner's target alone: not held against its targets, and no work
-                // asked for meanwhile (`member_job`), but freed toward (`goal`).)
+                // asked for meanwhile (`member_job`), but freed toward (`held_room`).)
                 let by_target = free >= need;
                 if by_target {
                     self.floor_short = Some((floor, room, Instant::now()));
+                    self.hold_room(room);
                 }
                 self.end_lease(k, if by_target { Outcome::Interrupted } else { Outcome::Failed }, &[], &why);
                 return false;
@@ -6387,7 +6417,8 @@ impl Agent {
     /// job's writes: its caches aren't counted. The lead asks alone with its disk unbounded (room
     /// made as its job starts); beside its jobs, a job of its own needs its measured room free as
     /// it starts or is given back, so its caches aren't counted there: granted for them, it would
-    /// be given back each loop.
+    /// be given back each loop. Instead one its coordinator holds back for its disk alone has the
+    /// caches freed toward its room (`held_room`), and is granted once the disk has it.
     fn disk_room(&self) -> u64 {
         let cheap = if self.is_member() && self.floor() > 0 { self.cheap.map_or(0, |c| c.1) } else { 0 };
         self.disk_free().saturating_add(cheap).saturating_sub(self.floor() + self.reserved(None))
@@ -6774,10 +6805,10 @@ impl Agent {
         }
     }
 
-    /// What the caches are due a freeing toward (bytes, `goal`: the owner's disk room target, or
-    /// the room a job held by it needs past it): the disk is short of it, no job runs here (nor one an earlier agent left), and it wasn't tried for
-    /// this target since the last job ended, or in the last ten minutes. (The agent's own: not a
-    /// dry run's.)
+    /// What the caches are due a freeing toward (bytes, `goal`: the owner's disk room target and
+    /// the jobs' reservations, or the room a job held for it needs): the disk is short of it, no
+    /// job an earlier agent left runs here, and it wasn't tried toward as much since the last job
+    /// ended, or in the last ten minutes. (The agent's own: not a dry run's.)
     fn toward_due(&mut self) -> Option<u64> {
         let target = self.goal();
         if target == 0 || self.disk_free() >= target || !self.locks_kept() {
@@ -6791,28 +6822,39 @@ impl Agent {
         (!fresh).then_some(target)
     }
 
-    /// Why the disk is short of the owner's room target and stays so, for the status (None: it
-    /// has it, or the agent frees toward it now or soon).
+    /// Why the disk is short of the owner's room target, or of the room a job is held for
+    /// (`held_room`), and stays so, for the status (None: it has it, or the agent frees toward it
+    /// now or soon).
     fn room_short(&self, nas: bool) -> Option<String> {
         let target = self.floor();
         let free = self.disk_free();
-        if target == 0 || free >= self.goal() || self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
+        if free >= self.goal() || self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
             return None;
         }
+        let held = self.held_room.filter(|h| free >= target && free < h.0);
+        let of = match held {
+            Some((h, _)) => format!(
+                "{} free of the {} a job held for its room needs{}",
+                room::size(free),
+                room::size(h),
+                if target > 0 { format!(" (the target's {} among it)", room::size(target)) } else { String::new() }
+            ),
+            None if target > 0 => format!("{} free of the target's {}", room::size(free), room::size(target)),
+            None => return None,
+        };
         if !nas {
-            return Some(format!("{} free, the target {}: the NAS isn't reachable, and what goes from the caches must be kept there; they're freed toward it once it is", room::size(free), room::size(target)));
+            return Some(format!("{of}: the NAS isn't reachable, and what goes from the caches must be kept there; they're freed toward it once it is"));
         }
-        if free >= target {
+        // (Short of the reservations alone: the jobs take what they reserved as they go.)
+        if free >= target && held.is_none() {
             return None;
         }
         if let Some(g) = self.orphans.first() {
-            return Some(format!("{} free of the target's {}: its caches are freed toward it once the job an earlier agent left ({}) ends (its programs may not keep what they use)", room::size(free), room::size(target), g.id));
+            return Some(format!("{of}: its caches are freed toward it once the job an earlier agent left ({}) ends (its programs may not keep what they use)", g.id));
         }
         let last = self.mem.toward.as_ref().filter(|f| f.target == Some(target))?;
         Some(format!(
-            "{} free of the target's {}: this Mac's build caches have nothing more to free now (the last freeing: {}); the rest of the disk is the map's offline copy, which keeps its own reserve, and other files",
-            room::size(free),
-            room::size(target),
+            "{of}: this Mac's build caches have nothing more to free now (the last freeing: {}); the rest of the disk is the map's offline copy, which keeps its own reserve, and other files",
             last.say()
         ))
     }
@@ -6823,7 +6865,7 @@ impl Agent {
         let t = self.caches_task.as_ref()?;
         let doing = match (&t.ask, t.toward) {
             (Some(_), _) => "cleared".to_string(),
-            (None, Some((t, g))) => format!("freed toward the disk room target ({}){}", room::size(t), room_past(t, g)),
+            (None, Some((t, g))) => format!("freed {}", toward_words(t, g)),
             (None, None) => "freed for a job".to_string(),
         };
         Some(format!(
@@ -6913,13 +6955,7 @@ impl Agent {
         f.at = now_s();
         (f.target, f.goal) = (Some(target), (goal > target).then_some(goal));
         let free = self.disk_free();
-        let note = format!(
-            "freed its caches toward the disk room target ({}){}: {}; {} free",
-            room::size(target),
-            room_past(target, goal),
-            f.say(),
-            room::size(free)
-        );
+        let note = format!("freed its caches {}: {}; {} free", toward_words(target, goal), f.say(), room::size(free));
         eprintln!("agent: {note}");
         if f.bytes() > 0 {
             self.note(crate::coord::history::Event {
@@ -9331,13 +9367,19 @@ fn caches_event(worker: &str, f: &room::Freed) -> crate::coord::history::Event {
     }
 }
 
-/// A freeing toward the room target's goal past the target, in words: ", and the 30.0 GB a job
-/// waiting for it needs past it"; none when it's the target.
-fn room_past(target: u64, goal: u64) -> String {
-    if goal > target {
-        format!(", and the {} a job waiting for it needs past it", room::size(goal - target))
-    } else {
-        String::new()
+/// What a freeing toward `goal` free (`goal`) frees toward, in words, of the owner's room target
+/// `target`: "toward the disk room target (50.0 GB), and the 7.1 GB past it the jobs here and
+/// one held for its room need"; with no target, "toward the 7.1 GB free a job held for its room
+/// needs".
+fn toward_words(target: u64, goal: u64) -> String {
+    match target {
+        0 => format!("toward the {} free a job held for its room needs", room::size(goal)),
+        t if goal > t => format!(
+            "toward the disk room target ({}), and the {} past it the jobs here and one held for its room need",
+            room::size(t),
+            room::size(goal - t)
+        ),
+        t => format!("toward the disk room target ({})", room::size(t)),
     }
 }
 
@@ -11427,7 +11469,8 @@ mod tests {
         // A 5 GB target, which the disk has; it starts.
         room::set_target(&home, Some(5 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
-        a.floor_short = None;
+        // (As the loop does when the target changes.)
+        (a.floor_short, a.held_room) = (None, None);
         assert!(a.try_start(
             0,
             job("unit 6/1/1"),
@@ -11580,7 +11623,8 @@ mod tests {
             assert_eq!(a.mem.toward.as_ref().map(|t| t.at), Some(f.at));
             assert_eq!(a.toward_due(), None);
         }
-        a.floor_short = None;
+        // (The job no longer held: the next decision found none.)
+        a.held_room = None;
         assert_eq!(a.toward_due(), None, "the target alone: tried lately toward more");
         // The status says why it's short, of the target the owner set.
         let short = a.room_short(true).unwrap();
@@ -11588,6 +11632,97 @@ mod tests {
         // A job ended since: tried again.
         a.mem.worked_at = now_s() + 1;
         assert_eq!(a.toward_due(), Some(target));
+    }
+
+    /// Task #1477 (the mini, 18 Nov: 56 GB free, its 50 GB target and 6 GB of reservations
+    /// leaving 0 GB for jobs; a job needing 7.1 GB waited while its caches held 485 GB, and the
+    /// freeings toward the target freed 0 MB: their goal, the target and the reservations, was met,
+    /// and the room held for a job alone was dropped as any job ended). Beside a running job, a job
+    /// of the lead's own its coordinator holds back for its disk alone has the caches freed toward
+    /// its room, the copies of the records' files among them; a job ending doesn't drop that room;
+    /// the status says when the caches have nothing more for it; once the disk has it, it's
+    /// granted and nothing is held.
+    #[test]
+    fn a_job_held_for_its_disk_beside_others_has_the_caches_freed_toward_its_room() {
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let (co, _port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        a.coord = Some(std::sync::Arc::new(co));
+        a.mem_set = Some((16 << 10, 14 << 10));
+        // (A target past the disk the freeing's thread sees, so it frees all it may.)
+        let target = (1u64 << 40) + (100 << 30);
+        room::set_target(&home, Some(target), "a test").unwrap();
+        a.room_target = room::target(&home);
+        a.free_set = Some(target + (20 << 30));
+        let job = |step: &str| JobSpec {
+            id: format!("{step} {step}"),
+            what: step.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(jobs::Work { step: step.into(), targets: vec![(step.into(), "k".into())] }),
+        };
+        let cost = |step: &str, mb: u64| crate::coord::Cost {
+            peak_mb: mb,
+            secs: 60,
+            worker: None,
+            v: crate::coord::cost_version(step),
+            sizes: [("threads".to_string(), 2)].into(),
+            ..Default::default()
+        };
+        let c = a.coord.clone().unwrap();
+        c.add_costs(&[
+            (crate::coord::cost_key("heritage", "heritage"), cost("heritage", 6144)),
+            (crate::coord::cost_key("items", "items"), cost("items", 3072)),
+        ]);
+        c.add_disks(&[(crate::coord::cost_key("items", "items"), 25 << 10)]);
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let mut w = Vec::new();
+        assert_eq!(lead_start(&mut a, &[job("heritage")], &cond, &nas, &mut w), [0], "{w:?}");
+        // Items fits its memory beside heritage, not its disk: 25 GB, 20 GB free past the target.
+        let plan = [job("heritage"), job("items")];
+        assert!(lead_start(&mut a, &plan, &cond, &nas, &mut w).is_empty(), "{w:?}");
+        let held = a.held_room.map(|h| h.0).expect("held for its disk");
+        assert!(held >= target + a.reserved(None) + (25 << 30), "{held}");
+        assert_eq!((a.goal(), a.toward_due()), (held, Some(held)));
+        // Freed toward it, the job running: the copies of the records' files go.
+        let copy = home.join("cache/blobs/sources/x/y.bin");
+        put(&copy, &[0; 1000]);
+        a.tend_caches(Some(&nas));
+        let f = a.mem.toward.clone().unwrap();
+        assert_eq!((f.target, f.goal, f.bytes()), (Some(target), Some(held), 1000), "{f:?}");
+        assert!(!copy.exists());
+        // A job ending (the loop lets room-making be tried again) leaves the room held as it is.
+        a.floor_short = None;
+        a.mem.worked_at = now_s() + 1;
+        assert_eq!((a.goal(), a.toward_due()), (held, Some(held)));
+        // Nothing more to free: the status says so, of the room the job needs.
+        let short = a.room_short(true).unwrap();
+        assert!(short.contains("a job held for its room needs") && short.contains("nothing more to free"), "{short}");
+        // The disk has it: granted, nothing held.
+        a.free_set = Some(target + (40 << 30));
+        assert_eq!(lead_start(&mut a, &plan, &cond, &nas, &mut w), [1], "{w:?}");
+        assert_eq!(a.held_room, None);
+        for k in 0..a.slots.len() {
+            if let Some(r) = a.slots[k].running.as_mut() {
+                r.stop(Duration::from_secs(5));
+                a.end_lease(k, Outcome::Interrupted, &[], "stopped");
+            }
+            a.slots[k].running = None;
+        }
     }
 
     /// A job's end the lead doesn't take (it doesn't answer, or its round failed already) is owed,
