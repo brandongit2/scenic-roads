@@ -37,6 +37,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use syn::visit_mut::VisitMut;
 
+/// The inputs crate's name, and its gate's module's.
+const INPUTS: &str = "inputs";
+
 /// Every crate read, by its name in code (`roadcore`), and every file read (build.rs reruns when one
 /// changes).
 pub struct World {
@@ -150,9 +153,9 @@ impl World {
                 found.extend(self.resolve_relative(c, m, g).into_iter().flat_map(|(gc, gm, _)| self.all(&gc, &gm)));
             }
             // (The registry's cut: mod.rs's items reach none of its child modules' items.)
-            let registry = c == "inputs" && m.as_slice() == ["inputs"];
+            let registry = c == INPUTS && m.as_slice() == [INPUTS];
             todo.extend(
-                found.into_iter().filter(|(fc, fm, _)| !(registry && fc == c && fm.len() > 1 && fm[0] == "inputs")),
+                found.into_iter().filter(|(fc, fm, _)| !(registry && fc == c && fm.len() > 1 && fm[0] == INPUTS)),
             );
         }
         seen
@@ -798,12 +801,12 @@ fn feed(ts: TokenStream, h: &mut xxhash_rust::xxh3::Xxh3, within: Delimiter) {
 /// The code of each module `src/inputs/mod.rs` declares, by name: its items and its modules', and
 /// all they name; the gate's (`gate`) with every item of `mod.rs` too.
 pub fn codes(w: &World) -> Vec<(String, String)> {
-    let top = vec!["inputs".to_string()];
+    let top = vec![INPUTS.to_string()];
     let mut out = Vec::new();
-    for x in &w.crates["inputs"].modules[&top].children {
-        let mut start = w.under("inputs", &[top.clone(), vec![x.clone()]].concat());
+    for x in &w.crates[INPUTS].modules[&top].children {
+        let mut start = w.under(INPUTS, &[top.clone(), vec![x.clone()]].concat());
         if x == "gate" {
-            start.extend(w.all("inputs", &top));
+            start.extend(w.all(INPUTS, &top));
         }
         out.push((x.clone(), w.digest(start)));
     }

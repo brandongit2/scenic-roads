@@ -57,6 +57,7 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 /// says (an anchor, so a common name like `new` exempts that line alone, and goes stale with it),
 /// with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
+    ("crates/inputs/build/checks_code.rs", "INPUTS", "\"inputs\"", "the inputs crate's and its gate module's name in code (the checks' code digests), not an inputs folder"),
     ("crates/agentcore/src/coord/mod.rs", "API", "\"pause\", \"inputs\"", "the build page's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
     ("crates/agentcore/src/coord/mod.rs", "gate", "\"pause\" | \"inputs\"", "the build page's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
     ("crates/agentcore/src/agent/mod.rs", "tell_gate", "post_api(\"inputs\"", "the lead's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),

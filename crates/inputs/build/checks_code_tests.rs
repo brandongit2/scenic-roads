@@ -1,6 +1,7 @@
 //! The checks' code digests (build/checks_code.rs, task #1467): a change to the code a unit's
 //! checks compile to, in its module or anything it names (across modules and crates), moves its
 //! digest, and nothing else does; the typed versions left are held to the code they cover.
+#![cfg(test)]
 
 use super::checks_code::{codes, World};
 use std::collections::BTreeMap;
