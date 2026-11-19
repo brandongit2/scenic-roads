@@ -75,7 +75,7 @@
 //!   until a hand-off of the target is merged, or the plan offers it no more.
 //! - **Too big** (`too-big`): an offered step's targets whose measure fits no Mac that runs it
 //!   even at its best (its memory less its floor; its disk for jobs with what its jobs reserve and
-//!   its caches can free; a disk not said fits nothing: `Status::too_big`,
+//!   its caches can free; a Mac whose ask bounds no disk, on its memory alone: `Status::too_big`,
 //!   crate::coord::Coordinator::too_big): no packing grants them nor holds room for them, so
 //!   they'd wait unsaid. One past a busy Mac's room now but within its best waits for it, unflagged.
 //!   A flag per offer: how many, the first with its memory and disk, and the Mac with the most
@@ -212,7 +212,7 @@ pub fn too_big(st: &Status) -> Vec<Flag> {
         .map(|b| {
             let first = if b.target.is_empty() { format!("its job of {}", b.targets) } else { b.target.clone() };
             let n = if b.targets == 1 { "target".to_string() } else { format!("{} targets", b.targets) };
-            let disk = b.mac_disk_mb.map_or("disk not said".to_string(), |d| format!("{} of disk", gb(d)));
+            let disk = b.mac_disk_mb.map_or("no disk bound".to_string(), |d| format!("{} of disk", gb(d)));
             Flag {
                 kind: "too-big".into(),
                 mac: b.mac.clone(),

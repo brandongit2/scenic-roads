@@ -1367,7 +1367,7 @@ pub struct HandoffRefusal {
 /// first and its measure (MB; its step's disk floor among its disk), and the Mac with the most
 /// memory for jobs at its best among those that run it, with its room then (MB, sched's
 /// `best_room`: its memory less its floor, `ask_limit`; its disk for jobs with what its jobs
-/// reserve and its caches can free, None: not said, which fits nothing). No packing grants it nor
+/// reserve and its caches can free, None: its ask bounds none, which any disk fits). No packing grants it nor
 /// holds room for it (`Sched::room_wait`: room isn't held for what fits no Mac): it waits, so it's
 /// said.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -12094,8 +12094,9 @@ mod tests {
     /// Task #1501: a target is weighed against each Mac at its best, not its room now: past a busy
     /// member's memory and disk now but within its memory less its floor and its disk with its
     /// jobs' reservations given back, it isn't flagged; past every Mac's best, it is. The lead's
-    /// own ask is weighed with its capacity (its ask is kept without it, and leaves its disk out
-    /// while it runs nothing), and a Mac whose disk isn't said fits nothing, its disk said not said.
+    /// own ask is weighed with its capacity (its ask is kept without it), and an ask bounding no
+    /// disk (the lead's own while it runs nothing, a member's that says none) fits any disk, as
+    /// packing grants it: what's granted there is never flagged as granted nowhere.
     #[test]
     fn too_big_weighs_each_mac_at_its_best() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -12125,32 +12126,40 @@ mod tests {
         assert_eq!((b.target.as_str(), b.mem_mb), ("6/1/2", 40_000), "past its best memory; 6/1/1 within it");
 
         // (The lead's own, m4: 4 GB for a job now, its disk left out of its ask as it runs nothing;
-        // at its best 30 GB and 6 GB, as its capacity says. Kept without its capacity, it was
-        // weighed at its 4 GB and its disk not said, and fit nothing.)
+        // at its best 30 GB, as its capacity says. Kept without its capacity, it was weighed at its
+        // 4 GB and fit nothing. Its disk bounds nothing: a target past its capacity's 6 GB fits.)
         let (_d, c, _w, _clock) = every((0, 0));
-        measured_offer(&c, "pack", &[("r", Some((10_000, 1_500, 2000)))]);
+        measured_offer(&c, "pack", &[("r", Some((10_000, 20_000, 2000)))]);
         let cap = Capacity { at: unix_now(), limit_mb: 30_000, disk_mb: 6_000, cores: 8, ..Default::default() };
         c.set_capacity(Some(cap.clone()));
-        let own = Ask { mem_mb: 4_000, disk_mb: None, cap: Some(cap), ..every_ask("m4", "pack", 0, 0) };
+        let own = Ask { mem_mb: 4_000, disk_mb: None, cap: Some(cap.clone()), ..every_ask("m4", "pack", 0, 0) };
         assert!(c.ask_own(&own, &BTreeSet::new(), 0).is_none(), "4 GB now: not granted");
         assert_eq!(c.too_big(), Vec::new(), "within the lead's best");
-        // (Past its best: flagged, with its room at best.)
-        measured_offer(&c, "pack", &[("r", Some((10_000, 1_500, 2000))), ("r2", Some((31_000, 1_500, 2000)))]);
+        // (Past its best memory: flagged, with its room at best, no disk bound.)
+        measured_offer(&c, "pack", &[("r", Some((10_000, 20_000, 2000))), ("r2", Some((31_000, 1_500, 2000)))]);
         let big = c.too_big();
         assert_eq!(big.len(), 1, "{big:?}");
         let b = &big[0];
-        assert_eq!((b.target.as_str(), b.mac.as_str(), b.mac_mem_mb, b.mac_disk_mb), ("r2", "m4", 30_000, Some(6_000)));
-
-        // (A member with no capacity and no disk said: a target within its memory fits nothing.)
-        let (_d, c, w, _clock) = every((0, 0));
-        let blind = Ask { disk_mb: None, cap: None, ..every_ask("m1", "pack", 20_000, 0) };
-        assert!(w.ask(&blind).unwrap().is_none());
-        measured_offer(&c, "pack", &[("h", Some((7_500, 100, 2000)))]);
-        let big = c.too_big();
-        assert_eq!(big.len(), 1, "{big:?}");
-        assert_eq!((big[0].mac_mem_mb, big[0].mac_disk_mb), (20_000, None));
+        assert_eq!((b.target.as_str(), b.mac.as_str(), b.mac_mem_mb, b.mac_disk_mb), ("r2", "m4", 30_000, None));
         let f = crate::agent::flags::too_big(&crate::agent::Status { too_big: big, ..Default::default() });
-        assert!(f[0].said.contains("has 19.5 GB of memory and disk not said for jobs at its best"), "{}", f[0].said);
+        assert!(f[0].said.contains("has 29.3 GB of memory and no disk bound for jobs at its best"), "{}", f[0].said);
+
+        // (The review's probe: the lead alone, room for one now, two targets of 20 GB disk past its
+        // capacity's 6 GB. One is granted; the other, the same, isn't flagged as granted nowhere.)
+        let (_d, c, _w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("r", Some((10_000, 20_000, 2000))), ("r2", Some((10_000, 20_000, 2000)))]);
+        c.set_capacity(Some(cap.clone()));
+        let own = Ask { mem_mb: 12_000, disk_mb: None, cap: Some(cap), want: 1, ..every_ask("m4", "pack", 0, 0) };
+        let g = c.ask_own(&own, &BTreeSet::new(), 0).expect("its disk bounds nothing: granted");
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1), "{:?}", g.work);
+        assert_eq!(c.too_big(), Vec::new(), "the one left fits as the one granted did");
+
+        // (A member whose ask says no disk: granted on its memory alone, so weighed so.)
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("h", Some((7_500, 50_000, 2000))), ("h2", Some((7_500, 50_000, 2000)))]);
+        let blind = Ask { disk_mb: None, cap: None, want: 1, ..every_ask("m1", "pack", 20_000, 0) };
+        assert_eq!(granted(&w, &blind).len(), 1, "granted on its memory");
+        assert_eq!(c.too_big(), Vec::new(), "the other fits it the same");
     }
 
     /// Task #1367: an ask no offer reached the room rule for says so, not the room left: no offer

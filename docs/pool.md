@@ -2937,8 +2937,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
     lead's own with its capacity): its memory less its floor (the most its jobs could hold
     together, `Capacity::limit_mb`), and its disk for jobs with what its jobs have reserved and its
     caches can free given back (`sched`'s `best_room`; `Coordinator::too_big`, the status's
-    `too_big`). A Mac that hasn't said its disk fits nothing, and the flag says its disk is not
-    said. A target past a busy Mac's room now but within its best isn't flagged: it waits for that
+    `too_big`), each Mac's memory and disk together. A Mac whose ask bounds no disk (the lead's
+    own while it runs nothing, which takes no disk of its own) is weighed on its memory alone, as
+    packing grants it, and the flag says "no disk bound" for it. A target past a busy Mac's room now but within its best isn't flagged: it waits for that
     Mac to be quieter. No packing grants one that fits no Mac, and no room is held for it
     (`room_wait`), so it would wait unsaid: a flag per offer, how many, the first with its memory
     and disk, and the Mac with the most memory for jobs at its best, with that room. A memory
