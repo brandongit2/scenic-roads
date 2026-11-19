@@ -10399,7 +10399,7 @@ mod tests {
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w[1].why.starts_with("waiting 48 min") && w[1].what == "depth-lo 3/1/3", "{w:?}");
         // (Held by the pacing: a line for the NAS, and each target's says why.)
-        let held = Some("NAS work paced to 35 % of the NAS, 70 % in use (the NAS cut lately, not grown since: the answers counted not near their best)".to_string());
+        let held = Some("NAS work paced to 35 % of the NAS, 70 % in use (the NAS cut lately, not grown since: the answers rising with the load)".to_string());
         nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 50)], held.clone());
         assert_eq!(w.len(), 3, "{w:?}");
         assert!(w[1].what == "the NAS" && w[1].why.starts_with("NAS work paced to 35 %"), "{w:?}");

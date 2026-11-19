@@ -27,8 +27,10 @@
 //! - **The pacing** (`Pace`, task #1417): the jobs' weights together are held within a window, not
 //!   the whole: every 10 s the coordinator reads every Mac's NAS answer time against its best and
 //!   the NAS's own disks' busy shares (crate::budget::snmp) against the owner's target (`Target`),
-//!   whatever loads the NAS, the build or not, and grows the window slowly while the NAS answers
-//!   near its best, or cuts it to half what's in use once it slows past the knee. A job weighing
+//!   whatever loads the NAS, the build or not, and grows the window slowly while work waits and
+//!   the NAS has room (the disks within the target with the next job, the answers not rising with
+//!   the load), or cuts it to half what's in use once it's congested (the disks over the target,
+//!   the answers past the knee and rising with the load, or missing their deadlines). A job weighing
 //!   less than a step (`Tuning::small`) isn't paced: such jobs are held to the whole together.
 //! - **Downloads**: a job of a fetching step (pipeline::agent::steps::Kind::Fetch) counts one; the
 //!   switch's `downloads <n>` caps them pool-wide (no cap without it).
@@ -75,8 +77,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// The pacing (task #1417): the weight the pool's jobs may hold together, `Limits::window`, found
 /// as TCP finds its window, from the NAS's live latency as every Mac reads it and its disks' busy
 /// share against the owner's target. The NAS is soft with a cliff (on 4 Oct its saturation left
-/// processes on two Macs in uninterruptible waits): work is added slowly while it answers near its
-/// best, and cut quickly once its answers slow, before the cliff. Every `Tuning::read_s` the lead
+/// processes on two Macs in uninterruptible waits): work is added slowly while it has room, and
+/// cut quickly once its answers slow with the load, before the cliff. Every `Tuning::read_s` the lead
 /// reads (`Sample`):
 ///
 /// - each Mac's NAS answer time over its **floor** (`Answer`: both the Mac's own, from its live
@@ -90,44 +92,57 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   Tailscale) never paces the pool alone, while a NAS slowdown, the same milliseconds on a Mac
 ///   at home and one away, is read at the home Mac's scale. A Mac whose NAS calls miss their
 ///   deadline ranks past every knee, and one at home missing them is past the knee whatever its
-///   rank. Growth is judged among the Macs whose floor is within `Tuning::slow` of the least (a
-///   Mac on a slower link jitters by milliseconds of its own floor's scale, past the near band at
-///   the least floor's: a lucky span would read a loaded NAS as near), the second-highest of them
-///   near with three or more, every one with fewer;
+///   rank;
 /// - the NAS's busiest disk's busy share (SNMP, smoothed by `SMOOTH`) against the owner's target
 ///   (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`).
 ///
+/// The answers over the floor say how slow the NAS is, not why: on 19 Nov the counted Mac's
+/// answered 1 to 40 times their best with the disks 0 to 5 % busy and the pool's jobs holding
+/// under 1 % of the NAS, and 20 to 50 times with the disks 50 to 90 % busy (task #1506's replay of
+/// the lead's readings, `nas_19nov.csv`). So the answers are judged as TCP Vegas judges its round
+/// trips, against those at **the load a step lighter**: whenever the weight in use rises, a
+/// `Level` is taken of the readings since it last rose (at that weight or less): their counted
+/// ratios' upper quartile, kept while the load stays heavier. A rise to a load a step or more over
+/// a level is judged against the heaviest such (`Judging`): from a `Tuning::span_s` after it (its
+/// jobs' answers in the readings) for a `Tuning::grow_s`, the answers are **rising** while the
+/// lower quartile of its readings' ratios is past the level's upper quartile (the quicker quarter
+/// now slower than all but the slowest quarter then: the day's noise, a minute of slow answers
+/// now and then whatever the load, passes under it). A load under a step over every level, one
+/// that has fallen, or one judged and taken, isn't: answers slowing then aren't the pool's doing.
+///
 /// Then, as the NAS's own readers decide their reads in flight (store::aimd):
 ///
-/// - **past the knee** (the ratio counted past `Tuning::slow`, or the disks over the target): the
-///   window drops to `Tuning::decrease` of the weight in use at once, never under `Tuning::step`;
-///   the slow start's threshold is set there. The jobs running go on, and nothing more that's
-///   paced starts until enough of them end. No new cut until the weight in use has fallen to the
-///   window and its answers had a `span_s` since to show it (store::aimd's once a window: a cut
-///   compounding on readings of the jobs out before it takes the pool to nothing);
-/// - **near the best** (within `Tuning::near`, the disks within the target, and a Mac's answers
-///   read: the disks alone, or no Mac listing the NAS, never grow it): it grows, only while
-///   it's what limits (the weight in use and the least a job waiting for the budget weighs past
-///   it; none waiting, the weight in use within a step of it: a window no job asks for isn't credit
-///   for a later burst, nor is room left by a job just ended), only on readings every Mac holding
-///   leased jobs gave fresh (none older than its span and a beat: no growth on stale data), and
-///   only once the jobs last started have run a `span_s` (their answers in the reading): doubling a
+/// - **congested** (the disks over the target; the counted Mac missing its deadlines; or its
+///   answers rising, their lower quartile past `Tuning::slow`, over a span's readings at least):
+///   the window drops to `Tuning::decrease` of the weight in use at once, never under
+///   `Tuning::step`; the slow start's threshold is set there. The jobs running go on, and nothing
+///   more that's paced starts until enough of them end. No new cut until the weight in use has
+///   fallen to the window and its answers had a `span_s` since to show it (store::aimd's once a
+///   window: a cut compounding on readings of the jobs out before it takes the pool to nothing);
+/// - **spare** (a Mac's answers read and not rising, and the disks read with room for the next
+///   job: their busy share and the room it needs, a share of the NAS as probed, within the
+///   target; the answers alone, or the disks alone, never grow it): it grows, only while it's what
+///   limits (the weight in use and the least a job waiting for the budget weighs past it; none
+///   waiting, the weight in use within a step of it: a window no job asks for isn't credit for a
+///   later burst, nor is room left by a job just ended), only on readings every Mac holding leased
+///   jobs gave fresh (none older than its span and a beat: no growth on stale data), and only once
+///   the jobs last started have run a `span_s` (their answers in the reading) and the load they
+///   rose to has been judged: doubling a
 ///   `Tuning::grow_s` up to the slow start's threshold (none before the first cut), then a step a
 ///   `grow_s`; and never more than one job past the load its readings tested: the weight in use
 ///   and the next job waiting (a step at least), or under the threshold twice the weight in use
 ///   (at least two steps) where that's more. A window grown on readings of a light load would
-///   admit several heavy jobs in one jump; one job's is what the next reading past the knee cuts
-///   back;
-/// - **between**, or nothing read: it holds.
+///   admit several heavy jobs in one jump; one job's is what the next congested reading cuts back;
+/// - **neither**, or nothing read: it holds.
 ///
 /// A reading that held says why (`Verdict::Held`'s `Hold`: the first of those gates it failed),
 /// for the lead's status (`Reading::line`): a held reading without its reason can't be made.
 ///
 /// A job beside nothing that the window doesn't take goes all the same, but not for
-/// `Tuning::lone_s` from a reading past the knee (`Pace::lone`: beside an outside load near the
-/// cliff, each lone job would take the NAS over it, and the hold is all that keeps it off), each
-/// hold in a row twice as long, to `Tuning::lone_most_s`; a reading near the best ends it. Then
-/// one goes, so nothing waits for good.
+/// `Tuning::lone_s` from a congested reading (`Pace::lone`: beside an outside load near the cliff,
+/// each lone job would take the NAS over it, and the hold is all that keeps it off), each hold in
+/// a row twice as long, to `Tuning::lone_most_s`; a spare reading ends it. Then one goes, so
+/// nothing waits for good.
 ///
 /// It starts at a step, or at what the jobs already leased weigh where that's more (a lead's
 /// coordinator starting knows nothing of the NAS's load but what runs on it), unless the lead kept
@@ -145,6 +160,13 @@ pub struct Pace {
     /// last started have run a span).
     prev_in_use: u32,
     rose_at: Option<u64>,
+    /// The readings with a Mac's answers since the weight in use last rose (within
+    /// `Tuning::floor_s`): when, the weight in use, the counted ratio (a `Level` is taken of them
+    /// as it rises again).
+    seen: std::collections::VecDeque<(u64, u32, f64)>,
+    /// The load last risen to, while it's judged against the level a step lighter (None: not
+    /// judged, or judged and taken).
+    judging: Option<Judging>,
     /// The busiest disk's busy share, smoothed (%; None: not read).
     pub load: Option<f64>,
     /// The target it was last read against (%), and the tuning.
@@ -157,8 +179,8 @@ pub struct Pace {
 /// The pacing's state the lead keeps in its store (agentcore::coord::kept's `PACE`), so a restart
 /// takes it up (`Pace::restore`): the window, the slow start's threshold (None: never cut, it
 /// doubles), when it was last cut, when the weight in use fell to the window since (the next cut's
-/// hold-off), and since when a job beside nothing is held back (`Pace::lone`), all as of `at`
-/// (unix s).
+/// hold-off), since when a job beside nothing is held back (`Pace::lone`), and the answers at the
+/// lighter loads (`Level`s, lightest first), all as of `at` (unix s).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct State {
@@ -174,6 +196,8 @@ pub struct State {
     pub lone_at: Option<u64>,
     #[serde(skip_serializing_if = "is_zero")]
     pub lone_n: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<Level>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -182,13 +206,49 @@ fn is_zero(n: &u32) -> bool {
 
 impl Default for State {
     fn default() -> Self {
-        State { at: 0, window: STEP as f64, threshold: None, cut_at: None, settled_at: None, lone_at: None, lone_n: 0 }
+        State {
+            at: 0,
+            window: STEP as f64,
+            threshold: None,
+            cut_at: None,
+            settled_at: None,
+            lone_at: None,
+            lone_n: 0,
+            levels: Vec::new(),
+        }
     }
 }
 
+/// The answers at a load the pool's jobs held (`Pace::read`): the weight in use (thousandths) and
+/// the upper quartile of the counted ratios over the `Tuning::grow_s` it held before the load
+/// rose past it (at that weight or less).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Level {
+    pub in_use: u32,
+    pub q3: f64,
+}
+
+/// A load the pool's jobs rose to, judged against the answers a step lighter (`Pace::read`): that
+/// level's upper quartile, until when it's judged (unix s), and its counted ratios so far.
+#[derive(Clone, Debug, PartialEq)]
+struct Judging {
+    below: f64,
+    until: u64,
+    ratios: Vec<f64>,
+}
+
+/// The `q`-th quartile of `v` (the ⌈qn/4⌉-th least: 1 the lower, 3 the upper); None when it's
+/// empty.
+fn quartile(v: impl IntoIterator<Item = f64>, q: usize) -> Option<f64> {
+    let mut v: Vec<f64> = v.into_iter().filter(|x| x.is_finite()).collect();
+    v.sort_by(f64::total_cmp);
+    (!v.is_empty()).then(|| v[(q * v.len()).div_ceil(4).max(1) - 1])
+}
+
 /// One reading of the pacing (`Pace::read`): when (unix s), the Mac whose answers counted and its
-/// ratio (one more than its excess over the least floor, at most `RATIO_MOST`), whether it was past
-/// the knee, the disks' smoothed load, the weight in use and the room the next job waiting needs
+/// ratio (one more than its excess over the least floor, at most `RATIO_MOST`), the upper quartile
+/// of the ratios a step lighter (`Level`; None: no such load), whether it was congested (`past`),
+/// the disks' smoothed load, the weight in use and the room the next job waiting needs
 /// (`Sample::wants`), what it did (and why, where it held), the slow start's threshold after it,
 /// and until when a job beside nothing is held back (`Pace::lone`; None: it isn't).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -199,6 +259,8 @@ pub struct Reading {
     pub counted: Option<Answer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub below: Option<f64>,
     pub past: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_pct: Option<f64>,
@@ -216,16 +278,21 @@ pub struct Reading {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Hold {
-    /// Past the knee within the last cut's hold-off: the weight in use not yet down to the window,
-    /// or no `Tuning::span_s` since it fell there.
+    /// Congested within the last cut's hold-off: the weight in use not yet down to the window, or
+    /// no `Tuning::span_s` since it fell there.
     HoldOff,
     /// No Mac's answers read (none listing the NAS), the disks alone within the target.
     NoAnswer,
-    /// Under the knee, not near the best.
-    NotNear,
+    /// The answers rising with the load: past the upper quartile of those a step lighter.
+    Rising,
+    /// No disk reading: the NAS's room unknown.
+    NoDisks,
+    /// The disks' busy share and the room the next job needs past the target.
+    Busy,
     /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
     NotFresh,
-    /// The jobs last started haven't run a `Tuning::span_s`.
+    /// The jobs last started haven't run a `Tuning::span_s`, or the load they rose to is still
+    /// judged against the one a step lighter.
     Started,
     /// The window isn't what limits: the room the next job waiting needs fits beside what's in use
     /// (none waiting: the weight in use more than a step under it).
@@ -236,11 +303,13 @@ impl Hold {
     /// What it says, for the lead's status.
     pub fn words(self) -> &'static str {
         match self {
-            Hold::HoldOff => "past the knee, within the last cut's hold-off",
+            Hold::HoldOff => "congested, within the last cut's hold-off",
             Hold::NoAnswer => "no Mac's answers read",
-            Hold::NotNear => "the answers counted not near their best",
+            Hold::Rising => "the answers rising with the load",
+            Hold::NoDisks => "the disks not read",
+            Hold::Busy => "the disks too busy for the next job",
             Hold::NotFresh => "not every Mac's answers fresh",
-            Hold::Started => "the jobs last started not a span old",
+            Hold::Started => "the jobs last started not yet judged",
             Hold::NotLimiting => "the window not what limits",
         }
     }
@@ -255,7 +324,8 @@ impl Reading {
         let wants = self.wants.map_or(", none held back for it".to_string(), |w| {
             format!(", the next job held back for it needs {}", pct(w))
         });
-        let ratio = self.ratio.map_or(String::new(), |x| format!(", answers {x:.1}× their best"));
+        let below = self.below.map_or(String::new(), |b| format!(" ({b:.1}× a step lighter)"));
+        let ratio = self.ratio.map_or(String::new(), |x| format!(", answers {x:.1}× their best{below}"));
         let load = self.load_pct.map_or(String::new(), |l| format!(", disks {l:.0} % busy"));
         let verdict = match self.verdict {
             Verdict::Grew => "grew".to_string(),
@@ -370,10 +440,9 @@ pub struct Tuning {
     /// The span a Mac's floor is its least answer over (s): long enough that a busy stretch, an
     /// hour-long job's, never becomes the floor; a link change starts it again.
     pub floor_s: u64,
-    /// Past this many times its floor, a Mac's answers are past the knee.
+    /// Past this many times its floor, a Mac's answers are past the knee (congested where they
+    /// also rise with the load).
     pub slow: f64,
-    /// Within this many times its floor, near its best.
-    pub near: f64,
     /// The growth's cadence (s): the window doubles, or grows a step, in this long.
     pub grow_s: u64,
     /// How often the lead reads (s).
@@ -447,7 +516,6 @@ impl Default for Tuning {
             decrease: DECREASE,
             floor_s: FLOOR_S,
             slow: store::aimd::SLOW,
-            near: store::aimd::NEAR,
             grow_s: GROW_S,
             read_s: READ_EVERY_S,
             span_s: SPAN_S,
@@ -465,7 +533,7 @@ pub type Knob = crate::settings::Knob<Tuning>;
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.
-pub const KNOBS: [Knob; 14] = [
+pub const KNOBS: [Knob; 13] = [
     Knob {
         name: "nas-step",
         what: "the window's step a growth cadence, and its least",
@@ -504,21 +572,12 @@ pub const KNOBS: [Knob; 14] = [
     },
     Knob {
         name: "nas-slow",
-        what: "the knee: answers past this many times their best cut the window",
+        what: "the knee: answers past this many times their best, rising with the load, cut the window",
         unit: "×",
         least: 1.5,
         most: 10.0,
         get: |k| k.slow,
         set: |k, v| k.slow = v,
-    },
-    Knob {
-        name: "nas-near",
-        what: "near the best: answers within this many times it let the window grow",
-        unit: "×",
-        least: 1.05,
-        most: 2.0,
-        get: |k| k.near,
-        set: |k, v| k.near = v,
     },
     Knob {
         name: "nas-grow-seconds",
@@ -601,7 +660,7 @@ pub fn knob(name: &str) -> Option<&'static Knob> {
 
 impl Tuning {
     /// The tuning with each knob's value as `get` says it (None, or out of its range: its default);
-    /// near never past the knee, the longest hold never under one.
+    /// the longest hold never under one.
     pub fn of(get: impl Fn(&str) -> Option<f64>) -> Tuning {
         let mut k = Tuning::default();
         for n in &KNOBS {
@@ -609,7 +668,6 @@ impl Tuning {
                 (n.set)(&mut k, v);
             }
         }
-        k.near = k.near.min(k.slow);
         k.lone_most_s = k.lone_most_s.max(k.lone_s);
         k
     }
@@ -642,15 +700,15 @@ impl Pace {
 
     /// Whether a job beside nothing that the window doesn't take may go all the same
     /// (`Limits::alone`): not for `lone_for` from a reading past the knee (a lone job beside an
-    /// outside load that holds the NAS near its cliff goes over it; the knee's reading may be its
-    /// own); open again once the hold has lasted, or a reading near the best has ended it.
+    /// outside load that holds the NAS near its cliff goes over it; the congested reading may be
+    /// its own); open again once the hold has lasted, or a spare reading has ended it.
     pub fn lone(&self) -> bool {
         let at = self.last.as_ref().map_or(0, |r| r.at);
         self.st.lone_at.is_none_or(|s| at >= s + self.lone_for())
     }
 
     /// How long the lone way's hold lasts (s): `Tuning::lone_s`, doubled for each hold since the
-    /// NAS last answered near its best, to `Tuning::lone_most_s` at most (an outside load that
+    /// NAS last had room (a spare reading), to `Tuning::lone_most_s` at most (an outside load that
     /// holds the NAS near its cliff for hours lets a lone job over it ever more rarely).
     fn lone_for(&self) -> u64 {
         let k = &self.tuning;
@@ -684,20 +742,66 @@ impl Pace {
         let home_missed = each.iter().find(|a| a.home && a.missed).copied();
         let counted = home_missed.or(each.get(usize::from(each.len() >= 2)).copied()).cloned();
         let ratio = counted.as_ref().map(|a| a.ratio(least));
-        let peers: Vec<&Answer> = each.iter().copied().filter(|a| a.floor_ms <= least * k.slow).collect();
-        let near = peers.get(usize::from(peers.len() >= 3)).is_none_or(|a| a.ratio(least) <= k.near);
         let fresh = !s.blind && each.iter().all(|a| a.fresh);
+        // (The answers at the lighter loads: a level taken of the last `grow_s`'s readings as the
+        // load rises past them, those no lighter than the load now let go as it falls. A rise a
+        // step or more over a level is judged against it: the readings from a span after it (its
+        // jobs' answers in them) to a `grow_s` after that.)
+        let prev = self.prev_in_use;
+        if s.in_use > prev {
+            self.rose_at = Some(t);
+            let q3 = quartile(self.seen.drain(..).filter(|x| x.1 <= prev).map(|x| x.2), 3);
+            if let Some(q3) = q3 {
+                self.st.levels.retain(|l| l.in_use < prev);
+                self.st.levels.push(Level { in_use: prev, q3 });
+            }
+            let below = self.st.levels.iter().rev().find(|l| l.in_use.saturating_add(k.step) <= s.in_use);
+            self.judging = below.map(|l| Judging { below: l.q3, until: t + k.span_s + k.grow_s, ratios: Vec::new() });
+        } else if s.in_use < prev {
+            self.st.levels.retain(|l| l.in_use < s.in_use);
+            self.judging = None;
+        }
+        self.prev_in_use = s.in_use;
+        if let Some(r) = ratio {
+            self.seen.push_back((t, s.in_use, r));
+        }
+        while self.seen.front().is_some_and(|x| x.0 + k.floor_s <= t) {
+            self.seen.pop_front();
+        }
+        if self.judging.as_ref().is_some_and(|j| t > j.until) {
+            self.judging = None;
+        }
+        let started = self.rose_at.is_some_and(|r| t < r + k.span_s);
+        if let (Some(j), Some(r), false) = (self.judging.as_mut(), ratio, started) {
+            j.ratios.push(r);
+        }
+        // (Rising: the quicker quarter of the answers at the load risen to slower than all but the
+        // slowest quarter a step lighter; past the knee too, over a span's readings at least:
+        // congested.)
+        let below = self.judging.as_ref().map(|j| j.below);
+        let quick = self.judging.as_ref().and_then(|j| quartile(j.ratios.iter().copied(), 1));
+        let rising = matches!((quick, below), (Some(q), Some(b)) if q > b);
+        let judged = self.judging.as_ref().is_some_and(|j| j.ratios.len() as u64 * k.read_s.max(1) >= k.span_s);
+        let slow = rising && judged && quick.is_some_and(|q| q > k.slow);
         let over = self.load.is_some_and(|l| l > s.pct as f64);
-        let past = over || ratio.is_some_and(|r| r > k.slow);
-        // (The lone way's hold: begun at a reading past the knee; once it has lasted its time
-        // (`lone_for`), let go by a reading under the knee or a job going beside nothing, a reading
-        // past it then beginning another, twice as long; a reading near the best ends it whenever,
-        // and its doubling.)
+        let missed = counted.as_ref().is_some_and(|a| a.missed);
+        let past = over || missed || slow;
+        // (Room for a job of weight `w`: the disks' busy share and its weight, a share of the NAS as
+        // probed, within the target. None: the disks not read. Spare: a step's room, the answers
+        // read and not rising.)
+        let load = self.load;
+        let room_for = |w: u32| load.map(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
+        let room = room_for(s.wants.unwrap_or(k.step));
+        let spare = ratio.is_some() && !rising && room_for(k.step) == Some(true);
+        // (The lone way's hold: begun at a congested reading; once it has lasted its time
+        // (`lone_for`), let go by a reading not congested or a job going beside nothing, a
+        // congested reading then beginning another, twice as long; a spare reading ends it
+        // whenever, and its doubling.)
         let expired = self.st.lone_at.is_some_and(|at| t >= at + self.lone_for());
-        if expired && (!past || (self.prev_in_use == 0 && s.in_use > 0)) {
+        if expired && (!past || (prev == 0 && s.in_use > 0)) {
             self.st.lone_at = None;
         }
-        if near && !past && ratio.is_some() {
+        if spare && !past {
             (self.st.lone_at, self.st.lone_n) = (None, 0);
         }
         if past && self.st.lone_at.is_none() {
@@ -707,10 +811,6 @@ impl Pace {
         if self.last.is_none() && !self.restored {
             self.st.window = self.st.window.max(in_use);
         }
-        if s.in_use > self.prev_in_use {
-            self.rose_at = Some(t);
-        }
-        self.prev_in_use = s.in_use;
         let st = &mut self.st;
         if st.cut_at.is_some() && st.settled_at.is_none() && in_use <= st.window {
             st.settled_at = Some(t);
@@ -720,8 +820,8 @@ impl Pace {
         let unread = ratio.is_none() && self.load.is_none();
         // (The most past the load its readings tested it grows to: one job more, the next one
         // waiting (a step at least, none waiting); in the slow start, twice the weight in use too
-        // (two steps at least). A jump of one job's weight, which the next reading past the knee
-        // cuts back.)
+        // (two steps at least). A jump of one job's weight, which the next congested reading cuts
+        // back.)
         let additive = st.threshold.is_some_and(|th| st.window >= th);
         let one_more = in_use + s.wants.map_or(0.0, f64::from).max(step);
         let ceiling = if additive { one_more } else { one_more.max(2.0 * in_use.max(step)) };
@@ -731,11 +831,15 @@ impl Pace {
             (st.cut_at.is_some() && st.settled_at.is_none_or(|at| t < at + k.span_s)).then_some(Hold::HoldOff)
         } else if ratio.is_none() {
             Some(Hold::NoAnswer)
-        } else if !near {
-            Some(Hold::NotNear)
+        } else if rising {
+            Some(Hold::Rising)
+        } else if room.is_none() {
+            Some(Hold::NoDisks)
+        } else if room == Some(false) {
+            Some(Hold::Busy)
         } else if !fresh {
             Some(Hold::NotFresh)
-        } else if self.rose_at.is_some_and(|r| t < r + k.span_s) {
+        } else if started || self.judging.is_some() {
             Some(Hold::Started)
         } else if in_use + s.wants.map_or(step, f64::from) <= st.window {
             Some(Hold::NotLimiting)
@@ -769,6 +873,7 @@ impl Pace {
             at: t,
             counted,
             ratio,
+            below,
             past,
             load_pct,
             in_use: s.in_use,
@@ -791,8 +896,8 @@ impl Pace {
                     format!("its disks {l:.0} % busy, over the target {} %", self.target)
                 }
                 (Some(a), ..) if a.missed => format!("missing its deadlines from {}", a.mac),
-                (Some(a), _, Some(x)) if x > self.tuning.slow => {
-                    format!("answering {} in {:.0} ms, {:.1}× its best", a.mac, a.ms, x)
+                (Some(a), _, Some(x)) if x > self.tuning.slow && r.below.is_some_and(|b| x > b) => {
+                    format!("answering {} in {:.0} ms, {:.1}× its best, rising with the load", a.mac, a.ms, x)
                 }
                 _ => match r.verdict.hold() {
                     Some(h) => format!("cut lately, not grown since: {}", h.words()),
@@ -1327,22 +1432,76 @@ mod tests {
         Answer { mac: mac.into(), home: true, ms, floor_ms: floor, missed: false, fresh: true }
     }
 
-    /// A reading of `answers`, the disks unread, by the default tuning.
-    fn read(p: &mut Pace, t: u64, answers: &[Answer], in_use: u32, wants: Option<u32>) -> Verdict {
-        let s = Sample { t, answers, blind: false, busy: None, pct: DEFAULT_TARGET_PCT, in_use, wants };
+    /// The disks quiet: 2 % busy.
+    const QUIET: [f64; 1] = [2.0];
+
+    /// A reading of `answers`, the disks at `busy`, by the default tuning.
+    fn disks(p: &mut Pace, t: u64, answers: &[Answer], busy: &[f64], in_use: u32, wants: Option<u32>) -> Verdict {
+        let s = Sample { t, answers, blind: false, busy: Some(busy), pct: DEFAULT_TARGET_PCT, in_use, wants };
         p.read(&s, &Tuning::default())
     }
 
-    /// A reading of one Mac answering in `ms` against a floor of 5 ms.
+    /// A reading of `answers`, the disks quiet, by the default tuning.
+    fn read(p: &mut Pace, t: u64, answers: &[Answer], in_use: u32, wants: Option<u32>) -> Verdict {
+        disks(p, t, answers, &QUIET, in_use, wants)
+    }
+
+    /// A reading of one Mac answering in `ms` against a floor of 5 ms, the disks quiet.
     fn at(p: &mut Pace, t: u64, ms: f64, in_use: u32, wants: Option<u32>) -> Verdict {
         read(p, t, &[ans("m1", ms, 5.0)], in_use, wants)
     }
 
-    /// Near the NAS's best the window doubles a minute while it's what limits, until its first
-    /// cut, and not until the jobs last started have run a span; past the knee it drops to half
-    /// the weight in use at once, and once more only once that has fallen to it and a span passed;
-    /// between, it holds; then it doubles back to the slow start's threshold and grows a step a
-    /// minute.
+    /// A reading of one Mac missing its deadlines, the disks quiet.
+    fn miss(p: &mut Pace, t: u64, in_use: u32, wants: Option<u32>) -> Verdict {
+        read(p, t, &[Answer { missed: true, ..ans("m1", 5.0, 5.0) }], in_use, wants)
+    }
+
+    /// `n` readings of `answers` every `READ_EVERY_S` from `t` on (`t` left after the last), the
+    /// disks quiet: their verdicts.
+    fn readings(
+        p: &mut Pace,
+        t: &mut u64,
+        n: usize,
+        answers: &[Answer],
+        in_use: u32,
+        wants: Option<u32>,
+    ) -> Vec<Verdict> {
+        (0..n)
+            .map(|_| {
+                *t += READ_EVERY_S;
+                read(p, *t, answers, in_use, wants)
+            })
+            .collect()
+    }
+
+    /// `readings` of one Mac answering in `ms` against a floor of 5 ms.
+    fn run(p: &mut Pace, t: &mut u64, n: usize, ms: f64, in_use: u32, wants: Option<u32>) -> Vec<Verdict> {
+        readings(p, t, n, &[ans("m1", ms, 5.0)], in_use, wants)
+    }
+
+    /// The readings from a rise to its first cut on answers rising past the knee: the rise's, a
+    /// span's for its jobs' answers to show, and a span's of readings judged.
+    const JUDGED: usize = (2 * SPAN_S / READ_EVERY_S) as usize;
+
+    /// Whether `v` ends in a cut, none before.
+    fn cut_last(v: &[Verdict]) -> bool {
+        v.last() == Some(&Verdict::Cut) && !v[..v.len() - 1].contains(&Verdict::Cut)
+    }
+
+    /// A pacing whose answers `best` were read at no load for a minute (a level the load rises
+    /// from), and the time of its last reading.
+    fn primed(best: &[Answer]) -> (Pace, u64) {
+        let mut p = Pace::default();
+        for t in (0..60).step_by(10) {
+            read(&mut p, t, best, 0, None);
+        }
+        (p, 50)
+    }
+
+    /// With room the window doubles a minute while it's what limits, until its first cut, and not
+    /// while the load the jobs last started rose to is judged; answers rising with the load hold
+    /// it; past the knee and rising over a span's readings it drops to half the weight in use at
+    /// once; then it doubles back to the slow start's threshold and grows a step a minute.
     #[test]
     fn the_window_grows_slowly_and_is_cut_quickly() {
         let mut p = Pace::default();
@@ -1350,68 +1509,51 @@ mod tests {
         // (Not what limits: nothing waits, and the weight in use is far under it.)
         assert!(matches!(at(&mut p, 0, 5.0, 0, None), Verdict::Held(_)));
         let mut t = 0;
-        for _ in 0..6 {
-            t += 10;
-            assert_eq!(at(&mut p, t, 5.0, 0, Some(150)), Verdict::Grew);
-        }
+        assert!(run(&mut p, &mut t, 6, 5.0, 0, Some(150)).iter().all(|v| *v == Verdict::Grew));
         assert_eq!(p.window(), 2 * STEP, "doubled in a minute");
-        // (Jobs started: no growth until they've run a span, their answers in the reading.)
-        for _ in 0..3 {
-            t += 10;
-            assert!(matches!(at(&mut p, t, 5.0, 700, Some(150)), Verdict::Held(_)));
-        }
-        for _ in 0..12 {
-            t += 10;
-            assert_eq!(at(&mut p, t, 5.0, 700, Some(150)), Verdict::Grew);
-        }
+        // (Jobs started a step over the level at no load: held while they're judged, a span for
+        // their answers to show and a growth cadence of readings.)
+        let held = run(&mut p, &mut t, 11, 5.0, 700, Some(150));
+        assert!(held[..10].iter().all(|v| *v == Verdict::Held(Hold::Started)) && held[10] == Verdict::Grew, "{held:?}");
+        assert_eq!(p.st.levels, [Level { in_use: 0, q3: 1.0 }], "the answers at no load");
+        assert!(run(&mut p, &mut t, 11, 5.0, 700, Some(150)).iter().all(|v| *v == Verdict::Grew));
         assert_eq!(p.window(), 4 * 2 * STEP, "slow start: doubling a minute");
-        // (Between `NEAR` and `SLOW` of its floor: held.)
-        t += 10;
-        assert!(matches!(at(&mut p, t, 10.0, 700, Some(150)), Verdict::Held(_)));
+        // (A step heavier, slower than the step lighter, under the knee: rising, held.)
+        let v = run(&mut p, &mut t, 9, 10.0, 800, Some(150));
+        assert_eq!(v.last(), Some(&Verdict::Held(Hold::Rising)), "{v:?}");
         assert_eq!(p.window(), 400);
-        // (Past the knee: half what's in use, at once; not again while the jobs out before it run.)
-        t += 10;
-        assert_eq!(at(&mut p, t, 16.0, 800, Some(150)), Verdict::Cut);
-        assert_eq!(p.window(), 400, "half the 800 in use: no more than it was");
+        // (A step heavier again, past the knee and rising: half what's in use, once a span's
+        // readings show it.)
+        let v = run(&mut p, &mut t, JUDGED, 16.0, 900, Some(150));
+        assert!(cut_last(&v), "{v:?}");
+        assert_eq!(p.window(), 400, "half the 900 in use: no more than it was");
         assert_eq!(
             p.why().unwrap(),
-            "NAS work paced to 40 % of the NAS, 80 % in use (the NAS answering m1 in 16 ms, 3.2× its best)"
+            "NAS work paced to 40 % of the NAS, 90 % in use (the NAS answering m1 in 16 ms, 3.2× its best, \
+             rising with the load)"
         );
-        t += 10;
-        assert!(matches!(at(&mut p, t, 16.0, 700, Some(150)), Verdict::Held(_)), "the jobs out before the cut");
-        // (Fallen to the window: cut again once its answers had a span to show it.)
-        t += 10;
-        assert!(matches!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held(_)));
-        t += 20;
-        assert!(matches!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Held(_)));
-        t += 10;
-        assert_eq!(at(&mut p, t, 16.0, 300, Some(150)), Verdict::Cut);
-        assert_eq!(p.window(), 150, "the NAS still slow: half what's left");
-        // (Calm again: at the threshold, a step a minute, no more doubling.)
-        for _ in 0..6 {
-            t += 10;
-            assert_eq!(at(&mut p, t, 5.0, 150, Some(150)), Verdict::Grew);
-        }
-        assert_eq!(p.window(), 150 + STEP);
-        assert!(p.why().is_none(), "the window over what's in use");
-        // (Cut never under a step: an outside load with nothing of the pool's running.)
-        t += 10;
-        at(&mut p, t, 40.0, 0, Some(150));
+        assert_eq!(
+            at(&mut p, t + 10, 16.0, 900, Some(150)),
+            Verdict::Held(Hold::HoldOff),
+            "the jobs out before the cut"
+        );
+        // (Nothing of the pool's out: slow answers aren't its doing, but missed deadlines cut it,
+        // never under a step.)
+        t += 100;
+        assert_eq!(at(&mut p, t, 40.0, 0, Some(150)), Verdict::Held(Hold::NotLimiting), "not the pool's doing");
+        t += SPAN_S;
+        assert_eq!(miss(&mut p, t, 0, Some(150)), Verdict::Cut);
         assert_eq!(p.window(), STEP);
         // (Under its threshold, it doubles back to it, then adds a step a minute.)
         let mut q = Pace::default();
         at(&mut q, 0, 5.0, 0, None);
-        assert_eq!(at(&mut q, 10, 40.0, 400, None), Verdict::Cut);
+        let mut t = 0;
+        assert!(cut_last(&run(&mut q, &mut t, JUDGED, 40.0, 400, None)));
         assert_eq!((q.window(), q.st.threshold), (STEP, Some(200.0)));
-        assert!(
-            matches!(at(&mut q, 20, 5.0, 400, None), Verdict::Held(_)),
-            "the jobs started at the cut not run a span yet"
-        );
-        for t in [40, 100, 160] {
-            assert_eq!(at(&mut q, t, 5.0, 400, None), Verdict::Grew);
-        }
+        let v = run(&mut q, &mut t, 16, 5.0, 400, None);
+        assert_eq!(v.iter().filter(|v| **v == Verdict::Grew).count(), 12, "grown once judged: {v:?}");
         assert_eq!(q.window(), 200, "doubled back to half what was in use at the cut, no further");
-        at(&mut q, 220, 5.0, 400, None);
+        run(&mut q, &mut t, 6, 5.0, 400, None);
         assert_eq!(q.window(), 250, "then a step a minute");
         // (A lead starting beside jobs already leased: from what they weigh.)
         let mut q = Pace::default();
@@ -1419,35 +1561,138 @@ mod tests {
         assert_eq!(q.window(), 700);
     }
 
-    /// The disks over the owner's target cut the window as a slow answer does; nothing read holds
-    /// it.
+    /// The answers are judged against those a step lighter: a level is taken as the load rises
+    /// (the upper quartile of the last growth cadence's ratios), kept while the load stays at
+    /// least that heavy, let go once it falls; a load less than a step over any level isn't
+    /// judged, and its answers, however slow, aren't the pool's doing; nor are answers slowing at a
+    /// load once judged.
+    #[test]
+    fn the_answers_are_judged_against_those_a_step_lighter() {
+        let mut p = Pace::default();
+        // (A minute at no load, one slow answer in four: the quartile passes over it.)
+        for (i, t) in (0..60).step_by(10).enumerate() {
+            at(&mut p, t, if i % 4 == 3 { 100.0 } else { 5.0 }, 0, None);
+        }
+        let mut t = 50;
+        // (40 in use: under a step over the level at no load, so 20 times its best is not the
+        // pool's doing.)
+        let v = run(&mut p, &mut t, 12, 100.0, 40, Some(150));
+        assert!(!v.contains(&Verdict::Cut), "{v:?}");
+        assert_eq!(p.st.levels, [Level { in_use: 0, q3: 1.0 }]);
+        assert_eq!(p.last.as_ref().unwrap().below, None);
+        run(&mut p, &mut t, 40, 5.0, 40, Some(150));
+        // (Up to 150: a step over both levels (40's mostly quick), slow, rising: cut.)
+        let v = run(&mut p, &mut t, JUDGED, 100.0, 150, Some(150));
+        assert!(cut_last(&v), "{v:?}");
+        assert_eq!(p.last.as_ref().unwrap().below, Some(1.0));
+        assert_eq!(p.st.levels.iter().map(|l| l.in_use).collect::<Vec<_>>(), [0, 40], "40's taken too");
+        // (Judged and taken, the load unchanged: answers slowing later aren't its doing.)
+        let v = run(&mut p, &mut t, 30, 100.0, 150, Some(150));
+        assert!(!v.contains(&Verdict::Cut), "{v:?}");
+        // (Fallen back under 40: its level let go, the one at no load kept.)
+        at(&mut p, t + 10, 100.0, 20, None);
+        assert_eq!(p.st.levels.iter().map(|l| l.in_use).collect::<Vec<_>>(), [0]);
+        // (A noisy level: answers within its upper quartile aren't rising, past it they are.)
+        let (mut q, mut t) = (Pace::default(), 0);
+        for ms in [5.0, 50.0, 5.0, 50.0, 5.0, 5.0] {
+            run(&mut q, &mut t, 1, ms, 0, None);
+        }
+        let v = run(&mut q, &mut t, 12, 50.0, 300, Some(150));
+        assert_eq!(q.st.levels.last().unwrap().q3, 10.0, "two slow of six: the quartile among them");
+        assert!(!v.contains(&Verdict::Cut) && v.last() == Some(&Verdict::Grew), "as slow as a step lighter: {v:?}");
+        let v = run(&mut q, &mut t, JUDGED, 60.0, 450, Some(150));
+        assert!(cut_last(&v), "slower: rising: {v:?}");
+    }
+
+    /// Task #1506's two readings of 19 Nov as cases. 18:51: the disks 3 % busy, the pool holding 3
+    /// thousandths, the answers 1.4 times their best and every third reading 40 times (the day's
+    /// noise with the disks idle), jobs of 100 waiting, each adding a tenth to the disks: the
+    /// window grows to take them, a job at a time, until the disks leave no room for one more
+    /// within the target, never cut. 19:12: the load risen from 24 to 124, the answers from 1.4
+    /// to 4.8 times their best with it, the disks 68 % busy: cut once a span's readings show it;
+    /// the same answers at a load that hasn't risen aren't the pool's doing.
+    #[test]
+    fn an_idle_nas_grows_the_window_and_one_slowing_with_the_load_cuts_it() {
+        let (mut p, mut t, mut jobs, w) = (Pace::default(), 0, 0u32, 100);
+        for i in 0..360 {
+            t += READ_EVERY_S;
+            let ms = if i % 3 == 2 { 80.0 } else { 2.8 };
+            let busy = 3.0 + f64::from(jobs * w) / 10.0;
+            let v = disks(&mut p, t, &[ans("m6", ms, 2.0)], &[busy], 3 + jobs * w, Some(w));
+            assert_ne!(v, Verdict::Cut, "{t}");
+            let l = Limits { window: p.window(), alone: p.lone(), ..Default::default() };
+            while l.paced(3 + jobs * w, w) {
+                jobs += 1;
+            }
+        }
+        assert_eq!(jobs, 8, "the disks at 83 %: no room for a ninth within 85 %");
+        assert_eq!(p.last.as_ref().unwrap().verdict, Verdict::Held(Hold::Busy));
+        // (19:12.)
+        let mut p = Pace::default();
+        p.load = Some(6.0);
+        for t in (0..300).step_by(10) {
+            disks(&mut p, t, &[ans("m6", 2.8, 2.0)], &[6.0], 24, Some(w));
+        }
+        p.load = Some(68.0);
+        let mut t = 290;
+        let at_1912 = |p: &mut Pace, t: &mut u64, in_use: u32| -> Vec<Verdict> {
+            (0..JUDGED)
+                .map(|_| {
+                    *t += READ_EVERY_S;
+                    disks(p, *t, &[ans("m6", 9.6, 2.0)], &[68.0], in_use, Some(w))
+                })
+                .collect()
+        };
+        assert!(cut_last(&at_1912(&mut p, &mut t, 124)));
+        assert_eq!(p.window(), STEP.max(62), "half the 124 in use");
+        let mut q = Pace::default();
+        q.load = Some(68.0);
+        let mut t = 0;
+        at_1912(&mut q, &mut t, 124);
+        let v = at_1912(&mut q, &mut t, 124);
+        assert!(!v.contains(&Verdict::Cut), "no lighter load to rise from: {v:?}");
+    }
+
+    /// The disks over the owner's target cut the window; nothing read holds it; with the answers
+    /// read it grows only when the disks are read and leave the next job room within the target.
     #[test]
     fn the_disks_over_the_target_cut_it_and_nothing_read_holds_it() {
         let mut p = Pace::default();
         let k = Tuning::default();
-        let disks = |p: &mut Pace, t: u64, busy: Option<&[f64]>| {
+        let busy = |p: &mut Pace, t: u64, busy: Option<&[f64]>| {
             p.read(&Sample { t, answers: &[], blind: false, busy, pct: 85, in_use: 100, wants: Some(150) }, &k)
         };
-        assert_eq!(disks(&mut p, 0, None), Verdict::Unread);
+        assert_eq!(busy(&mut p, 0, None), Verdict::Unread);
         assert!(
-            matches!(disks(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Held(_)),
+            matches!(busy(&mut p, 30, Some(&[40.0, 60.0])), Verdict::Held(_)),
             "within the target, but no answers: held"
         );
         assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NoAnswer));
         assert_eq!(p.load, Some(60.0));
-        assert!(matches!(disks(&mut p, 40, Some(&[95.0])), Verdict::Held(_)), "smoothed: one busy reading isn't over");
-        let cut = (5..10).map(|k| disks(&mut p, k * 10, Some(&[95.0]))).filter(|v| *v == Verdict::Cut).count();
+        assert!(matches!(busy(&mut p, 40, Some(&[95.0])), Verdict::Held(_)), "smoothed: one busy reading isn't over");
+        let cut = (5..10).map(|k| busy(&mut p, k * 10, Some(&[95.0]))).filter(|v| *v == Verdict::Cut).count();
         assert_eq!(cut, 1, "cut once: its jobs out before the cut still run");
         assert_eq!(p.window(), 50, "half the 100 in use");
         assert!(p.why().unwrap().contains("% busy, over the target 85 %"), "{:?}", p.why());
         let w = p.window();
-        assert_eq!(disks(&mut p, 100, None), Verdict::Unread);
+        assert_eq!(busy(&mut p, 100, None), Verdict::Unread);
         assert_eq!(p.window(), w);
+        // (The answers at their best: the disks unread, held; 75 % busy, no room for a 150 job
+        // within 85 %; 60 %, room.)
+        let mut p = Pace::default();
+        let best = [ans("m1", 5.0, 5.0)];
+        let s = Sample { t: 0, answers: &best, blind: false, busy: None, pct: 85, in_use: 0, wants: Some(150) };
+        assert_eq!(p.read(&s, &k), Verdict::Held(Hold::NoDisks));
+        p.load = Some(75.0);
+        assert_eq!(disks(&mut p, 10, &best, &[75.0], 0, Some(150)), Verdict::Held(Hold::Busy));
+        assert_eq!(disks(&mut p, 20, &best, &[75.0], 0, Some(60)), Verdict::Grew, "room for a lighter one");
+        p.load = Some(60.0);
+        assert_eq!(disks(&mut p, 30, &best, &[60.0], 0, Some(150)), Verdict::Grew);
     }
 
     /// The second by excess over the least floor counts once two or more are read: one Mac's own
     /// link (Wi-Fi, a move to Tailscale) never paces the pool alone; a NAS that's loaded adds its
-    /// delay to all of them. A Mac whose calls miss their deadline is past the knee, one at home
+    /// delay to all of them. A Mac whose calls miss their deadline is congestion, one at home
     /// whatever its rank; stale answers, or a Mac holding jobs giving none, never grow the window.
     #[test]
     fn the_second_slowest_mac_counts_and_stale_answers_never_grow_it() {
@@ -1457,24 +1702,26 @@ mod tests {
         let c = p.last.as_ref().unwrap().counted.clone().unwrap();
         assert_eq!((c.mac.as_str(), c.ms, c.floor_ms), ("m1", 5.0, 5.0));
         // (Alone, a Mac's own answers count.)
-        assert_eq!(read(&mut p, 40, &[ans("m6", 160.0, 40.0)], 0, Some(150)), Verdict::Cut);
-        // (Three: the second-slowest's.)
-        let mut q = Pace::default();
+        read(&mut p, 40, &[ans("m6", 160.0, 40.0)], 0, Some(150));
+        let r = p.last.as_ref().unwrap();
+        assert_eq!((r.counted.as_ref().unwrap().mac.as_str(), r.ratio), ("m6", Some(4.0)));
+        // (Three: the second-slowest's, past the knee and rising from their best at no load.)
+        let (mut q, mut t) = primed(&[ans("m1", 5.0, 5.0), ans("m4", 5.0, 5.0), ans("m6", 40.0, 40.0)]);
         let three = [ans("m1", 20.0, 5.0), ans("m4", 17.5, 5.0), ans("m6", 40.0, 40.0)];
-        assert_eq!(read(&mut q, 0, &three, 300, None), Verdict::Cut);
+        assert!(cut_last(&readings(&mut q, &mut t, JUDGED, &three, 300, None)));
         assert_eq!(q.last.as_ref().unwrap().counted.as_ref().unwrap().mac, "m4");
         // (R2: the NAS adding 16 ms to m1 at home (5 ms) and m6 away (40 ms): 4.2 times the least
         // floor's best on both, past the knee, where m6's own ratio would be 1.4.)
-        let mut q = Pace::default();
         let away = |ms, floor| Answer { home: false, ..ans("m6", ms, floor) };
-        assert_eq!(read(&mut q, 0, &[ans("m1", 21.0, 5.0), away(56.0, 40.0)], 300, None), Verdict::Cut);
+        let (mut q, mut t) = primed(&[ans("m1", 5.0, 5.0), away(40.0, 40.0)]);
+        assert!(cut_last(&readings(&mut q, &mut t, JUDGED, &[ans("m1", 21.0, 5.0), away(56.0, 40.0)], 300, None)));
         assert!((q.last.as_ref().unwrap().ratio.unwrap() - 4.2).abs() < 1e-9);
-        // (m1 at home missing its deadlines, m6 away at its best: past the knee, m1 counted.)
+        // (m1 at home missing its deadlines, m6 away at its best: congested at once, m1 counted.)
         let mut q = Pace::default();
         let m1 = Answer { missed: true, ..ans("m1", 5.0, 5.0) };
         assert_eq!(read(&mut q, 0, &[m1, away(40.0, 40.0)], 300, None), Verdict::Cut);
         assert_eq!(q.last.as_ref().unwrap().counted.as_ref().unwrap().mac, "m1");
-        // (Its calls missing their deadline: past the knee whatever its mean, said so.)
+        // (Its calls missing their deadline: congested whatever its mean, said so.)
         let mut q = Pace::default();
         let missed = |m: &str| Answer { missed: true, ..ans(m, 5.0, 5.0) };
         assert_eq!(read(&mut q, 0, &[missed("m1"), missed("m6")], 600, None), Verdict::Cut);
@@ -1491,100 +1738,111 @@ mod tests {
             t: 40,
             answers: &[ans("m1", 5.0, 5.0)],
             blind: true,
-            busy: None,
+            busy: Some(&QUIET),
             pct: 85,
             in_use: 0,
             wants: Some(150),
         };
         assert!(matches!(q.read(&s, &Tuning::default()), Verdict::Held(_)));
         assert_eq!(q.last.as_ref().unwrap().verdict.hold(), Some(Hold::NotFresh));
-        // (Stale, but past the knee: cut all the same.)
-        let s = Sample { t: 50, answers: &[Answer { fresh: false, ..ans("m1", 50.0, 5.0) }], ..s };
-        assert_eq!(q.read(&s, &Tuning::default()), Verdict::Cut);
+        // (Stale, but past the knee and rising: cut all the same.)
+        let mut t = 40;
+        let slow = [Answer { fresh: false, ..ans("m1", 50.0, 5.0) }];
+        assert!(cut_last(&readings(&mut q, &mut t, JUDGED, &slow, 300, None)));
     }
 
     /// A restarted lead takes its kept state up when it's younger than `restore_s`: the window,
-    /// its threshold and its cut's hold-off, never lifted to the jobs out; older, it starts again.
+    /// its threshold, its cut's hold-off and the levels, never lifted to the jobs out; older, it
+    /// starts again.
     #[test]
     fn a_restart_takes_the_kept_state_up() {
         let mut p = Pace::default();
         at(&mut p, 0, 5.0, 800, None);
-        at(&mut p, 10, 40.0, 800, None);
+        at(&mut p, 10, 5.0, 0, None);
+        let mut t = 10;
+        assert!(cut_last(&run(&mut p, &mut t, JUDGED, 40.0, 800, None)));
         assert_eq!(p.window(), 400);
-        let kept: State = serde_json::from_value(serde_json::to_value(p.state(20)).unwrap()).unwrap();
+        let kept: State = serde_json::from_value(serde_json::to_value(p.state(t)).unwrap()).unwrap();
         assert_eq!(
             kept,
             State {
-                at: 20,
+                at: t,
                 window: 400.0,
                 threshold: Some(400.0),
-                cut_at: Some(10),
+                cut_at: Some(t),
                 settled_at: None,
-                lone_at: Some(10),
-                lone_n: 1
+                lone_at: Some(t),
+                lone_n: 1,
+                levels: vec![Level { in_use: 0, q3: 1.0 }],
             }
         );
         let mut q = Pace::default();
-        assert!(q.restore(&kept, 20 + RESTORE_S - 1, RESTORE_S));
-        assert!(matches!(at(&mut q, 20 + RESTORE_S - 1, 40.0, 800, None), Verdict::Held(_)), "its hold-off kept");
+        let mut u = t + RESTORE_S - 100;
+        assert!(q.restore(&kept, u, RESTORE_S));
+        let v = run(&mut q, &mut u, JUDGED, 40.0, 800, None);
+        assert_eq!(v.last(), Some(&Verdict::Held(Hold::HoldOff)), "its levels and hold-off kept: {v:?}");
+        assert_eq!(q.last.as_ref().unwrap().below, Some(1.0));
         assert_eq!(q.window(), 400, "not lifted to the 800 out");
         let mut q = Pace::default();
-        assert!(!q.restore(&kept, 20 + RESTORE_S, RESTORE_S));
-        at(&mut q, 20 + RESTORE_S, 5.0, 800, None);
+        assert!(!q.restore(&kept, t + RESTORE_S, RESTORE_S));
+        at(&mut q, t + RESTORE_S, 5.0, 800, None);
         assert_eq!(q.window(), 800, "too old: afresh");
     }
 
-    /// R3: a reading past the knee holds a job beside nothing back for `lone_s` (an outside load
-    /// near the cliff, one job taking it over), then lets one go; a reading near the best ends the
-    /// hold at once; holds in a row double, to `lone_most_s`.
+    /// R3: a congested reading holds a job beside nothing back for `lone_s` (an outside load near
+    /// the cliff, one job taking it over), then lets one go; a spare reading ends the hold at
+    /// once; holds in a row double, to `lone_most_s`.
     #[test]
-    fn a_reading_past_the_knee_holds_a_lone_job_back_a_while() {
+    fn a_congested_reading_holds_a_lone_job_back_a_while() {
         let mut p = Pace::default();
         assert!(p.lone(), "nothing read: open");
         at(&mut p, 0, 5.0, 0, Some(150));
         assert!(p.lone());
-        at(&mut p, 10, 20.0, 0, Some(150));
-        assert!(!p.lone(), "past the knee with nothing out");
+        miss(&mut p, 10, 0, Some(150));
+        assert!(!p.lone(), "congested with nothing out");
         let held = Limits { window: p.window(), alone: p.lone(), ..Default::default() };
         assert!(!held.paced(0, 150), "not beside nothing");
         assert!(Limits { alone: true, ..held }.paced(0, 150));
-        at(&mut p, 10 + LONE_S - 10, 20.0, 0, Some(150));
+        miss(&mut p, 10 + LONE_S - 10, 0, Some(150));
         assert!(!p.lone(), "still held");
-        at(&mut p, 10 + LONE_S, 20.0, 0, Some(150));
+        miss(&mut p, 10 + LONE_S, 0, Some(150));
         assert!(p.lone(), "a `lone_s` on: one goes");
-        at(&mut p, 20 + LONE_S, 25.0, 150, None);
-        assert!(!p.lone(), "the job gone beside nothing, past the knee: held again");
-        at(&mut p, 30 + LONE_S, 10.0, 150, None);
-        assert!(!p.lone(), "between near and the knee within its `lone_s`: still held");
+        miss(&mut p, 20 + LONE_S, 150, None);
+        assert!(!p.lone(), "the job gone beside nothing, congested: held again");
+        p.load = Some(82.0);
+        disks(&mut p, 30 + LONE_S, &[ans("m1", 5.0, 5.0)], &[82.0], 150, None);
+        assert!(!p.lone(), "the disks with no room for a step within its `lone_s`: still held");
+        p.load = Some(2.0);
         at(&mut p, 40 + LONE_S, 5.0, 0, Some(150));
-        assert!(p.lone(), "near the best: the hold ended at once");
+        assert!(p.lone(), "spare: the hold ended at once");
         // (An ordinary cut with nothing running after it: the NAS recovered, a heavy job beside
-        // nothing goes at the next reading near its best, not `lone_s` on.)
+        // nothing goes at the next spare reading, not `lone_s` on.)
         let mut p = Pace::default();
-        at(&mut p, 0, 20.0, 400, None);
-        at(&mut p, 10, 20.0, 0, Some(900));
+        miss(&mut p, 0, 400, None);
+        miss(&mut p, 10, 0, Some(900));
         assert!(!p.lone());
         at(&mut p, 20, 5.0, 0, Some(900));
         assert!(p.lone(), "recovered: open");
         assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, 900));
-        // (Holds in a row, the NAS never near its best between: each twice as long, to 8 times.)
+        // (Holds in a row, never spare between: each twice as long, to 8 times.)
         let mut p = Pace::default();
         let mut t = 0;
-        at(&mut p, t, 30.0, 0, Some(150));
+        miss(&mut p, t, 0, Some(150));
         for hold in [1, 2, 4, 8, 8] {
             assert!(!p.lone());
-            at(&mut p, t + hold * LONE_S - 10, 30.0, 0, Some(150));
+            miss(&mut p, t + hold * LONE_S - 10, 0, Some(150));
             assert!(!p.lone(), "held {hold} times `lone_s`");
-            at(&mut p, t + hold * LONE_S, 30.0, 0, Some(150));
+            miss(&mut p, t + hold * LONE_S, 0, Some(150));
             assert!(p.lone());
             t += hold * LONE_S + 10;
-            at(&mut p, t, 30.0, 150, None);
+            miss(&mut p, t, 150, None);
         }
         // (The longest hold as set: 20 minutes, holds of 10, 20, 20.)
         let k = Tuning { lone_most_s: 2 * LONE_S, ..Tuning::default() };
         let read = |p: &mut Pace, t: u64, in_use: u32| {
-            let answers = [ans("m1", 30.0, 5.0)];
-            let s = Sample { t, answers: &answers, blind: false, busy: None, pct: 85, in_use, wants: Some(150) };
+            let answers = [Answer { missed: true, ..ans("m1", 5.0, 5.0) }];
+            let s =
+                Sample { t, answers: &answers, blind: false, busy: Some(&QUIET), pct: 85, in_use, wants: Some(150) };
             p.read(&s, &k);
             p.lone()
         };
@@ -1603,45 +1861,58 @@ mod tests {
     }
 
     /// Each reading says why it held the window (the first gate it failed), and the lead's status
-    /// line says the window, its threshold, what's in use and waits, the verdict, why, and the lone
-    /// way's hold.
+    /// line says the window, its threshold, what's in use and waits, the answers a step lighter,
+    /// the verdict, why, and the lone way's hold.
     #[test]
     fn a_reading_says_why_it_held() {
+        let k = Tuning::default();
         let hold = |p: &Pace| p.last.as_ref().unwrap().verdict.hold();
+        let unread = |t| Sample { t, answers: &[], blind: false, busy: None, pct: 85, in_use: 0, wants: Some(150) };
         let mut p = Pace::default();
-        assert_eq!(read(&mut p, 0, &[], 0, Some(150)), Verdict::Unread);
+        assert_eq!(p.read(&unread(0), &k), Verdict::Unread);
         assert_eq!(hold(&p), None);
         assert!(matches!(at(&mut p, 10, 5.0, 0, None), Verdict::Held(_)));
         assert_eq!(hold(&p), Some(Hold::NotLimiting), "nothing waits, nothing in use");
         assert_eq!(at(&mut p, 20, 5.0, 0, Some(150)), Verdict::Grew);
         assert_eq!(hold(&p), None);
-        assert!(matches!(at(&mut p, 30, 5.0, 100, Some(150)), Verdict::Held(_)));
-        assert_eq!(hold(&p), Some(Hold::Started), "a job just started");
-        assert!(matches!(at(&mut p, 70, 10.0, 100, Some(150)), Verdict::Held(_)));
-        assert_eq!(hold(&p), Some(Hold::NotNear));
+        let best = [ans("m1", 5.0, 5.0)];
+        assert_eq!(p.read(&Sample { answers: &best, ..unread(22) }, &k), Verdict::Held(Hold::NoDisks));
+        p.load = Some(80.0);
+        assert_eq!(disks(&mut p, 24, &best, &[80.0], 0, Some(150)), Verdict::Held(Hold::Busy));
+        p.load = Some(2.0);
         let stale = Answer { fresh: false, ..ans("m1", 5.0, 5.0) };
-        assert!(matches!(read(&mut p, 80, &[stale], 100, Some(150)), Verdict::Held(_)));
-        assert_eq!(hold(&p), Some(Hold::NotFresh));
-        assert_eq!(at(&mut p, 90, 40.0, 400, Some(150)), Verdict::Cut);
+        assert_eq!(read(&mut p, 26, &[stale], 0, Some(150)), Verdict::Held(Hold::NotFresh));
+        assert_eq!(at(&mut p, 30, 5.0, 100, Some(150)), Verdict::Held(Hold::Started), "a job just started");
+        let mut t = 30;
+        assert_eq!(run(&mut p, &mut t, 4, 10.0, 100, Some(150)).last(), Some(&Verdict::Held(Hold::Rising)));
+        assert!(cut_last(&run(&mut p, &mut t, JUDGED, 40.0, 400, Some(150))));
         assert_eq!(hold(&p), None);
-        assert!(matches!(at(&mut p, 100, 40.0, 400, Some(150)), Verdict::Held(_)));
-        assert_eq!(hold(&p), Some(Hold::HoldOff), "the jobs out before the cut still run");
+        assert_eq!(
+            at(&mut p, t + 10, 40.0, 400, Some(150)),
+            Verdict::Held(Hold::HoldOff),
+            "the jobs out before the cut"
+        );
         let r = p.last.clone().unwrap();
         assert_eq!((r.threshold, r.wants), (Some(200), Some(150)));
-        assert_eq!(r.lone_until, Some(90 + LONE_S), "past the knee: a lone job held back");
+        assert_eq!(r.lone_until, Some(t + LONE_S), "congested: a lone job held back");
         assert_eq!(
-            r.line(p.window(), 160),
+            r.line(p.window(), t + 70),
             "NAS pacing: window 6 % (threshold 20 %), 40 % in use, the next job held back for it needs 15 %; last reading 60 s \
-             ago, answers 8.0× their best: held: past the knee, within the last cut's hold-off; a job beside \
-             nothing held back 9 min more"
+             ago, answers 8.0× their best (2.0× a step lighter), disks 2 % busy: held: congested, within the last cut's \
+             hold-off; a job beside nothing held back 9 min more"
         );
-        assert!(p.why().unwrap().ends_with("(the NAS answering m1 in 40 ms, 8.0× its best)"), "{:?}", p.why());
-        // (Between near and the knee after the cut: why says so in place of a cause it can't see.)
-        at(&mut p, 110, 10.0, 400, Some(150));
+        assert!(
+            p.why().unwrap().ends_with("(the NAS answering m1 in 40 ms, 8.0× its best, rising with the load)"),
+            "{:?}",
+            p.why()
+        );
+        // (Fallen under the load judged, no longer congested: why says what held it in place of a
+        // cause it can't see.)
+        read(&mut p, t + 20, &[Answer { fresh: false, ..ans("m1", 40.0, 5.0) }], 300, Some(150));
         assert_eq!(
             p.why().unwrap(),
-            "NAS work paced to 6 % of the NAS, 40 % in use (the NAS cut lately, not grown since: the answers \
-             counted not near their best)"
+            "NAS work paced to 6 % of the NAS, 30 % in use (the NAS cut lately, not grown since: not every Mac's \
+             answers fresh)"
         );
     }
 
@@ -1652,7 +1923,7 @@ mod tests {
     fn the_window_grows_only_on_answers_and_never_past_the_load_tested() {
         let k = Tuning::default();
         let disks_only = |p: &mut Pace, t: u64, in_use: u32| {
-            let s = Sample { t, answers: &[], blind: false, busy: Some(&[2.0]), pct: 85, in_use, wants: Some(300) };
+            let s = Sample { t, answers: &[], blind: false, busy: Some(&QUIET), pct: 85, in_use, wants: Some(300) };
             p.read(&s, &k)
         };
         // (Idle, the disks quiet, a 300 job waiting: held for want of answers.)
@@ -1662,7 +1933,7 @@ mod tests {
             assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NoAnswer));
         }
         assert_eq!(p.window(), STEP);
-        // (Answers near the best, nothing in use: doubling to that one job, no further.)
+        // (Answers at their best, nothing in use: doubling to that one job, no further.)
         for t in (600..1200).step_by(10) {
             at(&mut p, t, 5.0, 0, Some(300));
             assert!(p.window() <= 300);
@@ -1671,11 +1942,11 @@ mod tests {
         assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NotLimiting));
         // (Cut at 400 in use: at the threshold, a step a minute to one job past the weight in use,
         // never past it.)
-        at(&mut p, 1200, 5.0, 400, Some(300));
-        assert_eq!(at(&mut p, 1210, 40.0, 400, Some(300)), Verdict::Cut);
+        let mut t = 1190;
+        assert!(cut_last(&run(&mut p, &mut t, JUDGED, 40.0, 400, Some(300))));
         assert_eq!((p.window(), p.st.threshold), (200, Some(200.0)));
-        for t in (1220..3000).step_by(10) {
-            at(&mut p, t, 5.0, 400, Some(300));
+        for _ in 0..180 {
+            run(&mut p, &mut t, 1, 5.0, 400, Some(300));
             assert!(p.window() <= 700);
         }
         assert_eq!(p.window(), 700, "400 in use and the 300 waiting");
@@ -1683,40 +1954,31 @@ mod tests {
     }
 
     /// The re-review's probe: cut at 300 in use (window and threshold 150), one 150 job running
-    /// and another waiting, the NAS near its best for two hours. Past the threshold the window
+    /// and another waiting, the NAS at its best for two hours. Past the threshold the window
     /// grows a step a minute to one job past the weight in use, so the second goes.
     #[test]
     fn past_a_cut_the_window_grows_back_to_take_one_more_job() {
         let mut p = Pace::default();
         at(&mut p, 0, 5.0, 300, None);
-        assert_eq!(at(&mut p, 10, 40.0, 300, Some(150)), Verdict::Cut);
-        assert_eq!((p.window(), p.st.threshold), (150, Some(150.0)));
+        at(&mut p, 10, 5.0, 0, None);
         let mut t = 10;
+        assert!(cut_last(&run(&mut p, &mut t, JUDGED, 40.0, 300, Some(150))));
+        assert_eq!((p.window(), p.st.threshold), (150, Some(150.0)));
         while t < 2 * 3600 {
-            t += 10;
-            at(&mut p, t, 5.0, 150, Some(150));
+            run(&mut p, &mut t, 1, 5.0, 150, Some(150));
         }
         assert_eq!(p.window(), 300, "one 150 running and one more");
         let l = Limits { window: p.window(), alone: p.lone(), ..Default::default() };
         assert!(l.paced(150, 150), "the second 150 job goes");
     }
 
-    /// The pacing's bounds are the pool's settings: each within its range, else its default;
-    /// near never past the knee.
+    /// The pacing's bounds are the pool's settings: each within its range, else its default.
     #[test]
     fn the_bounds_are_settings() {
         assert_eq!(Tuning::of(|_| None), Tuning::default());
-        let set = [
-            ("nas-step", 20.0),
-            ("nas-slow", 2.0),
-            ("nas-near", 1.8),
-            ("nas-floor-hours", 6.0),
-            ("nas-read-seconds", 1.0),
-        ];
+        let set = [("nas-step", 20.0), ("nas-slow", 2.0), ("nas-floor-hours", 6.0), ("nas-read-seconds", 1.0)];
         let k = Tuning::of(|n| set.iter().find(|s| s.0 == n).map(|s| s.1));
-        assert_eq!((k.step, k.slow, k.near, k.floor_s, k.read_s), (20, 2.0, 1.8, 6 * 3600, READ_EVERY_S));
-        let k = Tuning::of(|n| (n == "nas-slow").then_some(1.5).or((n == "nas-near").then_some(2.0)));
-        assert_eq!((k.slow, k.near), (1.5, 1.5));
+        assert_eq!((k.step, k.slow, k.floor_s, k.read_s), (20, 2.0, 6 * 3600, READ_EVERY_S));
         for n in &KNOBS {
             let d = (n.get)(&Tuning::default());
             assert!((n.least..=n.most).contains(&d), "{}'s default {d} in its range", n.name);
@@ -1763,8 +2025,8 @@ mod tests {
     /// behind its own jobs' reads (`STALL`, `SPIKE`: as the mini's on 19 Nov). Its answer is the
     /// production's (`answer_of` its span's listings), against its own floor (the least such over
     /// `floor_s`), sent with each beat (every 10 s), or with `asks_only` only with its asks (every
-    /// 120 s while it holds jobs: an older agent's); the lead restarted at each reading `restart`
-    /// says (its state kept).
+    /// 120 s while it holds jobs: an older agent's); the disks busy its true load's share; the lead
+    /// restarted at each reading `restart` says (its state kept).
     struct Burst {
         n: usize,
         w: u32,
@@ -1916,11 +2178,12 @@ mod tests {
                         let blind = (0..self.macs.len()).any(|i| {
                             running.iter().any(|j| j.1 == i) && said[i].as_ref().is_none_or(|s| s.0 + fresh_s < t)
                         });
+                        let disk = [(rho * 100.0).min(100.0)];
                         let s = Sample {
                             t,
                             answers: &answers,
                             blind,
-                            busy: None,
+                            busy: Some(&disk),
                             pct: 85,
                             in_use,
                             wants: (queue > 0).then_some(self.w),
@@ -2080,6 +2343,155 @@ mod tests {
         // (Held 1, 2 and 4 times `lone_s` through its hour: three lone jobs, and those out as it came.)
         assert!(r.cliff_s <= 4 * 300 + 60, "at the cliff only as the lone jobs go");
         assert!(r.cliff_s * 4 <= lone.cliff_s);
+    }
+
+    /// The lead's readings of 19 Nov, 17:16-20:36Z (`nas_19nov.csv`, its header says how they
+    /// were taken): each reading's time, the counted ratio, the busiest disk's share (%), the
+    /// weight the pool's jobs held and the window #1417's rule gave (thousandths).
+    fn readings_19nov() -> Vec<(u64, f64, f64, u32, u32)> {
+        include_str!("nas_19nov.csv")
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let f: Vec<&str> = l.split(',').collect();
+                (
+                    f[0].parse().unwrap(),
+                    f[1].parse().unwrap(),
+                    f[2].parse().unwrap(),
+                    f[3].parse().unwrap(),
+                    f[4].parse().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// What a replay came to: the window at each reading, when it was cut, the jobs it started,
+    /// the readings at the knee and at the cliff (the model's).
+    #[derive(Debug, Default)]
+    struct Replayed {
+        windows: Vec<(u64, u32)>,
+        cuts: Vec<(u64, &'static str)>,
+        started: usize,
+        knee: usize,
+        cliff: usize,
+    }
+
+    /// Unix s of 19 Nov 2026 at `h:m` UTC.
+    fn nov19(h: u64, m: u64) -> u64 {
+        1_795_046_400 + h * 3600 + m * 60
+    }
+
+    /// The pacing over the readings of 19 Nov, closed on the jobs it lets go (task #1506): beside
+    /// what the pool held then (as recorded), a queue of held-back jobs weighing `w` each (the 883
+    /// terrain-deep targets that waited), each loading the NAS as it weighs and running `secs`.
+    /// The recorded disks are the outside load (smoothed as the pacing smooths them: a busy 10 s
+    /// isn't a load the NAS's curve sees); the jobs let go add their weight to it (`rho`),
+    /// the disks reading its share, and the counted answers as recorded times the simulated NAS's
+    /// slowing at `rho` over its slowing at the outside load alone (`simulated`), so the noise is
+    /// the day's and the slowing past it the jobs'; one Mac, its floor 2 ms, missing its deadlines
+    /// at the cliff or where the recorded one did. With `secs` 0, none goes: the readings as they
+    /// were, a job of `w` waiting throughout.
+    fn replay(w: u32, secs: u64) -> Replayed {
+        let k = Tuning::default();
+        let mut p = Pace::default();
+        let mut running: Vec<u64> = Vec::new();
+        let mut out = Replayed::default();
+        let mut smooth: Option<f64> = None;
+        for (t, x, disk, used, _) in readings_19nov() {
+            running.retain(|&end| end > t);
+            let outside = *smooth.insert(smooth.map_or(disk, |l| l + SMOOTH * (disk - l))) / 100.0;
+            let rho = outside + (running.len() as u32 * w) as f64 / WHOLE as f64;
+            let ratio = (x * simulated(rho) / simulated(outside)).min(RATIO_MOST);
+            let missed = x >= RATIO_MOST || rho >= 1.0;
+            let answers = [Answer { missed, ..ans("m6", 2.0 * ratio, 2.0) }];
+            let busy = [(rho * 100.0).min(100.0)];
+            out.knee += usize::from(simulated(rho) > k.slow);
+            out.cliff += usize::from(rho >= 1.0);
+            let in_use = used + running.len() as u32 * w;
+            let s = Sample { t, answers: &answers, blind: false, busy: Some(&busy), pct: 85, in_use, wants: Some(w) };
+            if p.read(&s, &k) == Verdict::Cut {
+                let r = p.last.as_ref().unwrap();
+                let why = match () {
+                    _ if r.load_pct.is_some_and(|l| l > 85.0) => "disks",
+                    _ if missed => "missed",
+                    _ => "rising",
+                };
+                out.cuts.push((t, why));
+            }
+            out.windows.push((t, p.window()));
+            let l = Limits { window: p.window(), small: k.small, alone: p.lone(), ..Default::default() };
+            while secs > 0 && l.paced(used + running.len() as u32 * w, w) {
+                running.push(t + secs);
+                out.started += 1;
+            }
+        }
+        out
+    }
+
+    /// Task #1506: the rule over the lead's own readings of 19 Nov. At 18:51Z #1417's held the
+    /// window at a step (5 %) with the disks 3 % busy and the answers 1.4 times their best, while
+    /// 883 terrain-deep targets waited for it; at 19:12Z, the disks 68 % busy and the answers 4.8
+    /// times, it cut. Replayed with those targets let go as the window takes them (`replay`): the
+    /// window grows to several jobs on the idle NAS, the noisy answers (1 to 40 times their best
+    /// with the disks idle) cutting it only where a Mac missed its deadlines; at 19:12 it's cut;
+    /// and it doesn't swing: no growth and cut over and over. Printed: the window every 5 minutes,
+    /// the cuts, the jobs started, the readings at the knee and the cliff.
+    #[test]
+    fn the_readings_of_19_nov_grow_on_the_idle_nas_and_cut_at_its_load() {
+        let rows = readings_19nov();
+        for (w, secs) in [(100, 600), (250, 600)] {
+            let r = replay(w, secs);
+            let at = |t: u64| r.windows.iter().rev().find(|x| x.0 <= t).unwrap().1;
+            let line: Vec<String> = (nov19(17, 20) / 300..=nov19(20, 35) / 300)
+                .map(|i| format!("{}:{:02} {}", i * 300 % 86400 / 3600, i * 300 % 3600 / 60, at(i * 300)))
+                .collect();
+            let cuts: Vec<String> = r
+                .cuts
+                .iter()
+                .map(|(t, w)| format!("{}:{:02}:{:02} {w}", t % 86400 / 3600, t % 3600 / 60, t % 60))
+                .collect();
+            eprintln!("jobs of {w}: started {}, readings at the knee {}, at the cliff {}", r.started, r.knee, r.cliff);
+            eprintln!("  window: {}", line.join(", "));
+            eprintln!("  cuts: {}", cuts.join(", "));
+            // (18:51-like: grown on the idle NAS to more than one job.)
+            assert!(at(nov19(18, 51)) > w, "jobs of {w}: {} at 18:51", at(nov19(18, 51)));
+            // (19:12-like: cut, within two minutes of 19:11.)
+            assert!(r.cuts.iter().any(|c| (nov19(19, 5)..nov19(19, 13)).contains(&c.0)), "jobs of {w}: cuts {cuts:?}");
+            // (No swinging: on the idle NAS before 19:05 the window two jobs or more most of the
+            // time, cut on the answers no more than every half hour (its other cuts the model's
+            // NAS filling: the disks past the target, the cliff); through the whole, a cut no more
+            // than every 15 minutes, at the cliff a twentieth of the readings at most.)
+            let idle = (nov19(17, 16), nov19(19, 5));
+            let mut windows: Vec<u32> =
+                r.windows.iter().filter(|x| (idle.0..idle.1).contains(&x.0)).map(|x| x.1).collect();
+            windows.sort_unstable();
+            let median = windows[windows.len() / 2];
+            eprintln!("  the idle NAS's median window {median}");
+            assert!(median >= 2 * w, "jobs of {w}: the idle NAS's median window {median}");
+            let rising = r.cuts.iter().filter(|c| (idle.0..idle.1).contains(&c.0) && c.1 == "rising").count();
+            assert!(
+                rising as u64 * 30 * 60 <= idle.1 - idle.0,
+                "jobs of {w}: {rising} cuts on the answers on the idle NAS"
+            );
+            let hours = (rows.last().unwrap().0 - rows[0].0) as f64 / 3600.0;
+            assert!(r.cuts.len() as f64 <= 4.0 * hours, "jobs of {w}: {} cuts in {hours:.1} h", r.cuts.len());
+            assert!(r.cliff * 20 <= rows.len(), "jobs of {w}: {} of {} readings at the cliff", r.cliff, rows.len());
+        }
+        // (The readings as they were, a step's job waiting throughout: cut by 19:14, the load
+        // risen to 54, a step over what it held at 19:04, and the answers with it.)
+        let r = replay(STEP, 0);
+        let cuts: Vec<String> = r
+            .cuts
+            .iter()
+            .map(|(t, w)| format!("{}:{:02}:{:02} {w}", t % 86400 / 3600, t % 3600 / 60, t % 60))
+            .collect();
+        eprintln!("as recorded: cuts {}", cuts.join(", "));
+        assert!(r.cuts.iter().any(|c| (nov19(19, 10)..nov19(19, 14)).contains(&c.0) && c.1 == "rising"), "{cuts:?}");
+        // (#1417's own windows on the idle NAS, as recorded.)
+        let mut old: Vec<u32> =
+            rows.iter().filter(|r| (nov19(17, 16)..nov19(19, 5)).contains(&r.0)).map(|r| r.4).collect();
+        old.sort_unstable();
+        eprintln!("#1417's windows on the idle NAS: median {}, most {}", old[old.len() / 2], old[old.len() - 1]);
     }
 
     /// The limits are the best of the last day's probes.

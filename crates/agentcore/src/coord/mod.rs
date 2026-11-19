@@ -2162,8 +2162,8 @@ impl Coordinator {
     /// Whether work was held back for the NAS budget in the last two minutes (`Sched::nas_waiting`):
     /// the lead's agent samples the NAS's answers then too (crate::agent's `tend_live`), as with
     /// leases out. With nothing running anywhere no Mac lists the NAS, and a pacing reading no
-    /// answers never sees it near its best, to end a lone job's hold or grow the window for the
-    /// work waiting.
+    /// answers never sees it has room, to end a lone job's hold or grow the window for the work
+    /// waiting.
     pub fn nas_waiting(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -9267,10 +9267,11 @@ mod tests {
     }
 
     /// Task #1417: the pool's NAS-heavy jobs are paced by the NAS's answers. A coordinator starting
-    /// holds the window at a step, a job beside nothing going all the same; while the NAS answers
-    /// near its best and a job waits, it doubles a minute until that job fits; once the answers
-    /// pass the knee it drops to half what's in use at once, holding back what fit before, and the
-    /// lead's waiting line says why; calm again, it grows a step a minute.
+    /// holds the window at a step, a job beside nothing going all the same; while the NAS has room
+    /// (the disks quiet, the answers not rising with the load) and a job waits, it doubles a
+    /// minute until that job fits, once the load the job out rose to is judged; once the answers
+    /// pass the knee rising with the load it drops to half what's in use, holding back what fit
+    /// before, and the lead's waiting line says why; calm again, it grows a step a minute.
     #[test]
     fn the_pools_nas_jobs_are_paced_by_the_nas_answers() {
         let (_d, c, w, clock) = every((0, 0));
@@ -9290,7 +9291,7 @@ mod tests {
             if let Some(w) = s.workers.get_mut("m1") {
                 w.cap = Some(cap);
             }
-            s.pace_nas("m4", None, 85, &jobrt::budget::nas::Tuning::default());
+            s.pace_nas("m4", Some(&[2.0]), 85, &jobrt::budget::nas::Tuning::default());
             assert_eq!(s.nas.map(|l| l.window), s.nas_own.map(|l| l.window));
             s.nas_own.unwrap().window
         };
@@ -9306,13 +9307,21 @@ mod tests {
                 break;
             }
         }
+        // (Its load judged a span and a growth cadence, 10 readings; then 50 to 1000 doubling a
+        // minute, 26.)
         assert!(
-            (28..=31).contains(&readings),
-            "doubling a minute from a step, once the job out has run a span: {readings} readings"
+            (35..=38).contains(&readings),
+            "doubling a minute from a step, once the load the job out rose to is judged: {readings} readings"
         );
         let g2 = w.ask(&a).unwrap().expect("two halves now");
-        // (The NAS answering four times its best: half what's in use.)
-        assert_eq!(read(20.0), 500);
+        // (The NAS answering four times its best as the load rose: half what's in use, once a
+        // span's readings show it.)
+        let mut cut = Vec::new();
+        for _ in 0..6 {
+            assert!(w.beat(g1.lease, None).unwrap() && w.beat(g2.lease, None).unwrap());
+            cut.push(read(20.0));
+        }
+        assert_eq!(cut, [1000, 1000, 1000, 1000, 1000, 500]);
         assert!(!c.shared.lock().unwrap().nas_own.unwrap().alone, "past the knee: no job beside nothing a while");
         let why = c.nas_paced().unwrap();
         assert!(
@@ -9327,7 +9336,7 @@ mod tests {
             assert!(w.ask(&a).unwrap().is_none());
             win = read(5.0);
         }
-        assert_eq!(win, 550, "calm again, once the job granted last has run a span: a step a minute");
+        assert!((501..=550).contains(&win), "calm again, once its load is judged: a step a minute at most: {win}");
     }
 
     /// Task #939: a job of several targets is weighed by what they move over their times together,
@@ -13084,13 +13093,13 @@ mod tests {
         assert_eq!(take(&c, "m4", 4).len(), 1, "they ended: the smaller one goes");
     }
 
-    /// Task #1417 follow-up, as the live lead stood on 19 Nov: the window cut to a step by a lone
-    /// job's slow answers, a heavy target aged in the budget holding its room, the light ones held
-    /// back behind it, nothing running and no Mac listing the NAS (the pool idle till the lone
-    /// job's hold ended). What the next job needs is the room held, not the light ones' weight;
-    /// with no answers the window holds. The lead's own answers near its best (it samples them
-    /// while work waits for the budget) end the hold at once, the heavy one goes beside nothing,
-    /// and the window grows on its answers, never past the load they tested.
+    /// Task #1417 follow-up, as the live lead stood on 19 Nov: the window cut to a step, a heavy
+    /// target aged in the budget holding its room, the light ones held back behind it, nothing
+    /// running and no Mac listing the NAS (the pool idle till the lone job's hold ended). What the
+    /// next job needs is the room held, not the light ones' weight; with no answers the window
+    /// holds. The lead's own answers at its best, the disks quiet (it samples them while work
+    /// waits for the budget), end the hold at once, the heavy one goes beside nothing, and the
+    /// window grows on its answers, never past the load they tested.
     #[test]
     fn a_cut_window_grows_back_on_the_leads_answers_once_the_pool_is_idle() {
         use jobrt::budget::nas::{Hold, State, Tuning, STEP};
@@ -13125,6 +13134,7 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 2,
+                levels: Vec::new(),
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             (s.offers[0].clone(), s.lead_name.clone())
@@ -13135,21 +13145,29 @@ mod tests {
             let now = s.now();
             s.pick_every(&one(i), &every_ask(w, "slope-hi", 64_000, 100_000), now)
         };
-        // (A reading: the lead's own answers `ms` over a 2-ms floor, None while it lists nothing;
-        // the disks quiet.)
-        let read = |ms: Option<f64>| {
+        // (A reading: the lead's own answers `ms` over a 2-ms floor, None while it lists nothing,
+        // its calls missing their deadline where `missed` says; the disks quiet.)
+        let read = |ms: Option<f64>, missed: bool| {
             clock.advance(Duration::from_secs(k.read_s));
             let mut s = c.shared.lock().unwrap();
             let at = s.wall_s();
-            let cap = Capacity { at, nas_ms: ms, nas_floor_ms: ms.map(|_| 2.0), nas_at: at, ..Default::default() };
+            let calls = missed.then_some([1.0, 1.0, 0.0]);
+            let cap = Capacity {
+                at,
+                nas_ms: ms,
+                nas_floor_ms: ms.map(|_| 2.0),
+                nas_at: at,
+                nas_calls: calls,
+                ..Default::default()
+            };
             s.own_cap = Some(cap);
             s.pace_nas(&lead, Some(&[2.0]), 85, &k);
             let l = s.nas_own.unwrap();
             (l.window, l.alone, s.nas_pace.last.as_ref().unwrap().verdict.hold())
         };
         assert!(!c.nas_waiting(), "nothing held back yet");
-        // (A light job runs on m2 for an `OWN_AGE` and more, its answers ten times its best; the
-        // heavy one asked for all along, held back for the budget, ages.)
+        // (A light job runs on m2 for an `OWN_AGE` and more, the lead's NAS calls missing their
+        // deadline; the heavy one asked for all along, held back for the budget, ages.)
         let light = {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
@@ -13157,7 +13175,7 @@ mod tests {
             s.leases.grant("m2", Work::Job { step: "slope-hi".into(), targets: ts }, now)
         };
         for _ in 0..=jobrt::budget::nas::OWN_AGE.as_secs() / k.read_s {
-            let (window, alone, _) = read(Some(20.0));
+            let (window, alone, _) = read(Some(20.0), true);
             assert_eq!((window, alone), (STEP, false));
             assert!(take("m3", 0).is_empty(), "500 beside 40 in a window of 50");
             let mut s = c.shared.lock().unwrap();
@@ -13172,14 +13190,15 @@ mod tests {
         for _ in 0..6 {
             assert!(take("m4", 2).is_empty(), "40 leaves no room for the aged 500");
             assert!(take("m3", 0).is_empty(), "500 past the window, beside nothing held back");
-            let (window, alone, hold) = read(None);
+            let (window, alone, hold) = read(None, false);
             assert_eq!((window, alone, hold), (STEP, false, Some(Hold::NoAnswer)), "no answers: no growth");
             let wants = c.shared.lock().unwrap().nas_pace.last.as_ref().unwrap().wants;
             assert_eq!(wants, Some(500), "the room held for the aged one, not the light ones' 40");
         }
-        // (The lead's own answers near its best: the hold ends, and the heavy one goes alone.)
-        let (window, alone, _) = read(Some(2.5));
-        assert!(alone, "near the best: a job beside nothing goes");
+        // (The lead's own answers at its best, the disks quiet: the hold ends, and the heavy one
+        // goes alone.)
+        let (window, alone, _) = read(Some(2.5), false);
+        assert!(alone, "spare: a job beside nothing goes");
         assert!(window > STEP && window <= 500, "grown on the lead's answer, toward the room held at most: {window}");
         assert_eq!(take("m3", 0).len(), 1, "the aged heavy one goes beside nothing");
         let heavy = {
@@ -13188,15 +13207,16 @@ mod tests {
             let ts = vec![(offer.targets[0].0.clone(), String::new())];
             s.leases.grant("m3", Work::Job { step: "slope-hi".into(), targets: ts }, now)
         };
-        // (Beside it, answers near the best: the window grows on them, a step a minute past the
-        // threshold, never more than one job past the 500 in use, until a light one fits beside it.)
+        // (Beside it, answers at their best: the window grows on them once its load is judged, a
+        // step a minute past the threshold, never more than one job past the 500 in use, until a
+        // light one fits beside it.)
         let mut went = None;
         for i in 0..120 {
             if !take("m4", 2).is_empty() {
                 went = Some(i);
                 break;
             }
-            let (window, _, _) = read(Some(2.5));
+            let (window, _, _) = read(Some(2.5), false);
             assert!(window <= 500 + 500, "one job past what's in use at most: {window}");
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
@@ -13208,8 +13228,8 @@ mod tests {
     /// Task #1417 round 4: what the pacing reads as the room the work held back needs is what its
     /// refusal weighed, not the targets weighed again one by one. The lead's own planned job of two
     /// targets (800 and 40 of the NAS alone, 420 as the job), held back beside nothing by a window
-    /// of 300 while the lone way is held, needs 420: the window is what limits, and on answers near
-    /// their best it grows (weighed target by target, it needed the lighter one's 40, read as not
+    /// of 300 while the lone way is held, needs 420: the window is what limits, and with room on
+    /// the NAS it grows (weighed target by target, it needed the lighter one's 40, read as not
     /// what limits, and never grew).
     #[test]
     fn the_pacing_reads_the_room_its_refusal_needed() {
@@ -13247,27 +13267,36 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 1,
+                levels: Vec::new(),
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             s.lead_name.clone()
         };
-        // (A reading: the lead's own answers `ms` over a 2-ms floor, the disks quiet.)
-        let read = |ms: f64| {
+        // (A reading: the lead's own answers `ms` over a 2-ms floor, its calls missing their
+        // deadline where `missed` says, the disks quiet.)
+        let read = |ms: f64, missed: bool| {
             clock.advance(Duration::from_secs(k.read_s));
             let mut s = c.shared.lock().unwrap();
             let at = s.wall_s();
-            s.own_cap =
-                Some(Capacity { at, nas_ms: Some(ms), nas_floor_ms: Some(2.0), nas_at: at, ..Default::default() });
+            let nas_calls = missed.then_some([1.0, 1.0, 0.0]);
+            s.own_cap = Some(Capacity {
+                at,
+                nas_ms: Some(ms),
+                nas_floor_ms: Some(2.0),
+                nas_at: at,
+                nas_calls,
+                ..Default::default()
+            });
             s.pace_nas(&lead, Some(&[2.0]), 85, &k);
             s.nas_pace.last.clone().unwrap()
         };
-        let r = read(20.0);
+        let r = read(2.5, true);
         assert_eq!(r.verdict, Verdict::Held(Hold::HoldOff));
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "420 past a window of 300, the lone way held");
-        let r = read(2.5);
+        let r = read(2.5, false);
         assert_eq!(r.wants, Some(420), "the job's room, as its refusal weighed it");
-        assert_eq!(r.verdict, Verdict::Grew, "the window what limits: grown on answers near their best");
+        assert_eq!(r.verdict, Verdict::Grew, "the window what limits: grown with room on the NAS");
         assert!(c.shared.lock().unwrap().nas_pace.window() > 300);
     }
 
