@@ -518,7 +518,7 @@ test("small: one definition, the page's and /api/schema's; the page sets the thr
   assert.ok(["small", "batch"].every((k) => sch.items.create.includes(k) && sch.items.edit.includes(k)));
   assert.equal(sch.items.fields.smallAt.server, true);
   const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
-  assert.doesNotMatch(page, /few hundred lines/, "the definition isn't spelled out in the page");
+  assert.doesNotMatch(page, /clearly large/, "the definition isn't spelled out in the page");
   assert.match(page, /patch\(t\.id, \{ small: t\.small === v \? null : v \}\)/, "the details' size buttons set true, false, or unset again");
   assert.match(page, /TASK_FIELDS = \[[^\]]*"small"[^\]]*"batch"/, "a task made a folder drops them");
 });

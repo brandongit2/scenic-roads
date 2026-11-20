@@ -17,7 +17,7 @@ export const ASSIGNED_SUGGESTIONS = [
 // What makes a task small (a task's `small`): the one definition, which the page shows, GET
 // /api/schema gives (`smallMeans`) and tools/dev/board.py prints. Small tasks are started five at a
 // time, as one piece of work (tools/dev/agent-rules.md, "Starting tasks").
-export const SMALL_MEANS = "Small: one module or a few files, no design decision to make, a few hundred lines changed at most. Read it generously: when in doubt, it's small.";
+export const SMALL_MEANS = "Small: anything that isn't clearly large. Large is only a big design, a research or data survey, or work across many subsystems. A whole-document rewrite, a change to several files or a few hundred lines, or a decision made along the way is still small. When in doubt, it's small.";
 // `status` and `archive`: the server's own (a task's status changed; an item archived or unarchived).
 export const EVENT_KINDS = ["note", "owner", "status", "archive", "priority", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
 // Names from before #1229, refused with the name to use instead.
