@@ -100,7 +100,9 @@ pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<V
 }
 
 /// The declared datasets as a run reads them: the accepted elevation version (their files, by its
-/// index), the declared geoid sources converting their heights, and the sets.
+/// index), the declared geoid sources converting their heights, and the sets. Every file read by
+/// its content name (inputs::inputs::read_content): a job's from this Mac's whole local copies,
+/// kept across its jobs.
 #[derive(Clone, Debug)]
 pub struct Declared {
     pub elevation: inputs::inputs::Accepted,
@@ -124,7 +126,8 @@ impl Declared {
         let mut ds = declared::accepted(&a)?;
         // (Said by the roads' own plans: inputs::dem::declared::plan_converted.)
         let _ = declared::convert(&mut ds, &geoid);
-        let sets = sets(&ds, &|n| Ok(a.root().join(n).read()?))?;
+        // (Their outlines by their content names: a job's from this Mac's copies, inputs::inputs::read_content.)
+        let sets = sets(&ds, &|n| inputs::inputs::read_content(a.root(), n))?;
         Ok(Declared { elevation: a, geoid, sets })
     }
 }

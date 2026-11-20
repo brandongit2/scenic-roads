@@ -73,7 +73,10 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles; with the
     basemap, the lakes' fill and the depth sources' packs the depth's and water's steps read, the stored GLO-30 tiles
-    and fill masks a terrain or polar terrain job reads half or more of, task #689: buildstore::localread; and the
+    and fill masks a terrain or polar terrain job reads half or more of, task #689: buildstore::localread; the
+    inputs' content-named files a job reads whole, such as the elevation datasets' index and their regions'
+    outlines every terrain job reads first, each checked against its name's hash as it's read, task #1508:
+    inputs::inputs::read_content; and the
     canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`; and the ranges the
     fetcher fetched of remote files, `blobs/net/<host>/<path>/<length>.<hash of URL and version>/<start>-<end>.<hash of bytes>`,
     by the file's version as its server names it (none named: not kept), kept only while the disk has them free past the room

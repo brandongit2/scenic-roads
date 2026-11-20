@@ -589,11 +589,55 @@ impl Accepted {
         self.index.files.iter().map(|(p, f)| (p, self.root.join(&f.file)))
     }
 
-    /// The bytes of inputs-folder path `path`.
+    /// The bytes of inputs-folder path `path` (`read_content`).
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let p = self.path(path).with_context(|| format!("{path} isn't in {}'s accepted version", self.index.unit))?;
-        p.read().with_context(|| format!("read {}", p.display()))
+        let f = self
+            .index
+            .files
+            .get(path)
+            .with_context(|| format!("{path} isn't in {}'s accepted version", self.index.unit))?;
+        read_content(&self.root, &f.file)
     }
+}
+
+/// The bytes of content-named file `name` under `root` (an index, a report, an accepted file, a
+/// region's stored geometry). In a job (its agent's cache named: buildstore::localread::Local::from_env)
+/// they're read from this Mac's whole local copy, kept across jobs (#1508: every terrain-deep,
+/// terrain-hi and slope-deep job read the same declared datasets' index and outlines from the NAS
+/// first, ~11 s of a 16-17 s stage), copied first when it isn't here and the disk has room past the
+/// owner's room target, and freed, the least recently used first, by room-making
+/// (agentcore::agent::room) as any whole copy; elsewhere (the agent, a test, a run by hand), or
+/// with no room, the NAS's file. A content name is the BLAKE3 hash of its bytes
+/// (store::naming): a copy whose bytes aren't is never read (deleted, the NAS's read), so a stale or
+/// damaged copy can't be.
+pub fn read_content(root: &store::nasfs::NasRoot, name: &str) -> Result<Vec<u8>> {
+    let hash = store::naming::parse_content_name(name).map(|c| c.hash16);
+    let local = hash.and_then(|_| buildstore::localread::Local::from_env(root));
+    read_content_in(local.as_ref(), root, name)
+}
+
+/// `read_content` through `local` (None: the NAS's file).
+fn read_content_in(
+    local: Option<&buildstore::localread::Local>,
+    root: &store::nasfs::NasRoot,
+    name: &str,
+) -> Result<Vec<u8>> {
+    let p = root.join(name);
+    let hash = store::naming::parse_content_name(name).map(|c| c.hash16);
+    if let (Some(local), Some(hash)) = (local, hash) {
+        if let store::nasfs::Place::Local(l) = local.path(&p) {
+            match std::fs::read(&l) {
+                Ok(b) if store::naming::hash16(&b) == hash => return Ok(b),
+                Ok(_) => {
+                    store::cachefile::release(&l);
+                    store::cachefile::try_remove(&l);
+                    eprintln!("{name}: the copy here isn't its content's: deleted, read from the NAS");
+                }
+                Err(e) => eprintln!("{name}: the copy here can't be read ({e}): read from the NAS"),
+            }
+        }
+    }
+    p.read().with_context(|| format!("read {name}"))
 }
 
 /// Unit `unit`'s accepted files, as the records `manifest` a step planned with name them: the one
@@ -605,16 +649,14 @@ pub fn open(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>, u
     Ok(Some(Accepted { root: root.clone(), version: version.clone(), index }))
 }
 
-/// An index, by its content name.
+/// An index, by its content name (`read_content`).
 pub fn read_index(root: &store::nasfs::NasRoot, name: &str) -> Result<Index> {
-    let b = root.join(name).read().with_context(|| format!("read {name}"))?;
-    serde_json::from_slice(&b).with_context(|| format!("parse {name}"))
+    serde_json::from_slice(&read_content(root, name)?).with_context(|| format!("parse {name}"))
 }
 
-/// A held report, by its content name.
+/// A held report, by its content name (`read_content`).
 pub fn read_report(root: &store::nasfs::NasRoot, name: &str) -> Result<Report> {
-    let b = root.join(name).read().with_context(|| format!("read {name}"))?;
-    serde_json::from_slice(&b).with_context(|| format!("parse {name}"))
+    serde_json::from_slice(&read_content(root, name)?).with_context(|| format!("parse {name}"))
 }
 
 /// The content name an inputs folder file's checked copy takes: its path up to its file name's first dot

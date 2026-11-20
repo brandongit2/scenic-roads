@@ -3,7 +3,10 @@
 //! and the water's water), the lakes' fill the water's readers open whole (`work/lakefill/<date>.…`),
 //! the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
 //! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
-//! inputs::dem::generic::stored) a terrain job reads half or more of (inputs::dem::generic::COPY_SHARE).
+//! inputs::dem::generic::stored) a terrain job reads half or more of (inputs::dem::generic::COPY_SHARE);
+//! and the inputs' content-named files a job reads whole (`sources/inputs/…`: the accepted versions'
+//! indexes and files, the regions' stored geometry; inputs::inputs::read_content, task #1508), which
+//! every terrain job read again from the NAS, each copy's bytes checked against its name's hash.
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
 //! file read in thousands of ranges is copied once, whole, in one sequential read, and read here.
 //!

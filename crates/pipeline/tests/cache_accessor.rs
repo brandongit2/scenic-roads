@@ -53,6 +53,11 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/roads/src/unit.rs", "run_tail", "a task's arguments: where its caches are"),
     ("crates/roads/src/unit.rs", "prepare_folder", "the unit's steps' arguments: where its caches are"),
     ("crates/trees/src/trees/tests.rs", "*", "tests: their own caches"),
+    (
+        "crates/inputs/src/inputs/tests.rs",
+        "a_content_named_file_is_read_from_this_macs_copy",
+        "a test: its own cache, read and made through read_content_in (store::cachefile)",
+    ),
     ("crates/buildstore/src/rawpack.rs", "put", "the packer's own new archive, which it holds (publish)"),
     ("crates/buildstore/src/rawpack.rs", "put_up", "deletes through drop_copy (store::cachefile)"),
     ("crates/buildstore/src/rawpack.rs", "merge_due", "deletes through drop_copy (store::cachefile)"),

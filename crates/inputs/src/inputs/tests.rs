@@ -1263,3 +1263,44 @@ fn stored_names_content_names_nested_in_facts() {
     s.sort();
     assert_eq!(s, ["sources/inputs/elevation/hrdem.toml.0123456789abcdef.toml", top, g]);
 }
+
+/// Task #1508: a job reads a content-named file from this Mac's copy, made once (`read_content_in`):
+/// after its first read the NAS's bytes aren't read again; a copy whose bytes aren't its name's
+/// hash is deleted and the NAS's read (and copied again after); a name that isn't a content name,
+/// or no cache, reads the NAS and copies nothing.
+#[test]
+fn a_content_named_file_is_read_from_this_macs_copy() {
+    let d = tempfile::tempdir().unwrap();
+    let (nas, cache) = (d.path().join("nas"), d.path().join("cache"));
+    let root = store::nasfs::NasRoot::local_for_test(&nas);
+    let local = buildstore::localread::Local::new(&root, &cache, 0);
+    let b = br#"{"unit":"x"}"#.to_vec();
+    let name = format!("sources/inputs/x/@index.{}.json", store::naming::hash16(&b));
+    let put = |n: &str, b: &[u8]| {
+        let p = nas.join(n);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b).unwrap();
+    };
+    put(&name, &b);
+    assert_eq!(read_content_in(Some(&local), &root, &name).unwrap(), b);
+    let copy = cache.join("blobs").join(&name);
+    assert_eq!(std::fs::read(&copy).unwrap(), b, "copied here");
+    // (The NAS's file other bytes under its name, which never happens: the read is the copy's.)
+    put(&name, b"elsewhere!!!");
+    assert_eq!(read_content_in(Some(&local), &root, &name).unwrap(), b, "read from the copy");
+    // (A damaged copy, its length the same: never read.)
+    put(&name, &b);
+    std::fs::write(&copy, br#"{"unit":"y"}"#).unwrap();
+    assert_eq!(read_content_in(Some(&local), &root, &name).unwrap(), b, "the NAS's, not the damaged copy's");
+    assert!(!copy.exists(), "the damaged copy deleted");
+    assert_eq!(read_content_in(Some(&local), &root, &name).unwrap(), b);
+    assert_eq!(std::fs::read(&copy).unwrap(), b, "copied again");
+    // (No content name, or no cache: the NAS's, nothing copied.)
+    put("sources/inputs/x/plain.json", b"p");
+    assert_eq!(read_content_in(Some(&local), &root, "sources/inputs/x/plain.json").unwrap(), b"p");
+    assert!(!cache.join("blobs/sources/inputs/x/plain.json").exists());
+    let other = format!("sources/inputs/x/@held.{}.json", store::naming::hash16(b"h"));
+    put(&other, b"h");
+    assert_eq!(read_content_in(None, &root, &other).unwrap(), b"h");
+    assert!(!cache.join("blobs").join(&other).exists());
+}
