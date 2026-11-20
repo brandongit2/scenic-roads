@@ -220,6 +220,11 @@ pub fn take() -> BTreeMap<String, u64> {
     if let Some(f) = jobrt::control::fewest_allowed().filter(|&f| f < threads) {
         m.insert("threads_least".into(), f as u64);
     }
+    // (More allowed meanwhile, a live target grown and cut back: the most, which its peak may have
+    // come on, its step's memory a thread read at them: agentcore's `needs` runs.)
+    if let Some(f) = jobrt::control::most_allowed().filter(|&f| f > threads) {
+        m.insert("threads_most".into(), f as u64);
+    }
     if let (Some(a), Some(b)) = (s.cpu_at, jobrt::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
     }
@@ -349,6 +354,18 @@ mod tests {
         begin();
         let m = take();
         assert_eq!(m.get("threads_least").copied(), (m["threads"] > 1).then_some(1));
+    }
+
+    /// Task #1550 review: a target grown under way past the threads it ends on (a live target's)
+    /// says the most it was allowed.
+    #[test]
+    fn a_target_grown_under_way_says_the_most_threads_it_was_allowed() {
+        let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        jobrt::control::allowed(4096);
+        begin();
+        let m = take();
+        assert!(m["threads"] < 4096);
+        assert_eq!(m.get("threads_most").copied(), Some(4096));
     }
 
     #[test]

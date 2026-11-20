@@ -353,8 +353,9 @@ lake-depth: `control::on_grant`) run that target on a pool that wide; a change w
 target. A live target (terrain-deep's: `control::on_grant_live`, task #1550) reads the file every
 second as it runs (`control::Live`): its work runs on threads as many as the Mac's cores, each
 taking a turn of the target's (`store::waits::Turns`, as many as the file says now) for the work
-it does, so a grow is taken within the second and a cut as the turns held are given back, inside
-the target; its costs line says `live`, and its agent watches it on its file's threads. A paced job
+it does, so a grow is taken within `POLL` plus `store::waits::RECHECK` (2 s at most) and a cut as the turns held are given back, inside
+the target; its costs line says `live` (and `live: false` once its live part ends, its landing and packing
+on the threads it began on), and its agent watches it on its file's threads meanwhile. A paced job
 (an input check, tree cover: `inputs::pace`) reads the file every second and limits its tasks under
 way to it. Other steps keep their starting grant. The thread count changes no output.
 
@@ -388,16 +389,16 @@ pyramids-fill don't yet, and a one-target job of theirs keeps its start grant to
     threads are measured (two windows). A thread so grown that didn't pay is cut back the next
     minute, and all of them are given back once work waits for the Mac's cores again (those a
     job hasn't taken yet, its target under way still on fewer, at once: its file set back,
-    `Agent::give_back_untaken`; a live target's and a paced job's, which take them within the
-    second, at their next minute). A Mac with every slot full asks for no work (`takes_more`), so
+    `Agent::give_back_untaken`; a live target's and a paced job's, which take them within
+    seconds, at their next minute). A Mac with every slot full asks for no work (`takes_more`), so
     after a minute it no longer knows that nothing waits, and it grows no job this way, even on a
     dry queue.
   - Past the most it may run on (the owner back): cut to that.
   The gap between 0.9 and 0.5 is the hysteresis: a grow that didn't pay is cut back the next
   minute (4 busy of 4, doubled to 8, still 4 busy: back to 6). These figures are the rule's form,
   not limits: the Mac's cores and memory bound a job's threads. The agent logs `agent: <job> on
-  <n> threads (was <m>): <why>`. A grow reaches a job as its next target begins, or within the
-  second, a live target's or a paced job's: a job of one target of the other steps runs it on its
+  <n> threads (was <m>): <why>`. A grow reaches a job as its next target begins, or within
+  seconds, a live target's (2 s at most) or a paced job's (1 s): a job of one target of the other steps runs it on its
   start grant.
 - **What the lead counts**: each capacity lists the jobs' threads, and the lead counts each job at
   the more of its current and its file's threads (a grow at once, a cut once a target runs on it),

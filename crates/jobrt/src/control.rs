@@ -1073,7 +1073,18 @@ pub fn allowed(n: usize) {
     use std::sync::atomic::Ordering;
     let n = n.max(1);
     let _ = FEWEST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| Some(if f == 0 { n } else { f.min(n) }));
+    MOST.fetch_max(n, Ordering::Relaxed);
     ALLOWED.store(n, Ordering::Relaxed);
+}
+
+/// The most threads this process's work has been allowed so far (0: none said), as `FEWEST`.
+static MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The most threads this process's work has been allowed so far (`allowed`); None: none said. A
+/// target grown under way is booked in its step's memory per thread at these (buildstore::costin's
+/// `threads_most`, agentcore's `needs` runs): its peak may have come on them.
+pub fn most_allowed() -> Option<usize> {
+    Some(MOST.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }
 
 /// The threads this process's work was last allowed (`allowed`; 0: none said).
@@ -1252,8 +1263,10 @@ pub fn on_grant_live<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         let g = grant.clone();
         store::waits::Turns::following(move || g.now().min(most))
     };
-    // (The fewest this target runs on, from its start: buildstore::costin's `threads_least`.)
+    // (The fewest and the most this target runs on, from its start: buildstore::costin's
+    // `threads_least` and `threads_most`.)
     FEWEST.store(0, Ordering::Relaxed);
+    MOST.store(0, Ordering::Relaxed);
     let t = std::sync::Arc::new(LiveTarget { grant, most, turns });
     t.now();
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
@@ -1320,16 +1333,28 @@ pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 /// working on nothing), and its parallel work on the pool it is on, which waits on no thread of the
 /// target's. A live target's (`on_grant_live`): the outside pool is as wide as the Mac's cores, its
 /// work there each holding a turn as it computes (`turns`: its caller's to see to); from a thread
-/// of no pool, `f` on that thread's own pool of one thread, holding a turn (the thread's own, else
-/// one waited for): one thread computing on one turn.
+/// of no pool, `f` on that thread's own pool of one thread, whose thread holds a turn while it
+/// runs (the caller's lent to it meanwhile, where it holds one): one thread computing on one turn.
 pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     let Some(mut n) = in_force() else { return f() };
     if let Some(t) = live_target() {
         if rayon::current_thread_index().is_none() {
-            let _turn = t.turns.take();
             return OWN.with(|p| match p.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(1).build().ok()) {
-                Some(p) => p.install(f),
-                None => f(),
+                // (The caller's turn, if it holds one, lent while it waits on its pool, whose
+                // thread takes one: the turn goes with the work, and a turn its work asks for is
+                // the one it holds. Taken here and run there, its work's own asks would wait on
+                // the caller's turn forever on a grant of 1: task #1550 review.)
+                Some(p) => {
+                    let _lent = store::waits::other();
+                    p.install(move || {
+                        let _turn = t.turns.take();
+                        f()
+                    })
+                }
+                None => {
+                    let _turn = t.turns.take();
+                    f()
+                }
             });
         }
         n = t.most;
@@ -1535,6 +1560,36 @@ mod tests {
         assert_eq!(top(0, usize::MAX), Some(up), "never past the most it was granted");
         assert_eq!(fewest_allowed(), Some(1));
         assert!(!is_live() && in_force().is_none(), "after it: nothing live");
+        // On a grant of 1, a thread of no pool, holding the one turn or not, whose parallel work
+        // asks for a turn: done, on that turn (task #1550 review: it had waited forever).
+        grant(&f, 1).unwrap();
+        let (bare, holding) = on_grant_live(|| {
+            let t = turns();
+            let bare = std::thread::scope(|s| s.spawn(|| on_outside_pool(|| t.computing(|| 1))).join().unwrap());
+            let holding = std::thread::scope(|s| {
+                s.spawn(|| {
+                    let _mine = t.take();
+                    on_outside_pool(|| t.computing(|| t.held()))
+                })
+                .join()
+                .unwrap()
+            });
+            (bare, holding)
+        });
+        assert_eq!((bare, holding), (1, 1), "the caller's turn lent to its work: one held");
+        // A target that panics ends all the same: nothing live, nothing in force after it.
+        for live in [true, false] {
+            let r = std::panic::catch_unwind(|| {
+                let run = || -> () { panic!("a target's bug") };
+                if live {
+                    on_grant_live(run)
+                } else {
+                    on_grant(run)
+                }
+            });
+            assert!(r.is_err());
+            assert!(!is_live() && in_force().is_none(), "after a panic (live {live}): nothing in force");
+        }
         std::env::remove_var(THREADS_ENV);
         assert_eq!(on_grant_live(rayon::current_num_threads), rayon::current_num_threads(), "no file: as it is");
     }

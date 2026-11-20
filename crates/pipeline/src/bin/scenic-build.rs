@@ -2568,14 +2568,28 @@ fn note_started(key: &str) {
     if jobrt::control::is_live() {
         line["live"] = true.into();
     }
+    note_cost_line(&p, key, "its start", &line);
+}
+
+/// `line` appended to the costs file `p` (`SCENIC_COSTS`), a failure said as noting `what` of `key`.
+fn note_cost_line(p: &std::ffi::OsStr, key: &str, what: &str, line: &serde_json::Value) {
     let r = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&p)
+        .open(p)
         .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
     if let Err(e) = r {
-        eprintln!("{key}: noting its start: {e}");
+        eprintln!("{key}: noting {what}: {e}");
     }
+}
+
+/// Notes that the live part of the target whose cost key is `key` ended (jobrt::control::
+/// on_grant_live returned; `SCENIC_COSTS`): what follows (its landing beside the next target, the
+/// job's packing) runs on the threads the job began on, so its agent watches it so again
+/// (agentcore::agent::memguard::targets).
+fn note_live_ended(key: &str) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    note_cost_line(&p, key, "its live part's end", &serde_json::json!({ "unit": key, "live": false }));
 }
 
 /// Target `target` of `step` run as a drop (its "none" key, pipeline::agent::build::is_none_key):
@@ -5891,6 +5905,7 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
                 );
                 landing.then(out, STEP, &t.slash(), said, c)
             })?;
+            note_live_ended(&agentcore::coord::cost_key(STEP, &t.slash()));
         }
         Ok(())
     })?;

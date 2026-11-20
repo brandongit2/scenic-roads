@@ -114,8 +114,14 @@ fn sets(z: u8) -> Vec<crate::terrain_zoom::Set> {
 
 /// A place 5 km wide at 10.5°E, 45.5°N.
 fn coverage(d: &std::path::Path) -> buildstore::coverage::Coverage {
+    coverage_km(d, 5)
+}
+
+/// A place `km` wide at 10.5°E, 45.5°N.
+fn coverage_km(d: &std::path::Path, km: u32) -> buildstore::coverage::Coverage {
+    let outline = vec![format!("place:10.5,45.5,{km}")];
     buildstore::coverage::Coverage::fixture(
-        &[buildstore::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:10.5,45.5,5".into()] }],
+        &[buildstore::recipes::Recipe { id: "r".into(), name: "R".into(), outline }],
         None,
         d,
     )
@@ -174,15 +180,18 @@ fn a_terrain_hi_target_on_one_or_two_threads_finishes_the_same() {
     assert!(made[0] == made[1], "the same tiles on 1 and 2 threads");
 }
 
+/// What a run of `run` did as a live target (`on_live_grants`): what it made, its threads in force
+/// at its end, and the cores it kept busy (the process's CPU time over the run's wall time).
+type LiveRun<R> = (R, Option<usize>, f64);
+
 /// `run` on each of `grants` as a live target's (jobrt::control::on_grant_live, terrain-deep's): its
 /// threads file written as the agent does, its grant at its start, and the grant `run`'s hook
-/// writes (None: none), within `BOUND` all told. What each made, and its threads in force at its
-/// end.
+/// writes (None: none), within `BOUND` all told.
 fn on_live_grants<R: Send>(
     what: &str,
     grants: &[(usize, Option<usize>)],
     run: impl Fn(&(dyn Fn() + Sync)) -> R + Sync,
-) -> Vec<(R, Option<usize>)> {
+) -> Vec<LiveRun<R>> {
     let d = tempfile::tempdir().unwrap();
     let f = d.path().join("threads");
     std::env::set_var(jobrt::control::THREADS_ENV, &f);
@@ -203,7 +212,10 @@ fn on_live_grants<R: Send>(
                             // (sleep ok: the grow seen)
                         }
                     };
-                    (run(&grow), jobrt::control::in_force())
+                    let (cpu, t0) = (jobrt::timings::cpu_us().unwrap_or(0), std::time::Instant::now());
+                    let r = run(&grow);
+                    let cpu = jobrt::timings::cpu_us().unwrap_or(0).saturating_sub(cpu) as f64 / 1e6;
+                    (r, jobrt::control::in_force(), cpu / t0.elapsed().as_secs_f64())
                 })
             })
             .collect()
@@ -212,7 +224,8 @@ fn on_live_grants<R: Send>(
     made
 }
 
-/// `inner`, its levels' sampling begun with `grow` called (a grant written mid-target).
+/// `inner`, `grow` called once its first tiles are ready (a grant written mid-level: the level's
+/// chunks sized as it began, the rest of its sampling and making on the grant grown).
 struct Grows<'a> {
     inner: &'a dyn crate::terrain_pack::RawSource,
     grow: &'a (dyn Fn() + Sync),
@@ -229,8 +242,10 @@ impl crate::terrain_pack::RawSource for Grows<'_> {
         turns: &crate::terrain_pack::Turns,
         ready: crate::terrain_pack::Ready,
     ) -> anyhow::Result<usize> {
-        (self.grow)();
-        self.inner.prefetch_each(z, tiles, turns, ready)
+        self.inner.prefetch_each(z, tiles, turns, &|got| {
+            ready(got);
+            (self.grow)();
+        })
     }
     fn built(&self, z: u8, tiles: &[(u32, u32)]) {
         self.inner.built(z, tiles)
@@ -243,29 +258,27 @@ impl crate::terrain_pack::RawSource for Grows<'_> {
     }
 }
 
-/// A terrain-deep target (a z10 tile's band sampled from the pool, crate::terrain_deep) on a grant
-/// of 1 and of 2 threads, and live (task #1550: jobrt::control::on_grant_live, as terrain-deep's
-/// jobs run it) on 1, on 3, and begun on 1 and grown to 3 within it (its file raised as its
-/// sampling begins): each done within the bound, the same deep pack and mid.
-#[test]
-fn a_terrain_deep_target_on_any_grant_or_grown_within_it_finishes_the_same() {
-    if !alone("grant_tests::a_terrain_deep_target_on_any_grant_or_grown_within_it_finishes_the_same") {
-        return;
-    }
+/// What a terrain-deep target made: its tiles, and the manifest's names (its deep pack and mid).
+type Deep = (usize, Vec<(String, String)>);
+
+/// `runs` given a terrain-deep target (a z10 tile's band sampled from the pool, crate::terrain_deep)
+/// of a place `km` wide, its finest level cut to `k` tiles, to make in a folder of its own each
+/// time, a hook its sampling calls as its first tiles are ready (`Grows`); what it made.
+fn deep_target<R>(km: u32, k: usize, runs: impl FnOnce(&(dyn Fn(&(dyn Fn() + Sync)) -> Deep + Sync)) -> R) -> R {
     let d = tempfile::tempdir().unwrap();
-    let cov = coverage(d.path());
+    let cov = coverage_km(d.path(), km);
     let sets = sets(14);
     let t = crate::terrain_zoom::tile_at(10.5, 45.5, crate::terrain_deep::PACK_Z);
-    let levels = few(crate::terrain_deep::levels(&cov, &sets, t), 4);
-    assert_eq!(levels[0].0, 14);
+    let levels = few(crate::terrain_deep::levels(&cov, &sets, t), k);
+    assert_eq!((levels[0].0, levels[0].1.len()), (14, k));
     let fill = fill_of(&cov, &sets, &|_, _| false);
     let native = |z: u8, x: u32, y: u32| native_of(&fill, z, x, y);
     let reaching = |z: u8, x: u32, y: u32| crate::terrain_zoom::reaching(&sets, z, x, y);
     let src = Sources { native: Some(&native), sets: &sets, ..Default::default() };
-    let k = std::sync::atomic::AtomicUsize::new(0);
-    let (made, live) = with_pool(|pool, raw| {
-        let once = |grow: &(dyn Fn() + Sync)| {
-            let r = d.path().join(k.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    with_pool(|pool, raw| {
+        let once = |grow: &(dyn Fn() + Sync)| -> Deep {
+            let r = d.path().join(n.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
             let mut out = buildstore::out::Out::unbound(
                 &store::nasfs::NasRoot::local_for_test(&r.join("root")),
                 &r.join("scratch"),
@@ -283,20 +296,128 @@ fn a_terrain_deep_target_on_any_grant_or_grown_within_it_finishes_the_same() {
                 })
                 .unwrap()
                 .unwrap();
-            let n = levels.iter().map(|l| l.1.len() as u64).sum::<u64>();
-            assert_eq!(said.into_inner().unwrap().last(), Some(&("tiles".to_string(), n, n)));
+            let all = levels.iter().map(|l| l.1.len() as u64).sum::<u64>();
+            assert_eq!(said.into_inner().unwrap().last(), Some(&("tiles".to_string(), all, all)));
             out.save().unwrap();
-            (rep.tiles, out.manifest.into_iter().collect::<Vec<_>>())
+            (rep.tiles, out.manifest.into_iter().collect())
         };
+        runs(&once)
+    })
+}
+
+/// A terrain-deep target on a grant of 1 and of 2 threads, and live on 3 (task #1550:
+/// jobrt::control::on_grant_live, as terrain-deep's jobs run it): each done within the bound, the
+/// same deep pack and mid.
+#[test]
+fn a_terrain_deep_target_on_any_grant_finishes_the_same() {
+    if !alone("grant_tests::a_terrain_deep_target_on_any_grant_finishes_the_same") {
+        return;
+    }
+    let (made, live) = deep_target(5, 4, |once| {
         let made = on_grants("a terrain-deep target", &[1, 2], || once(&|| ()));
-        let live = on_live_grants("a live terrain-deep target", &[(1, None), (3, None), (1, Some(3))], once);
-        (made, live)
+        (made, on_live_grants("a live terrain-deep target", &[(3, None)], once))
     });
     assert!(made[0].0 > 0 && made[0].1.len() == 2, "a deep pack and its mid: {:?}", made[0]);
     assert_eq!(made[0], made[1], "the same deep pack and mid on 1 and 2 threads");
-    let ends: Vec<Option<usize>> = live.iter().map(|l| l.1).collect();
-    assert_eq!(ends, [Some(1), Some(3), Some(3)], "the last grown within its target");
-    for (l, on) in live.iter().zip(["1", "3", "1 grown to 3"]) {
-        assert_eq!(made[0], l.0, "the same deep pack and mid live on {on}");
+    assert_eq!((&live[0].0, live[0].1), (&made[0], Some(3)), "the same live on 3");
+}
+
+/// Task #1550 review: a live terrain-deep target of a level of several chunks, on 1 thread, keeps
+/// no more than its one core busy (its sampling's chunks, their passes on the outside pool's
+/// threads, and the tiles' making all on the target's one turn); begun on 1 and grown to 3 as its
+/// first tiles are ready, mid-level, it takes the grow (on 3 at its end), and makes the same deep
+/// pack and mid.
+#[test]
+fn a_live_terrain_deep_target_keeps_to_its_grant_and_grown_mid_level_finishes_the_same() {
+    if !alone("grant_tests::a_live_terrain_deep_target_keeps_to_its_grant_and_grown_mid_level_finishes_the_same") {
+        return;
     }
+    // (70 z14 tiles: two chunks on 1 thread, terrain_base's IN_FLIGHT of 64 a chunk.)
+    let live =
+        deep_target(20, 70, |once| on_live_grants("a live terrain-deep target", &[(1, None), (1, Some(3))], once));
+    let (on1, grown) = (&live[0], &live[1]);
+    eprintln!("on 1: {:.2} cores busy; grown to 3: {:.2}", on1.2, grown.2);
+    assert!(on1.0 .0 >= 70 && on1.0 .1.len() == 2, "a deep pack and its mid: {:?}", on1.0);
+    assert!(on1.2 <= 1.5, "on 1 thread: {:.2} cores busy", on1.2);
+    assert_eq!((on1.1, grown.1), (Some(1), Some(3)), "the grow taken within the target");
+    assert_eq!(on1.0, grown.0, "the same deep pack and mid grown mid-level");
+}
+
+/// Task #1550 review: a live target's level makes its tiles on no more threads at once than its
+/// grant (the makers, as many as the Mac's cores, each on a turn of the target's), and on all of
+/// them: a source whose reads of the tiles take 20 ms, on a grant of 2.
+#[test]
+fn a_live_levels_tiles_are_made_on_no_more_threads_than_its_grant() {
+    if !alone("grant_tests::a_live_levels_tiles_are_made_on_no_more_threads_than_its_grant") {
+        return;
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counting {
+        now: AtomicUsize,
+        most: AtomicUsize,
+        tile: Vec<u8>,
+    }
+    impl crate::terrain_pack::RawSource for Counting {
+        fn get(&self, _z: u8, _x: u32, _y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+            let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(n, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(20)); // (sleep ok: a read's work)
+            self.now.fetch_sub(1, Ordering::SeqCst);
+            Ok((Some(self.tile.clone()), false))
+        }
+        fn prefetch_each(
+            &self,
+            _z: u8,
+            tiles: &[(u32, u32)],
+            _turns: &crate::terrain_pack::Turns,
+            ready: crate::terrain_pack::Ready,
+        ) -> anyhow::Result<usize> {
+            ready(tiles);
+            Ok(0)
+        }
+    }
+    let raw = Counting {
+        now: AtomicUsize::new(0),
+        most: AtomicUsize::new(0),
+        tile: roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap(),
+    };
+    let src = Sources::default();
+    let tiles: Vec<(u32, u32)> = (0..24).map(|x| (x, 0)).collect();
+    let made =
+        on_live_grants("a live level", &[(2, None)], |_| make_piece(&raw, &src, vec![(12, tiles.clone())]).unwrap());
+    assert!(made[0].0 .0.iter().filter(|m| m.0 == 12).count() == 24, "each tile made");
+    assert_eq!(raw.most.load(Ordering::SeqCst), 2, "on its grant's 2 threads at once, no more");
+}
+
+/// Task #1550 review: a live target's sampling (crate::terrain_base's chunk threads, on the outside
+/// pool as wide as the Mac's cores) computes on no more threads at once than its grant, and on all
+/// of them: one chunk thread whose passes (64 parallel tasks of 5 ms) the pool's other threads help
+/// with, each on a turn, on a grant of 2.
+#[test]
+fn a_live_targets_sampling_passes_compute_on_no_more_threads_than_its_grant() {
+    if !alone("grant_tests::a_live_targets_sampling_passes_compute_on_no_more_threads_than_its_grant") {
+        return;
+    }
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (now, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    on_live_grants("a live sampling", &[(2, None)], |_| {
+        let turns = jobrt::control::turns();
+        let pass = || {
+            (0..64).into_par_iter().for_each(|_| {
+                let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(n, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(5)); // (sleep ok: a pass's work)
+                now.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+        crate::terrain_base::on_chunk_threads(1, &turns, &|| {
+            for _ in 0..2 {
+                turns.computing(pass);
+            }
+            Ok(())
+        })
+        .unwrap()
+    });
+    assert_eq!(most.load(Ordering::SeqCst), 2, "on its grant's 2 threads at once, no more");
 }

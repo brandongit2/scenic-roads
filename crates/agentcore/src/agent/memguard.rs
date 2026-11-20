@@ -419,6 +419,10 @@ pub fn targets(costs: &Path) -> Targets {
                     t.on = None;
                 }
             }
+        } else if v["live"] == false {
+            // (Its live part ended: the rest of its target, its landing and packing, on the threads it
+            // began on, as a target not live: scenic-build's `note_live_ended`.)
+            t.live = false;
         }
     }
     t
@@ -2310,6 +2314,9 @@ mod tests {
         // (Task #1550: a live target's line says so; the next target's line, not live, says not.)
         std::fs::write(&p, "{\"unit\":\"terrain-deep 10/1/1\",\"started\":1,\"threads\":2,\"live\":true}\n{\"unit\":\"terrain-deep 10/1/2\",\"started\":5}\n").unwrap();
         assert_eq!((targets(&p).threads, targets(&p).live), (Some(2), true));
+        // (Its live part ended, its landing under way: not live, on the threads it began on.)
+        std::fs::write(&p, "{\"unit\":\"terrain-deep 10/1/1\",\"started\":1,\"threads\":2,\"live\":true}\n{\"unit\":\"terrain-deep 10/1/1\",\"live\":false}\n").unwrap();
+        assert_eq!((targets(&p).threads, targets(&p).live), (Some(2), false));
         std::fs::write(&p, "{\"unit\":\"terrain-deep 10/1/1\",\"started\":1,\"threads\":2,\"live\":true}\n{\"unit\":\"slope-deep 10/1/2\",\"started\":5,\"threads\":3}\n").unwrap();
         assert_eq!((targets(&p).threads, targets(&p).live), (Some(3), false));
         // (A step that lands a target's uploads beside the next target's work writes its end line
