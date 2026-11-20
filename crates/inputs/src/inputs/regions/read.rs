@@ -570,6 +570,22 @@ pub fn check_folder(
         jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
         jobrt::sys::peak_rss() / 1_000_000
     );
+    // (`only`: a region named, as resolved now, within the cells looked at; one moved past them
+    // since its accepted version would have its findings and neighbours unseen.)
+    if let Some(o) = &chosen {
+        let now: BTreeMap<String, BTreeSet<Cell>> = out
+            .resolved
+            .iter()
+            .filter(|(id, _)| o.named.contains(*id))
+            .map(|(id, r)| (id.clone(), drawn_cells(&r.drawn)))
+            .collect();
+        let off = o.outside(&now);
+        anyhow::ensure!(
+            off.is_empty(),
+            "--only: {} resolved outside its accepted cells: check the whole folder",
+            off.join(", ")
+        );
+    }
     let steps = checks.last_steps();
     for s in &steps.0 {
         eprintln!("regions-check: {}: {:.1} s, {} of {}", s.step.what(), s.secs, s.done, s.total);
@@ -606,12 +622,12 @@ pub fn check_folder(
     if let Some(d) = checks.ctx.as_ref().and_then(|c| c.data.as_ref()) {
         d.land_failed()?;
     }
-    // (`only`: the findings about a region named; the others' are those of regions checked only
-    // for what they share with them, cut off at the window's edge.)
+    // (`only`: the findings about a region named, or its folders' remainders; the others' are
+    // those of regions checked only for what they share with them, cut off at the window's edge.)
     let left_out = match &chosen {
         Some(o) => {
             let n = findings.len();
-            findings.retain(|f| f.files.iter().any(|p| o.named_files.contains(p)));
+            findings.retain(|f| f.files.iter().any(|p| o.kept_files.contains(p)));
             n - findings.len()
         }
         None => 0,
@@ -647,39 +663,52 @@ fn accepted_cells(
     let mut out = BTreeMap::new();
     for ((x, b), n) in have.iter().zip(read_all(root, &names)?).zip(&names) {
         let d: Drawn = serde_json::from_slice(&b).with_context(|| format!("parse {n}"))?;
-        let mut cells = BTreeSet::new();
-        for ring in d.shapes.values().flatten().flatten() {
-            let e7 = |v: f64| (v * 1e7).round() as i64;
-            let xs = ring.iter().map(|p| e7(p[0]));
-            let ys = ring.iter().map(|p| e7(p[1]));
-            let (Some(x0), Some(x1), Some(y0), Some(y1)) = (xs.clone().min(), xs.max(), ys.clone().min(), ys.max())
-            else {
-                continue;
-            };
-            cells.extend(super::tiles::cells_of([x0, y0, x1 + 1, y1 + 1]));
-        }
-        out.insert(x.recipe.id.clone(), cells);
+        out.insert(x.recipe.id.clone(), drawn_cells(&d));
     }
     Ok(out)
+}
+
+/// A drawn outline's cells (`tiles::cells_of` each ring's box).
+fn drawn_cells(d: &Drawn) -> BTreeSet<Cell> {
+    let mut cells = BTreeSet::new();
+    for ring in d.shapes.values().flatten().flatten() {
+        let e7 = |v: f64| (v * 1e7).round() as i64;
+        let xs = ring.iter().map(|p| e7(p[0]));
+        let ys = ring.iter().map(|p| e7(p[1]));
+        let (Some(x0), Some(x1), Some(y0), Some(y1)) = (xs.clone().min(), xs.max(), ys.clone().min(), ys.max()) else {
+            continue;
+        };
+        cells.extend(super::tiles::cells_of([x0, y0, x1 + 1, y1 + 1]));
+    }
+    cells
 }
 
 /// A scratch check of some regions (`check_folder`'s `only`): those named, and what their findings
 /// need: the regions they name (`region:`, `land:`, `group:`, their hand-out's folder), the members
 /// of a folder whose remainder holds one of them, and their neighbours, every region whose
-/// accepted cells come within `REACH` cells of theirs (the nearest-coast splits reach 450 km, the
-/// zones 200 nmi; a cell is 2°), with what those name in turn. The passes over the Earth's cells
-/// take those within one cell of theirs (`window`): past it the neighbours' own neighbours are
-/// missing, so what they find there isn't kept.
+/// accepted cells come within a zone's `reach()` of theirs, with what those name in turn. The passes
+/// over the Earth's cells take those touching theirs (`window`, one cell round them): past it the
+/// neighbours' own neighbours are missing, so what they find there isn't kept. A region named that
+/// resolves outside the window (moved since its accepted version) stops the check.
 pub struct Only {
     pub named: BTreeSet<String>,
-    pub named_files: BTreeSet<String>,
+    /// The files whose findings are kept: the named regions', and the remainders of the folders
+    /// holding one (a remainder's problem names its own file alone).
+    pub kept_files: BTreeSet<String>,
     pub checked: BTreeSet<String>,
     pub window: BTreeSet<Cell>,
 }
 
-/// How far a region's neighbours are looked for, in cells (`Only`), north and south; east and
-/// west as far on the ground at the cell's latitude.
-const REACH: i64 = 2;
+/// How far a region's neighbours are looked for, in cells (`Only`), north and south (east and
+/// west as far on the ground at the cell's latitude): a 200-nmi zone's width (`geom::MAX_BUFFER_M`,
+/// the widest buffer, 370 km) past a region's cells, a cell being 2° (222 km): 2. A region touching
+/// it is within that (its accepted cells hold its water too); one past it can't reach it with a
+/// zone. (The nearest-coast splits' `NEAREST_REACH_M` is where they first gather coasts, from the
+/// datasets, doubled as needed: no bound of a neighbour.)
+fn reach() -> i64 {
+    let cell_m = super::tiles::CELL as f64 * 1e-7 * roadcore::geo::M_PER_DEG;
+    (super::geom::MAX_BUFFER_M / cell_m).ceil() as i64
+}
 
 impl Only {
     /// `names` chosen from `folder` (a region's id, or a folder's or file's path in it; one naming
@@ -721,15 +750,25 @@ impl Only {
             "--only: none of {} has accepted geometry, nor does a region it names: its neighbours can't be told (check the whole folder)",
             named.iter().cloned().collect::<Vec<_>>().join(", ")
         );
-        let near = round(&own, REACH);
+        let near = round(&own, reach());
         let neighbours: BTreeSet<String> = cells
             .iter()
             .filter(|(id, c)| folder.regions.contains_key(*id) && !c.is_disjoint(&near))
             .map(|(id, _)| id.clone())
             .collect();
         checked.extend(needs(folder, &neighbours));
-        let named_files = named.iter().map(|id| folder.regions[id].0.clone()).collect();
-        Ok(Only { named, named_files, checked, window: round(&own, 1) })
+        let mut kept_files: BTreeSet<String> = named.iter().map(|id| folder.regions[id].0.clone()).collect();
+        for (d, (path, _)) in &folder.remainders {
+            if named.iter().any(|id| super::file::in_group(d, &folder.regions[id].0)) {
+                kept_files.insert(path.clone());
+            }
+        }
+        Ok(Only { named, kept_files, checked, window: round(&own, 1) })
+    }
+
+    /// The regions of `now` (each named one's cells as resolved) not within the window.
+    pub fn outside(&self, now: &BTreeMap<String, BTreeSet<Cell>>) -> Vec<String> {
+        now.iter().filter(|(_, c)| !c.is_subset(&self.window)).map(|(id, _)| id.clone()).collect()
     }
 
     /// Whether the check takes file `p`: a region checked, the remainder of a folder holding one, a
@@ -901,13 +940,19 @@ mod tests {
         let ids = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let o = Only::choose(&f, &["b".into()], &cells).unwrap();
         assert_eq!(o.named, ids(&["b"]));
-        assert_eq!(o.named_files, ids(&["b.toml"]));
+        assert_eq!(o.kept_files, ids(&["b.toml"]));
         // (a: b names it, and borders it; x borders it, and its folder's remainder needs y.)
         assert_eq!(o.checked, ids(&["a", "b", "x", "y"]));
         assert!(o.window.contains(&(0, 0)) && o.window.contains(&(2, 1)) && !o.window.contains(&(3, 0)));
         assert!(o.takes("p/_remainder.toml", &f) && o.takes("_pins.toml", &f) && o.takes("s.geojson", &f));
         assert!(o.takes("p/y.toml", &f) && !o.takes("c.toml", &f));
         assert!(!o.takes("q/_remainder.toml", &f), "a remainder of a folder holding no region checked");
+        // (Moved since: a named region resolved past the window stops the check.)
+        let now = |c: Cell| BTreeMap::from([("b".to_string(), BTreeSet::from([(1, 0), c]))]);
+        assert_eq!((o.outside(&now((2, 1))), o.outside(&now((5, 0)))), (vec![], vec!["b".to_string()]));
+        // A region in a folder with a remainder: the remainder's findings (about its file) kept.
+        let o = Only::choose(&f, &["x".into()], &cells).unwrap();
+        assert_eq!(o.kept_files, ids(&["p/x.toml", "p/_remainder.toml"]));
         // A folder names its regions; a file its region.
         assert_eq!(Only::choose(&f, &["p/".into()], &cells).unwrap().named, ids(&["x", "y"]));
         assert_eq!(Only::choose(&f, &["p/x.toml".into()], &cells).unwrap().named, ids(&["x"]));
@@ -928,5 +973,6 @@ mod tests {
         let far = round(&BTreeSet::from([(0, 40)]), 1);
         assert!(far.iter().filter(|c| c.1 == 40).count() > 3, "at 80° a cell's row spans more columns");
         assert_eq!(round(&BTreeSet::from([(0, 44)]), 2).iter().map(|c| c.1).max(), Some(44));
+        assert_eq!(reach(), 2, "a 200-nmi zone, 370 km, spans 2 cells of 222 km");
     }
 }

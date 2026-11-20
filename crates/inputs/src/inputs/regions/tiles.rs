@@ -3155,7 +3155,8 @@ fn cover_check(
     for (idx, (over, g)) in groups.iter().zip(judged) {
         let files = || {
             let mut f = vec![super::resolve::RULES.to_string()];
-            f.extend(g.edges.iter().take(6).filter_map(|(o, _)| folder.regions.get(o).map(|r| r.0.clone())));
+            // (Every region along it: a scratch check keeps its findings by their files.)
+            f.extend(g.edges.iter().filter_map(|(o, _)| folder.regions.get(o).map(|r| r.0.clone())));
             f
         };
         if g.rest {
@@ -3181,7 +3182,7 @@ fn cover_check(
                     }
                     let edges = by_edge(len);
                     let mut files = vec![super::resolve::RULES.to_string()];
-                    files.extend(edges.iter().take(6).filter_map(|(o, _)| folder.regions.get(o).map(|r| r.0.clone())));
+                    files.extend(edges.iter().filter_map(|(o, _)| folder.regions.get(o).map(|r| r.0.clone())));
                     problems.push(Problem {
                         warning: false,
                         check: "rg-cover",

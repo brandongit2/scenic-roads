@@ -1041,12 +1041,16 @@ regions or folders of the steps taking one at a time (`slowest`).
 or folder of the scratch folder) checked, with what their findings need: the regions they name
 (`region:`, `land:`, `group:`, their hand-out's folder), a folder's regions where its remainder
 holds one, and their neighbours, every region whose accepted outline (its drawn file's rings'
-boxes, by 2° cell) comes within 2 cells of theirs (east and west as far on the ground), with what
-those name; a region new since the accepted version takes the cells of those it names. The passes
-over the Earth's cells (the 200-nmi zones by cell, the cover check, the rest) take only the cells
-within one of theirs, and only the findings naming one of their files are kept (`only` in the
-report says how many were left out): past the window the neighbours' own neighbours are missing.
-So it can't stand for the whole check; the input check always runs whole.
+boxes, by 2° cell, its water's too) comes within a 200-nmi zone of theirs (`read::reach`, from
+`geom::MAX_BUFFER_M`: 2 cells, east and west as far on the ground), with what those name; a region
+new since the accepted version takes the cells of those it names. The passes over the Earth's
+cells (the 200-nmi zones by cell, the cover check, the rest) take only the cells within one of
+theirs, and only the findings naming one of their files, or the remainder of a folder holding one,
+are kept (a gap's and a stretch of open sea's name every region along them; `only` in the report
+says how many were left out): past the window the neighbours' own neighbours are missing. A region
+named that resolves outside the window, moved since its accepted version, stops the check ("outside
+its accepted cells: check the whole folder"). So it can't stand for the whole check; the input
+check always runs whole.
 
 #### 6.1.8 Checks
 

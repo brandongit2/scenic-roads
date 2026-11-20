@@ -232,12 +232,16 @@ pub(super) fn world_data(
 }
 
 fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
-    run_counted(w, files).0
+    run_counted(w, files, None).0
 }
 
 /// `run`, and each step its progress counted (crate::inputs::regions::progress): the step, its
 /// items done and its total.
-fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Step, u64, u64)>, f64) {
+fn run_counted(
+    w: &World,
+    files: &[(&str, &str)],
+    window: Option<&std::collections::BTreeSet<super::tiles::Cell>>,
+) -> (resolve::Outcome, Vec<(Step, u64, u64)>, f64) {
     let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
     let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
     let others = BTreeMap::new();
@@ -252,7 +256,7 @@ fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Ste
         names: String::new(),
         data: Some(&w.data),
         progress: Default::default(),
-        window: None,
+        window,
     };
     let out = resolve::resolve(&folder, &ctx);
     (out, ctx.progress.steps().iter().map(|t| (t.step, t.done, t.total)).collect(), ctx.progress.share())
@@ -264,7 +268,7 @@ fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Ste
 #[test]
 fn a_resolve_counts_every_step_to_its_total() {
     let w = world();
-    let (out, steps, share) = run_counted(&w, &all());
+    let (out, steps, share) = run_counted(&w, &all(), None);
     assert!(out.problems.is_empty(), "{:#?}", out.problems);
     let taken: Vec<Step> = steps.iter().map(|s| s.0).collect();
     assert_eq!(taken, Step::ALL, "every step taken, in order: the folder has water, cover and a rest");
@@ -520,6 +524,12 @@ fn a_large_piece_of_land_in_no_region_is_an_error() {
     assert_eq!(gaps.len(), 1, "{:?}", out.problems);
     assert!(gaps[0].message.contains("of it land") && gaps[0].message.contains("around it a ("), "{}", gaps[0].message);
     assert!(!area_of(&out.resolved["a"].geometry).contains([e7(0.6), e7(1.03)]), "not filled");
+    // A scratch check's window (task #1523, `--only`): the cover check takes its cells alone, the
+    // gap found in the cell holding it, not from another's.
+    let only = |c| run_counted(&w, &all(), Some(&std::collections::BTreeSet::from([c]))).0;
+    let gaps =
+        |o: &resolve::Outcome| o.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).count();
+    assert_eq!((gaps(&only((0, 0))), gaps(&only((5, 5)))), (1, 0));
 }
 
 /// The place a finding names, in degrees.

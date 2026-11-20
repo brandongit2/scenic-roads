@@ -691,6 +691,22 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     assert!(!checks.takes_ignored("_x.geojson") && !checks.takes_ignored(".DS_Store"));
 }
 
+/// Task #1523: a scratch check's outcome (`--only`) is its window's: keyed apart from the whole
+/// folder's and from another window's, so neither is taken for the other.
+#[test]
+fn a_windows_outcome_is_keyed_by_its_cells() {
+    let f = folder(&[PINS, ("a.toml", &region("a", "outline = [\"osm:1\"]\n"))]);
+    let mut checks = Regions::new(None);
+    let whole = checks.outcome_key(&f).unwrap();
+    checks.window = Some(std::collections::BTreeSet::from([(0, 0)]));
+    let one = checks.outcome_key(&f).unwrap();
+    checks.window = Some(std::collections::BTreeSet::from([(0, 0), (1, 0)]));
+    let two = checks.outcome_key(&f).unwrap();
+    assert!(whole != one && one != two && whole != two, "{whole} {one} {two}");
+    checks.window = None;
+    assert_eq!(checks.outcome_key(&f).unwrap(), whole);
+}
+
 /// Any `_*.toml` is special, never a region: the known three are read, any other is a fault naming
 /// them, the old names are a fault saying what to rename them to, and the special files at the wrong
 /// place are faults (#536).
