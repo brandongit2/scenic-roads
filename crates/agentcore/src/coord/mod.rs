@@ -837,9 +837,9 @@ impl Shared {
 
     /// The steps whose memory moved with no cost version raised (`NotRaised`). Each rerun of the way
     /// its step runs now (`Cost::was_mb`) counts where the larger of its two peaks is past what a
-    /// thread of its step adds to its memory by the needs model (`needs::Book::step_thread_mb`, at
-    /// least its own peak over its threads, `needs::Book::thread_mb`): a move smaller than that sizes nothing that matters
-    /// in packing. One off its run before by more than the needs model's `off` times is moved, on
+    /// thread of the target adds to its memory as it's packed (`needs::Book::thread_mb`: its own
+    /// peak over its threads, at least its step's fitted memory per thread): a move smaller than
+    /// that sizes nothing that matters in packing. One off its run before by more than the needs model's `off` times is moved, on
     /// the side it went; a step is flagged on a side where the moved are `relearn` or more and
     /// most of the reruns that count.
     fn not_raised(&self) -> Vec<NotRaised> {
@@ -852,8 +852,7 @@ impl Shared {
             let Some(was) = c.was_mb.filter(|&w| w > 0 && c.peak_mb > 0) else { continue };
             let key = CostKey::parse(k);
             let v = self.the_plan.cost_version(key.step);
-            let thread = book.step_thread_mb(key.step, key.target).max(book.thread_mb(key.step, key.target));
-            if c.v != v || thread.is_some_and(|t| was.max(c.peak_mb) < t) {
+            if c.v != v || book.thread_mb(key.step, key.target).is_some_and(|t| was.max(c.peak_mb) < t) {
                 continue;
             }
             *reruns.entry(key.step.to_string()).or_default() += 1;
@@ -1713,8 +1712,9 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
-    /// `sched::Sched::thread_mb`, its step's memory per thread by the needs model, at least its
-    /// targets' own runs' peaks over their threads; 0: no figure, a cold start's, so its job grows
+    /// `sched::Sched::thread_mb`: a target with its own run, that run's peak over its threads, at
+    /// least its step's fitted memory per thread; one without, its step's memory per thread by the
+    /// needs model; 0: no figure, a cold start's, so its job grows
     /// past none of them), and the threads the memory it was packed
     /// at covers (its threads and those its memory was read at, the more): its agent reserves that a thread for each one it
     /// grows the job past them (crate::agent::threads), as the lead counts it
@@ -8487,6 +8487,11 @@ mod tests {
         c.add_costs(&[(cost_key("lo", "3/7/6"), run(900, 2))]);
         c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(12_000, 2) })]);
         c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(900, 2) })]);
+        // (Two runs on 8 threads: the step's memory per thread is fitted, about 3 GB a thread, past
+        // 3/7/4's own peak over its threads.)
+        c.add_costs(&[(cost_key("lo", "3/8/1"), run(20_000, 8)), (cost_key("lo", "3/8/2"), run(20_000, 8))]);
+        let thread = c.shared.lock().unwrap().book().thread_mb("lo", "3/7/4").unwrap();
+        assert!(thread > 30 && thread < 5_000, "{thread}");
         assert!(t.off < 12_000.0 / 900.0 && t.off > 12_000.0 / 5_000.0);
         let nr = c.not_raised();
         assert_eq!(

@@ -740,8 +740,8 @@ say no threads, so nothing is decided for them).
     §7.7, Memory admission: fitted over its runs' sizes and threads, at least `needs-thread-share`
     of their peaks over their threads, else those peaks over their threads; a target with its own
     run, that run's peak over its threads, at least the fitted figure; the whole figure a thread
-    where none says; the threads covered,
-    `Grant::thread_covers`, the more of its starting threads, those its memory was read at, and
+    where none says; the threads covered, `Grant::thread_covers`, the more of its starting
+    threads, those its memory was read at, and
     those its own runs had (or the fewest a paced run was cut to under way where fewer, its cost
     line's `threads_least`, from the fewest its pace allowed, `jobrt::control::fewest_allowed`: its
     peak may have come on them)), within its capacity's `mem_mb` less what its jobs' grows hold
@@ -1977,8 +1977,8 @@ each thread past them costs. Memory is the cautious limit, and the memory guard 
   for every Mac (`too_big`). A target with its own run: that run's peak (never below its floor),
   plus its memory per thread (`Book::thread_mb`: that peak over its threads, at least its step's
   fitted memory per thread; never its step's runs scaled up to its size) for each thread past
-  those it ran on (`needs::own_threads`: its threads, or the fewest a paced run was cut to). One without: its floor
-  where it has one, else its memory by place where that is judged good (its nearest measured
+  those it ran on (`needs::own_threads`: its threads, or the fewest a paced run was cut to). One
+  without: its floor where it has one, else its memory by place where that is judged good (its nearest measured
   targets', `needs::Near`), each grown to those threads by what its step's runs grow by from their
   own threads to them (its step's model's memory on them past its memory as measured: a floor or
   a place's figure says no threads); else its step's runs at or above its size, each grown to
@@ -2175,10 +2175,11 @@ are, docs/inputs.md): the code a step runs reaches most crates, so nearly every 
 every step a cold start. So the lead watches for it: a cost taken in place of its target's run
 before, both of the way the step runs now on as many threads, notes that run's peak
 (`Cost::was_mb`, `coord`'s `moved_from`). Such a rerun counts where the larger of its two peaks is
-past what a thread of its step adds by the needs model (`needs::Book::step_thread_mb`, the
-`needs-thread-share` setting; at least the target's own peak over its threads): a move under that sizes nothing that matters in packing. One off its
-run before by more than `needs-off` (3) times is moved, on the side it went; a step is flagged
-`cost-version` (§10, Flags; `Coordinator::not_raised`) on a side where the moved are `needs-relearn`
+past what a thread of the target adds as it's packed (`needs::Book::thread_mb`: its own peak over
+its threads, at least its step's fitted memory per thread): a move under that sizes nothing that
+matters in packing. One off its run before by more than `needs-off` (3) times is moved, on the
+side it went; a step is flagged `cost-version` (§10, Flags; `Coordinator::not_raised`) on a side
+where the moved are `needs-relearn`
 (5) or more and most of its reruns that count, until the version is raised or those targets run
 again alike. Its targets not run since are still sized by the old code's runs, and the flag says
 so: raise the step's `cost_v`. A rerun whose inputs moved its memory that much is flagged alike, so

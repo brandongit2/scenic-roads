@@ -2257,9 +2257,10 @@ impl Sched {
 
     /// What each thread a job of `step` over `targets`, admitted at `mem_mb` on `on` threads (its
     /// `start_threads`, or those it was granted where more), adds to its memory past them (MB), and
-    /// the threads its memory covers: its targets' most (crate::needs::Book::thread_mb: its step's
-    /// memory per thread, fitted over its runs' sizes and threads, else its runs' peaks over their
-    /// threads, else its own run's); the threads, `on`, or its own runs' where every target ran on
+    /// the threads its memory covers: its targets' most (crate::needs::Book::thread_mb: a target's
+    /// own run's peak over its threads, at least its step's fitted memory per thread; one never
+    /// run, its step's memory per thread, fitted over its runs' sizes and threads, else its runs'
+    /// peaks over their threads); the threads, `on`, or its own runs' where every target ran on
     /// more (`needs::own_threads`: its peak came on them). Where a target's isn't said, the whole
     /// figure a thread and one covered (one more thread of a regions check once needed about a
     /// region's worth, docs/inputs.md §4.3); none (0) where it has no figure, a cold start's,

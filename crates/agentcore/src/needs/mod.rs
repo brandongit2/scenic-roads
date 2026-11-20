@@ -802,9 +802,7 @@ impl<'a> Book<'a> {
         if let Some(c) = self.own(step, target) {
             let mb = c.peak_mb.max(floor.unwrap_or(0));
             let more = match own_threads(c) {
-                Some(ran) if threads > ran => {
-                    u64::from(threads - ran) * self.thread_mb(step, target).unwrap_or(mb.div_ceil(u64::from(ran)))
-                }
+                Some(ran) if threads > ran => u64::from(threads - ran) * self.own_thread_mb(step, target, c, ran),
                 _ => 0,
             };
             return (mb + more, From::Measured);
@@ -842,21 +840,18 @@ impl<'a> Book<'a> {
     /// (`model::Model::thread_mb`); None where neither says (a cold start's: its job grows past no
     /// threads its grant doesn't cover, crate::agent::threads).
     pub fn thread_mb(&self, step: &str, target: &str) -> Option<u64> {
-        let sizes = self.sizes(step, target, None);
-        let md = self.model(step);
-        let own = self.own(step, target).and_then(|c| Some((c, own_threads(c)?)));
-        let Some((c, ran)) = own else { return md.needs.thread_mb(&sizes) };
-        let peak = c.peak_mb.max(self.current_floor(step, &cost_key(step, target)).unwrap_or(0));
-        let fitted = md.needs.fitted_per_thread(&sizes).map_or(0, |f| f.ceil() as u64);
-        Some(peak.div_ceil(u64::from(ran)).max(fitted))
+        match self.own(step, target).and_then(|c| Some((c, own_threads(c)?))) {
+            Some((c, ran)) => Some(self.own_thread_mb(step, target, c, ran)),
+            None => self.model(step).needs.thread_mb(&self.sizes(step, target, None)),
+        }
     }
 
-    /// What a thread of `step` adds to the memory of a target of `target`'s sizes by its step's
-    /// runs (`model::Model::thread_mb`), its own run or none: what a move of its memory is weighed
-    /// against (crate::coord's `not_raised`: a move under it sizes nothing that matters in
-    /// packing), never what it's admitted at (`thread_mb`).
-    pub fn step_thread_mb(&self, step: &str, target: &str) -> Option<u64> {
-        self.model(step).needs.thread_mb(&self.sizes(step, target, None))
+    /// `thread_mb` of a target whose own run `c` ran on `ran` threads: its peak (never below its
+    /// floor) over them, at least its step's fitted memory per thread.
+    fn own_thread_mb(&self, step: &str, target: &str, c: &Cost, ran: u32) -> u64 {
+        let peak = c.peak_mb.max(self.current_floor(step, &cost_key(step, target)).unwrap_or(0));
+        let fitted = self.model(step).needs.fitted_per_thread(&self.sizes(step, target, None));
+        peak.div_ceil(u64::from(ran)).max(fitted.map_or(0, |f| f.ceil() as u64))
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
@@ -2233,5 +2228,25 @@ mod tests {
         assert_eq!(b.mem("inputs", t, 2, 0), (9_180, From::Measured), "not 211,706 MB");
         // (A target never run is still read by its step's runs scaled to its size.)
         assert!(b.thread_mb("inputs", "inputs/new").is_some());
+    }
+
+    /// Task #1528 review: where its step's fitted memory per thread is past a target's own peak over
+    /// its threads, each thread past them grows by the fitted figure: its step's runs say a thread
+    /// holds about 1,000 MB whatever its target, and its own run on 2 threads took 300.
+    #[test]
+    fn an_own_run_grows_by_its_steps_fitted_slope_where_that_is_more() {
+        let on = |peak: u64, threads: u64| Cost {
+            v: cost_version("slope"),
+            ..cost(peak, 60, &[("threads", threads), ("cpu_ms", 60_000 * threads)])
+        };
+        let mut costs: BTreeMap<String, Cost> =
+            (1..=10).map(|t| (cost_key("slope", &format!("t{t}")), on(100 + 1_000 * t, t))).collect();
+        costs.insert(cost_key("slope", "small"), on(300, 2));
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        let fitted = b.model("slope").needs.fitted_per_thread(&b.sizes("slope", "small", None)).unwrap();
+        assert!(fitted > 150.0, "past its own 300 MB over 2 threads: {fitted}");
+        let per = fitted.ceil() as u64;
+        assert_eq!(b.thread_mb("slope", "small"), Some(per));
+        assert_eq!(b.mem("slope", "small", 4, 0), (300 + 2 * per, From::Measured));
     }
 }

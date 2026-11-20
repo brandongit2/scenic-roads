@@ -2887,7 +2887,7 @@ mod tests {
                 ("retired".to_string(), 130)
             ])
         );
-        assert_eq!((f.target, f.left), (Some(3500), 0));
+        assert_eq!((f.target, f.left, f.short), (Some(3500), 0, false), "it reached its goal");
         assert!(
             !c.join("base/base/6-1-1.0000000000000001.base").exists()
                 && c.join("base/base/6-1-2.0000000000000001.base").exists()
@@ -2900,16 +2900,15 @@ mod tests {
             toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 4000, &disk, &|_| None).unwrap().freed,
             BTreeMap::from([("base".to_string(), 2000)])
         );
-        // Already there: nothing goes.
-        assert_eq!(
-            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| None).unwrap(),
-            Freed::default()
-        );
+        // Already there: nothing goes, and it isn't short (task #1528).
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| None).unwrap();
+        assert_eq!(f, Freed::default());
+        assert!(!f.short);
         // A target past everything: the last base pack, then the heritage clip; short, and what
         // stays said (nothing here).
         let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| None).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("heritage".to_string(), 700)]));
-        assert_eq!(f.left, 0);
+        assert_eq!((f.left, f.short), (0, true));
     }
 
     /// The pass's filtered planet of 2026-09-28 in the NAS's manifest under `root`, and there.
