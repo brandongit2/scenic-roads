@@ -261,7 +261,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      versions declared isn't derived yet.
      Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_no_input_scheme_1_didnt` (each manifest
      entry and input changed alone moves a target's scheme-2 key only when it moves its scheme-1
-     key: a scheme-2 key may pin less, never more), both over every derived step. It holds for every derived step, the terrain family
+     key: a scheme-2 key may pin less, never more), both over every derived step (the first over
+     every manifest entry before a publish, one in six in every other run, #1539). It holds for every derived step, the terrain family
      too: scheme 1 as this code makes it already keys on #832's coverage cut (step 2), so no
      step's scheme-2 lines name an input its scheme-1 key doesn't pin, and which records go at
      the switch needs no list: those scheme 1 itself no longer finds current (§6 step 3d).

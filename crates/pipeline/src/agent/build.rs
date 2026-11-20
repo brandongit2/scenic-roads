@@ -7005,13 +7005,24 @@ mod tests {
                 .collect()
         }
 
-        /// Each manifest entry and input changed alone (its content or value with a mark added): what
-        /// changed, and the manifest and inputs with it.
+        /// The manifest entries the tests over every change change (#1539): before a publish
+        /// (`every_entry`) every one; otherwise every `SAMPLE`th in their order, the first
+        /// included, so each fixture still has some of each part of the build (its sources, its
+        /// terrain and slope, its work files): a fixture's 64 entries changed, removed and added
+        /// back were most of those tests' 9-16 s alone on the M4, up to the 3 min of nextest's
+        /// bound on it loaded.
+        fn entries(&self) -> Vec<&String> {
+            let every = every_entry();
+            self.m.keys().enumerate().filter(|(i, _)| every || i % SAMPLE == 0).map(|(_, l)| l).collect()
+        }
+
+        /// Each manifest entry of `entries` and each input changed alone (its content or value with
+        /// a mark added): what changed, and the manifest and inputs with it.
         fn one_changed(&self) -> Vec<(String, BTreeMap<String, String>, BTreeMap<String, String>)> {
             let mut out = Vec::new();
-            for (l, c) in &self.m {
+            for l in self.entries() {
                 let mut m2 = self.m.clone();
-                m2.insert(l.clone(), format!("{c}~"));
+                m2.insert(l.clone(), format!("{}~", self.m[l]));
                 out.push((l.clone(), m2, self.inputs.clone()));
             }
             for (n, v) in &self.inputs {
@@ -7052,6 +7063,24 @@ mod tests {
             let load = tiles.load_state();
             (keys, memo.read_sets(), load)
         }
+    }
+
+    /// Of the manifest entries, the tests over every change take one in this many (`Fixture::entries`)
+    /// but before a publish.
+    const SAMPLE: usize = 6;
+
+    /// Whether the tests over every change take every manifest entry: in publish's run, which sets
+    /// SCENIC_PUBLISH (tools/app/publish.sh), the gate every change passes; a sample in every other
+    /// (check.sh's, an agent's). By hand: SCENIC_PUBLISH=1 in the run's command.
+    fn every_entry() -> bool {
+        std::env::var_os("SCENIC_PUBLISH").is_some()
+    }
+
+    /// The threads a test working through its cases takes (#1539): at most 4. nextest runs as many
+    /// tests at once as the run has test threads (its share of the test Mac's cores), so a test of
+    /// a thread per core took them from the others (14 a test on the M4, beside two other runs).
+    fn case_threads() -> usize {
+        std::thread::available_parallelism().map_or(4, |n| n.get()).min(4)
     }
 
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
@@ -7342,7 +7371,7 @@ mod tests {
     /// in some fixture build, every target it lists has lines, and changing a manifest entry
     /// changes a target's key just when its key lines name that entry (by its logical name or its
     /// content), or the terrain tiles it reads inside the entry (a `Grain::Tiles` read's lines)
-    /// changed.
+    /// changed. Of a sample of the entries but before a publish (`Fixture::entries`).
     #[test]
     fn a_key_names_exactly_its_reads() {
         let fixtures = fixtures();
@@ -7360,7 +7389,7 @@ mod tests {
             // (Each change's keys worked out on threads of their own, #1112: a whole context's keys
             // a change, some 190 changes, were most of the test's time.)
             let changes: Vec<_> = f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")).collect();
-            let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let n = case_threads();
             std::thread::scope(|s| {
                 for some in changes.chunks(changes.len().div_ceil(n).max(1)) {
                     let (all, steps) = (&all, &steps);
@@ -7413,9 +7442,22 @@ mod tests {
     /// the keys before it derived on terrain whose memos a plan before filled (one `TerrainTiles`
     /// for both: the warm passes' and the terrain's memos hit). The other way, a key moved that
     /// comes out the same (a read that changed under it, the key not naming it so), is the diff's
-    /// imprecision: not a stale key, so counted, not failed.
+    /// imprecision: not a stale key, so counted, not failed. Of a sample of the entries but before a
+    /// publish (`Fixture::entries`); the held build in a test of its own (#1539: each sets up its
+    /// fixtures, 3.6 s of building a plan to the end; the two together were 15-21 s alone).
     #[test]
     fn the_recorded_reads_see_every_change_that_moves_a_key() {
+        recorded_reads_see_every_change(fixtures(), if every_entry() { 30_000 } else { 3_000 });
+    }
+
+    #[test]
+    fn the_recorded_reads_see_every_change_in_the_held_build() {
+        recorded_reads_see_every_change(vec![held_fixture()], if every_entry() { 10_000 } else { 1_000 });
+    }
+
+    /// `the_recorded_reads_see_every_change_that_moves_a_key` in fixtures `all`: at least `least`
+    /// keys checked.
+    fn recorded_reads_see_every_change(all: Vec<Fixture>, least: usize) {
         use buildstore::reads::{Changes, Diff};
         // (A build's manifest, inputs, and whether the keys read its reaches.)
         type State = (BTreeMap<String, String>, BTreeMap<String, String>, bool);
@@ -7428,15 +7470,13 @@ mod tests {
         }
         let steps = derived_steps();
         let (mut checked, mut imprecise, mut by_fixture) = (0usize, 0usize, Vec::new());
-        let mut all = fixtures();
-        all.push(held_fixture());
         for f in &all {
             let reach = f.reach.is_some();
             let base: State = (f.m.clone(), f.inputs.clone(), reach);
             let case = |what: String, before: State, after: State| Case { what, before, after, warmed: false };
             let mut cases: Vec<Case> =
                 f.one_changed().into_iter().map(|(l, m, i)| case(l, base.clone(), (m, i, reach))).collect();
-            for l in f.m.keys() {
+            for l in f.entries() {
                 let mut less = f.m.clone();
                 less.remove(l);
                 cases.push(case(format!("{l} removed"), base.clone(), (less.clone(), f.inputs.clone(), reach)));
@@ -7458,7 +7498,7 @@ mod tests {
                 cases.extend(warmed);
             }
             // (On threads of their own, as `a_key_names_exactly_its_reads`.)
-            let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let n = case_threads();
             let counts = std::thread::scope(|s| {
                 let hs: Vec<_> = cases
                     .chunks(cases.len().div_ceil(n).max(1))
@@ -7518,13 +7558,13 @@ mod tests {
             "{checked} keys over the changes ({}), {imprecise} moved though they came out the same",
             by_fixture.join(", ")
         );
-        assert!(checked > 10_000, "{checked}");
+        assert!(checked > least, "{checked}");
     }
 
     /// docs/incremental-planning.md §6 (task #880 step 4): a plan made incrementally after a change
     /// (a shadow plan's memo, `KeyMemo::after`, holding the keys of the shadow plan before that the
     /// diff doesn't move) is the full plan of the changed state, key by key and `Planned` whole: in
-    /// fixture `f`, each manifest entry changed, removed and added alone, each input changed, and
+    /// fixture `f`, each manifest entry (of a sample but before a publish, `Fixture::entries`) changed, removed and added alone, each input changed, and
     /// the reaches gone with their entry the same. Each plan on terrain of its own (no memo of
     /// another's found: the incremental plan works out the terrain's targets from its keys); or
     /// `as_on_the_lead`, the incremental plan after the full one on the same terrain (the warm
@@ -7589,7 +7629,7 @@ mod tests {
         for (l, m, i) in f.one_changed() {
             cases.push((l, base.clone(), (m, i, reached), false));
         }
-        for l in f.m.keys() {
+        for l in f.entries() {
             let mut less = f.m.clone();
             less.remove(l);
             cases.push((format!("{l} removed, then added"), base.clone(), (less, f.inputs.clone(), reached), true));
@@ -7598,7 +7638,7 @@ mod tests {
             cases.push(("the reaches gone".into(), base.clone(), (f.m.clone(), f.inputs.clone(), false), false));
         }
         // (On threads of their own, as `a_key_names_exactly_its_reads`.)
-        let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let n = case_threads();
         let kept = std::thread::scope(|s| {
             let hs: Vec<_> = cases
                 .chunks(cases.len().div_ceil(n).max(1))
@@ -7665,8 +7705,10 @@ mod tests {
     }
 
     /// `incremental_is_full` in the fixtures named `names` (`as_on_the_lead` or not): at least
-    /// `least` keys kept in all, so the plans were made incrementally.
+    /// `least` keys kept in all (a tenth of it of a sample of the entries, `Fixture::entries`), so
+    /// the plans were made incrementally.
     fn incremental_is_full_in(names: &[&str], as_on_the_lead: bool, least: usize) {
+        let least = if every_entry() { least } else { least / 10 };
         let all = if names == ["held"] { vec![held_fixture()] } else { fixtures() };
         let mut kept = 0;
         for f in all.iter().filter(|f| names.contains(&f.name)) {
@@ -10219,8 +10261,15 @@ mod tests {
         let (mut states, mut most) = (0, 0);
         for _ in 0..12 {
             let one = planned(&first, &m, &done);
-            assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
-            assert!(one == planned(&kept_back(&made()), &m, &done), "a coverage read back in place, state {states}");
+            // (The other coverages' plans at every third state but before a publish, #1539: at
+            // each, three plans a state were the test's 8.7 s alone on the M4.)
+            if every_entry() || states % 3 == 0 {
+                assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
+                assert!(
+                    one == planned(&kept_back(&made()), &m, &done),
+                    "a coverage read back in place, state {states}"
+                );
+            }
             if states == 0 {
                 // (From the next state on, `one` is the first coverage with its memos filled.)
                 assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled");

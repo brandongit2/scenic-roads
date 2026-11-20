@@ -722,6 +722,13 @@ fails, and is never given more. `cargo test` runs have no such bound.
   every timer scaled together, so the margin between what is measured and what would show a
   failure stays as it was (the beat's tests: a gap allowed of 1.5 s against a hung call held 2.5 s,
   as 11.5 s against 20 s before; a 1-s hold under a 3.5-s gap allowed had proved nothing). Every assertion stays: what the smaller test still proves, and how, is said in its comment.
+  A test over every change of a fixture takes a sample of them but before a publish, which runs
+  them all (`SCENIC_PUBLISH`, set by publish.sh's run; #1539: pipeline's plan tests over each
+  manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
+  six), and its own threads stay few (at most 4: nextest already runs a test a thread).
+  Nothing measures a test alone: the budget is held only by the bound, 3 min on the loaded test
+  Mac, so a test of 9-16 s alone (the plan tests, 20 Nov) passed every run until the M4's load
+  reached 108-229 and they timed out.
 - **A stopped coordinator refuses at once** in a test program too: the listeners it keeps for the
   next coordinator on the port (`coord::KEPT`) take each connection and close it, as a port nothing
   listens on refuses it (#1112: its clients had waited out their 15-s timeout in the backlog, 15-60
