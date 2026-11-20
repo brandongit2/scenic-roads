@@ -600,7 +600,10 @@ pub fn check_folder(
     let (counts, swept) = checks.kept_lasting();
     if keep.is_some() {
         for (stage, (taken, made)) in &counts {
-            eprintln!("regions-check: pieces of {}: {taken} taken as kept, {made} made", super::kept::stage_name(*stage));
+            eprintln!(
+                "regions-check: pieces of {}: {taken} taken as kept, {made} made",
+                super::kept::stage_name(*stage)
+            );
         }
     }
     if let (Some(s), Some((d, mb))) = (swept, keep) {
@@ -684,7 +687,8 @@ fn read_besides(root: &store::nasfs::NasRoot, declarations: Option<&Path>, land:
     };
     let mut out = Vec::new();
     if let Some(d) = declarations {
-        let mut names: Vec<_> = std::fs::read_dir(d).with_context(|| format!("list {}", d.display()))?.collect::<std::io::Result<_>>()?;
+        let mut names: Vec<_> =
+            std::fs::read_dir(d).with_context(|| format!("list {}", d.display()))?.collect::<std::io::Result<_>>()?;
         names.sort_by_key(|e| e.file_name());
         for e in names.iter().filter(|e| e.path().is_file()) {
             out.push(format!("{:?} {}", e.file_name(), blake3::hash(&std::fs::read(e.path())?).to_hex()));

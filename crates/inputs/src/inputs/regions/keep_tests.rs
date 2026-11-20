@@ -17,7 +17,10 @@ fn files() -> BTreeMap<String, String> {
         ("p/l.toml", "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nwater = []\n"),
         ("p/r.toml", "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n"),
         ("p/_remainder.toml", "of = \"box:30.0,20.0,33.0,21.0\"\n"),
-        ("far.toml", "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n"),
+        (
+            "far.toml",
+            "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n",
+        ),
         ("q.toml", "id = \"q\"\nname = \"Q\"\noutline = [\"box:40.0,20.0,41.0,21.0\"]\n"),
     ]
     .into_iter()
@@ -162,11 +165,8 @@ fn a_changed_or_cut_short_piece_is_made_again() {
     let d = tempfile::tempdir().unwrap();
     let f = files();
     check(&w, &f, d.path(), CODE);
-    let pieces: BTreeMap<(String, String), std::path::PathBuf> = std::fs::read_dir(d.path())
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .map(|p| (piece_of(&p), p))
-        .collect();
+    let pieces: BTreeMap<(String, String), std::path::PathBuf> =
+        std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().path()).map(|p| (piece_of(&p), p)).collect();
     assert_eq!(pieces.keys().cloned().collect::<BTreeSet<_>>(), all_pieces());
     // Far's land: a corner of its outline (21°) a unit east.
     let land = &pieces[&("land".to_string(), "far".to_string())];
@@ -206,11 +206,7 @@ fn the_folder_is_held_to_its_cap_the_least_recently_used_deleted() {
     let mut files = Vec::new();
     for (i, name) in ["a", "b", "c", "d"].iter().enumerate() {
         l.write(kept::LAND, name, &piece).unwrap();
-        let p = std::fs::read_dir(d.path())
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .find(|p| !files.contains(p))
-            .unwrap();
+        let p = std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().path()).find(|p| !files.contains(p)).unwrap();
         std::fs::File::options().write(true).open(&p).unwrap().set_modified(at(i as u64)).unwrap();
         files.push(p);
     }

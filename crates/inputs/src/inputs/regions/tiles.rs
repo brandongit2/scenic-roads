@@ -811,7 +811,8 @@ type ByCell = HashMap<Cell, Vec<(String, blake3::Hash)>>;
 
 /// `areas`' pieces by cell (`Reads::cells`), in id order.
 fn pieces_by_cell<'a>(areas: impl Iterator<Item = (&'a String, &'a TArea)>) -> ByCell {
-    let all: Vec<(&String, Cell, &Area)> = areas.flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (id, *c, a))).collect();
+    let all: Vec<(&String, Cell, &Area)> =
+        areas.flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (id, *c, a))).collect();
     let mut by: ByCell = HashMap::new();
     for (id, c, h) in pace::par_map(all, |(id, c, a)| {
         let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
@@ -855,7 +856,10 @@ fn piece<T>(
             super::kept::ids(p, more);
         });
     } else {
-        eprintln!("regions: the {} piece {key} read cells its key doesn't name: not kept", super::kept::stage_name(stage));
+        eprintln!(
+            "regions: the {} piece {key} read cells its key doesn't name: not kept",
+            super::kept::stage_name(stage)
+        );
     }
     needs.extend(v.1);
     v.0
@@ -878,7 +882,9 @@ fn key_cells(
 ) -> BTreeSet<Cell> {
     let of = |q: &Part| key_cells(q, r, folder, ctx, data, made, others, whole);
     let boxed = |b: Option<[i64; 4]>| -> BTreeSet<Cell> {
-        b.map_or_else(BTreeSet::new, |b| cells_of([b[0], b[1], b[2] + 1, b[3] + 1]).map(|(x, y)| (wrap(x).0, y)).collect())
+        b.map_or_else(BTreeSet::new, |b| {
+            cells_of([b[0], b[1], b[2] + 1, b[3] + 1]).map(|(x, y)| (wrap(x).0, y)).collect()
+        })
     };
     let rings = |rs: &[Vec<Pt>]| boxed(geom::bbox_of(rs.iter().flatten()));
     let refs = |ids: Vec<String>, whole: bool| {
@@ -935,14 +941,19 @@ fn key_cells(
         Part::Osm(id) => match ctx.outlines.and_then(|o| o.by_id(*id)) {
             Some(rec) => boxed(Some(rec.bbox.map(i64::from))),
             None => match ctx.extract.and_then(|e| e.relation(*id)) {
-                Some(Some(rel)) => {
-                    rings(&rel.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect::<Vec<_>>())
-                }
+                Some(Some(rel)) => rings(
+                    &rel.rings
+                        .iter()
+                        .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
+                        .collect::<Vec<_>>(),
+                ),
                 _ => BTreeSet::new(),
             },
         },
         Part::OsmWay(w) => match ctx.extract.and_then(|e| e.way(*w)) {
-            Some(Some(way)) => boxed(geom::bbox_of(way.line.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>().iter())),
+            Some(Some(way)) => {
+                boxed(geom::bbox_of(way.line.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>().iter()))
+            }
             _ => BTreeSet::new(),
         },
         Part::Shape(n) => match folder.shapes.get(n) {
@@ -1294,10 +1305,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
                 })
             })
             .collect();
-        let had: Vec<Option<Vec<(usize, String)>>> = keys
-            .iter()
-            .map(|k| Some(ctx.kept?.take(super::kept::HAND_OUT, k.as_ref()?, get_moves)?))
-            .collect();
+        let had: Vec<Option<Vec<(usize, String)>>> =
+            keys.iter().map(|k| Some(ctx.kept?.take(super::kept::HAND_OUT, k.as_ref()?, get_moves)?)).collect();
         let mut moves: Vec<(usize, usize, String)> = {
             // (Counted by cell, the units' unions' and the stretches': a large stretch, or a
             // hand-out to a folder of many regions, says how far it is as it goes.)
@@ -1708,19 +1717,27 @@ fn land(
         k.cells(&kept, &ByCell::new());
         k.key(id)
     });
-    piece(ctx, super::kept::LAND, key.as_deref(), needs, |needs| {
-        let env = match env_for(id, false, folder, ctx, made, others, out, needs) {
-            Ok(env) => env,
-            Err(ps) => return (Err(ps), true),
-        };
-        let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
-        if !r.intersect.is_empty() {
-            let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
-            cells = cells.intersection(&i).copied().collect();
-        }
-        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
-        (make_land(id, r, path, data, &env, cells, keep, item), ok)
-    }, put_made, get_made)
+    piece(
+        ctx,
+        super::kept::LAND,
+        key.as_deref(),
+        needs,
+        |needs| {
+            let env = match env_for(id, false, folder, ctx, made, others, out, needs) {
+                Ok(env) => env,
+                Err(ps) => return (Err(ps), true),
+            };
+            let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
+            if !r.intersect.is_empty() {
+                let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
+                cells = cells.intersection(&i).copied().collect();
+            }
+            let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+            (make_land(id, r, path, data, &env, cells, keep, item), ok)
+        },
+        put_made,
+        get_made,
+    )
 }
 
 /// Whether region `r`'s pieces are keyed (`Reads`): not when it's pinned to another pass than the
@@ -2154,30 +2171,38 @@ fn remainder(
         }
         k.key(path)
     });
-    piece(ctx, super::kept::REMAINDER, key.as_deref(), needs, |needs| {
-        let mut env = match env_of(path, &r, false, folder, ctx, made, others, out, needs) {
-            Ok(env) => env,
-            Err(ps) => return (Err(ps), true),
-        };
-        for m in members {
-            env.leaves.insert(format!("region:{m}"), Src::Refs(vec![m.clone()], true));
-        }
-        let cells: BTreeSet<Cell> = support(&rem.of, &env);
-        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
-        // (A held region whose outline may reach the remainder's cells: what it would have taken is
-        // free here, and would go to the folder's regions.)
-        for h in &held_out {
-            let Some((_, hr)) = folder.regions.get(*h) else { continue };
-            let meets = outline_reach(hr, folder, ctx, &mut BTreeSet::new()).is_none_or(|c| !c.is_disjoint(&cells));
-            if meets {
-                let message = format!(
+    piece(
+        ctx,
+        super::kept::REMAINDER,
+        key.as_deref(),
+        needs,
+        |needs| {
+            let mut env = match env_of(path, &r, false, folder, ctx, made, others, out, needs) {
+                Ok(env) => env,
+                Err(ps) => return (Err(ps), true),
+            };
+            for m in members {
+                env.leaves.insert(format!("region:{m}"), Src::Refs(vec![m.clone()], true));
+            }
+            let cells: BTreeSet<Cell> = support(&rem.of, &env);
+            let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+            // (A held region whose outline may reach the remainder's cells: what it would have taken is
+            // free here, and would go to the folder's regions.)
+            for h in &held_out {
+                let Some((_, hr)) = folder.regions.get(*h) else { continue };
+                let meets = outline_reach(hr, folder, ctx, &mut BTreeSet::new()).is_none_or(|c| !c.is_disjoint(&cells));
+                if meets {
+                    let message = format!(
                     "{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"
                 );
-                return (Err(vec![remainder_problem(dir, path, vec![(*h).clone()], message)]), ok);
+                    return (Err(vec![remainder_problem(dir, path, vec![(*h).clone()], message)]), ok);
+                }
             }
-        }
-        (remainder_pieces(dir, path, rem, members, data, made, others, &env, &r, cells, given, item), ok)
-    }, put_pieces, get_pieces)
+            (remainder_pieces(dir, path, rem, members, data, made, others, &env, &r, cells, given, item), ok)
+        },
+        put_pieces,
+        get_pieces,
+    )
 }
 
 /// A remainder's pieces (`remainders`): (the region, the cell, its piece: what's free of `of` there,
@@ -2770,17 +2795,25 @@ fn water(
         k.cells(cells, others_by_cell);
         k.key(id)
     });
-    piece(ctx, super::kept::WATER, key.as_deref(), needs, |needs| {
-        let env = match env_for(id, true, folder, ctx, made, others, out, needs) {
-            Ok(env) => env,
-            Err(ps) => return (Err(ps), true),
-        };
-        trace(&format!("water of {id}: its parts read"));
-        let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
-        trace(&format!("water of {id}: {} cells", cells.len()));
-        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
-        (make_water(id, r, path, data, &env, cells, others, item), ok)
-    }, put_tarea, get_tarea)
+    piece(
+        ctx,
+        super::kept::WATER,
+        key.as_deref(),
+        needs,
+        |needs| {
+            let env = match env_for(id, true, folder, ctx, made, others, out, needs) {
+                Ok(env) => env,
+                Err(ps) => return (Err(ps), true),
+            };
+            trace(&format!("water of {id}: its parts read"));
+            let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
+            trace(&format!("water of {id}: {} cells", cells.len()));
+            let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+            (make_water(id, r, path, data, &env, cells, others, item), ok)
+        },
+        put_tarea,
+        get_tarea,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
