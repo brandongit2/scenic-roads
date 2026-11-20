@@ -99,8 +99,13 @@ def emit(ev):
         pass
 
 
+# (ps's start times in the C locale and UTC: a live file written under one LANG or TZ reads the same
+# in a sampler started under another.)
+PS_ENV = dict(os.environ, LC_ALL="C", TZ="UTC")
+
+
 def lstart(pid):
-    r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True)
+    r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=PS_ENV)
     return " ".join(r.stdout.split())
 
 
@@ -684,7 +689,7 @@ def sampler():
         if time.time() - last >= SAMPLE_S:
             last = time.time()
             started = {}
-            r = subprocess.run(["ps", "-A", "-o", "pid=,lstart="], capture_output=True, text=True)
+            r = subprocess.run(["ps", "-A", "-o", "pid=,lstart="], capture_output=True, text=True, env=PS_ENV)
             for ln in r.stdout.splitlines():
                 p, _, st = ln.strip().partition(" ")
                 started[p] = " ".join(st.split())

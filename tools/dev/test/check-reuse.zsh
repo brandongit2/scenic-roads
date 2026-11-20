@@ -432,7 +432,8 @@ members = ["crates/a", "crates/b"]'
     w crates/a/Cargo.toml '[package]
 name = "a"'; w crates/a/src/lib.rs 'pub mod m;
 pub mod n;'
-    w crates/a/src/n.rs 'pub fn load() -> crate::m::Cfg { crate::m::Cfg { knob: 12 } }'
+    w crates/a/src/n.rs 'pub fn load() -> crate::m::Cfg { crate::m::Cfg { knob: 12 } }
+pub fn pair() -> crate::m::P { crate::m::P(14, 15) }'
     w crates/a/src/m.rs '//! m.
 pub fn used() -> u8 { 1 }
 pub fn unused() -> u8 { 2 }
@@ -462,6 +463,12 @@ impl<T: Clone> Tr for T {
 pub struct Cfg {
     pub knob: u8,
 }
+pub trait Tw { fn e(&self) -> u8 { 13 } }
+impl<T: Clone> Tw for T {}
+pub struct P(
+    pub u8,
+    pub i8,
+);
 #[cfg(test)]
 mod tests {
     pub fn used() -> u8 { 6 }
@@ -473,7 +480,7 @@ name = "b"
 [dependencies]
 a = { path = "../a" }'; w crates/b/src/lib.rs 'pub mod u;'
     w crates/b/src/u.rs 'use a::m::*;
-pub fn x() -> u8 { used() + 5u8.d() + a::n::load().knob + a::m::wrapper() + a::m::make().run() + a::m::kit() + a::m::C { n: 0 }.n + a::m::gen() }
+pub fn x() -> u8 { used() + 5u8.d() + a::n::load().knob + a::m::wrapper() + a::m::make().run() + a::m::kit() + a::m::C { n: 0 }.n + a::m::gen() + 5u8.e() + a::n::pair().1 as u8 }
 #[cfg(test)]
 mod tests {
     #[test]
@@ -509,6 +516,12 @@ m() { sed -i '' 's/impl<T: Clone> Tr/impl<T: Copy> Tr/' crates/a/src/m.rs }
 traced "an impl's header: its methods, called on a value whose type the user never names" m $both
 m() { sed -i '' 's/pub knob: u8/pub knob: u16/' crates/a/src/m.rs }
 traced "a field read through a value whose type the user never names" m $both
+m() { sed -i '' 's/impl<T: Clone> Tw/impl<T: Copy> Tw/' crates/a/src/m.rs }
+traced "an empty blanket impl's header: the trait's methods, called on a value whose type the user never names" m $both
+m() { sed -i '' 's/^    pub i8,$/    pub i16,/' crates/a/src/m.rs }
+traced "a tuple struct's field, read by its index through a value whose type the user never names" m $both
+m() { sed -i '' 's/^    pub u8,$/    pub u16,/' crates/a/src/m.rs }
+traced "a tuple struct's other field, which no user reads" m $own
 m() { print 'thread_local! { static X: u8 = 0; }' >> crates/a/src/m.rs }
 traced "a line outside every item: every user" m $both
 

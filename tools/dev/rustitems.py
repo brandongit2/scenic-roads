@@ -18,15 +18,19 @@ names in an attribute's strings count (`#[serde(default = "f")]` names f). A cha
   - the innermost item holding it, by its name; a method (an `impl` block's `fn`) as a method
     (below); a trait's item, or a trait `impl`'s (`impl T for X`), also by the trait and the type;
     an inherent `impl`'s other item (an associated const or type) by its type (and trait); an
-    `impl` or `trait` block's own lines (its header) by its type and trait and every method in it
-    (a blanket `impl<T: Clone> Tr for T` reaches `5u8.d()`); a `struct`'s line, also its fields
-    (each `f:` on it); an `enum`'s line, also its variant (the line's first word); a `use` line,
-    also what it brings in (each path's last names), which this file's items then name.
+    `impl` or `trait` block's own lines (its header) by its type and trait and every method in it,
+    and a trait `impl`'s by every method of the trait too when the trait is in the file (a blanket
+    `impl<T: Clone> Tr for T` reaches `5u8.d()`, an empty one, `impl<T: Clone> Tr for T {}`, the
+    trait's own methods); a `struct`'s line, also its fields (each `f:` on it; a tuple struct's,
+    each field the line holds, by its index: `.0`); an `enum`'s line, also its variant (the line's
+    first word); a `use` line, also what it brings in (each path's last names), which this file's
+    items then name.
 Then, within the file, every item naming a changed one is changed too, until none more is (a
 private helper changed changes the public items calling it).
 
-A method `m` is named by `.m(`, `.m::<` or `::m`, a field `f` by `.f`, whatever type the file
-names (its value's type may never be named). Every other name is named by the word, but for a lower-case word before `::`
+A method `m` is named by `.m(`, `.m::<` or `::m`, a field `f` by `.f` (a tuple struct's `.0`, but
+not after a number: `1.0` is a float), whatever type the file names (its value's type may never be
+named). Every other name is named by the word, but for a lower-case word before `::`
 (a module on a path: `agentcore::agent::jobs` names no function `agent`).
 Another crate sees only what is `pub` (not `pub(crate)` nor `pub(super)`) and not under
 `#[cfg(test)]` (that alone: `cfg(any(test, feature = …))` is another crate's too): a user in
@@ -34,7 +38,8 @@ another crate is matched against those names alone.
 
 A user names the change when its source (comments and strings blanked, attributes' strings kept)
 names one of the names. What this misses, publish's whole run catches: a trait method reached without naming the trait, the type
-or the method (formatting with `{}`); a type reached through an alias of it.
+or the method (formatting with `{}`); a type reached through an alias of it; an impl's header
+changed whose trait is in another file, through that trait's methods the impl doesn't define.
 """
 import importlib.util
 import os
@@ -53,6 +58,8 @@ HEAD = re.compile(r"\b(fn|struct|enum|union|trait|type|const|static|mod)\s+(?:mu
 PUB = re.compile(r"\bpub\b(?!\s*\()")
 # (A field on a struct's line: `pub n: u8`, `n: u8`; group 1 its `pub`, not `pub(crate)`.)
 FIELD = re.compile(r"(\bpub\s+)?(?<![\w:'])(?:r#)?([A-Za-z_]\w*)\s*:(?!:)")
+# (A number ending just before a `.`: `1.0`, `1_000.5` are floats, not a tuple's field.)
+FLOAT_END = re.compile(r"(?<![\w.])\d[\d_]*$")
 TESTCFG = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 KEYWORDS = set("""as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod
 move mut pub ref return self Self static struct super trait true type union unsafe use where while macro_rules""".split())
@@ -170,14 +177,17 @@ def innermost(its, at):
 class Names:
     """What a change changed: words, methods and fields, each with whether another crate sees it."""
 
-    def __init__(self):
+    def __init__(self, traits=None):
         self.words, self.methods, self.fields = {}, {}, {}
+        # (The file's traits by name: [(a method, whether another crate sees it)], for an impl's header.)
+        self.traits = traits or {}
 
     def _put(self, d, k, seen):
         d[k] = d.get(k, False) or seen
 
-    def add(self, it, line=None):
-        """Item it changed (line: the text of its changed line, when one of its own)."""
+    def add(self, it, line=None, tuple_fields=()):
+        """Item it changed (line: the text of its changed line, when one of its own; tuple_fields: the
+        fields of a tuple struct that line holds, [(index, pub)])."""
         o = it.owner
         if it.kind == "fn" and o is not None and o.kind == "impl":
             self._put(self.methods, it.name, (it.pub or o.trait is not None) and not it.test)
@@ -198,12 +208,17 @@ class Names:
             for k in it.kids:
                 if k.kind == "fn" and k.name:
                     self._put(self.methods, k.name, (k.pub or it.trait is not None or it.kind == "trait") and not k.test and not it.test)
+            # (A trait impl's header reaches the trait's methods it doesn't define too: their defaults.)
+            for m, seen in self.traits.get(it.trait, []) if it.kind == "impl" else []:
+                self._put(self.methods, m, seen and not it.test)
         if line is None: return
         if it.kind in ("struct", "union") and not line.lstrip().startswith("#"):
             # (A field, read as `.f` through a value whose type may be named nowhere.)
             body = line.split("{", 1)[1] if re.search(r"\b(struct|union)\b", line) and "{" in line else line
             for m in FIELD.finditer(body):
                 self._put(self.fields, m.group(2), it.pub and bool(m.group(1)) and not it.test)
+            for n, pub in tuple_fields:
+                self._put(self.fields, str(n), it.pub and pub and not it.test)
         if it.kind == "enum" and not line.lstrip().startswith("#"):
             ws = [w for w in WORD.findall(line) if w not in KEYWORDS]
             for w in ws[:1]: self._put(self.words, w, it.pub and not it.test)   # (a variant)
@@ -221,9 +236,10 @@ class Names:
                 continue
             if re.search(r"\.\s*%s\s*(?:\(|::\s*<)|::\s*%s\b" % (re.escape(m), re.escape(m)), b): return True
         for f, seen in self.fields.items():
-            if (cross and not seen) or f not in ws:
+            if (cross and not seen) or (f not in ws and not f.isdigit()):
                 continue
-            if re.search(r"\.\s*%s\b" % re.escape(f), b): return True
+            for m in re.finditer(r"\.\s*%s\b" % re.escape(f), b):
+                if not f.isdigit() or not FLOAT_END.search(b, max(0, m.start() - 40), m.start()): return True
         return False
 
     def size(self):
@@ -236,6 +252,37 @@ class Names:
         return ", ".join(sorted(self.words) + [".%s()" % x for x in sorted(self.methods)] + [".%s" % x for x in sorted(self.fields)])
 
 
+def tuple_fields(b, it, a, z):
+    """The fields of tuple struct `it` (in blanked source b) that the line [a, z) holds:
+    [(index, whether it is pub)]; none for another item."""
+    if it.kind != "struct": return []
+    m = re.compile(r"\bstruct\s+(?:r#)?%s\b\s*" % re.escape(it.name)).search(b, it.a, it.b)
+    if not m: return []
+    i = m.end()
+    if b.startswith("<", i):   # (its generics)
+        depth = 0
+        while i < it.b:
+            depth += {"<": 1, ">": -1}.get(b[i], 0) if b[i - 1:i + 1] != "->" else 0
+            i += 1
+            if depth == 0: break
+        while i < it.b and b[i].isspace(): i += 1
+    if not b.startswith("(", i): return []
+    out, depth, start, n = [], 0, i + 1, 0
+    for j in range(i, it.b):
+        c = b[j]
+        if c in "([{" or c == "<": depth += 1
+        elif c in ")]}" or (c == ">" and b[j - 1] != "-"): depth -= 1
+        if (c == "," and depth == 1) or depth == 0:
+            f = b[start:j]
+            if f.strip():
+                if start + len(f) - len(f.lstrip()) < z and j > a:   # (the field's text, from its first character)
+                    out.append((n, bool(re.match(r"\s*(?:#\[[^\]]*\]\s*)*pub\b(?!\s*\()", f))))
+                n += 1
+            start = j + 1
+            if depth == 0: break
+    return out
+
+
 def line_spans(src, lines):
     """[(offset of the line's start, its end)] of 1-based line numbers in src."""
     starts = [0] + [m.end() for m in re.finditer(r"\n", src)]
@@ -246,13 +293,21 @@ def changed(old, new, hunks):
     """The names a change of a file changed (old, new: its source before and after, "" for a file
     new or gone; hunks: [(old start, old count, new start, new count)], a unified diff's
     `@@ -a,b +c,d @@` lines), or None: every user (above)."""
-    names = Names()
-    every, macros = [], []
+    every, macros, sides = [], [], []
+    traits = {}
     for src, side in ((old, 0), (new, 1)):
         if not src: continue
-        b, bc = blank(src), blank(src, strings=False)
-        bw = with_attrs(src, b)
+        b = blank(src)
         its = items(b)
+        sides.append((src, side, b, its))
+        for t in flat(its):
+            if t.kind == "trait" and t.name:
+                ms = traits.setdefault(t.name, [])
+                ms += [(k.name, t.pub and not t.test and not k.test) for k in t.kids if k.kind == "fn" and k.name]
+    names = Names(traits)
+    for src, side, b, its in sides:
+        bc = blank(src, strings=False)
+        bw = with_attrs(src, b)
         lines = [n for h in hunks for n in range(h[2 * side], h[2 * side] + h[2 * side + 1])]
         for a, z in line_spans(src, lines):
             if not bc[a:z].strip():
@@ -260,7 +315,8 @@ def changed(old, new, hunks):
             it = innermost(its, a + len(bc[a:z]) - len(bc[a:z].lstrip()))
             if it is None or it.kind in ("other", "macro"):
                 return None   # (outside every item, a macro's definition or call)
-            names.add(it, bw[a:z] if not it.kids else None)
+            # (An impl's or trait's own line is its header, an empty one's too.)
+            names.add(it, None if it.kids or it.kind in ("impl", "trait") else bw[a:z], tuple_fields(b, it, a, z))
         for it in flat(its):
             if it.kids: continue
             # (Its own name left out: a test helper `used` changed isn't the module's `fn used`.)

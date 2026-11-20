@@ -62,8 +62,9 @@ dj_start() {
   if [[ $who == '{'*'}' && $who != '{}' ]]; then in=${${a#\{}%\}}; a="${who%\}}${in:+, $in}}"; fi
   dj_q "$kind"; k=$REPLY; dj_name "$name"; n=$REPLY; dj_q "$parent"; p=$REPLY
   dj_emit "{\"op\":\"start\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t\":$EPOCHREALTIME,\"attrs\":$a}"
-  # (Live while this shell is, as it started: a pid used again later isn't it.)
-  ls=$(ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
+  # (Live while this shell is, as it started: a pid used again later isn't it. Its start in the C
+  # locale and UTC, as the sampler reads it whatever its own LANG and TZ.)
+  ls=$(LC_ALL=C TZ=UTC ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
   { mkdir -p $DJ_DIR/live && print -r -- "$$ $ls" > $DJ_DIR/live/$id } 2>/dev/null || :
   dj_sampler
   REPLY=$id
@@ -95,7 +96,7 @@ dj_attr() {
 }
 dj_sampling() {  # this Mac sampled while this shell lives, with no span of its own (the test Mac's side of a run)
   dj_on || return 0
-  local ls; ls=$(ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
+  local ls; ls=$(LC_ALL=C TZ=UTC ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
   { mkdir -p $DJ_DIR/live && print -r -- "$$ $ls sample" > $DJ_DIR/live/sampling-$$ } 2>/dev/null && dj_sampler
   return 0
 }

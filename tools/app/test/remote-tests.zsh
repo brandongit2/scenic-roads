@@ -241,6 +241,13 @@ mkdir -p $fb/.build/6/target $fb/.slots/6; print -r -- "$dead 1 test" > $fb/.slo
 out=$(run_remote c1 "true")
 [[ ! -e $fb/.build/6 && ! -e $fb/.slots/6 && $out == *"slot 6 on the test Mac (above"* ]] \
   && ok "the capacity lowered: a slot above it whose run is gone freed, its folder gone" || no "the capacity lowered: a slot above it whose run is gone freed, its folder gone" "$(ls $fb/.build $fb/.slots): $out"
+# One whose owner, alive, was written under another LANG and TZ (#1555): kept, its folder too.
+mkdir -p $fb/.build/6/target $fb/.slots/6
+print -r -- "$(env -u LC_ALL LANG=fr_FR.UTF-8 TZ=Asia/Tokyo zsh -c 'source $1; proc_id $2' zsh $lib $$) test" > $fb/.slots/6/owner
+out=$(LC_ALL=en_US.UTF-8 TZ=America/Vancouver run_remote c1 "true")
+[[ -d $fb/.build/6 && -e $fb/.slots/6/owner ]] \
+  && ok "a slot whose owner was written under LANG=fr_FR and another TZ: still alive, kept" || no "a slot whose owner was written under LANG=fr_FR and another TZ: still alive, kept" "$(<$fb/.slots/6/owner) vs $(proc_id): $out"
+rm -rf $fb/.slots/6 $fb/.build/6
 
 base=$tmp/scenic-check
 # The slot a key tries first: its last; then the least recently used, those never used before all.
