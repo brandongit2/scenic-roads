@@ -34,11 +34,13 @@ esac
 # then mise's for this checkout (`mise env`, which a checkout mise doesn't trust can't give).
 # tools/dev/test-guard.py runs this in Claude Code's environment: the desktop app gives its sessions
 # the login shell's PATH, mise's python3 first, but on a PATH of the system's alone python3 is
-# /usr/bin's 3.9, and brew's rg is found only by the line below. With none, every member's tests run,
-# whole (below): never a failure blocking the run.
-path=($path /opt/homebrew/bin)
+# /usr/bin's 3.9, and brew's rg is found only by the line below (brew's folder: HOMEBREW_PREFIX, as
+# `brew shellenv` sets it, else /opt/homebrew). With none, every member's tests run, whole (below):
+# never a failure blocking the run.
+brew=${HOMEBREW_PREFIX:-/opt/homebrew}
+path=($path $brew/bin)
 py=
-for c in python3 /opt/homebrew/bin/python3; do $c -c 'import tomllib' 2>/dev/null && { py=$c; break }; done
+for c in python3 $brew/bin/python3; do $c -c 'import tomllib' 2>/dev/null && { py=$c; break }; done
 [[ -z $py ]] && eval "$(mise env -C ${0:A:h:h:h} -s zsh 2>/dev/null)" 2>/dev/null
 SCENIC_AFFECTED_HERE=${0:A:h} exec ${py:-python3} - "$@" <<'PY'
 import glob, os, re, subprocess, sys

@@ -165,7 +165,9 @@ for args in found:
     # (120 s: the M1 took 25 s on 6f4's 130 Rust files; past it the guard blocks, which a hang inside
     # the hook's own timeout would not. A failure isn't an empty set: rg off the PATH read as "nothing
     # affected".)
-    try: r = subprocess.run([repo + "/tools/dev/affected-tests.sh"], cwd=root, capture_output=True, text=True, timeout=120)
+    # (The affected-tests.sh beside this guard: the main checkout's as the hook runs, a worktree's copy under
+    # its own test, tools/dev/test/test-guard.zsh, so the test tries the branch's script, not main's.)
+    try: r = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "affected-tests.sh")], cwd=root, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired: block("tools/dev/affected-tests.sh took over 120 s in %s, so this cargo test can't be checked against it." % root)
     if r.returncode:
         block("tools/dev/affected-tests.sh failed in %s (exit %d), so this cargo test can't be checked against it: %s" % (root, r.returncode, (r.stderr.strip().splitlines() or ["no output"])[-1]))
