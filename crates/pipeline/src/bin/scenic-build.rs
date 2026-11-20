@@ -4511,19 +4511,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             Ok(serde_json::to_vec(&rep)?)
         });
         std::fs::remove_file(&local_piece).ok();
-        // (The cache files its folders link to, its roadside buildings, held for as long as it's
-        // built: its tail may run long after the z6 tiles after it let go of the job's holds, here
-        // or with another worker reading them through the links (store::cachefile::hold_links).
-        // Staged now, they're held already: no moment between.)
-        let prepared = prepared.and_then(|p| {
-            let linked = match linked {
-                Some(l) => l,
-                None => store::cachefile::hold_links(&dirs)?,
-            };
-            Ok((serde_json::from_slice(&p)?, linked))
-        });
-        let (rep, linked): (roads::unit::Report, _) = match prepared {
-            Ok(got) => got,
+        let rep: roads::unit::Report = match prepared.and_then(|p| Ok(serde_json::from_slice(&p)?)) {
+            Ok(rep) => rep,
             // (Paused once its preparing's kept: the job ends at its safe point below, its folders and
             // pieces kept for its run resumed.)
             Err(e) if jobrt::control::is_paused(&e) => {
@@ -4576,7 +4565,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             ("vertices".into(), rep.kept_verts as u64),
             ("piece_ways".into(), rep.piece_ways as u64),
         ]);
-        let b = Built {
+        let b = Tile {
             u,
             dir: dir.clone(),
             bdir: bdir.clone(),
@@ -4591,8 +4580,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             anywhere: anywhere.to_vec(),
             sizes,
             pieces,
-            _linked: linked,
-        };
+        }
+        .held(linked)?;
         let offering = phase("offering tails to other workers");
         let offered = match &offload {
             Some(o) if b.rep.kept_ways > 0 && out_now.len() < o.depth() => {
@@ -4614,6 +4603,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 if b.rep.kept_ways > 0 {
                     let at = here.len();
                     let (r, taken) = buildstore::costin::measured(|| {
+                        let b = &mut b.tile;
                         let dirs = [b.dir.as_path(), b.bdir.as_path()];
                         roads::unit::run_tail_kept(&b.anywhere, at, &b.dir, &dirs, &b.tools, &mut b.pieces)
                     });
@@ -4625,7 +4615,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                         }
                         Err(e) => {
                             set_aside(&mut aside, u, e)?;
-                            b.pieces.finish();
+                            b.tile.pieces.finish();
                             clean();
                             tile_progress(|a| a.finished(&u.slash()));
                             continue;
@@ -4638,13 +4628,13 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
         // Z6 tiles whose last steps came back from other workers: committed before the next.
-        settle_tails(out, &date, offload.as_ref(), &mut out_now, false, &mut aside)?;
+        settle_tails(offload.as_ref(), &mut out_now, false, &mut aside, &mut |b, how| commit_unit(out, &date, b, how))?;
     }
     // The rest: given a moment to be taken by a worker whose pace beats this Mac's (or isn't
     // measured, once an hour), and waited on while a worker holding one will be back with it
     // before this Mac's run would end; then taken back and run here where no one took them, raced
     // here where someone did.
-    settle_tails(out, &date, offload.as_ref(), &mut out_now, true, &mut aside)?;
+    settle_tails(offload.as_ref(), &mut out_now, true, &mut aside, &mut |b, how| commit_unit(out, &date, b, how))?;
     if paused {
         if let Some(h) = ahead.take() {
             h.join().ok();
@@ -4691,8 +4681,31 @@ fn aside_end(aside: &[(TileId, String)], of: usize) -> Result<()> {
     )
 }
 
-/// A z6 tile prepared (and its tail's first steps run), waiting to be finished and committed.
+/// A z6 tile prepared (and its tail's first steps run), waiting to be finished and committed: its
+/// parts, and the cache files its folders link to (its roadside buildings) held until it's
+/// committed or set aside, dropped with it after its folders go. Its tail may run long after the
+/// z6 tiles after it let the job's own holds go, here or with a worker reading them through the
+/// links (store::cachefile::hold_links). Made only by `Tile::held`.
 struct Built {
+    tile: Tile,
+    _linked: store::cachefile::Linked,
+}
+
+impl std::ops::Deref for Built {
+    type Target = Tile;
+    fn deref(&self) -> &Tile {
+        &self.tile
+    }
+}
+
+impl std::ops::DerefMut for Built {
+    fn deref_mut(&mut self) -> &mut Tile {
+        &mut self.tile
+    }
+}
+
+/// A z6 tile prepared: `Built`'s parts.
+struct Tile {
     u: TileId,
     dir: PathBuf,
     bdir: PathBuf,
@@ -4714,9 +4727,19 @@ struct Built {
     sizes: BTreeMap<String, u64>,
     /// Its pieces kept (roads::unit::PREPARE, tail_piece): let go once it's committed.
     pieces: jobrt::resume_log::Pieces,
-    /// The cache files its folders link to, held until it's committed or set aside (dropped with
-    /// it, after its folders go: store::cachefile::hold_links).
-    _linked: store::cachefile::Linked,
+}
+
+impl Tile {
+    /// It built: what its folders link to held from now on, as its last run's folders were taken
+    /// up (`linked`: roads::unit::take_up), else now (staged by this run, they're the job's own
+    /// holds' until the z6 tile after the next begins: no moment between).
+    fn held(self, linked: Option<store::cachefile::Linked>) -> Result<Built> {
+        let linked = match linked {
+            Some(l) => l,
+            None => store::cachefile::hold_links(&[&self.dir, &self.bdir])?,
+        };
+        Ok(Built { tile: self, _linked: linked })
+    }
 }
 
 /// Where a z6 tile's folder keeps what its ways asked of the coverage (buildstore::asked::Record),
@@ -4727,15 +4750,15 @@ const UNIT_ASKED: &str = "coverage-asked.json.zst";
 const TAIL_GUESS_S: f64 = 120.0;
 
 /// Settles the z6 tiles whose last steps are out with other workers (pipeline::offload), in order,
-/// and commits them: with `wait` false only those a worker finished or failed; with it, each after
-/// the patience its steps' time here and its worker's pace allow (pipeline::offload::Patience).
+/// and commits them (`commit`: `commit_unit`): with `wait` false only those a worker finished or
+/// failed; with it, each after the patience its steps' time here and its worker's pace allow
+/// (pipeline::offload::Patience).
 fn settle_tails(
-    out: &mut Out,
-    date: &str,
     offload: Option<&pipeline::offload::Offload>,
     waiting: &mut std::collections::VecDeque<(Built, pipeline::offload::Offered)>,
     wait: bool,
     aside: &mut Vec<(TileId, String)>,
+    commit: &mut dyn FnMut(Built, &str) -> Result<()>,
 ) -> Result<()> {
     let Some(o) = offload else { return Ok(()) };
     let mut i = 0;
@@ -4776,7 +4799,7 @@ fn settle_tails(
                 let (mut b, _) = waiting.remove(i).unwrap();
                 buildstore::costin::add_to(&mut b.sizes, read);
                 b.peak = b.peak.max(roads::unit::take_peak());
-                commit_unit(out, date, b, &how.how())?;
+                commit(b, &how.how())?;
             }
         }
     }
@@ -4788,7 +4811,9 @@ fn settle_tails(
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `roads::unit::saved_files`, all a member's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, pieces, .. } = b;
+    // (What its folders link to held to its end, after they go: `_linked`.)
+    let Built { tile: Tile { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, pieces, .. }, _linked } =
+        b;
     use roads::unit::{owns, stage as unit_stage};
     tile_progress(|a| a.on(&u.slash()));
     let clean = || {
@@ -7452,21 +7477,25 @@ mod tests {
             declared: None,
             snap: None,
         };
-        let tail = || -> anyhow::Result<()> {
-            let run = roads::unit::Run {
-                what: "scoring the scenery (buildings)".into(),
-                prog: "step".into(),
-                args: vec!["{dir}".into(), "{buildings}".into()],
-                env: Vec::new(),
-                reads: Vec::new(),
-            };
-            std::fs::remove_file(dir.join("bld")).ok();
-            roads::unit::run_tail(&[run], &dir, &tools)?;
+        // (Offered, its buildings sent.)
+        let run = roads::unit::Run {
+            what: "scoring the scenery (buildings)".into(),
+            prog: "step".into(),
+            args: vec!["{dir}".into(), "{buildings}".into()],
+            env: Vec::new(),
+            reads: vec!["{buildings}/*".into()],
+        };
+        let read_all = || -> anyhow::Result<()> {
             anyhow::ensure!(std::fs::metadata(dir.join("bld"))?.len() == 16 * 14, "every tile read");
             Ok(())
         };
+        let tail = || -> anyhow::Result<()> {
+            std::fs::remove_file(dir.join("bld")).ok();
+            roads::unit::run_tail(std::slice::from_ref(&run), &dir, &tools)?;
+            read_all()
+        };
         // Its preparing (kept as its piece, as the job keeps it): the buildings staged, held as
-        // they're copied; what they link to held with the z6 tile, as the job's `Built`.
+        // they're copied.
         let prepare = |p: &mut jobrt::resume_log::Pieces| {
             p.folder_piece(roads::unit::PREPARE, &dirs, || {
                 std::fs::create_dir_all(&dir)?;
@@ -7474,19 +7503,65 @@ mod tests {
                 Ok(Vec::new())
             })
             .unwrap();
-            store::cachefile::hold_links(&dirs).unwrap()
         };
         // (The job's own holds let go as the z6 tiles after it begin: release_before.)
         let let_go = || copies.iter().for_each(|c| store::cachefile::release(c));
         let open = || jobrt::resume_log::Pieces::open(&scratch, (6, u.x, u.y), "unit", "a", true);
         let mut p = open();
-        let linked = prepare(&mut p);
+        prepare(&mut p);
+        // Built as the job builds it (`Tile::held`), its tail offered to other workers through
+        // the coordinator; none takes it.
+        let b = super::Tile {
+            u,
+            dir: dir.clone(),
+            bdir: bdir.clone(),
+            rep: Default::default(),
+            tools: tools.clone(),
+            carry: mapview::scache::Carry { dir: d.path().join("kept") },
+            piece: root.join("piece"),
+            t: std::time::Instant::now(),
+            peak: 0,
+            group: 0,
+            disk: 0,
+            anywhere: vec![run.clone()],
+            sizes: Default::default(),
+            pieces: p,
+        }
+        .held(None)
+        .unwrap();
+        let (c, port) = agentcore::coord::start_on_test_port(
+            pipeline::agent::theplan::the_plan(),
+            &d.path().join("coord"),
+            "m4",
+            "",
+        );
+        let o = pipeline::offload::Offload::for_test(
+            coordwire::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job"),
+            1,
+            "v",
+            d.path().join("tasks"),
+            std::time::Duration::ZERO,
+            pipeline::offload::Waiting::ByPace,
+            store::clock::real(),
+        );
+        let task = o.offer(u, &b.dir, b.tools.buildings.as_deref(), &b.anywhere).unwrap();
+        // The z6 tiles after it under way, room-making between: nothing of its buildings freed.
         let_go();
         assert_eq!(store::cachefile::remove_tree(&cache).freed, 0, "held with the z6 tile");
-        tail().unwrap();
-        // The job stopped before its commit (its process gone, its holds with it): room-making
-        // takes them. A later run doesn't take its folders up: staged again, and its tail reads them.
-        drop((p, linked));
+        // Taken back and run here (`settle_tails`), then committed: its tail read every tile.
+        let mut out = std::collections::VecDeque::from([(b, task)]);
+        let mut committed = Vec::new();
+        super::settle_tails(Some(&o), &mut out, true, &mut Vec::new(), &mut |b, how| {
+            read_all()?;
+            committed.push(how.to_string());
+            // (Its pieces not let go: as a job stopped before its commit, its log kept.)
+            drop(b);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(committed, ["here"]);
+        // Its process gone, its holds with it: room-making takes them. A later run doesn't take
+        // its folders up: staged again, and its tail reads them.
         // (A sibling test's child may hold a copy of a descriptor a moment: five minutes a watchdog.)
         store::testkit::wait_for("the copies deleted", || {
             store::cachefile::remove_tree(&cache);
@@ -7497,8 +7572,8 @@ mod tests {
         assert!(roads::unit::take_up(&p, &dirs).is_none());
         p.finish();
         let mut p = open();
-        let linked = prepare(&mut p);
-        drop((p, linked));
+        prepare(&mut p);
+        drop(p);
         let_go();
         // Its folders as they were left: taken up, what they link to held again.
         let p = open();
