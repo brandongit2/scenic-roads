@@ -1,9 +1,9 @@
 # The review checklist
 
 What every review of a change asks, written once (tools/dev/agent-rules.md, "Review"). A builder
-goes through it over its own diff (`git diff main...HEAD`) as its last step before reporting, and
-fixes what it finds; a reviewer reviews against it, plus what the brief asks. Each question comes
-from findings reviews made (the observer's report, .claude/notes/DEV-EFFICIENCY.md §1.3, §2.7).
+goes through it over its own diff (`git diff main...HEAD`) before the final check.sh, and fixes
+what it finds; a reviewer reviews against it, plus what the brief asks. Each question comes from
+findings reviews made (#1076, #1413, #1451, #1506, #1533).
 A question that doesn't apply is passed over; one that does is answered from the code, not from
 memory of writing it.
 
@@ -24,6 +24,11 @@ memory of writing it.
 - Is a measurement's method sound: chosen on a train set and scored once on the test set (#1413),
   the before and after on the same inputs, the same Mac, the same load?
 - Does a test hold to tools/dev/testing.md ("A test that can't flake", "Every test bounded")?
+
+## Speed
+
+- **Does the change slow what it touches?** Its before and after timed on the same Mac, under the
+  same load, on the same inputs; a slowdown said and justified in the report.
 
 ## Concurrency
 
@@ -55,4 +60,6 @@ memory of writing it.
 ## The task
 
 - Does it do what the task's text and the owner's note ask, all of it, and say what's left?
+- **Does the branch still apply to main?** Rebased onto main's latest, or `git merge-tree
+  --write-tree main HEAD` clean, before the final check.sh.
 - Is it the general mechanism, not a fix of the one symptom?

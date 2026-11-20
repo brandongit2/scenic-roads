@@ -202,8 +202,8 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 
 ## Review
 
-- **The reviewer's standing checklist is `tools/dev/review-checklist.md`.** A builder's last step
-  before reporting is a pass through it over its own diff (`git diff main...HEAD`), fixing what it
+- **The reviewer's standing checklist is `tools/dev/review-checklist.md`.** Before its final
+  check.sh, a builder passes through it over its own diff (`git diff main...HEAD`), fixing what it
   finds; a reviewer reviews against the same list, plus what the brief asks. Briefs need not
   repeat it.
 
