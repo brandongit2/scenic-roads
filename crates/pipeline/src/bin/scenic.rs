@@ -2088,12 +2088,12 @@ fn forecast_check(
         let split = at(&split, last.saturating_sub(86_400))?;
         let t = std::time::Instant::now();
         let b = fccheck::backtest(pipeline::agent::theplan::the_plan(), &inputs, &events, from, to, split);
+        let backtest_s = t.elapsed().as_secs_f64();
         // (Where its time went, task #1527: on stderr, the report on stdout as it was.)
         eprintln!(
-            "forecast-check: {} inputs, {:.1} s: the history read {history_s:.1} s, the inputs read {read_s:.1} s, the backtest {:.1} s: {}",
+            "forecast-check: {} inputs, {:.1} s: the history read {history_s:.1} s, the inputs read {read_s:.1} s, the backtest {backtest_s:.1} s: {}",
             inputs.len(),
-            history_s + read_s + t.elapsed().as_secs_f64(),
-            t.elapsed().as_secs_f64(),
+            history_s + read_s + backtest_s,
             b.spent.text()
         );
         if json {

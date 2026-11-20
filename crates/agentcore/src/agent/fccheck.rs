@@ -346,22 +346,25 @@ pub fn dedup(mut events: Vec<Event>) -> Vec<Event> {
 /// The forecast inputs made from `from` to `to`, in time order: the archive's (crate::agent::fcinputs),
 /// and the terms' (`state/build/term/<E>/forecast-input.json`, each term's last: docs/pool.md §10,
 /// written before the archive while a member read the page's files on the NAS) at times it hasn't,
-/// a term's file last written before `from` not read. One that doesn't read is skipped, said.
+/// a term's file last written over an hour before `from` not read (`SKEW_S`). One that doesn't read
+/// is skipped, said.
 pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
+    const SKEW_S: u64 = 3600;
     let mut out = super::fcinputs::read(root, from, to);
     let archived: std::collections::BTreeSet<u64> = out.iter().map(|i| i.at).collect();
     for t in root.join("state/build/term").read_dir().unwrap_or_default() {
         let Some(term) = t.path.file_name().and_then(|n| n.parse().ok()) else { continue };
         let f = t.path.join("forecast-input.json");
         // (An input is written once made, so a file last written before `from` holds none in the
-        // span: not read. Task #1527: the 352 terms' files, 276 MB, were most of a backtest's time,
-        // read on every run for spans after them all.)
+        // span: not read, an hour's margin for the clocks of the Mac that wrote it and the NAS's.
+        // Task #1527: the 352 terms' files, 276 MB, were most of a backtest's time, read on every
+        // run for spans after them all.)
         let written = f
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-        if written.is_some_and(|w| w.as_secs() < from) {
+        if written.is_some_and(|w| w.as_secs() + SKEW_S < from) {
             continue;
         }
         let Ok(b) = f.read() else { continue };
@@ -590,10 +593,10 @@ pub struct Spent {
 }
 
 impl Spent {
-    /// As a line: `decoded 40 s (96 records), prepared 3 s, …`.
+    /// As a line: `decoded 40 s (96 decodes), made ready 3 s, …`.
     pub fn text(&self) -> String {
         format!(
-            "decoded {:.1} s ({} records), made ready {:.1} s, forecast {:.1} s ({} forecasts), checked {:.1} s, the jobs' lengths {:.1} s (decoding {:.1} s of it)",
+            "decoded {:.1} s ({} decodes), made ready {:.1} s, forecast {:.1} s ({} forecasts), checked {:.1} s, the jobs' lengths {:.1} s (decoding {:.1} s of it)",
             self.decoded_s,
             self.decodes,
             self.prepared_s,
@@ -1098,8 +1101,71 @@ mod tests {
     /// target at its cost.
     #[test]
     fn the_replay_runs_old_and_new_on_the_records() {
+        // Three depth targets of 600 s at 10,000, done by 12,000; the next record's left at 20,000.
+        let es: Vec<Event> =
+            (0..3).map(|i| ev(11_000 + i, "end", "m4", None, "depth", &[&format!("6/1/{i}")], Some(300.0))).collect();
+        let records: Vec<super::super::fcinputs::Input> = [rec(10_000, 0..3), rec(20_000, 3..5)]
+            .iter()
+            .map(|r| super::super::fcinputs::Input::of_bytes(1, r.bytes().unwrap()).unwrap())
+            .collect();
+        let span = |es: &[Entry]| {
+            let p = es[1].placed();
+            (es[1].code, p[0].until - p[0].from)
+        };
+        let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
+        assert_eq!(
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, old, &mut Spent::default())),
+            (old, 600)
+        );
+        assert_eq!(
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, new, &mut Spent::default())),
+            (new, 600)
+        );
+        // Paused by then (the history's pause, for every code): nothing placed.
+        let mut paused = es.clone();
+        paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
+        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new, &mut Spent::default());
+        assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
+        assert_eq!(replayed[0].placed().len(), 3);
+        // The backtest: the second record the test set's.
+        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000);
+        assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
+        assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
+    }
+
+    /// Task #1527: a term's file last written over an hour before the span isn't read (its input
+    /// would be in it, so a read would show); one written inside it, or within the hour's margin
+    /// before, is. The backtest says what it decoded and forecast.
+    #[test]
+    fn a_terms_file_written_before_the_span_isnt_read() {
+        let d = tempfile::tempdir().unwrap();
+        let from = 1_000_000_000;
+        let at = |s: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
+        for (term, now, written) in
+            [(1, from + 1_000, from - 7_200), (2, from + 2_000, from + 2_000), (3, from + 3_000, from - 1_800)]
+        {
+            let dir = d.path().join(format!("state/build/term/{term}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let f = dir.join("forecast-input.json");
+            std::fs::write(&f, rec(now, 0..2).bytes().unwrap()).unwrap();
+            std::fs::File::options().write(true).open(&f).unwrap().set_modified(at(written)).unwrap();
+        }
+        let got = inputs(&store::nasfs::NasRoot::local_for_test(d.path()), from, from + 10_000);
+        assert_eq!(got.iter().map(|i| (i.term, i.at)).collect::<Vec<_>>(), vec![(2, from + 2_000), (3, from + 3_000)]);
+        let b = backtest(crate::agent::seam::for_tests(), &got, &[], from, from + 10_000, from + 2_500);
+        let runs = if forecast::BEFORE_HAS_PATH { 2 } else { 1 };
+        assert_eq!((b.spent.decodes, b.spent.forecasts), (2 * runs, 2 * runs));
+        assert!(
+            b.spent.text().starts_with(&format!("decoded {:.1} s (2 decodes)", b.spent.decoded_s)),
+            "{}",
+            b.spent.text()
+        );
+    }
+
+    /// A record at `now` of depth targets `targets`, 600 s each, on one Mac with no scheduler.
+    fn rec(now: u64, targets: std::ops::Range<u32>) -> super::super::forecast::Record<'static> {
         use super::super::forecast::{Basis, Cadence, Cost, Input, Machine, Record};
-        let rec = |now: u64, targets: std::ops::Range<u32>| {
+        {
             let c = Cost { secs: 600.0, basis: Basis::Own, peak_mb: 100 };
             Record {
                 input: Input {
@@ -1133,37 +1199,7 @@ mod tests {
                 each_s: BTreeMap::new(),
                 waiting: BTreeMap::new(),
             }
-        };
-        // Three depth targets of 600 s at 10,000, done by 12,000; the next record's left at 20,000.
-        let es: Vec<Event> =
-            (0..3).map(|i| ev(11_000 + i, "end", "m4", None, "depth", &[&format!("6/1/{i}")], Some(300.0))).collect();
-        let records: Vec<super::super::fcinputs::Input> = [rec(10_000, 0..3), rec(20_000, 3..5)]
-            .iter()
-            .map(|r| super::super::fcinputs::Input::of_bytes(1, r.bytes().unwrap()).unwrap())
-            .collect();
-        let span = |es: &[Entry]| {
-            let p = es[1].placed();
-            (es[1].code, p[0].until - p[0].from)
-        };
-        let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
-        assert_eq!(
-            span(&replay(crate::agent::seam::for_tests(), &records, &es, old, &mut Spent::default())),
-            (old, 600)
-        );
-        assert_eq!(
-            span(&replay(crate::agent::seam::for_tests(), &records, &es, new, &mut Spent::default())),
-            (new, 600)
-        );
-        // Paused by then (the history's pause, for every code): nothing placed.
-        let mut paused = es.clone();
-        paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new, &mut Spent::default());
-        assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
-        assert_eq!(replayed[0].placed().len(), 3);
-        // The backtest: the second record the test set's.
-        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000);
-        assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
-        assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
+        }
     }
 
     /// Task #951 review: a record's lanes held to the day before's (#563, gone) get back each
