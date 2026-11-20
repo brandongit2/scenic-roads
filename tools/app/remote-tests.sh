@@ -299,8 +299,11 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
   else
     t=$reply[2]; how+="; the pool's jobs keep ${p[2]} cores busy"
   fi
-  export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t
-  REPLY=$t; reply=("capacity: $how")
+  # (A test's own threads, its share of the run's: RAYON_NUM_THREADS, read by rayon's pools and the
+  # tests' own threads, pipeline's case_threads.)
+  local each=$(( ($2 == 0 ? $4 - ${p[1]} : ($4 - ${p[1]}) / $3) / t )); (( each < 1 )) && each=1
+  export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=$each
+  REPLY=$t; reply=("capacity: $how; $each thread$( (( each > 1 )) && print s) a test")
 }
 
 publish_holds() {  # <base>: 0 while publish's run holds slot 0 (its process alive); REPLY its owner line
@@ -354,8 +357,9 @@ wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empt
   done
   local p=($(pool_busy))
   publish_share $4 ${p[1]} "$5"
-  print -u2 -r -- "remote-tests: the test Mac is publish's after $(( SECONDS - t0 )) s (load $(loadavg); the pool's jobs keep ${p[2]} cores busy, ${p[3]} processes): $REPLY test threads (${reply[1]})"
-  print $REPLY
+  local each=$(( ($4 - ${p[1]}) / REPLY )); (( each < 1 )) && each=1
+  print -u2 -r -- "remote-tests: the test Mac is publish's after $(( SECONDS - t0 )) s (load $(loadavg); the pool's jobs keep ${p[2]} cores busy, ${p[3]} processes): $REPLY test threads (${reply[1]}), $each a test"
+  print "NEXTEST_TEST_THREADS=$REPLY RUST_TEST_THREADS=$REPLY RAYON_NUM_THREADS=$each"
 }
 
 # A slot (remote_main's, and a run on the test Mac itself): publish's run slot 0, any other the
@@ -601,10 +605,11 @@ here_on_test_mac() {  # <key> <source dir> <command>
   typeset -g g_mine=$mine g_base=$base g_slotdir=$base/.slots/$REPLY g_reserver= g_slot=$REPLY
   trap '[[ -n $g_reserver ]] && { kill $g_reserver 2>/dev/null; wait $g_reserver 2>/dev/null; }; free_mine $g_base "$g_mine" $g_slotdir' EXIT
   trap 'exit 143' INT TERM HUP
-  local own=${NEXTEST_TEST_THREADS:-}
+  local own=${NEXTEST_TEST_THREADS:-} own_each=${RAYON_NUM_THREADS:-}
   share_out $base $g_slot $slots $cores "$mine"
   # (A caller's own threads, exported here already, stand, as in a run sent from another Mac.)
   [[ -n $own ]] && export NEXTEST_TEST_THREADS=$own
+  [[ -n $own_each ]] && export RAYON_NUM_THREADS=$own_each
   print "remote-tests: running here (this is the test Mac; load $(loadavg), slot $g_slot of $slots, ${NEXTEST_TEST_THREADS} test threads; ${reply[1]})"
   run_local $2 "$3"
 }

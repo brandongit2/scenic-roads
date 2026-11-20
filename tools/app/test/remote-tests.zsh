@@ -230,9 +230,9 @@ rm -rf $fb/.slots/{2,3}
 out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub; ls ../../../.slots > $tmp/pubslots")
 [[ $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) && $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
   && ok "publish's run: its own slot, every core as it builds" || no "publish's run: its own slot, every core as it builds" "$(<$tmp/pub): $out"
-out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS > $tmp/chk")
+out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS \$RAYON_NUM_THREADS > $tmp/chk")
 n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
-[[ $(<$tmp/chk) == $n && $out == *" of 3, $n test threads"* ]] && ok "a check's run: its share of the cores" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+[[ $(<$tmp/chk) == "$n 1" && $out == *" of 3, $n test threads"*"1 thread a test"* ]] && ok "a check's run: its share of the cores, a test's own threads its share of those" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
 
 # The pool's jobs (#1563): the CPU of the agent's process and every process under it, nothing else;
 # taken off a check's share, and off publish's tests' threads, half the cores left them at least.
@@ -272,7 +272,7 @@ sleep 3
   && ok "behind publish: another run waits at start, publish's tests wait for the run under way" || no "behind publish: another run waits at start, publish's tests wait for the run under way" "$(cat $tmp/chkout $tmp/pubout)"
 rm -rf $fb/.slots/2  # (the run under way ends)
 wait_for $tmp/pubtests
-[[ -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/slotsheld) == $'0\n1\n2\n3' && $(<$tmp/pubthreads) == $(sysctl -n hw.ncpu) \
+[[ -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/slotsheld) == $'0\n1\n2\n3' && $(<$tmp/pubthreads) == "NEXTEST_TEST_THREADS=$(sysctl -n hw.ncpu) RUST_TEST_THREADS=$(sysctl -n hw.ncpu) RAYON_NUM_THREADS=1" \
    && $(<$fb/.slots/2/owner) == $(<$fb/.slots/0/owner) ]] \
   && ok "publish's tests: once every slot is its own" || no "publish's tests: once every slot is its own" "$(cat $tmp/slotsheld $tmp/pubthreads $tmp/pubout)"
 [[ $(<$tmp/pubout) == *"wait for the test Mac's other runs to end"*"slot 2 test (since"*"the test Mac is publish's after"* ]] \
@@ -299,7 +299,7 @@ rm -rf $fb/.slots
 # Publish's wait is bounded (publish_wait): past it, its tests go on, saying what is left.
 mkdir -p $fb/.slots/{0,1}; print -r -- $holdme > $fb/.slots/1/owner
 out=$(wait_alone $fb 1 1 14 "" "me" 2>&1)
-[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == 14 ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
+[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == "NEXTEST_TEST_THREADS=14 RUST_TEST_THREADS=14 RAYON_NUM_THREADS=1" ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
 rm -rf $fb/.slots
 
 # A run on the test Mac itself (no copy): a slot taken, behind publish's run too, freed as it ends.

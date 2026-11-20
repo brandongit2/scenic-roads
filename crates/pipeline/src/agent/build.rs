@@ -7076,18 +7076,18 @@ mod tests {
         std::env::var_os("SCENIC_PUBLISH").is_some()
     }
 
-    /// The threads a test working through its cases takes (#1539): at most 4, but every core in
-    /// publish's run. nextest runs as many tests at once as the run has test threads (its share of
-    /// the test Mac's cores), so in a check's run a test of a thread per core took them from the
-    /// others (14 a test on the M4, beside two other runs). Publish's run has every core, and its
-    /// tests over every entry are its last to finish: with 4 threads they ran 118-131 s.
+    /// The threads a test working through its cases takes: a test's own share of its run's cores,
+    /// RAYON_NUM_THREADS as tools/app/remote-tests.sh sets it (#1563: the run's cores over its test
+    /// threads), as rayon's own pools in the code under test take it; else 4 at most. nextest runs as
+    /// many tests at once as the run has test threads, so a test of a thread per core took them from
+    /// the others (#1539: 14 a test on the M4 beside two other runs; #1563: in publish's run, 14
+    /// tests at once of 14 threads each put the M4's load at 64-147 with nothing else on it).
     fn case_threads() -> usize {
-        let n = std::thread::available_parallelism().map_or(4, |n| n.get());
-        if every_entry() {
-            n
-        } else {
-            n.min(4)
-        }
+        std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()).min(4))
     }
 
     /// `f` of each of `cases` on `case_threads` threads, each taking the next case left as it
