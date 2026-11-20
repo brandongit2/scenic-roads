@@ -2175,8 +2175,9 @@ are, docs/inputs.md): the code a step runs reaches most crates, so nearly every 
 every step a cold start. So the lead watches for it: a cost taken in place of its target's run
 before, both of the way the step runs now on as many threads, notes that run's peak
 (`Cost::was_mb`, `coord`'s `moved_from`). Such a rerun counts where the larger of its two peaks is
-past what a thread of the target adds as it's packed (`needs::Book::thread_mb`: its own peak over
-its threads, at least its step's fitted memory per thread): a move under that sizes nothing that
+past what a thread of its step holds by its runs alone (`needs::Book::step_thread_mb`: the
+`needs-mem-pct` percentile of their peaks over their threads, none scaled to a target's size, at
+least the memory per thread fitted over their threads): a move under that sizes nothing that
 matters in packing. One off its run before by more than `needs-off` (3) times is moved, on the
 side it went; a step is flagged `cost-version` (§10, Flags; `Coordinator::not_raised`) on a side
 where the moved are `needs-relearn`

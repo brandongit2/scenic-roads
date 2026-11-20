@@ -837,11 +837,12 @@ impl Shared {
 
     /// The steps whose memory moved with no cost version raised (`NotRaised`). Each rerun of the way
     /// its step runs now (`Cost::was_mb`) counts where the larger of its two peaks is past what a
-    /// thread of the target adds to its memory as it's packed (`needs::Book::thread_mb`: its own
-    /// peak over its threads, at least its step's fitted memory per thread): a move smaller than
-    /// that sizes nothing that matters in packing. One off its run before by more than the needs model's `off` times is moved, on
-    /// the side it went; a step is flagged on a side where the moved are `relearn` or more and
-    /// most of the reruns that count.
+    /// thread of its step holds by its runs alone (`needs::Book::step_thread_mb`: the needs model's
+    /// memory percentile of their peaks over their threads, none scaled to a target's size, at least
+    /// the fitted memory per thread): a move smaller than that sizes nothing that matters in
+    /// packing. One off its run before by more than the needs model's `off` times is moved, on the
+    /// side it went; a step is flagged on a side where the moved are `relearn` or more and most of
+    /// the reruns that count.
     fn not_raised(&self) -> Vec<NotRaised> {
         let book = self.book();
         let off = self.tuning.off;
@@ -852,7 +853,7 @@ impl Shared {
             let Some(was) = c.was_mb.filter(|&w| w > 0 && c.peak_mb > 0) else { continue };
             let key = CostKey::parse(k);
             let v = self.the_plan.cost_version(key.step);
-            if c.v != v || book.thread_mb(key.step, key.target).is_some_and(|t| was.max(c.peak_mb) < t) {
+            if c.v != v || book.step_thread_mb(key.step).is_some_and(|t| was.max(c.peak_mb) < t) {
                 continue;
             }
             *reruns.entry(key.step.to_string()).or_default() += 1;
@@ -8459,7 +8460,8 @@ mod tests {
     /// targets did and they are most of its reruns that count: its code moved with no cost
     /// version raised. A rerun on other threads or of an older way notes nothing; one
     /// within the factor counts among the reruns; one whose larger peak is under what a thread of
-    /// the step adds (the needs model's) doesn't count at all.
+    /// its step holds by its runs alone (`needs::Book::step_thread_mb`: their peaks over their
+    /// threads at the memory percentile, none scaled to a target's size) doesn't count at all.
     #[test]
     fn memory_moved_with_no_version_raised_is_flagged() {
         let (_d, c, _w) = start();
@@ -8487,11 +8489,9 @@ mod tests {
         c.add_costs(&[(cost_key("lo", "3/7/6"), run(900, 2))]);
         c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(12_000, 2) })]);
         c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(900, 2) })]);
-        // (Two runs on 8 threads: the step's memory per thread is fitted, about 3 GB a thread, past
-        // 3/7/4's own peak over its threads.)
-        c.add_costs(&[(cost_key("lo", "3/8/1"), run(20_000, 8)), (cost_key("lo", "3/8/2"), run(20_000, 8))]);
-        let thread = c.shared.lock().unwrap().book().thread_mb("lo", "3/7/4").unwrap();
-        assert!(thread > 30 && thread < 5_000, "{thread}");
+        // (The bar: its runs' peaks over their threads, 450 to 2,500 MB, past 3/7/4's 30.)
+        let bar = c.shared.lock().unwrap().book().step_thread_mb("lo").unwrap();
+        assert!(bar > 30 && bar < 12_000, "{bar}");
         assert!(t.off < 12_000.0 / 900.0 && t.off > 12_000.0 / 5_000.0);
         let nr = c.not_raised();
         assert_eq!(
@@ -8525,6 +8525,33 @@ mod tests {
         assert_eq!(c.not_raised().len(), 1, "{n} of {}: most", 2 * n - 1);
         rerun("3/6/6", 12_000, 11_000);
         assert!(c.not_raised().is_empty(), "half");
+
+        // Task #1528 review: a target its step's largest by far, inputs/regions (4.6 GB on its
+        // thread, its siblings' runs 20-221 MB), is past the bar, though its size would scale its
+        // siblings past it: its reruns at 40 GB count, and flag the step.
+        let (_d, c, _w) = start();
+        let one = |peak: u64| Cost {
+            peak_mb: peak,
+            secs: 60,
+            sizes: [("threads".to_string(), 1)].into(),
+            ..Default::default()
+        };
+        for (i, peak) in [20, 137, 25, 221, 41, 58, 23, 20, 20].into_iter().enumerate() {
+            c.add_costs(&[(cost_key("inputs", &format!("inputs/s{i}")), one(peak))]);
+        }
+        c.add_costs(&[(cost_key("inputs", "inputs/r0"), one(4_600))]);
+        let bar = c.shared.lock().unwrap().book().step_thread_mb("inputs").unwrap();
+        assert!(bar > 221 && bar < 4_600, "{bar}");
+        for i in 0..n {
+            let r = format!("inputs/r{i}");
+            c.add_costs(&[(cost_key("inputs", &r), one(4_600))]);
+            c.add_costs(&[(cost_key("inputs", &r), one(40_000))]);
+        }
+        let nr = c.not_raised();
+        assert_eq!(
+            nr.iter().map(|r| (r.step.as_str(), r.lower, r.targets)).collect::<Vec<_>>(),
+            [("inputs", false, n)]
+        );
     }
 
     #[test]
