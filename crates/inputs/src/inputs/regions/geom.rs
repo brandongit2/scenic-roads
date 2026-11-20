@@ -827,7 +827,8 @@ pub fn earth() -> Area {
 }
 
 /// An area's size on the ground, km², on the Earth's mean sphere (roadcore::geo::EARTH_R) (edges taken as straight in
-/// longitude and latitude).
+/// longitude and latitude, as every operation here takes them: an area with none, such as a sliver
+/// between a straight edge and the same line through a point more, has none here).
 pub fn area_km2(a: &Area) -> f64 {
     let k = std::f64::consts::PI / 180.0 * 1e-7;
     let mut t = 0.0;
@@ -836,9 +837,21 @@ pub fn area_km2(a: &Area) -> f64 {
         let mut s = 0.0;
         for i in 0..n {
             let (p, q) = (ring[i], ring[(i + 1) % n]);
-            // (On the mean sphere: the band from the equator under the edge.)
-            let (s1, s2) = ((p[1] as f64 * k).dsin(), (q[1] as f64 * k).dsin());
-            s += (q[0] - p[0]) as f64 * k * (s1 + s2) * 0.5 * roadcore::geo::EARTH_R * roadcore::geo::EARTH_R;
+            // (On the mean sphere: the band from the equator under the edge, the integral of
+            // sin(latitude) along it with latitude linear in longitude, (cos φp − cos φq) / (φq − φp)
+            // a longitude, which is sin of the mean times sinc of the half difference. Task #1452:
+            // the mean of the ends' sines, the band under a line straight in longitude and sin
+            // latitude, measured 0.17 km² between Finland's 55.7 km edge and Estonia's same line
+            // through a point more, 24 m² as drawn.)
+            let (f1, f2) = (p[1] as f64 * k, q[1] as f64 * k);
+            let h = (f2 - f1) * 0.5;
+            let sinc = if h.abs() < 1e-4 { 1.0 - h * h / 6.0 } else { h.dsin() / h };
+            s += (q[0] - p[0]) as f64
+                * k
+                * ((f1 + f2) * 0.5).dsin()
+                * sinc
+                * roadcore::geo::EARTH_R
+                * roadcore::geo::EARTH_R;
         }
         t -= s;
     }

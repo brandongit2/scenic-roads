@@ -151,6 +151,28 @@ fn nearest_splits_among_three_touching_lands_cover_once() {
 }
 
 #[test]
+fn a_shared_edge_through_a_point_more_leaves_no_strip() {
+    // Task #1452: the segment Finland's zone shares with Estonia's (EEZ v12), Estonia's one edge,
+    // Åland's and mainland Finland's two (the nearest-coast split's point on it, 0.1 cm off the line
+    // in E7): what's in neither is 24 m² as drawn, and measured so (not 0.17 km², the 3 m strip).
+    let (a, b, p) = ([204_817_000, 588_446_167], [211_861_333, 591_914_833], [211_531_781, 591_752_560]);
+    let estonia = Area::from_rings(&[vec![a, [204_817_000, 588_000_000], [211_861_333, 588_000_000], b]]);
+    let finland = Area::from_rings(&[vec![a, p, b, [211_861_333, 592_500_000], [204_817_000, 592_500_000]]]);
+    let gap = geom::box_area([204_817_000, 588_000_000, 211_861_333, 592_500_000]).minus(&estonia.union(&finland));
+    let km2 = geom::area_km2(&gap);
+    assert!(km2 < 1e-4 && km2 < tiles::HAIR_KM2, "{km2} km² in neither");
+    let sliver = geom::area_km2(&Area::from_rings(&[vec![a, b, p]]));
+    assert!((sliver * 1e6 - 24.4).abs() < 0.5, "{} m²", sliver * 1e6);
+    // A band between two parallels as the sphere has it, whatever its edges' slant.
+    // (The 1° slanted band from 58°–59° at 0° to 59°–60° at 1°: R² ∫ sin(59° + λ) − sin(58° + λ) dλ.)
+    let band = Area::from_rings(&[vec![[0, 580_000_000], [10_000_000, 590_000_000], [10_000_000, 600_000_000], [0, 590_000_000]]]);
+    let r = roadcore::geo::EARTH_R;
+    let k = std::f64::consts::PI / 180.0;
+    let exact = r * r * (2.0 * (59.0 * k).cos() - (60.0 * k).cos() - (58.0 * k).cos()) / 1e6;
+    assert!((geom::area_km2(&band) - exact).abs() < 1e-6 * exact, "{} of {exact}", geom::area_km2(&band));
+}
+
+#[test]
 fn boxes_areas_and_wide_buffers() {
     // A degree square at the equator: 111.2 km a side on the mean sphere.
     let sq = geom::box_area([0, 0, 10_000_000, 10_000_000]);

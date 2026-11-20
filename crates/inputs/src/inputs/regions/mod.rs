@@ -201,15 +201,17 @@ impl Got {
 /// 13: #1427: the cover check moves nothing: no fills, no slivers, a hand-out's shared stretch
 /// stays the handing region's. 14: #1451: land in no region is a `gap` past `LAND_MIN_KM2`, not
 /// the hair, judged by land pieces (past LAND_MIN_KM2, SIMPLIFY_M / 2 wide), in overlaps as in
-/// gaps; a remainder's edge in free land is coast to the coast step; the gap says the box round its land.)
-pub const RESOLUTION: u32 = 14;
+/// gaps; a remainder's edge in free land is coast to the coast step; the gap says the box round its land.
+/// 15: #1452: an area's size measured with its edges straight in longitude and latitude, as
+/// drawn (a sliver between an edge and the same line through a point more is none).)
+pub const RESOLUTION: u32 = 15;
 
 /// The digest of the code `RESOLUTION` covers, as it was when `RESOLUTION` was last set
 /// (build/checks_code.rs `resolution_code`: the resolution's modules, what of this file shapes a
 /// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "f79237130b197e97bd9aefb3c26c48d0";
+pub const RESOLUTION_CODE: &str = "04c26870d10e2a6306a04fc0ca69a90e";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.
