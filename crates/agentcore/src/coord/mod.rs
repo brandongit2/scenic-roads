@@ -837,8 +837,8 @@ impl Shared {
 
     /// The steps whose memory moved with no cost version raised (`NotRaised`). Each rerun of the way
     /// its step runs now (`Cost::was_mb`) counts where the larger of its two peaks is past what a
-    /// thread of its step adds to its memory by the needs model (`needs::Book::thread_mb`, at
-    /// least its own peak over its threads): a move smaller than that sizes nothing that matters
+    /// thread of its step adds to its memory by the needs model (`needs::Book::step_thread_mb`, at
+    /// least its own peak over its threads, `needs::Book::thread_mb`): a move smaller than that sizes nothing that matters
     /// in packing. One off its run before by more than the needs model's `off` times is moved, on
     /// the side it went; a step is flagged on a side where the moved are `relearn` or more and
     /// most of the reruns that count.
@@ -852,7 +852,8 @@ impl Shared {
             let Some(was) = c.was_mb.filter(|&w| w > 0 && c.peak_mb > 0) else { continue };
             let key = CostKey::parse(k);
             let v = self.the_plan.cost_version(key.step);
-            if c.v != v || book.thread_mb(key.step, key.target).is_some_and(|t| was.max(c.peak_mb) < t) {
+            let thread = book.step_thread_mb(key.step, key.target).max(book.thread_mb(key.step, key.target));
+            if c.v != v || thread.is_some_and(|t| was.max(c.peak_mb) < t) {
                 continue;
             }
             *reruns.entry(key.step.to_string()).or_default() += 1;

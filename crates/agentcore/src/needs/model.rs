@@ -554,6 +554,13 @@ impl Model {
         p.thread_mb(u)
     }
 
+    /// The memory per thread fitted over its runs' sizes and threads (`PerUnit::mem_per_thread`)
+    /// of the size a target of `sizes` is read by: a slope, the same for every size. None where
+    /// none is fitted.
+    pub fn fitted_per_thread(&self, sizes: &BTreeMap<String, f64>) -> Option<f64> {
+        self.unit_of(sizes, |p| !p.mem.is_empty())?.0.mem_per_thread
+    }
+
     pub fn disk(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
         let (p, u) = self.unit_of(sizes, |p| !p.disk.is_empty())?;
         p.disk(u)

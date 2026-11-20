@@ -542,7 +542,9 @@ left beside running jobs too, as on the mini), and whose disk its caches can giv
 end, as last counted, `room::Freeable`; not what no freeing deletes, a pageview index the NAS
 lacks, a heritage clip that can't be made again, a file not to be opened; the loose raw tiles and
 canopy squares go only once the freeing packs or copies them onto the NAS, so after a freeing that
-fell short of its goal what its own count of the caches still showed it could delete is left out
+fell short of its goal by its own last measure (`room::Freed::short`: not one that reached it,
+the jobs running having written past it again by the time it is recorded) what its own count of
+the caches still showed it could delete is left out
 (`Agent::toward_left`: packing failing on a stale SMB handle, say) until a count shows less of it
 there (some went: the next freeing says again), or for ten minutes at most (`TOWARD_RETRY`: what
 stopped it may be gone with the caches unchanged, a tile too new to pack, and the disk may have its
@@ -736,8 +738,9 @@ say no threads, so nothing is decided for them).
     memory: each thread past those its grant's memory covers adds `Grant::thread_mb` (the lead's
     `Sched::thread_mb`: its step's memory per thread by the needs model, `needs::Book::thread_mb`,
     §7.7, Memory admission: fitted over its runs' sizes and threads, at least `needs-thread-share`
-    of their peaks over their threads, else those peaks over their threads; at least its own run's
-    peak over its threads where it has one; the whole figure a thread where none says; the threads covered,
+    of their peaks over their threads, else those peaks over their threads; a target with its own
+    run, that run's peak over its threads, at least the fitted figure; the whole figure a thread
+    where none says; the threads covered,
     `Grant::thread_covers`, the more of its starting threads, those its memory was read at, and
     those its own runs had (or the fewest a paced run was cut to under way where fewer, its cost
     line's `threads_least`, from the fewest its pace allowed, `jobrt::control::fewest_allowed`: its
@@ -1972,8 +1975,9 @@ each thread past them costs. Memory is the cautious limit, and the memory guard 
   figure everywhere: what `pack` packs it at beside the jobs a Mac holds, what room is held for it
   (`room_wait`), what a Mac's last ask is weighed by (`would_take_now`), and what flags it too big
   for every Mac (`too_big`). A target with its own run: that run's peak (never below its floor),
-  plus its memory per thread (`Book::thread_mb`) for each thread past those it ran on
-  (`needs::own_threads`: its threads, or the fewest a paced run was cut to). One without: its floor
+  plus its memory per thread (`Book::thread_mb`: that peak over its threads, at least its step's
+  fitted memory per thread; never its step's runs scaled up to its size) for each thread past
+  those it ran on (`needs::own_threads`: its threads, or the fewest a paced run was cut to). One without: its floor
   where it has one, else its memory by place where that is judged good (its nearest measured
   targets', `needs::Near`), each grown to those threads by what its step's runs grow by from their
   own threads to them (its step's model's memory on them past its memory as measured: a floor or
@@ -1986,8 +1990,8 @@ each thread past them costs. Memory is the cautious limit, and the memory guard 
   let a batch pass it).
 - **Grown** (`Sched::thread_mb`, `Sched::grown_mb`): its grant says what each thread past those
   its memory covers adds (`Grant::thread_mb`: its targets' most, `Book::thread_mb`: its step's
-  memory per thread by the model, at least its own run's peak over its threads where it has one;
-  the whole figure a thread where none says) and the threads covered (`Grant::thread_covers`:
+  memory per thread by the model; a target with its own run, that run's peak over its threads, at
+  least its step's fitted figure; the whole figure a thread where none says) and the threads covered (`Grant::thread_covers`:
   those it was read at, those it was granted, and those its own runs had, the most). Its agent
   grows it only within its Mac's room by that (§7.1, Threads controlled live), and the lead counts
   each thread grown past them at it, so a grow never takes the room a grant beside it was admitted
@@ -2171,8 +2175,8 @@ are, docs/inputs.md): the code a step runs reaches most crates, so nearly every 
 every step a cold start. So the lead watches for it: a cost taken in place of its target's run
 before, both of the way the step runs now on as many threads, notes that run's peak
 (`Cost::was_mb`, `coord`'s `moved_from`). Such a rerun counts where the larger of its two peaks is
-past what a thread of its step adds by the needs model (`needs::Book::thread_mb`, the
-`needs-thread-share` setting): a move under that sizes nothing that matters in packing. One off its
+past what a thread of its step adds by the needs model (`needs::Book::step_thread_mb`, the
+`needs-thread-share` setting; at least the target's own peak over its threads): a move under that sizes nothing that matters in packing. One off its
 run before by more than `needs-off` (3) times is moved, on the side it went; a step is flagged
 `cost-version` (§10, Flags; `Coordinator::not_raised`) on a side where the moved are `needs-relearn`
 (5) or more and most of its reruns that count, until the version is raised or those targets run

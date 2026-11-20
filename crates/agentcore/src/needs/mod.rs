@@ -832,20 +832,31 @@ impl<'a> Book<'a> {
     }
 
     /// What each thread a job of `step` for `target` grows by past the threads its memory (`mem`)
-    /// was read at adds to it (MB): its step's model's (`model::Model::thread_mb`), at least its own
-    /// run's peak over its threads where it has one (one target's own run says more of it than its
-    /// step's fit over all their sizes); None where neither says (a cold start's: its job grows
-    /// past no threads its grant doesn't cover, crate::agent::threads).
+    /// was read at adds to it (MB). A target whose own run said its threads: that run's peak
+    /// (never below its floor) over its threads, at least its step's fitted memory per thread
+    /// (`model::Model::fitted_per_thread`, a slope over threads that no size scales). Its step's
+    /// runs scaled to its size don't size it: past the target's own measure, they are the model's
+    /// guess for a target of that size, and the largest of a step's targets is scaled up from runs
+    /// far smaller (task #1528: inputs/regions, 4.6 GB on 1 thread, its siblings' 20-221 MB runs
+    /// each scaled by its 2,012 files created, 207 GB a thread). Else its step's model's
+    /// (`model::Model::thread_mb`); None where neither says (a cold start's: its job grows past no
+    /// threads its grant doesn't cover, crate::agent::threads).
     pub fn thread_mb(&self, step: &str, target: &str) -> Option<u64> {
-        let model = self.model(step).needs.thread_mb(&self.sizes(step, target, None));
-        let own = self.own(step, target).and_then(|c| {
-            Some(
-                c.peak_mb
-                    .max(self.current_floor(step, &cost_key(step, target)).unwrap_or(0))
-                    .div_ceil(u64::from(own_threads(c)?)),
-            )
-        });
-        model.into_iter().chain(own).max()
+        let sizes = self.sizes(step, target, None);
+        let md = self.model(step);
+        let own = self.own(step, target).and_then(|c| Some((c, own_threads(c)?)));
+        let Some((c, ran)) = own else { return md.needs.thread_mb(&sizes) };
+        let peak = c.peak_mb.max(self.current_floor(step, &cost_key(step, target)).unwrap_or(0));
+        let fitted = md.needs.fitted_per_thread(&sizes).map_or(0, |f| f.ceil() as u64);
+        Some(peak.div_ceil(u64::from(ran)).max(fitted))
+    }
+
+    /// What a thread of `step` adds to the memory of a target of `target`'s sizes by its step's
+    /// runs (`model::Model::thread_mb`), its own run or none: what a move of its memory is weighed
+    /// against (crate::coord's `not_raised`: a move under it sizes nothing that matters in
+    /// packing), never what it's admitted at (`thread_mb`).
+    pub fn step_thread_mb(&self, step: &str, target: &str) -> Option<u64> {
+        self.model(step).needs.thread_mb(&self.sizes(step, target, None))
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
@@ -2171,5 +2182,56 @@ mod tests {
         assert_eq!(tile("tail 6/3/4"), Some((6, 3, 4)));
         assert_eq!(tile("6/3/4"), Some((6, 3, 4)));
         assert_eq!(tile("marks"), None);
+    }
+
+    /// Task #1528: a target's own run on fewer threads than it starts on grows by its own peak over
+    /// its threads (at least its step's fitted memory per thread), not by its siblings' runs
+    /// scaled up to its size. The lead's inputs runs of 19 Nov: inputs/regions took 4,590 MB on 1
+    /// thread, granted 2 by its own cores (0.7 busy and a thread more); its 9 siblings took
+    /// 20-221 MB, each having created 1 file to its 2,012, so the model's figure for it, by files
+    /// created, scaled each up 2,012 times: 207,116 MB a thread, 211,706 MB (206.7 GB) on 2,
+    /// past every Mac, and the input gate's check waited.
+    #[test]
+    fn an_own_run_grows_by_its_own_peak_a_thread_not_its_siblings_scaled_to_its_size() {
+        // (Target, peak MB, s, threads, CPU ms, bytes, files created, listed, written.)
+        let runs: [(&str, u64, u64, u64, u64, u64, u64, u64, u64); 10] = [
+            ("descriptions", 20, 1, 1, 8, 22_301, 1, 58, 4_335),
+            ("elevation", 137, 4, 1, 1_543, 2_465_623_724, 1, 23, 1_599),
+            ("extents", 25, 1, 1, 56, 461_104, 1, 971, 71_602),
+            ("heritage", 221, 8, 1, 1_120, 183_363_733, 1, 81, 5_237),
+            ("languages", 41, 1, 1, 37, 27_844_439, 1, 3, 248),
+            ("regions", 4_590, 6_199, 1, 4_389_031, 1_239_655_417, 2_012, 3_393, 196_503_074),
+            ("sources", 58, 2, 1, 73, 28_463_715, 1, 42, 2_855),
+            ("timetables/feeds", 23, 6, 1, 44, 30_580_208, 1, 48, 3_464),
+            ("timetables/gtfs", 20, 0, 2, 5, 8_629, 1, 27, 1_783),
+            ("translations", 20, 1, 1, 11, 3_341, 1, 12, 805),
+        ];
+        let costs: BTreeMap<String, Cost> = runs
+            .iter()
+            .map(|&(t, peak, secs, threads, cpu_ms, bytes, creates, listed, wrote)| {
+                let sizes = [
+                    ("threads", threads),
+                    ("cpu_ms", cpu_ms),
+                    ("bytes", bytes),
+                    ("creates", creates),
+                    ("listed", listed),
+                    ("stats", listed),
+                    ("wrote", wrote),
+                    ("read_back", wrote),
+                ];
+                (cost_key("inputs", &format!("inputs/{t}")), cost(peak, secs, &sizes))
+            })
+            .collect();
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        let t = "inputs/regions";
+        assert_eq!(b.cores("inputs", t).map(|c| c.grant), Some(2), "its own run's 0.7 busy cores and a thread more");
+        let (md, sizes) = (b.model("inputs"), b.sizes("inputs", t, None));
+        assert_eq!(md.needs.thread_mb(&sizes), Some(207_116), "its siblings' peaks scaled to its files created");
+        assert_eq!(md.needs.fitted_per_thread(&sizes), Some(0.0));
+        assert_eq!(b.thread_mb("inputs", t), Some(4_590), "its own peak a thread, not 207,116 MB");
+        assert_eq!(b.mem("inputs", t, 1, 0), (4_590, From::Measured));
+        assert_eq!(b.mem("inputs", t, 2, 0), (9_180, From::Measured), "not 211,706 MB");
+        // (A target never run is still read by its step's runs scaled to its size.)
+        assert!(b.thread_mb("inputs", "inputs/new").is_some());
     }
 }

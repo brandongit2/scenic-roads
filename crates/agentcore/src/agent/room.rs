@@ -505,6 +505,11 @@ pub struct Freed {
     /// reservations alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<u64>,
+    /// A freeing toward the target (`toward`) that ended with the disk short of its goal by its
+    /// own last measure: it went through all it may free (or the agent stopped). One that reached
+    /// its goal isn't, though the jobs running may have written past it again since.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub short: bool,
 }
 
 impl Freed {
@@ -1008,7 +1013,7 @@ fn toward_with(
         left += cheap_left(cache, root);
     }
     freed.retain(|_, b| *b > 0);
-    Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(first), ..Default::default() })
+    Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(first), short, ..Default::default() })
 }
 
 /// What the jobs on this Mac will read of the caches, as far as the agent knows it, and when: those

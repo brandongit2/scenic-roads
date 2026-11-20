@@ -7293,6 +7293,7 @@ impl Agent {
                 ..crate::coord::history::Event::new("caches")
             });
         }
+        let short = f.short;
         self.mem.toward = Some(f);
         // (The jobs held by the target wait on: each starts once the disk has its room, and room-
         // making, which frees no more than this did, isn't tried again within `FLOOR_SHORT_HOLD`, or until a
@@ -7300,14 +7301,20 @@ impl Agent {
         self.save();
         // (Its thread's count of the caches as it left them taken in.)
         self.counts_in();
-        // (Short of its goal: what running jobs hold and what it could have deleted now but didn't,
-        // as that count says, so what the caches can free is said less that (`towardable`), and a
-        // job's end tries again only once they can do more: `toward_due`.)
+        // (Short of its goal by its own last measure (`room::Freed::short`): what running jobs hold
+        // and what it could have deleted now but didn't, as that count says, so what the caches can
+        // free is said less that (`towardable`), and a job's end tries again only once they can do
+        // more: `toward_due`. Not the disk as read now: one that reached its goal, the jobs running
+        // having written past it again since, left the rest undeleted because it had its room, not
+        // because it couldn't free it (task #1528: the lead's 480 GB of caches said as 7 GB).)
         let goal = ended_at.min(goal);
-        let left = (free < goal)
-            .then(|| self.cache_size.borrow().1.as_ref().map(|s| s.free))
-            .flatten()
-            .map(|n| TowardLeft { goal, held: n.held, unfreed: self.toward_now(&n), cheap: n.cheap, at: now_s() });
+        let left = short.then(|| self.cache_size.borrow().1.as_ref().map(|s| s.free)).flatten().map(|n| TowardLeft {
+            goal,
+            held: n.held,
+            unfreed: self.toward_now(&n),
+            cheap: n.cheap,
+            at: now_s(),
+        });
         self.toward_left.set(left);
     }
 
@@ -12805,6 +12812,53 @@ mod tests {
         std::fs::remove_file(&tile).unwrap();
         a.counted(Some(&nas));
         assert_eq!((a.toward_left.get(), a.towardable()), (None, Some(1000)));
+    }
+
+    /// Task #1528: a freeing that reached its goal left the rest of the caches because it had its
+    /// room, so they stay freeable though the jobs running wrote past the goal again before it was
+    /// recorded (the lead's 480 GB of caches were said as 7 GB, `too_big`'s "9.0 GB of disk for jobs
+    /// at its best"); only one that fell short by its own measure leaves them out.
+    #[test]
+    fn a_freeing_that_reached_its_goal_leaves_the_rest_freeable_though_jobs_wrote_past_it_since() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let target = 50u64 << 30;
+        room::set_target(&home, Some(target), "a test").unwrap();
+        a.room_target = room::target(&home);
+        // (Three copies on a disk whose free space follows the cache's files: 500 bytes short.)
+        let _disk = room::TestDisk::set(home.join("cache"), target + 2500);
+        for f in ["a", "b", "c"] {
+            put(&home.join(format!("cache/blobs/sources/x/{f}.bin")), &[0; 1000]);
+        }
+        a.counted(Some(&nas));
+        assert_eq!((a.towardable(), a.toward_due()), (Some(3000), Some(target)));
+        a.tend_caches(Some(&nas));
+        let f = a.mem.toward.clone().unwrap();
+        assert!(!f.short && f.bytes() > 0 && a.disk_free() >= target, "it reached its goal: {f:?}");
+        let rest = 3000 - f.bytes();
+        assert!(rest > 0);
+        assert_eq!((a.toward_left.get(), a.towardable()), (None, Some(rest)));
+        // A job writes past the goal again before the freeing is recorded: what's left stays freeable.
+        put(&home.join("cache/job-output.bin"), &vec![0; 2000]);
+        assert!(a.disk_free() < target);
+        a.toward_record(f.clone(), (target, target, false));
+        assert_eq!((a.toward_left.get(), a.towardable()), (None, Some(rest)), "not left by the freeing");
+        // One short by its own measure: what it could still delete is left out.
+        a.toward_record(room::Freed { short: true, ..f }, (target, target, false));
+        assert_eq!(a.toward_left.get().map(|l| l.unfreed), Some(rest));
+        assert_eq!(a.towardable(), Some(0));
     }
 
     /// Task #1478 review: a member with a room target counts its cheap caches in its ask's disk
