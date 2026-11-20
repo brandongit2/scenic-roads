@@ -52,6 +52,20 @@ print -l -- '- #5 a' '- #5 b' > $d/next-check.md; step >/dev/null; age
 print -l -- '- #5 b' > $d/next-check.md
 out=$(step)
 [[ $out == *"ITEMS GONE"*"    - #5"* ]] && ok "one of two items for a task gone" || no "one of two items for a task gone" "$out"
+# Keys: a task number's punctuation after it changed (the PM's list, 20 Nov: "#1506: reopened …"
+# to "#1506 (live 1235): …"), a word's trailing punctuation, a checkbox open then ticked with X.
+age
+print -l -- '- #1506: reopened 08:30Z' '- #1475 (live 0732): no rekey' '- watch: the NAS' '- [ ] #7 open' '- [ ] tidy, then' > $d/next-check.md
+step >/dev/null; age
+print -l -- '- #1506 (live 1235): a day on the lead' '- #1475: after the peaks round' '- watch the NAS' '- [X] #7 open' '- [X] tidy.' > $d/next-check.md
+out=$(step)
+[[ $out != *GONE* ]] && ok "an item's number or word, its punctuation edited, a checkbox ticked: the same items" || no "the same items, edited" "$out"
+age
+print -l -- '- #1506 (live 1235): a day on the lead' '- #1475: after the peaks round' '- watch the NAS' > $d/next-check.md
+out=$(step)
+[[ $out != *GONE* ]] && ok "items marked done with [X], then deleted" || no "items marked done with [X], then deleted" "$out"
+[[ $out == *'finish an item by marking it "- [x]" before a check, then delete it after that check'* ]] \
+  && ok "the output says how an item is finished" || no "the output says how an item is finished" "$out"
 # Copies older than 2 days go.
 age
 touch -t $(date -v-3d +%Y%m%d%H%M) $d/next-check-done/0-*.md(N[1])
