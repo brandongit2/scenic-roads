@@ -8195,7 +8195,8 @@ impl Agent {
             .filter(|&k| {
                 self.slots[k].running.as_ref().is_some_and(|r| {
                     r.watch.is_some_and(|w| {
-                        w.threads as usize == r.threads && (w.threads > room || self.watched_for(k, &w) >= threads::EVERY)
+                        w.threads as usize == r.threads
+                            && (w.threads > room || self.watched_for(k, &w) >= threads::EVERY)
                     })
                 })
             })
@@ -13548,8 +13549,9 @@ mod tests {
         };
         std::fs::create_dir_all(&a.o.home).unwrap();
         std::fs::create_dir_all(a.nas_counts_path(0)).unwrap();
-        let r = Running::start(spec("regions"), None, 4, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None)
-            .unwrap();
+        let r =
+            Running::start(spec("regions"), None, 4, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None)
+                .unwrap();
         let pgid = r.pgid;
         a.slots[0].running = Some(r);
         a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
@@ -13559,7 +13561,8 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         let cpu =
             |a: &Agent, ns: u64| a.sampler.watch(0, memguard::Watch { pgid, cpu_ns: Some(ns), ..Default::default() });
-        let file = |a: &Agent, k: usize| std::fs::read_to_string(a.threads_path(k)).unwrap().trim().parse::<u32>().unwrap();
+        let file =
+            |a: &Agent, k: usize| std::fs::read_to_string(a.threads_path(k)).unwrap().trim().parse::<u32>().unwrap();
         cpu(&a, 0);
         a.watch_threads(0);
         a.take_settings();
@@ -13573,7 +13576,11 @@ mod tests {
         let cap = a.capacity(&cond);
         assert_eq!((cap.in_use, cap.kept_cores, cap.test_hold), (true, cores - 2, Some(cores - 2)), "said to the lead");
         a.tend_threads(&cond);
-        assert_eq!((file(&a, 0), a.slots[0].running.as_ref().unwrap().threads), (2, 2), "cut at once to the cores left");
+        assert_eq!(
+            (file(&a, 0), a.slots[0].running.as_ref().unwrap().threads),
+            (2, 2),
+            "cut at once to the cores left"
+        );
         // A job granted meanwhile starts, on the cores left; neither is stopped.
         a.start(1, spec("roads"), &cond, None).unwrap();
         assert_eq!((file(&a, 1), a.slots[1].running.as_ref().unwrap().threads), (2, 2), "started on the cores left");

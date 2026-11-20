@@ -1872,13 +1872,12 @@ mod tests {
     /// otherwise.
     #[test]
     fn the_capacity_line_says_publishs_tests_hold() {
-        let c = agentcore::coord::Capacity {
-            in_use: true,
-            kept_cores: 9,
-            test_hold: Some(9),
-            ..Default::default()
-        };
-        assert!(capacity_line(&c).contains("publish's tests hold 9 cores (9 kept from its jobs)"), "{}", capacity_line(&c));
+        let c = agentcore::coord::Capacity { in_use: true, kept_cores: 9, test_hold: Some(9), ..Default::default() };
+        assert!(
+            capacity_line(&c).contains("publish's tests hold 9 cores (9 kept from its jobs)"),
+            "{}",
+            capacity_line(&c)
+        );
         let c = agentcore::coord::Capacity { in_use: true, ..Default::default() };
         assert!(capacity_line(&c).contains("in use") && !capacity_line(&c).contains("publish"));
         assert!(capacity_line(&Default::default()).contains("idle"));
