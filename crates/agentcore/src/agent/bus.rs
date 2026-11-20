@@ -68,7 +68,7 @@ pub enum ControlMsg {
 /// replaces what still waits (the reader counts what it never took); the reader's `take` waits
 /// for one, and while a `hold` is out (the sender busy with what the reader shouldn't run beside),
 /// and gives None once the sender is gone. Holding at most one, it never piles up behind a slow
-/// reader.
+/// reader; once the reader is gone (`Post::closed`), it holds none.
 struct Slot<T> {
     state: Mutex<SlotState<T>>,
     changed: std::sync::Condvar,
@@ -78,12 +78,14 @@ struct SlotState<T> {
     item: Option<T>,
     holds: usize,
     gone: bool,
+    /// The reader is gone (its `Inbox` dropped: its thread ended, or unwound).
+    closed: bool,
 }
 
 /// A mailbox's sending side (`mailbox`); dropped, the reader's `take` gives None.
 pub struct Post<T>(Arc<Slot<T>>);
 
-/// A mailbox's reading side (`mailbox`).
+/// A mailbox's reading side (`mailbox`); dropped, the mailbox is closed (`Post::closed`).
 pub struct Inbox<T>(Arc<Slot<T>>);
 
 /// While it lives, the mailbox's reader takes nothing (`Post::hold`).
@@ -92,7 +94,7 @@ pub struct Hold<T>(Arc<Slot<T>>);
 /// A one-slot mailbox: its sender and its reader.
 pub fn mailbox<T>() -> (Post<T>, Inbox<T>) {
     let s = Arc::new(Slot {
-        state: Mutex::new(SlotState { item: None, holds: 0, gone: false }),
+        state: Mutex::new(SlotState { item: None, holds: 0, gone: false, closed: false }),
         changed: std::sync::Condvar::new(),
     });
     (Post(s.clone()), Inbox(s))
@@ -110,9 +112,15 @@ impl<T> Slot<T> {
 }
 
 impl<T> Post<T> {
-    /// `v` left for the reader in place of what still waited (dropped).
+    /// `v` left for the reader in place of what still waited (dropped); dropped itself once the
+    /// reader is gone.
     pub fn put(&self, v: T) {
-        self.0.change(|s| s.item = Some(v));
+        self.0.change(|s| s.item = (!s.closed).then_some(v));
+    }
+
+    /// The reader is gone: nothing put is ever taken.
+    pub fn closed(&self) -> bool {
+        self.0.lock().closed
     }
 
     /// The reader takes nothing until it's dropped (a panic dropping it too).
@@ -131,6 +139,15 @@ impl<T> Drop for Post<T> {
 impl<T> Drop for Hold<T> {
     fn drop(&mut self) {
         self.0.change(|s| s.holds -= 1);
+    }
+}
+
+impl<T> Drop for Inbox<T> {
+    fn drop(&mut self) {
+        self.0.change(|s| {
+            s.closed = true;
+            s.item = None;
+        });
     }
 }
 
@@ -227,5 +244,24 @@ mod tests {
         drop(post);
         reader.join().unwrap();
         assert!(rx.try_recv().is_err(), "the sender gone: nothing more taken");
+    }
+
+    /// Task #1540: once its reader is gone (its thread ended, or unwound), a mailbox says so and
+    /// holds nothing put, before or after.
+    #[test]
+    fn a_mailbox_whose_reader_is_gone_is_closed_and_holds_nothing() {
+        let (post, inbox) = mailbox::<std::sync::Arc<u32>>();
+        let v = std::sync::Arc::new(1);
+        post.put(v.clone());
+        assert!(!post.closed());
+        let reader = std::thread::spawn(move || {
+            let _inbox = inbox;
+            panic!("the reader's thread ended");
+        });
+        assert!(reader.join().is_err());
+        assert!(post.closed());
+        assert_eq!(std::sync::Arc::strong_count(&v), 1, "what waited was dropped with the reader");
+        post.put(v.clone());
+        assert_eq!(std::sync::Arc::strong_count(&v), 1, "a put to a closed mailbox is dropped");
     }
 }

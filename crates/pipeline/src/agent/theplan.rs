@@ -192,15 +192,7 @@ impl Plan for ThePlan {
         roads::staging::MARGIN_KM
     }
     fn held(&self, index_dir: PathBuf) -> Box<dyn PlanHeld> {
-        Box::new(Held {
-            tiles: RefCell::new(TerrainTiles::new(Some(index_dir))),
-            reach: RefCell::default(),
-            reach_now: RefCell::default(),
-            kept: RefCell::default(),
-            memo: RefCell::default(),
-            shadow: RefCell::default(),
-            shadowing: Cell::new(true),
-        })
+        Box::new(Held::new(index_dir))
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         key_inputs(root, manifest)
@@ -462,7 +454,9 @@ fn shadow_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
 impl Shadowing {
     /// Its worker started, each shadow begun once no plan is being made (`Post::hold`, the plan's
     /// while it makes `build::plan`) and ended with the plan part (its mailbox's sender dropped);
-    /// None, said, when no thread can be.
+    /// None, said, when no thread can be. A worker that ends on its own (its pool not built, or
+    /// unwound) leaves its mailbox closed (`bus::Post::closed`: its inbox dropped), and the plan
+    /// starts another with its next (`Held::shadow_hold`), copying nothing for it meanwhile.
     fn start() -> Option<Shadowing> {
         let (asks, inbox) = agentcore::agent::bus::mailbox::<Ask>();
         #[cfg(test)]
@@ -474,7 +468,9 @@ impl Shadowing {
             let p = match shadow_pool() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("agent: the plan's shadow has no threads of its own ({e}): no shadow plans");
+                    eprintln!(
+                        "agent: the plan's shadow has no threads of its own ({e}); tried again with the next plan"
+                    );
                     return;
                 }
             };
@@ -782,6 +778,19 @@ fn first_difference(a: &Planned, b: &Planned) -> String {
 }
 
 impl Held {
+    /// Nothing held yet, the terrain packs' indexes kept in `index_dir`.
+    fn new(index_dir: PathBuf) -> Held {
+        Held {
+            tiles: RefCell::new(TerrainTiles::new(Some(index_dir))),
+            reach: RefCell::default(),
+            reach_now: RefCell::default(),
+            kept: RefCell::default(),
+            memo: RefCell::default(),
+            shadow: RefCell::default(),
+            shadowing: Cell::new(true),
+        }
+    }
+
     /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
     /// the NAS: half a minute for the whole build's, once).
     fn terrain_tiles(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> std::cell::Ref<'_, TerrainTiles> {
@@ -848,7 +857,7 @@ impl Held {
         made: (Duration, Duration),
     ) {
         let mut s = self.shadow.borrow_mut();
-        let Some(sh) = s.as_mut() else { return };
+        let Some(sh) = live(&mut s) else { return };
         debug_assert!(std::ptr::eq(publish.each, &r.covs.each[..]), "the plan publishes by the coverages' regions");
         sh.asked += 1;
         let ask = Ask {
@@ -877,17 +886,27 @@ impl Held {
 
     /// While it lives, the plan's shadow starts no plan (`bus::Post::hold`): one started at once
     /// (the plan's own just ended) would have its peak beside this plan's. The worker started
-    /// with the first plan; None while shadows are off, or when it has no thread.
+    /// with the first plan, and again with a plan after it ended (`live`); None while shadows are
+    /// off, or when it has no thread.
     fn shadow_hold(&self) -> Option<agentcore::agent::bus::Hold<Ask>> {
         if !self.shadowing.get() {
             return None;
         }
         let mut s = self.shadow.borrow_mut();
-        if s.is_none() {
+        if live(&mut s).is_none() {
             *s = Shadowing::start();
         }
         s.as_ref().map(|s| s.asks.hold())
     }
+}
+
+/// The plans' shadow while its worker runs: one whose worker ended (its mailbox closed) dropped,
+/// so no plan is copied for it.
+fn live(s: &mut Option<Shadowing>) -> Option<&mut Shadowing> {
+    if s.as_ref().is_some_and(|sh| sh.asks.closed()) {
+        *s = None;
+    }
+    s.as_mut()
 }
 
 impl PlanHeld for Held {
@@ -1025,16 +1044,41 @@ mod tests {
     use rayon::prelude::*;
 
     /// The shadow's work, on its threads, leaves the plan's phase as the plan set it (task #1077:
-    /// `build::plan`'s sections enter `nasread::PLAN`'s phases on whatever thread runs them).
+    /// `build::plan`'s sections enter `nasread::PLAN`'s phases on whatever thread runs them): there
+    /// each enter goes nowhere (None, even after another: on a phased thread the second says the
+    /// first). Nothing read of the process-wide `PLAN`, which other tests enter at once (#1540).
     #[test]
     fn a_shadow_leaves_the_plans_phase() {
-        nasread::PLAN.enter("its shadow's copy");
+        let none = |name| {
+            let ends = [nasread::PLAN.enter(name), nasread::PLAN.enter(name)];
+            assert_eq!(ends.map(|e| e.map(|e| e.0)), [None, None], "{name}");
+        };
         shadow_pool().unwrap().install(|| {
-            nasread::PLAN.enter("build::plan: the checklist");
-            (0..64).into_par_iter().for_each(|_| {
-                nasread::PLAN.enter("build::plan: the regions");
-            });
+            none("build::plan: the checklist");
+            (0..64).into_par_iter().for_each(|_| none("build::plan: the regions"));
         });
-        assert_eq!(nasread::PLAN.now(), Some("its shadow's copy"));
+    }
+
+    /// Task #1540: a shadow whose worker ended (its mailbox closed, as its pool unbuilt leaves it)
+    /// is dropped, copied nothing (`live`), and the next plan starts another (`shadow_hold`).
+    #[test]
+    fn a_shadow_whose_worker_ended_is_started_again() {
+        let ended = || {
+            let (asks, inbox) = agentcore::agent::bus::mailbox::<Ask>();
+            std::thread::spawn(move || drop(inbox)).join().unwrap();
+            let (_, said) = std::sync::mpsc::channel();
+            Some(Shadowing { asks, asked: 7, said, last: (0, None) })
+        };
+        let mut s = ended();
+        assert!(live(&mut s).is_none(), "an ended worker's shadow is copied nothing");
+        assert!(s.is_none(), "and dropped");
+        let held = Held::new(std::env::temp_dir().join("never-read"));
+        *held.shadow.borrow_mut() = ended();
+        let hold = held.shadow_hold().expect("a shadow started again");
+        drop(hold);
+        let s = held.shadow.borrow();
+        let s = s.as_ref().unwrap();
+        assert!(!s.asks.closed(), "a new worker's");
+        assert_eq!(s.asked, 0);
     }
 }
