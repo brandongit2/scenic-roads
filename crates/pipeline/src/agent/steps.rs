@@ -622,7 +622,7 @@ fn work_names(step: &str, u: &str) -> Option<Vec<String>> {
 }
 
 /// Every output of `step` in the manifest `m` (its write-set's names: `writes`), `<logical>=<content>`.
-fn whole_outputs<'a>(step: &str, m: impl Manifest<'a>) -> Vec<String> {
+pub(super) fn whole_outputs<'a>(step: &str, m: impl Manifest<'a>) -> Vec<String> {
     let Some(w) = row(step).map(|r| r.writes) else { return Vec::new() };
     m.matching(w).map(|(l, c)| format!("{l}={c}")).collect()
 }
@@ -1514,7 +1514,7 @@ pub const TABLE: [Step; 65] = [
     Step {
         shared: true,
         versions: &[("peaks", || super::build::PEAKS_V.to_string())],
-        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::pass_summits) }, All { step: "terrain-lo", grain: Outputs }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
+        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::pass_summits) }, All { step: "terrain-lo", grain: Grain::Read(idents::peaks_lo) }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
@@ -2002,7 +2002,8 @@ pub fn outside_by(e: &agentcore::pool::journal::Entry, writes: &dyn Fn(&str, boo
 /// z3 tile's whole run: a lease of the scheme before z6 tiles); a z6 tile's normalized buildings
 /// and their side file (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid
 /// (`bldtiles`); a z3 tile's field lo pack (`bldfield-lo`); a z6 tile's lake-depth packs and its
-/// record of what it asked of the terrain (`lake-depth`, buildstore::asked); and what a z6 tile of a
+/// record of what it asked of the terrain (`lake-depth`, buildstore::asked); a z6 tile's peaks
+/// and its record of the z8 tiles it read (`peaks`); and what a z6 tile of a
 /// step keyed on what each target asked asked of the coverage (`ASKED_PER_TARGET`,
 /// buildstore::asked). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
@@ -2017,7 +2018,9 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
     }
     match step {
         "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
-        "pois" | "peaks" => l == format!("work/{step}/{dash}"),
+        "pois" => l == format!("work/{step}/{dash}"),
+        // (Its results and what its coarse stage read of the z8.)
+        "peaks" => l == format!("work/{step}/{dash}") || l == buildstore::asked::target_logical(step, target),
         // (A z6 tile's normalized buildings and their side file, and its 3D buildings' hi pack.)
         "bldprep" => tile.is_some_and(|t| t.z == 6 && bld::bld::prepared_logicals(t.x, t.y).iter().any(|p| p == l)),
         "bldtiles" => tile.is_some_and(|t| {
@@ -2435,7 +2438,7 @@ fn w_pois(l: &str, _: bool) -> bool {
 }
 
 fn w_peaks(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["work", "peaks", t] if tile(t, 6))
+    matches!(parts(l).as_slice(), ["work", "peaks", t] if tile(t, 6)) || asked_of(l, "peaks")
 }
 
 /// A z6 tile's map tiles: its roads' and rails' hi packs and its data.

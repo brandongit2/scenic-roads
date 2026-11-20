@@ -296,6 +296,8 @@ struct UDem<'a> {
     max_cache: usize,
     /// A z8 read that failed (the lo packs' local copies): fails the run.
     failed: Option<String>,
+    /// The z8 tiles read (`run`'s record).
+    read: BTreeSet<(u32, u32)>,
 }
 
 impl<'a> UDem<'a> {
@@ -309,6 +311,7 @@ impl<'a> UDem<'a> {
         }
         let k = (tx.rem_euclid(n) as u32, ty as u32);
         if let Some(z8) = self.z8 {
+            self.read.insert(k);
             return match z8.tile(k.0, k.1) {
                 Ok(t) => Some(t),
                 Err(e) => {
@@ -508,8 +511,9 @@ struct Seen {
 /// The peaks of a z6 tile measured a piece at a time (`run`; a multiple of the fine stage's 64).
 const BATCH: usize = 512;
 
-/// A batch's results as a kept piece's payload (jobrt::resume_log::Put).
-fn put_outs(coarse: usize, outs: &[(usize, Out)]) -> Vec<u8> {
+/// A batch's results as a kept piece's payload (jobrt::resume_log::Put), with the z8 tiles its
+/// coarse stage read.
+fn put_outs(coarse: usize, outs: &[(usize, Out)], read: &BTreeSet<(u32, u32)>) -> Vec<u8> {
     let mut p = jobrt::resume_log::Put::default();
     let f64s = |p: &mut jobrt::resume_log::Put, v: &[f64]| v.iter().for_each(|x| p.u64(x.to_bits()));
     p.u64(coarse as u64);
@@ -527,11 +531,16 @@ fn put_outs(coarse: usize, outs: &[(usize, Out)]) -> Vec<u8> {
             f64s(&mut p, &h);
         }
     }
+    p.u64(read.len() as u64);
+    for &(x, y) in read {
+        p.u32(x);
+        p.u32(y);
+    }
     p.0
 }
 
-/// `put_outs`'s count of peaks that needed the coarse stage and results, read back.
-fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>)> {
+/// `put_outs`'s count of peaks that needed the coarse stage, results and z8 tiles read, read back.
+fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>, BTreeSet<(u32, u32)>)> {
     let mut g = jobrt::resume_log::Get(p);
     let f64 = |g: &mut jobrt::resume_log::Get| g.u64().map(f64::from_bits);
     let coarse = usize::try_from(g.u64()?)?;
@@ -546,12 +555,17 @@ fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>)> {
         let hi = if f & 4 != 0 { Some([f64(&mut g)?, f64(&mut g)?]) } else { None };
         v.push((at, Out { i, e, p: pr, pl: f & 1 != 0, c, ce, iso, il: f & 2 != 0, hi }));
     }
+    let mut read = BTreeSet::new();
+    for _ in 0..g.count(8)? {
+        read.insert((g.u32()?, g.u32()?));
+    }
     g.end()?;
-    Ok((coarse, v))
+    Ok((coarse, v, read))
 }
 
-/// Peaks of a z6 tile: (key, result) in the peaks' order; the summits as they see them, then each
-/// batch of them (`BATCH`), kept in `pieces` as made.
+/// Peaks of a z6 tile: (key, result) in the peaks' order, and the z8 tiles its coarse stage read
+/// (pipeline's agent::idents::peaks_lo: what its key's lo line answers); the summits as they see
+/// them, then each batch of them (`BATCH`), kept in `pieces` as made.
 pub fn run(
     peaks: &[UnitPeak],
     summits: &[Summit],
@@ -560,7 +574,7 @@ pub fn run(
     z8: &Z8,
     coarse_threads: usize,
     pieces: &mut jobrt::resume_log::Pieces,
-) -> Result<Vec<(String, Out)>> {
+) -> Result<(Vec<(String, Out)>, BTreeSet<(u32, u32)>)> {
     let t0 = std::time::Instant::now();
     let by_id: HashMap<&str, usize> = summits.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
     // The summits near the z6 tile's peaks, by 0.1° cell.
@@ -611,8 +625,15 @@ pub fn run(
         let seen: Vec<(u32, (i64, i64), (i64, i64), f32, f32)> = all
             .par_chunks(256)
             .flat_map_iter(|chunk| {
-                let mut d =
-                    UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
+                let mut d = UDem {
+                    z: Z12,
+                    z12: Some(z12),
+                    z8: None,
+                    cache: HashMap::new(),
+                    max_cache: 96,
+                    failed: None,
+                    read: BTreeSet::new(),
+                };
                 chunk
                     .iter()
                     .map(|&(i, s)| {
@@ -646,7 +667,15 @@ pub fn run(
             by_px.entry(s.2).or_default().push(k);
         }
         let mut info: HashMap<u32, Seen> = HashMap::with_capacity(seen.len());
-        let mut d0 = UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 256, failed: None };
+        let mut d0 = UDem {
+            z: Z12,
+            z12: Some(z12),
+            z8: None,
+            cache: HashMap::new(),
+            max_cache: 256,
+            failed: None,
+            read: BTreeSet::new(),
+        };
         let mut moved = 0;
         let mut groups: Vec<(&(i64, i64), &Vec<usize>)> = by_px.iter().collect();
         groups.sort_unstable_by_key(|g| *g.0);
@@ -743,6 +772,7 @@ pub fn run(
     let pool = rayon::ThreadPoolBuilder::new().num_threads(coarse_threads.max(1)).build()?;
     let mut need_coarse = 0;
     let mut outs: Vec<(usize, Out)> = Vec::with_capacity(peaks.len());
+    let mut read: BTreeSet<(u32, u32)> = BTreeSet::new();
     // (Each batch of peaks in that order measured, fine then coarse, a piece kept, task #889: a
     // peak's result is its own, so a resumed z6 tile measures only the batches not kept.)
     for (n, batch) in order.chunks(BATCH).enumerate() {
@@ -750,8 +780,15 @@ pub fn run(
             let fine: Vec<Fine> = batch
                 .par_chunks(64)
                 .flat_map_iter(|chunk| {
-                    let mut d =
-                        UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
+                    let mut d = UDem {
+                        z: Z12,
+                        z12: Some(z12),
+                        z8: None,
+                        cache: HashMap::new(),
+                        max_cache: 96,
+                        failed: None,
+                        read: BTreeSet::new(),
+                    };
                     chunk
                         .iter()
                         .map(|&i| {
@@ -820,11 +857,11 @@ pub fn run(
             let coarse = fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
 
             // The coarse stage (z8), a few at a time (a flood holds up to 40M pixels).
-            let results: Vec<Result<(usize, Out)>> = pool.install(|| {
+            let results: Vec<Result<(usize, Out, Vec<(u32, u32)>)>> = pool.install(|| {
                 fine.into_par_iter()
                     .map(|f| {
                         if f.flood_done && f.iso_done {
-                            return Ok((f.i, f.out));
+                            return Ok((f.i, f.out, Vec::new()));
                         }
                         let mut out = f.out;
                         let p = &peaks[f.i];
@@ -840,8 +877,15 @@ pub fn run(
                             }
                         }
                         let ov8 = Ov8 { base: base8, near: &near, over };
-                        let mut d =
-                            UDem { z: Z8_, z12: None, z8: Some(z8), cache: HashMap::new(), max_cache: 0, failed: None };
+                        let mut d = UDem {
+                            z: Z8_,
+                            z12: None,
+                            z8: Some(z8),
+                            cache: HashMap::new(),
+                            max_cache: 0,
+                            failed: None,
+                            read: BTreeSet::new(),
+                        };
                         let (sx, sy) = d.px(f.sum[0], f.sum[1]);
                         // The z8 pixel is a mean: the summit keeps its fine height.
                         let e = out.e;
@@ -862,8 +906,11 @@ pub fn run(
                                 Flood::Beyond => unreachable!("no reach at z8"),
                             }
                         }
+                        // (The tiles whose maxima the search reads, each read whole: `Z8::max`.)
+                        let maxed = std::cell::RefCell::new(BTreeSet::new());
                         if !f.iso_done {
                             match nearest_higher(&mut d, Some(&ov8), sx, sy, e, COARSE_ISO_KM, &|x, y| {
+                                maxed.borrow_mut().insert((x, y));
                                 Some(z8.max(x, y).unwrap_or(f32::INFINITY))
                             }) {
                                 Some((km, at)) => {
@@ -879,20 +926,29 @@ pub fn run(
                         if let Some(e) = d.failed {
                             anyhow::bail!("peaks: z8 read failed: {e}");
                         }
-                        Ok((f.i, out))
+                        let mut read = maxed.into_inner();
+                        read.extend(d.read);
+                        Ok((f.i, out, read.into_iter().collect()))
                     })
                     .collect()
             });
-            let batch: Vec<(usize, Out)> = results.into_iter().collect::<Result<_>>().context("coarse stage")?;
-            Ok(put_outs(coarse, &batch))
+            let mut batch = Vec::with_capacity(results.len());
+            let mut read = BTreeSet::new();
+            for r in results {
+                let (i, o, r) = r.context("coarse stage")?;
+                batch.push((i, o));
+                read.extend(r);
+            }
+            Ok(put_outs(coarse, &batch, &read))
         })?;
-        let (coarse, kept) = get_outs(&kept)?;
+        let (coarse, kept, r) = get_outs(&kept)?;
         need_coarse += coarse;
         outs.extend(kept);
+        read.extend(r);
     }
     eprintln!("peaks: measured ({:.0?}), {need_coarse} needed the coarse stage", t0.elapsed());
     outs.sort_by_key(|o| o.0);
-    Ok(outs
+    let outs = outs
         .into_iter()
         .map(|(i, mut o)| {
             o.e = o.e.round();
@@ -901,7 +957,8 @@ pub fn run(
             o.iso = (o.iso * 100.0).round() / 100.0;
             (peaks[i].key.clone(), o)
         })
-        .collect())
+        .collect();
+    Ok((outs, read))
 }
 
 #[cfg(test)]
@@ -1018,7 +1075,8 @@ mod tests {
         .unwrap();
         let z8 = Z8::open(&[((0, 0), z8p.local.clone())], 64).unwrap();
         let base8 = Z8Base::new(&summits);
-        let bytes = |res: Vec<(String, Out)>| -> Vec<u8> {
+        // (Its results, then the z8 tiles it read: a resumed run's are its pieces'.)
+        let bytes = |(res, read): (Vec<(String, Out)>, BTreeSet<(u32, u32)>)| -> Vec<u8> {
             let mut b = Vec::new();
             for (key, o) in res {
                 let mut v = o.json();
@@ -1027,6 +1085,7 @@ mod tests {
                 b.extend(serde_json::to_vec(&v).unwrap());
                 b.push(b'\n');
             }
+            b.extend(format!("{read:?}").bytes());
             b
         };
         let peaks_of = |k: usize| units[k].iter().map(|p| p.0.clone()).collect::<Vec<_>>();

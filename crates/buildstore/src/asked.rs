@@ -243,6 +243,13 @@ impl<'a> Run<'a> {
         Ok(Run { logical, cov, version: geo, line, asking: Asking::new(cov) })
     }
 
+    /// The run with its line as its key spells it (`f` of the line worked out): a key that names a
+    /// line by what it stands for (pipeline's agent::idents::peaks_lo: no record yet, its cheap
+    /// test's lines whole) records that, so the plan finds it as it keyed the run.
+    pub fn spelled(self, f: impl FnOnce(String) -> String) -> Run<'a> {
+        Run { line: f(self.line), ..self }
+    }
+
     /// The coverage, every question kept.
     pub fn asking(&self) -> &Asking<'a> {
         &self.asking

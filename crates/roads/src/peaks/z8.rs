@@ -30,12 +30,25 @@ pub fn lo_packs(m: &BTreeMap<String, String>) -> Vec<(String, (u32, u32))> {
         .collect()
 }
 
-/// What the z8 is made of in manifest `m`: the digest of its lo packs' logical and content names
-/// (the summits' and the peaks' keys name it: a lo pack made again is a new z8).
-pub fn digest(m: &BTreeMap<String, String>) -> String {
-    let named: Vec<String> =
-        m.range(LO.to_string()..).take_while(|(l, _)| l.starts_with(LO)).map(|(l, c)| format!("{l}={c}")).collect();
-    format!("{:016x}", store::naming::xxh3(named.join(",").as_bytes()))
+/// What a peaks run asks of the z8, recorded with its results (buildstore::asked's
+/// `Record::also`): each z8 tile its coarse stage read, answered by its XXH3 in its lo pack's
+/// index (`tile_answer`). Its key's lo line is that record's line while those answers stay
+/// (pipeline's agent::idents::peaks_lo): a change elsewhere in the lo packs moves no key.
+pub fn tile_question(t: (u32, u32)) -> String {
+    format!("z8 {Z}/{}/{}", t.0, t.1)
+}
+
+/// The z8 tile `tile_question` asks of; None for a question of another form.
+pub fn question_tile(q: &str) -> Option<(u32, u32)> {
+    let mut it = q.strip_prefix("z8 ")?.split('/');
+    (it.next()? == Z.to_string()).then_some(())?;
+    let t = (it.next()?.parse().ok()?, it.next()?.parse().ok()?);
+    (it.next().is_none() && q == tile_question(t)).then_some(t)
+}
+
+/// A tile's answer: its XXH3 in its lo pack's index, "-" for one nothing holds.
+pub fn tile_answer(h: Option<u64>) -> String {
+    h.map_or_else(|| "-".to_string(), |h| format!("{h:016x}"))
 }
 
 struct Pack {
@@ -109,6 +122,13 @@ impl Z8 {
         Ok(t)
     }
 
+    /// Tile `x`/`y`'s XXH3 in its lo pack's index; None where nothing is built (no lo pack, or
+    /// not in it).
+    pub fn hash(&self, x: u32, y: u32) -> Option<u64> {
+        let p = self.packs.get(&(x >> (Z - 3), y >> (Z - 3)))?;
+        p.idx.find(Z, x, y).map(|e| e.hash)
+    }
+
     /// The tile's highest pixel (despiked; 0 where nothing is built). Worked out on its first use
     /// and kept; the tile it decodes isn't kept (the isolation searches ask far more tiles' maxima
     /// than they read: kept, they'd push the floods' tiles out of the cache).
@@ -127,7 +147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn its_packs_and_digest_are_the_lo_packs() {
+    fn its_packs_are_the_lo_packs() {
         let mut m: BTreeMap<String, String> = [
             ("layers/terrain/hi/6-1-1", "a"),
             ("layers/terrain/lo/3-2-5", "b"),
@@ -139,11 +159,19 @@ mod tests {
         .collect();
         let got: Vec<(u32, u32)> = lo_packs(&m).into_iter().map(|p| p.1).collect();
         assert_eq!(got, vec![(10, 0), (2, 5)]);
-        let d = digest(&m);
-        m.insert("layers/terrain/hi/6-1-1".into(), "x".into());
-        assert_eq!(digest(&m), d, "the hi packs aren't the z8");
-        m.insert("layers/terrain/lo/3-2-5".into(), "x".into());
-        assert_ne!(digest(&m), d);
+        m.insert("layers/terrain/lo/3-x-5".into(), "x".into());
+        assert_eq!(lo_packs(&m).len(), 2, "a name that isn't a z3 tile's");
+    }
+
+    #[test]
+    fn a_question_names_its_tile_and_one_of_another_form_none() {
+        assert_eq!(tile_question((133, 91)), "z8 8/133/91");
+        assert_eq!(question_tile("z8 8/133/91"), Some((133, 91)));
+        for q in ["z8 9/133/91", "z8 8/133", "z8 8/133/91/1", "terrain 8/133/91", "z8 8/0133/91"] {
+            assert_eq!(question_tile(q), None, "{q}");
+        }
+        assert_eq!(tile_answer(None), "-");
+        assert_eq!(tile_answer(Some(0xab)), "00000000000000ab");
     }
 
     /// A tile in a lo pack is read with its maximum; elsewhere nothing is built: 0 m.

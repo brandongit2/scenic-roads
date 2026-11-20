@@ -150,10 +150,15 @@ nothing); overlays name the built z6 tiles, the heritage dots as the last marks 
 (`work/marks/heritage-dots`) and the pass's heritage job's files; ferries the ferries set, the ferry feeds' list (each zip by
 content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` runs
 when its versioned outputs are missing. The summits name the summits set and every terrain lo
-pack (`peaks::z8::digest`); peaks (`agent::build::peaks_keys`) name the z6 tile's candidates, the
-summits, every terrain lo pack and the terrain hi packs within U + 30 km, not the z12 tiles read
-(task #484). Any lo pack made again measures every z6 tile's peaks again: the coarse stage reaches
-5,000 km. So the summits and peaks wait until terrain-hi and terrain-lo have no work left
+pack; peaks (`agent::build::peaks_keys`) name the z6 tile's candidates, the summits, the terrain
+hi packs within U + 30 km, not the z12 tiles read (task #484), and of the lo packs the z8 tiles
+its coarse stage read (task #1475): each run records them with their XXH3 in their packs' indexes
+(`work/asked/peaks/<u>`, buildstore::asked; `peaks::z8::tile_question`), and its key's lo line
+(`agent::idents::peaks_lo`) is that record's while those tiles read the same, so a lo pack made
+again moves only the z6 tiles whose search read a tile of it that changed. A z6 tile with no
+record yet keys every lo pack by content, as before it recorded; its first record keeps that
+line. The summits change with any z8 tile under a summit, and every z6 tile's peaks read the
+summits whole. The summits and peaks wait until terrain-hi and terrain-lo have no work left
 (their declared reads, `Read::Whole`: docs/readiness.md).
 
 Every step with work left (stale against what's built now) that is held for another step's

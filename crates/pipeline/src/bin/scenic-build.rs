@@ -3137,15 +3137,26 @@ fn peaks_from(
                 }
             }
         }
+        // (Its pieces carry the z8 tiles read since task #1475: "z8 read" keeps those before apart.)
         let id = jobrt::resume_log::job_id(
             "peaks",
             &pipeline::agent::build::PEAKS_V.to_string(),
             &u.slash(),
-            &[read, &jobrt::resume_log::names(out, near)],
+            &[read, &jobrt::resume_log::names(out, near), "z8 read"],
         );
+        // (What its coarse stage reads of the z8, the tiles by their XXH3, recorded with its
+        // results: its key's lo line moves only once one of those does,
+        // pipeline::agent::idents::peaks_lo. Its line worked out as the plan did, from the record
+        // before it; it asks nothing of the coverage.)
+        let (geo, lines) = pipeline::agent::idents::peaks_lo_geo(&out.manifest);
+        let reask =
+            |q: &str| roads::peaks::z8::question_tile(q).map(|(x, y)| roads::peaks::z8::tile_answer(z8.hash(x, y)));
+        let cov = buildstore::coverage::Coverage::default();
+        let asked = buildstore::asked::Run::start_target(out, "peaks", &u.slash(), &cov, geo.clone(), &reask)?
+            .spelled(|l| if l == geo { lines.join("\n") } else { l });
         let mut pieces =
             jobrt::resume_log::Pieces::open(scratch, (u.z, u.x, u.y), "peaks", &id, jobrt::resume_log::on());
-        let res = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
+        let (res, z8_read) = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
             .map_err(|e| jobrt::control::stop_if_paused("peaks", e))?;
         drop(p);
         let file = scratch.join(format!("peaks-{}.jsonl.zst", u.dash()));
@@ -3164,6 +3175,11 @@ fn peaks_from(
         drop(p);
         let p = phase("uploading results");
         out.put_file(&format!("work/peaks/{}", u.dash()), "jsonl.zst", &file)?;
+        let answers = z8_read
+            .iter()
+            .map(|&t| (roads::peaks::z8::tile_question(t), roads::peaks::z8::tile_answer(z8.hash(t.0, t.1))))
+            .collect();
+        asked.put(out, answers)?;
         drop(p);
         out.save()?;
         pieces.finish();
@@ -4915,9 +4931,12 @@ fn prune(out: &mut Out, targets: &[String]) -> Result<usize> {
                 .map(|p| format!("{p}{d}"))
                 .chain([buildstore::asked::target_logical("unit", at)])
                 .collect(),
-            "pois" => {
-                vec![format!("work/pois/{d}"), format!("work/peaks/{d}"), buildstore::asked::target_logical("pois", at)]
-            }
+            "pois" => vec![
+                format!("work/pois/{d}"),
+                format!("work/peaks/{d}"),
+                buildstore::asked::target_logical("pois", at),
+                buildstore::asked::target_logical("peaks", at),
+            ],
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
             "bldprep" => ::bld::bld::prepared_logicals(tile.x, tile.y),

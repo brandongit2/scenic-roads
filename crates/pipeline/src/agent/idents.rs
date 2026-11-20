@@ -701,6 +701,48 @@ pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![terrain::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
 }
 
+/// What a peaks z6 tile's key reads of the terrain's lo packs by their names, its cheap test
+/// (buildstore::asked's `geo`): every lo pack by content (`<logical>=<content>`, "-" with none), the
+/// lines its key named before it recorded what it read, and their hash, the record's version. The
+/// same packs, the same z8, the same answers to what its run asked of it.
+pub fn peaks_lo_geo<'m>(m: impl Manifest<'m>) -> (String, Vec<String>) {
+    let mut lines = super::steps::whole_outputs("terrain-lo", m);
+    if lines.is_empty() {
+        lines.push("-".to_string());
+    }
+    (store::naming::hash16(lines.join("\n").as_bytes()), lines)
+}
+
+/// The terrain a peaks z6 tile reads of the lo packs: the z8 tiles its coarse stage read, as its
+/// run recorded them (roads::peaks::z8::tile_question, buildstore::asked), by their XXH3 in the lo
+/// packs' indexes now: its record's line while those answer the same, so a change elsewhere in the
+/// lo packs moves no key (task #1475). While it has no record, every lo pack by content
+/// (`peaks_lo_geo`'s lines), as its key read them before: the line it runs under, which its record
+/// keeps spelled so (buildstore::asked::Run::spelled), so recording moves no key. None while a lo
+/// pack's index can't be read. Key lines `w terrain-lo <line>`.
+pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    use roads::peaks::z8::{question_tile, tile_answer, Z};
+    TileId::parse(t).filter(|u| u.z == 6)?;
+    let (geo, lines) = peaks_lo_geo(x.m);
+    // (Every lo pack's index read, so each question is answered: none taken for flipped while its
+    // index is only not read yet.)
+    for l in &lines {
+        let Some(q) = l
+            .split_once('=')
+            .and_then(|(l, _)| TileId::parse(&l.strip_prefix("layers/terrain/lo/")?.replace('-', "/")))
+        else {
+            continue;
+        };
+        x.tiles.hash(x.m, Z, q.x << (Z - 3), q.y << (Z - 3)).ok()?;
+    }
+    let reask = |q: &str| {
+        let (a, b) = question_tile(q)?;
+        x.tiles.hash(x.m, Z, a, b).ok().map(tile_answer)
+    };
+    let line = target_asked("peaks", t, geo.clone(), x, &reask)?;
+    Some(if line == geo { lines } else { line.lines().map(str::to_string).collect() })
+}
+
 /// What a lake-depth z6 tile's key reads of the terrain by its packs, its cheap test
 /// (buildstore::asked's `geo`): the hi packs of it and its ring (terrain::depth::lakes::ring), by
 /// content, hashed. The same packs, the same answers to what its run asked of them.

@@ -817,7 +817,7 @@ pub fn heritage_sites_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// read.
 pub const SUMMITS_V: u32 = 1;
 
-/// Its key: the pass's summits set and the terrain packs' z8 it reads (roads::peaks::z8::digest).
+/// Its key: the pass's summits set and the terrain packs' z8 it reads (every lo pack).
 /// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
 /// a lo pack still to be made doesn't make it twice.
 fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
@@ -859,7 +859,7 @@ pub(crate) fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 }
 
 /// The coverage's z6 tiles with candidates, each with its peaks' key: the candidates, the summits,
-/// the terrain packs' z8 (its lo packs: roads::peaks::z8::digest) and the terrain hi packs within
+/// the z8 tiles its run read (crate::agent::idents::peaks_lo) and the terrain hi packs within
 /// 30 km of it, across the antimeridian too (its z12).
 pub fn peaks_keys(x: &KeyCtx) -> Vec<(TileId, String)> {
     let (cov, date, m) = (x.cov, x.date, x.m.whole());
@@ -5225,6 +5225,96 @@ mod tests {
         assert_ne!(moved, dispatched, "a change in a tile it read moves the key");
         run(&mut out, &mut tiles);
         assert_eq!(key(&out, &tiles).unwrap(), moved, "one run per change");
+    }
+
+    /// Task #1475: a peaks z6 tile's key reads the terrain's lo packs by the z8 tiles its run read
+    /// (buildstore::asked::Run over an `Out`, answered by roads::peaks::z8::Z8 from the packs' own
+    /// indexes). With no record, its lo lines are every lo pack by content, as before it recorded,
+    /// and its first record keeps them: rolling it out moves no key. Then a change to a z8 tile it
+    /// didn't read keeps the key; one to a tile it read moves it, once.
+    #[test]
+    fn a_peaks_key_moves_only_with_the_z8_tiles_its_run_read() {
+        use buildstore::asked::{target_logical, Record, Run};
+        use buildstore::out::Out;
+        use roads::peaks::z8::{question_tile, tile_answer, tile_question, Z8};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
+        let c = Coverage::default();
+        let t = "6/33/22";
+        let inputs = BTreeMap::new();
+        // (Two lo packs, two z8 tiles each; its run read one of each.)
+        let packs = [(4u32, 2u32), (5, 2)];
+        let read: BTreeSet<(u32, u32)> = [(133, 89), (160, 90)].into();
+        let put = |out: &mut Out, tiles: &mut TerrainTiles, blob: &dyn Fn(u32, u32) -> Vec<u8>| {
+            let mut local = Vec::new();
+            for (a, b) in packs {
+                let p = d.path().join(format!("lo-{a}-{b}.pack"));
+                let mut w = store::pack::PackWriter::create(&p, serde_json::json!({}), false).unwrap();
+                let mut held = Vec::new();
+                for (x, y) in [(a * 32 + 5, b * 32 + 25), (a * 32 + 6, b * 32 + 25), (a * 32, b * 32 + 26)] {
+                    let bl = blob(x, y);
+                    w.add(8, x, y, &bl, bl.len() as u32).unwrap();
+                    held.push((8, x, y, store::naming::xxh3(&bl)));
+                }
+                w.finish().unwrap();
+                let l = format!("layers/terrain/lo/3-{a}-{b}");
+                out.put_bytes(&l, "pack", &std::fs::read(&p).unwrap()).unwrap();
+                tiles.hold(out.get(&l).unwrap(), held);
+                local.push(((a, b), p));
+            }
+            out.save().unwrap();
+            local
+        };
+        let run = |out: &mut Out, tiles: &mut TerrainTiles, local: &[((u32, u32), std::path::PathBuf)]| {
+            let z8 = Z8::open(local, 16).unwrap();
+            let reask = |q: &str| question_tile(q).map(|(x, y)| tile_answer(z8.hash(x, y)));
+            let (geo, lines) = crate::agent::idents::peaks_lo_geo(&out.manifest);
+            let r = Run::start_target(out, "peaks", t, &c, geo.clone(), &reask).unwrap().spelled(|l| {
+                if l == geo {
+                    lines.join("\n")
+                } else {
+                    l
+                }
+            });
+            r.put(out, read.iter().map(|&q| (tile_question(q), tile_answer(z8.hash(q.0, q.1)))).collect()).unwrap();
+            out.save().unwrap();
+            let content = out.get(&target_logical("peaks", t)).unwrap().to_string();
+            tiles.hold_asked(&content, Record::from_bytes(&root.join(&content).read().unwrap()).unwrap());
+        };
+        let lo = |out: &Out, tiles: &TerrainTiles| -> Vec<String> {
+            let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, tiles);
+            let lines = crate::agent::steps::key_lines("peaks", t, &x).unwrap();
+            lines.into_iter().filter(|l| l.starts_with("w terrain-lo ")).collect()
+        };
+        let first = |x: u32, y: u32| format!("{x} {y}").into_bytes();
+        let mut tiles = TerrainTiles::default();
+        let local = put(&mut out, &mut tiles, &first);
+        let unread = TerrainTiles::default();
+        let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, &unread);
+        assert_eq!(crate::agent::steps::key_lines("peaks", t, &x), None, "it waits while a lo pack's index isn't read");
+        let before = lo(&out, &tiles);
+        let packs_now: Vec<String> = packs
+            .iter()
+            .map(|(a, b)| format!("layers/terrain/lo/3-{a}-{b}"))
+            .map(|l| format!("w terrain-lo {l}={}", out.get(&l).unwrap()))
+            .collect();
+        assert_eq!(before, packs_now, "no record: every lo pack by content, as before");
+        run(&mut out, &mut tiles, &local);
+        assert_eq!(lo(&out, &tiles), before, "its first record moves no key");
+        // Tiles it didn't read changed in both packs: the key kept, and kept by its run again.
+        let outside = |x: u32, y: u32| if !read.contains(&(x, y)) { b"changed".to_vec() } else { first(x, y) };
+        let local = put(&mut out, &mut tiles, &outside);
+        assert_eq!(lo(&out, &tiles), before, "a change outside what it read keeps the key");
+        run(&mut out, &mut tiles, &local);
+        assert_eq!(lo(&out, &tiles), before);
+        // One it read changed: a new key, and its run's record keys as the plan worked it out.
+        let inside = |x: u32, y: u32| if (x, y) == (160, 90) { b"changed again".to_vec() } else { outside(x, y) };
+        let local = put(&mut out, &mut tiles, &inside);
+        let moved = lo(&out, &tiles);
+        assert_ne!(moved, before, "a change in a tile it read moves the key");
+        run(&mut out, &mut tiles, &local);
+        assert_eq!(lo(&out, &tiles), moved, "one run per change");
     }
 
     /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:
