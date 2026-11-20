@@ -1,7 +1,8 @@
 #!/bin/zsh
 # The PM's health check of the build and the agents. Prints what needs attention, and stamps the
 # time (.claude/health-stamp): the next check's failures are those since this one. It starts with the
-# PM's own list for the check (.claude/next-check.md), which it then clears.
+# PM's own list for the check (.claude/next-check.md), kept in place, flagging the items that went
+# from it unmarked (tools/dev/next-check.zsh).
 #
 # The build's part is one `scenic status --flags` (crates/agentcore/src/agent/flags.rs): the lead's
 # status covers every Mac, and it prints only what needs a look, a line each: its flags ("idle:" a
@@ -38,18 +39,10 @@ cd $repo || exit 1
 since=$(cat .claude/health-stamp 2>/dev/null)
 date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
-# The PM's list for this check (.claude/next-check.md, a line each, added to between checks): shown
-# first, then set aside under .claude/next-check-done/ with its time, so the next check starts with an
-# empty list and a check cut short loses nothing. Copies older than 2 days are deleted.
-print "attend to first (.claude/next-check.md):"
-if [[ -s .claude/next-check.md ]]; then
-  sed 's/^/  /' .claude/next-check.md
-  mkdir -p .claude/next-check-done
-  mv .claude/next-check.md .claude/next-check-done/$(date +%Y%m%d-%H%M%S).md
-else
-  print "  nothing listed"
-fi
-find .claude/next-check-done -name '*.md' -mtime +2 -delete 2>/dev/null
+# The PM's list for this check (.claude/next-check.md, an item a line, kept between checks): shown
+# first and copied under .claude/next-check-done/ with its time, the items gone since the last copy
+# without being marked done flagged (tools/dev/next-check.zsh).
+zsh ${0:A:h}/next-check.zsh $repo/.claude
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/inputs ]] && echo mounted || echo NOT MOUNTED)"
 if [[ ! -f .claude/nas-links || -n $(find .claude/nas-links -mmin +360) ]]; then
