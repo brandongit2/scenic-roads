@@ -224,6 +224,14 @@ cleanup+=("unhold $cache/tests.busy")
 step "Rust tests"
 dj_attr $djrun tests_log $tests_log
 zsh tools/app/remote-tests.sh publish $snap $suite >> $tests_log 2>&1 || tests_ok=$?
+# The test budget (#1553, tools/dev/test-budget.py): once one is due (tools/dev/test-budget.json's
+# every_h, from the last measure the dev jobs app holds), the slowest tests of the last publishes'
+# suites run alone in publish's slot on the test Mac (the build just made: nothing compiles), any
+# over the budget flagged on the dev jobs page. After a suite that passed; it never fails the publish.
+if (( tests_ok == 0 )); then
+  step "test budget"
+  python3 tools/dev/test-budget.py run $snap >> $tests_log 2>&1 || true
+fi
 # Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
 # tools/check/*.test.mjs by glob, the dev tools app's, the dev jobs' recorder's, the status app's
 # Swift self-test, shell.zsh and test-guard.zsh; their parts at once, ~1 min, most of it swiftc),
@@ -241,6 +249,7 @@ $reply cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::di
 unhold $cache/tests.busy
 grep -E '^ *Summary |^remote-tests: NOT RUN: ' $tests_log || true
 grep -E '^other tests: ' $tests_log || true
+grep -E '^test budget: ' $tests_log || true
 (( other_ok == 0 )) || { (( tests_ok != 0 )) || tests_ok=$other_ok; }
 if (( tests_ok != 0 )); then
   sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: ' || true

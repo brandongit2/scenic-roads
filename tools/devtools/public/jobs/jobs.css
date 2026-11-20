@@ -117,4 +117,5 @@ th.sort.on { color: var(--text); }
 @media (max-width: 719px) { .statbar select, .statbar input { font-size: 16px; } }
 .more { margin-top: 6px; }
 /* (A phone: the table's first columns; the longest, total, recent and last on a wider screen.) */
-@media (max-width: 600px) { #stats .opt { display: none; } }
+@media (max-width: 600px) { #stats .opt, #budget .opt { display: none; } }
+#budget > div + div, #budget table { margin-top: 6px; }

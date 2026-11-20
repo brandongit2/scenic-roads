@@ -111,6 +111,21 @@ test("stats: each name's runs, failures and times", async () => {
   assert.ok((await get("/api/jobs/kinds")).body.kinds.some((k) => k.kind === "test" && k.n === 5));
 });
 
+test("latest: the span of a kind begun last, whole, or null (the test budget's measure)", async () => {
+  assert.equal((await get("/api/jobs/latest?kind=budget")).body.span, null);
+  assert.equal((await get("/api/jobs/latest")).status, 400);
+  await send([
+    { op: "span", id: "bg-1", kind: "budget", name: "test budget", mac: "m", t0: T, t1: T + 50, status: "ok", attrs: { budget_s: 10, over: [] } },
+    { op: "start", id: "bg-2", kind: "budget", name: "test budget", mac: "m", t: T + 3000, attrs: { budget_s: 10 } },
+    { op: "span", id: "bg-0", kind: "budget", name: "test budget", mac: "m", t0: T - 100, t1: T - 50, status: "ok" },
+  ]);
+  let s = (await get("/api/jobs/latest?kind=budget")).body.span;
+  assert.deepEqual([s.id, s.status, s.attrs.budget_s], ["bg-2", "running", 10]);
+  await send([{ op: "end", id: "bg-2", t: T + 3060, status: "ok", attrs: { over: [["terrain", "depth::x", 12.5]] } }]);
+  s = (await get("/api/jobs/latest?kind=budget")).body.span;
+  assert.deepEqual([s.id, s.attrs.budget_s, s.attrs.over], ["bg-2", 10, [["terrain", "depth::x", 12.5]]]);
+});
+
 test("only POST events writes; a span that isn't there is a 404", async () => {
   assert.equal((await fetch(base + "/api/jobs/runs", { method: "POST" })).status, 405);
   assert.equal((await get("/api/jobs/runs/nope")).status, 404);

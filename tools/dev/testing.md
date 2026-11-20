@@ -121,6 +121,8 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
     naming `target/release/server`; cargo and nextest set that variable themselves as they run a test);
   - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
     tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, agentcore, webpenc), on the test Mac;
+  - after a suite that passed, once one is due, the test budget's measure (`tools/dev/test-budget.py`:
+    the slowest tests alone, "Every test bounded" below), which never fails the publish;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
     `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
     `tools/dev/test/devjob.zsh`, the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and
@@ -745,9 +747,23 @@ fails, and is never given more. `cargo test` runs have no such bound.
   manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
   six), and its own threads stay few (at most 4: nextest already runs a test a thread), but every
   core in publish's run, which has every core and waits on its slowest tests.
-  Nothing measures a test alone: the budget is held only by the bound, 3 min on the loaded test
-  Mac, so a test of 9-16 s alone (the plan tests, 20 Nov) passed every run until the M4's load
-  reached 108-229 and they timed out.
+  **The budget measured (#1553):** the bound alone let a test of 9-16 s alone (the plan tests, 20
+  Nov) pass every run until the M4's load reached 108-229 and they timed out. So publish.sh, after
+  a suite that passed and once a measure is due, runs `tools/dev/test-budget.py`: the slowest tests
+  of the last publishes' suites (from the dev job records: each test's median there, those at or over
+  the budget, the slowest few), each run alone (`--test-threads 1`) in publish's slot on the test Mac,
+  on the build the suite just made; any over the budget is flagged on the dev job dashboard (its "Test
+  budget", the latest measure) and in publish's output, never failing it. Its settings, each shown
+  with the measure, are `tools/dev/test-budget.json`: `budget_s` 10, `every_h` 24, `publishes` 3,
+  `slowest` 20 (on 20 Nov, 72 tests had a median of 10 s or more in the last 3 publishes' suites; the 20 slowest
+  alone, a few minutes once a day). Alone means one test at a time, not an idle Mac: the pool's jobs
+  and other slots' checks run beside it, the run's load recorded with it. Its test:
+  `tools/dev/test/test_test_budget.py` (check.sh's `testbudget` part). Three tests it would have
+  flagged were made smaller (#1553, alone on the M4 under the same load before and after:
+  `depth::lakes::tests::the_small_lakes_resume_where_a_stop_left_them`, its empty z10 tiles no
+  longer given a 64 MB canvas each; `available::built::tests::only_the_z6_tiles_a_dataset_moved_in_are_made_again`
+  over a small coast, not the whole earth's land; `regions::water_tests::a_remainder_is_kept_as_a_piece`
+  on its folder alone).
 - **A stopped coordinator refuses at once** in a test program too: the listeners it keeps for the
   next coordinator on the port (`coord::KEPT`) take each connection and close it, as a port nothing
   listens on refuses it (#1112: its clients had waited out their 15-s timeout in the backlog, 15-60

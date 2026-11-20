@@ -271,6 +271,15 @@ export function makeJobs(jobs, changed) {
     });
     return { kind, from: has ? from : null, to: has ? to : null, names };
   }
+  // GET /api/jobs/latest?kind=: the span of that kind begun last, whole (its attributes too), or null:
+  // the test budget's latest measure (tools/dev/test-budget.py), which the page shows. (spans_kind:
+  // one step down the index.)
+  function latest(url) {
+    const kind = url.searchParams.get("kind");
+    if (!kind) refuse(400, "invalid_argument", "kind: is required");
+    const r = stmt(`SELECT * FROM spans INDEXED BY spans_kind WHERE kind = ? ORDER BY t0 DESC LIMIT 1`).get(kind);
+    return { now: now(), span: r ? row(r) : null, macs: macs() };
+  }
   // GET /api/jobs/kinds[?from=&to=]: each kind of span recorded and how many, all time or begun in
   // [from, to]. (The kinds found by a skip along spans_kind, one step a kind, and each counted over
   // its range of that index: the spans outside the range are never read.)
@@ -291,6 +300,7 @@ export function makeJobs(jobs, changed) {
     if (what === "samples") return send(res, 200, samples(url));
     if (what === "stats") return send(res, 200, stats(url));
     if (what === "kinds") return send(res, 200, kinds(url));
+    if (what === "latest") return send(res, 200, latest(url));
     return fail(res, 404, "not_found", "no such route");
   }
   return { api };

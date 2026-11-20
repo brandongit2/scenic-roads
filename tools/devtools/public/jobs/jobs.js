@@ -9,6 +9,8 @@
 //            of their own (a lane a kind, deepest last: parts or steps, compiles, the test Mac's
 //            run, suites, tests, crates), where its time went, its longest and failed spans.
 //   By name  one kind of span over all time: each name's runs, failures and times.
+//   Test budget  the latest measure of the slowest tests alone (tools/dev/test-budget.py, a `budget`
+//            span): those over the budget flagged, its settings said.
 // The page's address keeps what's open (?range=24h&run=<id>&kind=test). Live: the app's event
 // stream says when a Mac sent more.
 import { createTimeline } from "../lib/buildpage/timeline.js";
@@ -398,6 +400,37 @@ function renderRun() {
 }
 $("run-close").addEventListener("click", () => { st.run = null; saveState(); runData = null; $("run-sec").hidden = true; delete $("run-sec").dataset.seen; });
 
+// ---- the test budget ---------------------------------------------------------------------------------------
+let budget = null;
+async function loadBudget() {
+  budget = await get("latest?kind=budget");
+  renderBudget();
+}
+function renderBudget() {
+  const box = $("budget"), b = budget?.span;
+  if (!b) {
+    $("budget-sum").textContent = "";
+    box.replaceChildren(h("div", "empty", "No measure yet: publish.sh measures the slowest tests alone once one is due (tools/dev/test-budget.py, its settings tools/dev/test-budget.json)."));
+    return;
+  }
+  const a = b.attrs, cap = a.budget_s;
+  const over = a.over || [], alone = a.alone || [];
+  $("budget-sum").textContent = `${cap} s a test alone · measured every ${a.every_h} h · last ${clock(b.t0, false)} on ${theMac(b.on || b.mac, budget.macs)}`;
+  const head = b.status === "running" ? h("div", "run", "measuring now…")
+    : b.status !== "ok" ? h("div", "bad", `the measure ${statusText(b)}${a.exit != null ? ` (remote-tests.sh exit ${a.exit})` : ""}: ${alone.length} of ${a.chosen} tests timed`)
+    : over.length ? h("div", "bad", `${over.length} test${over.length === 1 ? "" : "s"} over ${cap} s alone`)
+    : h("div", "ok", alone.length ? `every test measured under ${cap} s alone` : `no test took ${cap} s or more in the suites`);
+  const rows = [...alone].sort((x, y) => y[2] - x[2]);
+  box.replaceChildren(head,
+    h("div", "dim small", `picked: the slowest ${a.chosen} of the ${a.at_or_over_in_suites} tests whose median was ${cap} s or more in the last ${a.read} publishes' suites (at most ${a.slowest}), each run alone (one test thread) in publish's slot`),
+    ...(rows.length ? [h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "test"), h("th", "opt", "binary"), h("th", "num", "alone"), h("th", "num opt", "in the suites"))),
+      h("tbody", null, rows.map(([bin, name, secs, med]) => h("tr", null,
+        h("td", { class: `nm${secs > cap ? " bad" : ""}`, title: `${bin} ${name}` }, name), h("td", "dim opt", bin),
+        h("td", `num${secs > cap ? " bad" : ""}`, dur(secs)), h("td", "num dim opt", dur(med))))))] : []),
+    h("div", "more", h("button", { type: "button", onclick: () => openRun(b.id) }, "Open its run")));
+}
+
 // ---- by name -----------------------------------------------------------------------------------------------
 let kinds = [], stats = null, statsAll = false;
 // (Over the range shown, as the timeline: a read over all time grows with the history, #1344.)
@@ -461,6 +494,7 @@ function reload() {
   again = setTimeout(async () => {
     again = null; lastLoad = Date.now();
     await loadMain().catch(showErr);
+    await loadBudget().catch(showErr);
     if (st.run && (!runData || runData.run.status === "running" || runData.run.t1 == null || Date.now() / 1000 - runData.run.t1 < 120)) {
       const keep = runTl;
       runData = await get(`runs/${encodeURIComponent(st.run)}`).catch(() => runData);
@@ -477,5 +511,6 @@ new ResizeObserver(() => { const w = $("runs").clientWidth; if (main && Math.abs
 
 renderControls();
 loadMain().catch(showErr);
+loadBudget().catch(showErr);
 loadStats().catch(showErr);
 if (st.run) openRun(st.run);

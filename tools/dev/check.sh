@@ -43,6 +43,8 @@
 #             board part, against a stand-in board), when tools/dev/board.py or its test changed
 #   nextcheck tools/dev/test/next-check.zsh (health.sh's list step, tools/dev/next-check.zsh, on a
 #             scratch folder), when it or its test changed
+#   testbudget python3 -m unittest of tools/dev/test/test_test_budget.py (the test budget's measure,
+#             tools/dev/test-budget.py, against a stand-in dev jobs app), when it, its settings or its test changed
 #   ran       tools/dev/test/ran.zsh (tools/dev/ran.zsh's kept folders for programs that ran, and the
 #             keep time testkit and the cargo shim say), when ran.zsh, its test, testkit or the shim changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
@@ -233,6 +235,9 @@ if has 'tools/dev/board.py' || has 'tools/dev/test/test_board.py'; then
 else skip board "tools/dev/board.py unchanged"; fi
 if has 'tools/dev/next-check.zsh' || has 'tools/dev/test/next-check.zsh'; then part nextcheck zsh tools/dev/test/next-check.zsh
 else skip nextcheck "the next check's list step unchanged"; fi
+if has 'tools/dev/test-budget.*' || has 'tools/dev/test/test_test_budget.py'; then
+  part testbudget python3 -m unittest discover -s tools/dev/test -p test_test_budget.py
+else skip testbudget "the test budget's measure unchanged"; fi
 if has 'tools/dev/ran.zsh' || has 'tools/dev/test/ran.zsh' || has 'crates/store/src/testkit.rs' || has 'tools/dev/bin/cargo'; then
   part ran zsh tools/dev/test/ran.zsh
 else skip ran "the kept folders' rule unchanged"; fi

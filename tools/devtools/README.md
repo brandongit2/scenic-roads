@@ -94,6 +94,11 @@ them.
   and recent times. Both timelines are the build page's (`web/buildpage/timeline.js`, served at
   `/lib/buildpage/`, as are the page's elements and words, `dom.js` and `words.js`, and a run's spans laid out as lanes, `runlanes.js`, a job page's too): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.
   The page's address keeps what's open (`?range=24h&run=<id>&kind=test&hide=cargo`).
+- **The test budget (#1553):** the latest measure of the slowest tests alone on the test Mac
+  (`tools/dev/test-budget.py`, a `budget` span: publish.sh's step once one is due), above the runs:
+  when and where, its settings (`tools/dev/test-budget.json`: the budget, how often, from how many
+  publishes, how many tests), each test over the budget flagged, and the rest measured; a click opens
+  its run.
 - **Lost:** a running span its Mac's sampler hasn't named for a minute (`jobs.mjs` LOST_S) shows as
   lost: the Mac asleep, away or restarted. The sampler ends one whose process is gone as `gone`.
 
@@ -108,7 +113,7 @@ count and the Macs its spans ran on, `macs`; `away`, the tests jobs inside other
 to another Mac, each with its run's id, `root`; and the Macs), every span read with `on`, `GET /api/jobs/runs/<id>` (the run a span is part of, whole, with its Macs'
 samples), `GET /api/jobs/samples?from=&to=&n=` (each Mac's samples in at most `n` buckets: the most
 load, the least memory free, the most swap), `GET /api/jobs/stats?kind=[&from=&to=]` (each name's
-runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds[?from=&to=]` (each kind and how many, begun in the range; all time without one).
+runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds[?from=&to=]` (each kind and how many, begun in the range; all time without one), `GET /api/jobs/latest?kind=` (the span of that kind begun last, whole, or `null`: the page's test budget).
 
 ## The task board's API (for the PM, agents and scripts)
 
