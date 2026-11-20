@@ -399,6 +399,6 @@ mod tests {
         let before = asked();
         let raw = read_geojson_raw(&root.join("zones.geojson"), "mrgid").unwrap();
         assert_eq!(raw.len(), 2000);
-        assert!(asked() - before >= text.len() as u64, "{} asked of {}", asked() - before, text.len());
+        assert_eq!(asked() - before, text.len() as u64);
     }
 }

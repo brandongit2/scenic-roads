@@ -766,7 +766,7 @@ pub fn read_translations(accepted: &inputs::inputs::Accepted) -> Result<Names> {
 /// they lie and counted.
 fn tables_of(files: &[(String, store::nasfs::NasPath, String)]) -> Result<Names> {
     let nas: Vec<store::nasfs::NasPath> = files.iter().map(|f| f.1.clone()).collect();
-    store::nasfs::read_files_by_program(&nas, 1, |paths| {
+    store::nasfs::read_files_by_program(&nas, store::nasio::Passes::ONCE, |paths| {
         let tables: BTreeMap<String, (PathBuf, String)> =
             files.iter().zip(paths).map(|(f, raw)| (f.0.clone(), (raw.clone(), f.2.clone()))).collect();
         Ok(Names::from_files(&tables))
@@ -1084,8 +1084,8 @@ mod tests {
         let (before, opened) = (asked(), get(Count::Files));
         let mut names = tables_of(&files).unwrap();
         assert!(names.take_warnings().is_empty());
-        assert!(asked() - before >= size, "{} asked of {size}", asked() - before);
-        assert!(get(Count::Files) >= opened + 2);
+        assert_eq!(asked() - before, size);
+        assert_eq!(get(Count::Files) - opened, 2);
     }
 
     /// The lists' key moves with a batch touching any of their inputs'

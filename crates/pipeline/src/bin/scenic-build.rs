@@ -2871,6 +2871,16 @@ fn pass_roads(out: &Out, date: &str, u: TileId) -> Result<Vec<(u64, codecs::lega
         .collect())
 }
 
+/// Piece `piece` of the pass copied from the NAS to `local`, counted as the phase's bytes. (Its
+/// bytes are the target's input measure already: the copy counts as it reads, store::nasio, and
+/// buildstore::costin takes `bytes` from there.)
+fn copy_piece(piece: &store::nasfs::NasPath, local: &Path) -> Result<u64> {
+    let p = phase("copying pieces from the NAS");
+    let n = piece.copy_data_to_local(local).with_context(|| format!("copy {}", piece.display()))?;
+    p.count(n, 1);
+    Ok(n)
+}
+
 /// pois <z6 tiles…> [--pass <date>]: each z6 tile's landmark candidates (roads::candidates), from
 /// its extract through `extract --candidates` with the pass's hiking-route ends, as `work/pois/<u>`.
 fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
@@ -2917,12 +2927,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         );
         let mut pieces = jobrt::resume_log::Pieces::open(scratch, (6, u.x, u.y), "pois", &id, jobrt::resume_log::on());
         let pois = pieces.piece((6, 0, 0), || {
-            let p = phase("copying pieces from the NAS");
-            let n = piece.copy_data_to_local(&local).with_context(|| format!("copy {}", piece.display()))?;
-            p.count(n, 1);
-            // (Its input's measure: the extract's bytes.)
-            buildstore::costin::add("bytes", n);
-            drop(p);
+            copy_piece(&piece, &local)?;
             let p = phase("extracting candidates (extract)");
             let mut c = jobrt::sys::program(&bin, "extract");
             c.arg(&dir).arg(&spacing).arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
@@ -3659,9 +3664,6 @@ fn osmium_quiet(mut c: std::process::Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// The reads `osmium extract --strategy smart` makes of its input (three, osmium 1.19: inputs::osmpass).
-const OSMIUM_EXTRACT_READS: u32 = 3;
-
 /// `src` within the polygon file (whole relations: smart), into `dest`.
 fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
     let mut c = ::inputs::osmpass::osmium();
@@ -3674,9 +3676,9 @@ fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
 }
 
 /// `osmium_clip` of a set read where it lies on the NAS: its reads of the set counted
-/// (store::nasfs::NasPath::read_by_program).
+/// (store::nasfs::NasPath::read_by_program, `inputs::osmpass::SMART`: osmium's reads and opens).
 fn osmium_clip_nas(src: &store::nasfs::NasPath, poly: &Path, dest: &Path) -> Result<PathBuf> {
-    src.read_by_program(OSMIUM_EXTRACT_READS, |p| osmium_clip(p, poly, dest))
+    src.read_by_program(::inputs::osmpass::SMART, |p| osmium_clip(p, poly, dest))
 }
 
 /// The pass's protected areas and Indigenous lands within the cover, as heritage.py's areas.geojsonseq.
@@ -7001,6 +7003,50 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A z6 tile's piece copied from the NAS is its input's measure once: the bytes the copy counts
+    /// as it reads are the target's `bytes`, exactly (none added again by hand: they were doubled).
+    #[test]
+    fn a_pieces_copy_is_its_targets_bytes_once() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        root.join("p.osm.pbf").parent().unwrap().create_dir_all().unwrap();
+        root.join("p.osm.pbf").write(vec![3u8; 3 << 20]).unwrap();
+        let n = super::copy_piece(&root.join("p.osm.pbf"), &d.path().join("p")).unwrap();
+        assert_eq!(n, 3 << 20);
+        assert_eq!(buildstore::costin::take()["bytes"], 3 << 20);
+    }
+
+    /// A set clipped where it lies on the NAS is counted by osmium's reads and opens
+    /// (`inputs::osmpass::SMART`), exactly, and the clip is made.
+    #[test]
+    fn a_set_clipped_on_the_nas_is_counted_by_osmiums_reads() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let opl = d.path().join("set.opl");
+        std::fs::write(&opl, "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nw10 v1 Thighway=road Nn1,n2\n").unwrap();
+        let pbf = d.path().join("set.osm.pbf");
+        let st = store::spawn::status(
+            ::inputs::osmpass::osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&pbf).arg(&opl),
+        )
+        .unwrap();
+        assert!(st.success());
+        let poly = d.path().join("cover.geojson");
+        std::fs::write(
+            &poly,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0.0,49.0],[2.0,49.0],[2.0,51.0],[0.0,51.0],[0.0,49.0]]]}}]}"#,
+        )
+        .unwrap();
+        let size = std::fs::metadata(&pbf).unwrap().len();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
+        let dest = d.path().join("clip.osm.pbf");
+        super::osmium_clip_nas(&root.join("set.osm.pbf"), &poly, &dest).unwrap();
+        assert!(dest.exists());
+        let smart = ::inputs::osmpass::SMART;
+        assert_eq!(get(Count::ReadBytes) + own_held() - asked, u64::from(smart.reads) * size);
+        assert_eq!(get(Count::Files) - files, u64::from(smart.opens));
+    }
+
     /// A pruned z6 tile's prepared files go, its normalized file and its side file both; another
     /// tile's stay.
     #[test]

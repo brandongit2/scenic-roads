@@ -155,9 +155,9 @@ fn a_copys_reads_are_each_told_the_nas_or_the_caches() {
     assert!(grew(Count::Files) >= 2);
 }
 
-/// A program given a file's path to read where it lies: its file counted as read once for each read
-/// it makes, asked of the NAS either way (the bytes the NAS served or this Mac's cache held), and
-/// the path handed only to the program.
+/// A program given a file's path to read where it lies: the file counted as read once for each
+/// read it makes and opened once for each open, asked of the NAS either way (the bytes the NAS
+/// served or this Mac's cache held), exactly; and the path handed only to the program.
 #[test]
 fn a_program_given_a_path_has_its_reads_counted() {
     let (_d, r) = root();
@@ -165,10 +165,11 @@ fn a_program_given_a_path_has_its_reads_counted() {
     r.join("set.osm.pbf").write(vec![7u8; n]).unwrap();
     let asked = || nasio::get(Count::ReadBytes) + nasio::own_held();
     let (a, files) = (asked(), nasio::get(Count::Files));
-    let path = r.join("set.osm.pbf").read_by_program(3, |p| Ok(p.to_path_buf())).unwrap();
+    let passes = nasio::Passes { reads: 3, opens: 4 };
+    let path = r.join("set.osm.pbf").read_by_program(passes, |p| Ok(p.to_path_buf())).unwrap();
     assert_eq!(path, r.join("set.osm.pbf").unchecked_path());
-    assert!(asked() - a >= 3 * n as u64, "{} asked of {}", asked() - a, 3 * n);
-    assert!(nasio::get(Count::Files) > files);
+    assert_eq!(asked() - a, 3 * n as u64);
+    assert_eq!(nasio::get(Count::Files) - files, 4);
 }
 
 /// A read the share fails for a moment is tried again; one that is missing fails at once.

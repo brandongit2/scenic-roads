@@ -123,15 +123,30 @@ The agent's home, its caches, scratch folders and blobs stay `Path`s and use sto
 Mac (a test's, a scratch run's `--out`) is a `NasRoot` too; the heritage chain's stand-in root, a
 local folder of links, is a `Path`.
 
+A program or a library that opens a NAS path itself (osmium, the extract program, the names tables)
+is given the path by `NasPath::read_by_program` (`read_files_by_program` for several), the one way to
+a raw path for a read: the path goes to the run alone. The run's bytes are counted, through
+`nasio::ProgramReads`, as the file's size times the passes it makes (`nasio::Passes`: reads and
+opens; osmium's smart extract is `inputs::osmpass::SMART`, the extract program's `EXTRACT`). They
+are credited as the NAS's while it runs, a look a second at the bytes this Mac's links received
+(never more than the passes' total), and what the links didn't carry is held (the page cache's) as it
+ends. A known limit: the links are this Mac's, so other traffic during the run is credited to the
+program too, up to its total. A file streamed over SSH is counted as each piece moves
+(`osmpass::stream_counted`); a library's reader of a file is wrapped in `nasio::Counting`.
+
 ## 5. What is not done
 
 - `Out::path`'s run-time refusal of inputs-folder paths stays as it was (docs/inputs.md §7.1); it did
   not become a typed `inputs()` accessor.
 - Errors carry the path through `display()`, as before; they don't carry `nas:<rel>` and the
   operation.
-- The step programs' NAS inputs (osmium's, extract's, the trees program's, GDAL's, basepart's,
-  railfeeds', lakefill's, the names crate's tables) are paths on their command lines or in their
-  readers: listed in `EXEMPT`, not wrapped.
+- Wrapped (their reads counted, §4): osmium's clips of the heritage sets, the OSM pass's streams, its
+  extract program's reads of the pieces and its ferries' way ids, the names crate's translation
+  files, pageviews' month indexes, the regions' zone GeoJSON. Counted by the readers themselves
+  (`PlainFile`): the zips, the basemap, the trees program's folders. Still paths on command lines
+  or in readers, listed in `EXEMPT`, not counted: railfeeds', the ovconv ferries', the pois'
+  hiking-route ends, the declared DEM conversions', heritage.py's, the linked building tiles of
+  `unit-snap`.
 
 ## 6. One deadline (`crates/store/src/deadline.rs`, task #1141)
 

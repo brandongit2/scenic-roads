@@ -1027,22 +1027,30 @@ read as absent):
   pages' rounding, over by a held-up read's bytes and a cold-then-warm run's warm part within what
   the links could carry, under by at most a read a run where a Wi-Fi's stated rate falls short.
 
-  What reads a NAS path itself is counted one of four ways (task #1470). A reader of
+  What reads a NAS path itself is counted one of five ways (task #1470). A reader of
   `store::range::PlainFile` (the zips of lakefill, lake-depth's GLOBathy and HydroLAKES and the GTFS
-  counters, the basemap, the trees program's CHM store, leaf folders and mids, the rail counting program's zips) counts through `Reads` as any, and a Rust
-  program a job starts counts into the job's own folder (it inherits `SCENIC_NAS_COUNTS`).
-  `store::nasio::Counting` counts a library's reader of a NAS file as it reads (pageviews' month
-  indexes copied from the NAS). A program or a library that opens the path itself is given it by
+  counters, the basemap, the trees program's CHM store, leaf folders and mids, the rail counting
+  program's zips) counts through `Reads` as any, and a Rust program a job starts counts into the
+  job's own folder (it inherits `SCENIC_NAS_COUNTS`). The regions' zone GeoJSON is read whole
+  through `NasPath::read`. `store::nasio::Counting` counts a library's reader of a NAS file as it
+  reads, each read told by its time (pageviews' month indexes copied from the NAS). A file streamed
+  over SSH (the OSM pass's planet and filtered planet, `inputs::osmpass::stream_counted`) is counted
+  as served as each piece moves. A program that opens the path itself is given it by
   `store::nasfs::NasPath::read_by_program` (`read_files_by_program` for several): the raw path goes
-  to the run alone and, once it succeeded, the file's bytes are counted as read once for each read
-  it makes (osmium extract's smart strategy reads its input three times), told by the run's own
-  time as `cached` tells a read's and bounded by the bytes this Mac's links received meanwhile
-  (`store::nasio::ProgramReads`: a warm file a slow program reads would else count whole). Used by
+  to the run alone. Its reads can't be seen, so the files' sizes times its passes (`nasio::Passes`:
+  reads and opens; osmium's smart extract reads three times and opens four, the extract program's
+  three passes open three times) are what it asked of the NAS. Of them, while it runs, a look each
+  second (`nasio::CREDIT_EVERY`) credits as served the bytes this Mac's links received since the
+  last, no more than the total, so the job's NAS rates move as the program reads; what the links
+  didn't carry, when it ended, is held (this Mac's cache's). For a program that spends its time on
+  the CPU only that link bound decides which answered: a time like a read's (`cached`) is not
+  used. A known limit: the links are this Mac's, not the job's, so other traffic over them while the
+  program runs (another job's reads, the job's own copies) is credited to it too, up to its total;
+  and where the links aren't told (not macOS) the whole is counted as served when it ended. A run
+  that failed keeps what was credited (those bytes crossed the links) and counts no more. Used by
   the osmium clips of the heritage step (the areas, named and whs sets over the cover), the OSM
-  pass's ways of the ferries and its extract program's reads of the pieces, the names tables'
-  translation files, and the regions' GeoJSON datasets (read whole, `NasPath::read`). A file streamed over SSH (the OSM pass's planet
-  and filtered planet, `inputs::osmpass::stream_counted`) counts what was read off the NAS as
-  served.
+  pass's ways of the ferries and its extract program's reads of the pieces, and the names tables'
+  translation files.
 
   Not counted (no store::nasio count; tests/nas_access.rs lists the raw paths): railfeeds'
   catalogue, checked list and keys (about 4 MB a run); osmium's runs over the ferries set

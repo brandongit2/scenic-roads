@@ -586,14 +586,14 @@ impl NasPath {
         self.retry("open", || crate::range::PlainFile::open(&p))
     }
 
-    /// Runs `run` (a program that opens this file where it lies, given its path) and, once it
-    /// succeeded, counts the file's bytes as read `reads` times (nasio::ProgramReads::ended: the
-    /// program's own reads can't be seen, so a file read whole is asked of the NAS its size each
-    /// time it is read; `osmium extract --strategy smart` reads its input three times). The one
+    /// Runs `run` (a program that opens this file where it lies, given its path), its bytes counted
+    /// as it runs and when it ended (nasio::ProgramReads: the program's own reads can't be seen, so
+    /// a file read whole is asked of the NAS its size each time it is read, `passes.reads`; each
+    /// open, `passes.opens`, counts a file opened). The one
     /// way to hand a program a NAS file's path to read, so its reads are counted: the raw path is
     /// given only to `run`.
-    pub fn read_by_program<T>(&self, reads: u32, run: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
-        read_files_by_program(std::slice::from_ref(self), reads, |p| run(&p[0]))
+    pub fn read_by_program<T>(&self, passes: nasio::Passes, run: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+        read_files_by_program(std::slice::from_ref(self), passes, |p| run(&p[0]))
     }
 
     /// A stat (`std::fs::metadata`). One `Stats`.
@@ -982,15 +982,21 @@ impl NasPath {
 }
 
 /// `NasPath::read_by_program` for several files: `run` is given their raw paths (in `files`'
-/// order) and, once it succeeded, each file's bytes are counted as read `reads` times.
-pub fn read_files_by_program<T>(files: &[NasPath], reads: u32, run: impl FnOnce(&[PathBuf]) -> Result<T>) -> Result<T> {
+/// order); the files' sizes times `passes.reads` are credited as the NAS's while it runs
+/// (nasio::ProgramReads), and once it succeeded each file is counted opened `passes.opens` times
+/// and what wasn't credited held.
+pub fn read_files_by_program<T>(
+    files: &[NasPath],
+    passes: nasio::Passes,
+    run: impl FnOnce(&[PathBuf]) -> Result<T>,
+) -> Result<T> {
     let sizes = files.iter().map(|f| Ok(f.metadata()?.len())).collect::<io::Result<Vec<u64>>>()?;
     let paths: Vec<PathBuf> = files.iter().map(NasPath::full).collect();
-    let counting = nasio::ProgramReads::begin();
-    let v = run(&paths)?;
     let read: Vec<(&Path, u64)> =
-        paths.iter().zip(&sizes).map(|(p, n)| (p.as_path(), n.saturating_mul(u64::from(reads)))).collect();
-    counting.ended(&read);
+        paths.iter().zip(&sizes).map(|(p, n)| (p.as_path(), n.saturating_mul(u64::from(passes.reads)))).collect();
+    let counting = nasio::ProgramReads::begin(read.iter().map(|f| f.1).sum());
+    let v = run(&paths)?;
+    counting.ended(&read, passes.opens);
     Ok(v)
 }
 

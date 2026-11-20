@@ -1439,6 +1439,16 @@ pub fn main(args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{is_causeway, Tags};
+
+    /// The passes `inputs::osmpass::EXTRACT` counts a piece's reads by are this program's: its
+    /// source marks each pass `// ---- Pass` (1, 1b, 2), as the program reads its input without
+    /// `--trailends`.
+    #[test]
+    fn the_counted_reads_are_the_programs_passes() {
+        let passes = include_str!("extract.rs").lines().filter(|l| l.trim_start().starts_with("// ---- Pass ")).count();
+        assert_eq!(passes, ::inputs::osmpass::EXTRACT.reads as usize);
+        assert_eq!(passes, ::inputs::osmpass::EXTRACT.opens as usize);
+    }
     /// Causeways and embankments by their three tags, nothing else.
     #[test]
     fn causeways_by_their_tags() {

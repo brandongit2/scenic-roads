@@ -401,11 +401,14 @@ impl Months {
     fn copy_into(&self, month: &str, src: &Path, dst: &Path) -> io::Result<()> {
         let p = phase("copying the months' indexes from the NAS");
         // (The NAS's file read through store::nasio::Counting: the job's NAS reads, task #1470.)
-        let mut a = Counted { r: store::nasio::Counting::new(File::open(src)?), n: self.counter(month, "copied") };
+        let f = File::open(src)?;
+        let want = f.metadata()?.len();
+        store::nasio::opened(src, want, 0);
+        let mut a = Counted { r: store::nasio::Counting::new(f), n: self.counter(month, "copied") };
         let mut b = File::options().write(true).truncate(true).open(dst)?;
         io::copy(&mut a, &mut b)?;
         b.sync_all()?;
-        let (got, want) = (std::fs::metadata(dst)?.len(), std::fs::metadata(src)?.len());
+        let got = std::fs::metadata(dst)?.len();
         if got != want {
             return Err(io::Error::other(format!("{}: {got} of {want} bytes copied", dst.display())));
         }
@@ -860,10 +863,11 @@ mod tests {
         let size = std::fs::metadata(&nas).unwrap().len();
         let m = Months::new(d.path().join("months"), Some(d.path().to_path_buf()), String::new());
         let asked = || get(Count::ReadBytes) + own_held();
-        let before = asked();
+        let (before, files) = (asked(), get(Count::Files));
         m.copy_into("2026-02", &nas, &dst).unwrap();
         assert_eq!(std::fs::metadata(&dst).unwrap().len(), size);
-        assert!(asked() - before >= size, "{} asked of {size}", asked() - before);
+        assert_eq!(asked() - before, size);
+        assert_eq!(get(Count::Files) - files, 1);
     }
 
     /// Room-making mid-job (docs/building.md §2): the months' indexes looked up again and again

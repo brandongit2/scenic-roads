@@ -138,6 +138,16 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
     Ok(missing.len())
 }
 
+/// How `osmium extract --strategy smart` reads a file it opens by its path (osmium 1.19): all of it
+/// three times, the file opened four times (the first let go after its first bytes). The stream
+/// tests hold it to osmium (`the_cut_streams_the_nas_file_over_ssh`).
+pub const SMART: store::nasio::Passes = store::nasio::Passes { reads: 3, opens: 4 };
+
+/// How the extract program (`extract` without `--trailends`) reads its piece: pass 1 (the ways),
+/// pass 1b (the hiking routes' end nodes) and pass 2 (the nodes), each opening it once. The
+/// program's passes are marked `// ---- Pass` in tools/extract.rs, which holds it to this.
+pub const EXTRACT: store::nasio::Passes = store::nasio::Passes { reads: 3, opens: 3 };
+
 /// The filtered planet `src` cut to boxes (`osmium extract`, one run for them all, its smart
 /// strategy: ways and multipolygons whole, the input read three times): each `(file, [west, south,
 /// east, north])` an OSM PBF of what meets its box. The polar caps' points (landmarks::polar).
@@ -147,7 +157,7 @@ pub fn extract_boxes(src: &Input, boxes: &[(PathBuf, [f64; 4])], scratch: &Path)
         Input::Local(_) => "cutting the boxes (osmium)",
         Input::Nas(_) => "cutting the boxes (osmium, over SSH)",
     });
-    read_input(src, &scratch.join("stream"), 3, |input, local| {
+    read_input(src, &scratch.join("stream"), SMART.reads, |input, local| {
         let c = boxes_extract(&config, input);
         if local {
             run_osmium(c, "osmium extract (the boxes)")
@@ -217,9 +227,9 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 }
 
 /// `streamed` of file `path` (`remote` on the NAS), the bytes it read off the NAS counted: as the
-/// enclosing phase's, and as the job's NAS reads (store::nasio, all of them served: the stream
-/// crosses the link, never this Mac's cache), the file counted opened. Counted once it ends: a
-/// stream that failed counts nothing.
+/// job's NAS reads (store::nasio, all of them served: the stream crosses the link, never this
+/// Mac's cache) as each piece moves (`streamed`'s feed), so the job's rates see the stream as it
+/// goes, a failed one's too; and, once it ended, as the enclosing phase's and the file opened.
 #[allow(clippy::too_many_arguments)]
 fn stream_counted(
     ssh: &(dyn Fn() -> Command + Sync),
@@ -235,7 +245,6 @@ fn stream_counted(
     let n = streamed(ssh, start, stall, remote, reads, dir, run)?;
     jobrt::timings::count(n, 1);
     store::nasio::opened(path, n, t.elapsed().as_millis() as u64);
-    store::nasio::read(n);
     Ok(())
 }
 
@@ -354,6 +363,8 @@ pub fn streamed(
         let feeder = s.spawn(|| -> Result<u64> {
             let (total, said) = (std::cell::Cell::new(0u64), std::cell::Cell::new(0.0f64));
             let mut tick = |n: u64| {
+                // (Counted as it moves: the job's NAS reads, store::nasio.)
+                store::nasio::read(n);
                 total.set(total.get() + n);
                 // (Said each 0.1 %.)
                 let f = (total.get() as f64 / (u64::from(reads.max(1)) * len.max(1)) as f64).min(0.99);
@@ -858,6 +869,15 @@ impl UnitLinks {
     }
 }
 
+/// `run` (`unit_links` of a piece's path) on the piece `src` on the NAS, read where it lies: the
+/// extract program's reads of it counted (`EXTRACT`).
+fn unit_links_of(
+    src: &store::nasfs::NasPath,
+    run: impl FnOnce(&Path) -> Result<UnitLinks>,
+) -> Result<UnitLinks> {
+    src.read_by_program(EXTRACT, run)
+}
+
 /// Run `extract` (of the programs in `bin`: jobrt::sys::program) on a extract and work out its z6
 /// tile's chaining inputs.
 /// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
@@ -1279,7 +1299,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
                     // (The extract program's input, read where it lies: counted once.)
-                    src.read_by_program(1, |p| unit_links(bin, &spacing, p, unit, &scratch.join("extract-work")))?
+                    unit_links_of(&src, |p| unit_links(bin, &spacing, p, unit, &scratch.join("extract-work")))?
                 }
             };
             all.push((unit, ul));
@@ -1485,7 +1505,7 @@ pub fn patch_ferries(
             continue;
         }
         // (Read where it is, counted once: copied only when it lacks some.)
-        let lacks = ids.len() - out.path(content).read_by_program(1, |p| way_ids(p, Some(&ids)))?.len();
+        let lacks = ids.len() - way_ids_on_nas(&out.path(content), &ids)?.len();
         if lacks == 0 {
             continue;
         }
@@ -1505,6 +1525,14 @@ pub fn patch_ferries(
     out.save()?;
     std::fs::remove_dir_all(&work).ok();
     Ok((changed, gained))
+}
+
+/// `way_ids` of a file on the NAS among `ids`, read where it lies (osmium reads it once), counted.
+fn way_ids_on_nas(
+    file: &store::nasfs::NasPath,
+    ids: &std::collections::BTreeSet<i64>,
+) -> Result<std::collections::BTreeSet<i64>> {
+    file.read_by_program(store::nasio::Passes::ONCE, |p| way_ids(p, Some(ids)))
 }
 
 /// The ids of the ways in an OSM file, or of those among `among` (osmium getid).
@@ -1798,8 +1826,41 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(get(Count::ReadBytes) - read >= 2 * len as u64, "two whole reads served");
-        assert!(get(Count::Files) > files);
+        assert_eq!(get(Count::ReadBytes) - read, 2 * len as u64, "two whole reads served");
+        assert_eq!(get(Count::Files) - files, 1);
+    }
+
+    /// A piece the extract program reads where it lies is counted by the program's passes
+    /// (`EXTRACT`), opened as often, exactly; and what `run` gives is what comes back.
+    #[test]
+    fn a_piece_read_by_the_extract_program_counts_its_passes() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        root.join("6-1-1.osm.pbf").write(vec![1u8; 100_000]).unwrap();
+        let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
+        let got = unit_links_of(&root.join("6-1-1.osm.pbf"), |_| Ok(UnitLinks { ways: vec![(7, 1.0)], pairs: vec![] }))
+            .unwrap();
+        assert_eq!(got.ways, [(7, 1.0)]);
+        assert_eq!(get(Count::ReadBytes) + own_held() - asked, u64::from(EXTRACT.reads) * 100_000);
+        assert_eq!(get(Count::Files) - files, u64::from(EXTRACT.opens));
+    }
+
+    /// The ways a ferries piece holds among some ids, read where it lies by osmium: found, and the
+    /// file counted once, exactly.
+    #[test]
+    fn the_ferries_way_ids_of_a_piece_are_counted() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let src = osm(d.path(), "piece", "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nw10 v1 Troute=ferry Nn1,n2\nw11 v1 Thighway=road Nn1,n2\n");
+        let size = std::fs::metadata(&src).unwrap().len();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
+        let ids = std::collections::BTreeSet::from([10, 99]);
+        let found = way_ids_on_nas(&root.join("piece.osm.pbf"), &ids).unwrap();
+        assert_eq!(found, std::collections::BTreeSet::from([10]));
+        assert_eq!(get(Count::ReadBytes) + own_held() - asked, size);
+        assert_eq!(get(Count::Files) - files, 1);
     }
 
     /// The stream's `ssh` asks for the AES-GCM-first cipher list.
@@ -1899,7 +1960,8 @@ mod tests {
         })
         .unwrap();
         // (Three whole reads, and what the first open, let go after its first bytes, took.)
-        assert!((3 * len..=4 * len).contains(&n), "three whole reads (osmium 1.19): {n} of {len}");
+        let reads = u64::from(SMART.reads);
+        assert!((reads * len..=(reads + 1) * len).contains(&n), "{reads} whole reads (osmium 1.19): {n} of {len}");
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
         };
@@ -1947,9 +2009,10 @@ mod tests {
         let (remote, stream) = (src.to_str().unwrap().to_string(), d.path().join("stream"));
         std::thread::spawn(move || tx.send(streamed(&*ssh(""), WAIT, WAIT, &remote, 3, &stream, |p| cut(p, &there))));
         let n = rx.recv_timeout(WAIT).expect("the stream hung").unwrap();
+        let reads = u64::from(SMART.reads);
         assert!(
-            (3 * len..3 * len + (128 << 10)).contains(&n),
-            "three whole reads, and the first open's bytes: {n} of {len}"
+            (reads * len..reads * len + (128 << 10)).contains(&n),
+            "{reads} whole reads, and the first open's bytes: {n} of {len}"
         );
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
