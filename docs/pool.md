@@ -1202,7 +1202,10 @@ done what it can, the disk guard as backstop.
 needs; it can't be derived from the step's key version (which moves with its outputs) nor a digest
 of its code (nearly every release would make every step a cold start). So the lead watches: a
 target's rerun of the same way on as many threads notes its run before's peak (`Cost::was_mb`). One
-off by more than `needs-off` (3) times, where it matters in packing, is counted; a step with
+off by more than `needs-off` (3) times, where it matters in packing, is counted: where the larger
+of its two peaks is past what a thread of its step holds by its runs (their peaks over their
+threads at the memory percentile; a run that recorded no threads, as bldtile's, tail's,
+terrainsub's and treeblock's, counts as one thread, its whole peak, as admission sizes it); a step with
 `needs-relearn` (5) or more such on one side, and most of its reruns, is flagged `cost-version`
 (§10, Flags): raise the step's `cost_v`.
 

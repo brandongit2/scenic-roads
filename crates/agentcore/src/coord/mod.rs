@@ -8796,6 +8796,31 @@ mod tests {
             nr.iter().map(|r| (r.step.as_str(), r.lower, r.targets)).collect::<Vec<_>>(),
             [("inputs", false, n)]
         );
+
+        // Task #1536: a step whose runs record no threads (tail) has a bar too, each run's whole
+        // peak one thread's, as admission sizes it: its small reruns' moves (6 to 20 MB) count
+        // for nothing, its large ones' still flag it.
+        let (_d, c, _w) = start();
+        let bare = |peak: u64| Cost { peak_mb: peak, secs: 60, ..Default::default() };
+        for i in 0..n {
+            let s = format!("6/{i}/1");
+            c.add_costs(&[(cost_key("tail", &s), bare(2_000))]);
+            c.add_costs(&[(cost_key("tail", &format!("7/{i}/1")), bare(6))]);
+            c.add_costs(&[(cost_key("tail", &format!("7/{i}/1")), bare(20))]);
+        }
+        let bar = c.shared.lock().unwrap().book().step_thread_mb("tail").expect("a bar with no threads said");
+        assert!(bar > 20 && bar <= 2_000, "{bar}");
+        assert!(c.not_raised().is_empty(), "6 to 20 MB moves under its bar count for nothing");
+        for i in 0..n {
+            let s = format!("6/{i}/1");
+            c.add_costs(&[(cost_key("tail", &s), bare(9_000))]);
+        }
+        let nr = c.not_raised();
+        assert_eq!(
+            nr.iter().map(|r| (r.step.as_str(), r.lower, r.targets, r.reruns)).collect::<Vec<_>>(),
+            [("tail", false, n, n)],
+            "its moves past the bar, and only those, count"
+        );
     }
 
     #[test]

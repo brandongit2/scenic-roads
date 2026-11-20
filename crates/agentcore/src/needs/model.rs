@@ -723,11 +723,13 @@ impl Model {
 
     /// What a thread of the step holds by its runs alone, whatever a target's size (MB): the
     /// `mem_pct` percentile of its runs' peaks over their threads, none scaled, at least the
-    /// memory per thread fitted over their threads (`TARGET`'s: every run has it). None where no
-    /// run said its threads.
+    /// memory per thread fitted over their threads (`TARGET`'s: every run has it). A run that
+    /// said no threads counts as one thread, its whole peak that thread's, as admission sizes such
+    /// a job (`coord::sched`'s `Sched::thread_mb`: the whole figure a thread). None where no run
+    /// measured its memory.
     pub fn step_thread_mb(&self) -> Option<u64> {
         let p = self.by.iter().find(|p| p.size == TARGET)?;
-        let each = p.mem.iter().filter(|m| m.1 > 0).map(|m| m.2 as f64 / f64::from(m.1)).collect();
+        let each = p.mem.iter().map(|m| m.2 as f64 / f64::from(m.1.max(1))).collect();
         let linear = pct(&sorted(each), p.mem_pct)?;
         Some(linear.max(p.mem_per_thread.unwrap_or(0.0)).ceil() as u64)
     }
