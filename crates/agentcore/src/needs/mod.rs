@@ -866,11 +866,11 @@ impl<'a> Book<'a> {
         }
     }
 
-    /// What a thread of `step` holds by its runs alone, whatever a target's size or own run
-    /// (`model::Model::step_thread_mb`): what a move of a target's memory is weighed against
-    /// (crate::coord's `not_raised`: a move under it sizes nothing that matters in packing).
-    pub fn step_thread_mb(&self, step: &str) -> Option<u64> {
-        self.model(step).needs.step_thread_mb()
+    /// The bar a move of a target's memory of `step` is weighed against, by its runs alone,
+    /// whatever a target's size or own run (`model::Model::move_bar_mb`; crate::coord's
+    /// `not_raised`: a move under it sizes nothing that matters in packing).
+    pub fn move_bar_mb(&self, step: &str) -> Option<u64> {
+        self.model(step).needs.move_bar_mb()
     }
 
     /// `thread_mb` of a target whose own run `c` ran on `ran` threads: its peak (never below its

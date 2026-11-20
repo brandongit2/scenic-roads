@@ -50,6 +50,13 @@ pub const MIN_RUNS: usize = super::MIN_RUNS;
 /// The size every target has: one a target.
 pub const TARGET: &str = "target";
 
+/// The percentile of a step's runs' peaks a move of its targets' memory is weighed against where
+/// none of them said more than one thread (`Model::move_bar_mb`): its lightest quarter's. (Task
+/// #1536's review: at the memory percentile, on the lead's runs of bldtile, tail, terrainsub and
+/// treeblock, a typical target's memory four times over was never flagged, the bar rising with
+/// the reruns.)
+pub const LIGHT_PCT: f64 = 25.0;
+
 /// What a run moved on the NAS (or a step's per unit of a size): the bytes it asked of it (read,
 /// whether the NAS or this Mac's page cache answered, written and read back) and its calls.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -722,16 +729,20 @@ impl Model {
         self.mem_units(sizes).first()?.0.mem_per_thread
     }
 
-    /// What a thread of the step holds by its runs alone, whatever a target's size (MB): the
+    /// The bar a move of one of the step's targets' memory is weighed against, by its runs alone,
+    /// whatever a target's size (MB; `coord`'s `not_raised`: a move under it sizes nothing that
+    /// matters in packing). Where a run said more than one thread, what a thread holds: the
     /// `mem_pct` percentile of its runs' peaks over their threads, none scaled, at least the
-    /// memory per thread fitted over their threads (`TARGET`'s: every run has it). A run that
-    /// said no threads counts as one thread, its whole peak that thread's, as admission sizes such
-    /// a job (`coord::sched`'s `Sched::thread_mb`: the whole figure a thread). None where no run
-    /// measured its memory.
-    pub fn step_thread_mb(&self) -> Option<u64> {
+    /// memory per thread fitted over their threads (`TARGET`'s: every run has it). Where none did
+    /// (a run that said none counts as one, its whole peak that thread's, as admission sizes such
+    /// a job: `coord::sched`'s `Sched::thread_mb`), the `LIGHT_PCT` percentile of their peaks: the
+    /// `mem_pct` one is then near its heaviest target's, and a typical target's moving several
+    /// times over stays under it. None where no run measured its memory.
+    pub fn move_bar_mb(&self) -> Option<u64> {
         let p = self.by.iter().find(|p| p.size == TARGET)?;
         let each = p.mem.iter().map(|m| m.2 as f64 / f64::from(m.1.max(1))).collect();
-        let linear = pct(&sorted(each), p.mem_pct)?;
+        let at = if p.mem.iter().any(|m| m.1 > 1) { p.mem_pct } else { LIGHT_PCT };
+        let linear = pct(&sorted(each), at)?;
         Some(linear.max(p.mem_per_thread.unwrap_or(0.0)).ceil() as u64)
     }
 

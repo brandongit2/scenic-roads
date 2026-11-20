@@ -1249,9 +1249,12 @@ needs; it can't be derived from the step's key version (which moves with its out
 of its code (nearly every release would make every step a cold start). So the lead watches: a
 target's rerun of the same way on as many threads notes its run before's peak (`Cost::was_mb`). One
 off by more than `needs-off` (3) times, where it matters in packing, is counted: where the larger
-of its two peaks is past what a thread of its step holds by its runs (their peaks over their
-threads at the memory percentile; a run that recorded no threads, as bldtile's, tail's,
-terrainsub's and treeblock's, counts as one thread, its whole peak, as admission sizes it); a step with
+of its two peaks is past its step's bar by its runs: what a thread of it holds (their peaks over
+their threads at the memory percentile); where no run recorded more than one thread (a run that
+recorded none counts as one, its whole peak, as admission sizes it: bldtile's, tail's,
+terrainsub's and treeblock's), the lightest quarter's peak (`needs::model::LIGHT_PCT`), as at the
+memory percentile, near such a step's heaviest target, a typical target's memory four times over
+stayed under it, the bar rising with the reruns; a step with
 `needs-relearn` (5) or more such on one side, and most of its reruns, is flagged `cost-version`
 (§10, Flags): raise the step's `cost_v`.
 
