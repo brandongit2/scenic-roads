@@ -1483,7 +1483,7 @@ mod tests {
                     .map(|k| {
                         let a = k as f64 / 12.0 * std::f64::consts::TAU;
                         let r = (size / 2 + next() % (size / 2)) as f64;
-                        [cx + (r * a.cos()) as i64, cy + (r * a.sin()) as i64]
+                        [cx + (r * a.dcos()) as i64, cy + (r * a.dsin()) as i64]
                     })
                     .collect()
             })
