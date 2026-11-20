@@ -4031,13 +4031,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         let mut out = Vec::new();
+        let cpu = || jobrt::sys::rusage(std::process::id() as i32).map_or(0, |r| r.cpu_ns);
         let mut op = |what: &str, f: &mut dyn FnMut()| {
             allocs::climb();
-            let (t, a) = (Instant::now(), allocs::asked());
+            let (t, a, c) = (Instant::now(), allocs::asked(), cpu());
             f();
-            let (took, b, (most, sum)) = (t.elapsed(), allocs::asked(), allocs::climb());
+            let (took, b, (most, sum), cpu_s) =
+                (t.elapsed(), allocs::asked(), allocs::climb(), (cpu() - c) as f64 / 1e9);
             out.push(format!(
-                "{what}: {:.2} s, asked for {} MB in {} blocks; at most {} MB more live, the sizes' mosts {} MB; reusable {} MB after",
+                "{what}: {:.2} s ({cpu_s:.2} s of CPU), asked for {} MB in {} blocks; at most {} MB more live, the sizes' mosts {} MB; reusable {} MB after",
                 took.as_secs_f64(),
                 (b.0 - a.0) >> 20,
                 b.1 - a.1,

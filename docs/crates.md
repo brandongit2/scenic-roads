@@ -993,7 +993,7 @@ commit; re-exports at the old paths as before.
         `SCENIC_FROZEN_PEAKS=<n>`, by block size, the `n` sites whose blocks took that size's live
         bytes to their most in each plan (a stack per 4 MB of the climb: who holds what the
         allocator keeps for that size). `SCENIC_FROZEN_THREADS` gives the planner a coordinator of
-        its own and measures after each plan, alone, what the agent's other threads do with its
+        its own and measures after each plan, alone (its time, the process's CPU and its allocations), what the agent's other threads do with its
         results (`apart`: the forecast's input archived, the forecast handed to the coordinator and
         put in the swarm's answer, `/api/regions`' and `/pool/view`'s answers, the status written, the offers
         given again), with `SCENIC_FROZEN_STATUS` a copy of the lead's status.json beside it. With

@@ -8644,8 +8644,9 @@ impl Agent {
 
     /// The build page, each loop (docs/roles.md §3.3): the lead's alone. On the lead, its
     /// coordinator serves it from this Mac's views (crate::agent::pageview, cataloguesview,
-    /// builtview), the pageview told the lead and this app, and its pages' asks taken. On a member, its port (its broker, else a viewer alone started there)
-    /// told where the page is (`member_page`).
+    /// builtview), the pageview told the lead and this app, and its pages' asks taken. On a member,
+    /// its port (its broker, else a viewer alone started there) told where the page is
+    /// (`member_page`).
     fn tend_pageview(&mut self, root: &store::nasfs::NasRoot) {
         if self.o.dry_run {
             return;
@@ -16100,7 +16101,9 @@ mod tests {
     }
 
     /// Task #1444: a forecast under way for another plan is never dropped nor run beside a new one:
-    /// the plan's own waits for it to end, and the held forecast of another shape is cleared.
+    /// the plan's own waits for it to end, and the held forecast of another shape is cleared. Task
+    /// #1487: the build page's (its coordinator's) is the status's own, cleared with it, and the
+    /// one taken in handed to it shared.
     #[test]
     fn a_forecast_under_way_for_another_plan_is_left_to_end_and_none_starts_beside_it() {
         let d = tempfile::tempdir().unwrap();
@@ -16108,7 +16111,13 @@ mod tests {
         put(&root.join("state/build/manifest.json"), b"{ not json");
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let mut a = agent(&nas, &home);
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         let p = a.planner();
+        p.coord = Some(co.clone());
+        let same = |p: &plan::Planner| match (p.forecast.borrow().as_ref(), co.page().forecast) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, &b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
         let (stop, release) = std::sync::mpsc::channel::<()>();
         let old = plan::Shape::Regions(None);
         *p.forecasting.borrow_mut() = Some((
@@ -16119,10 +16128,13 @@ mod tests {
             }),
         ));
         *p.forecast_shape.borrow_mut() = Some(old.clone());
-        *p.forecast.borrow_mut() = Some(std::sync::Arc::new(forecast::Forecast { at: now_s(), ..Default::default() }));
+        let seeded = std::sync::Arc::new(forecast::Forecast { at: now_s(), ..Default::default() });
+        *p.forecast.borrow_mut() = Some(seeded.clone());
+        co.set_page_forecast(Some(seeded));
         let (mut w, mut held) = (Vec::new(), Holds::default());
         p.region_jobs(&nas, None, None, &mut w, &mut held);
         assert!(p.forecast.borrow().is_none(), "the held forecast of another shape is cleared");
+        assert!(co.page().forecast.is_none(), "the page's with it");
         assert_eq!(p.forecasting.borrow().as_ref().map(|f| &f.0), Some(&old), "the run under way stays, alone");
         // (It ends: its answer, of another plan's shape, never taken in; the plan's own then starts.)
         stop.send(()).unwrap();
@@ -16133,6 +16145,16 @@ mod tests {
             p.region_jobs(&nas, None, None, &mut w, &mut held);
         }
         assert!(p.forecast.borrow().is_none() || p.forecast.borrow().as_ref().unwrap().why.is_some());
+        // (The stop's forecast, once taken in: the page's the very same, its reason and no finish.)
+        let t = std::time::Instant::now();
+        while p.forecast.borrow().is_none() {
+            assert!(t.elapsed() < Duration::from_secs(60), "no forecast made");
+            std::thread::sleep(Duration::from_millis(20));
+            p.take_forecast();
+        }
+        assert!(same(p), "the page's forecast is the status's own");
+        let f = co.page().forecast.unwrap();
+        assert!(f.why.is_some() && f.done_at.is_none(), "{f:?}");
     }
 
     #[test]
