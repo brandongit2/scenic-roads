@@ -271,14 +271,16 @@ export function makeJobs(jobs, changed) {
     });
     return { kind, from: has ? from : null, to: has ? to : null, names };
   }
-  // GET /api/jobs/latest?kind=: the span of that kind begun last, whole (its attributes too), or null:
-  // the test budget's latest measure (tools/dev/test-budget.py), which the page shows. (spans_kind:
-  // one step down the index.)
+  // GET /api/jobs/latest?kind=[&n=]: the span of that kind begun last, whole (its attributes too),
+  // or null, and the last n (`spans`, newest first, 1 to 100, default 1): the test budget's measures
+  // (tools/dev/test-budget.py), which the page shows and the next measure picks by. (spans_kind: n
+  // steps down the index.)
   function latest(url) {
     const kind = url.searchParams.get("kind");
     if (!kind) refuse(400, "invalid_argument", "kind: is required");
-    const r = stmt(`SELECT * FROM spans INDEXED BY spans_kind WHERE kind = ? ORDER BY t0 DESC LIMIT 1`).get(kind);
-    return { now: now(), span: r ? row(r) : null, macs: macs() };
+    const n = Math.max(1, Math.min(100, Math.floor(Number(url.searchParams.get("n")) || 1)));
+    const rs = stmt(`SELECT * FROM spans INDEXED BY spans_kind WHERE kind = ? ORDER BY t0 DESC LIMIT ?`).all(kind, n).map(row);
+    return { now: now(), span: rs[0] || null, spans: rs, macs: macs() };
   }
   // GET /api/jobs/kinds[?from=&to=]: each kind of span recorded and how many, all time or begun in
   // [from, to]. (The kinds found by a skip along spans_kind, one step a kind, and each counted over

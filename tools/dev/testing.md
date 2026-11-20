@@ -751,13 +751,18 @@ fails, and is never given more. `cargo test` runs have no such bound.
   Nov) pass every run until the M4's load reached 108-229 and they timed out. So publish.sh, after
   a suite that passed and once a measure is due, runs `tools/dev/test-budget.py`: the slowest tests
   of the last publishes' suites (from the dev job records: each test's median there, those at or over
-  the budget, the slowest few), each run alone (`--test-threads 1`) in publish's slot on the test Mac,
-  on the build the suite just made; any over the budget is flagged on the dev job dashboard (its "Test
-  budget", the latest measure) and in publish's output, never failing it. Its settings, each shown
-  with the measure, are `tools/dev/test-budget.json`: `budget_s` 10, `every_h` 24, `publishes` 3,
-  `slowest` 20 (on 20 Nov, 72 tests had a median of 10 s or more in the last 3 publishes' suites; the 20 slowest
-  alone, a few minutes once a day). Alone means one test at a time, not an idle Mac: the pool's jobs
-  and other slots' checks run beside it, the run's load recorded with it. Its test:
+  the budget, the slowest few, less those measured under it in the last few measures, so the measures
+  go on down the list), each run alone (`--test-threads 1`) in publish's slot on the test Mac, on the
+  build the suite just made, within a bound of its own (its run stopped past it, by its PID, what it
+  timed kept); any over the budget is flagged on the dev job dashboard (its "Test budget", the latest
+  measure) and in publish's output, never failing it. Its settings, each shown with the measure, are
+  `tools/dev/test-budget.json`: `budget_s` 10, `every_h` 24, `publishes` 3, `slowest` 20 (on 20 Nov,
+  72 tests had a median of 10 s or more in the last 3 publishes' suites; the 20 slowest alone, a few
+  minutes once a day), `rest` 3, `max_min` 10. A measure that timed nothing (refused, cut short) is
+  not the last for `every_h`; with the dev job records off (`SCENIC_DEVJOB=0`) nothing is measured,
+  as they hold its due time. Alone means one test at a time, not an idle Mac: the pool's jobs and
+  other slots' checks run beside it, the test Mac's load as its run began and ended recorded and shown
+  with it. Its test:
   `tools/dev/test/test_test_budget.py` (check.sh's `testbudget` part). Three tests it would have
   flagged were made smaller (#1553, alone on the M4 under the same load before and after:
   `depth::lakes::tests::the_small_lakes_resume_where_a_stop_left_them`, its empty z10 tiles no

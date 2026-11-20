@@ -415,14 +415,16 @@ function renderBudget() {
   }
   const a = b.attrs, cap = a.budget_s;
   const over = a.over || [], alone = a.alone || [];
-  $("budget-sum").textContent = `${cap} s a test alone · measured every ${a.every_h} h · last ${clock(b.t0, false)} on ${theMac(b.on || b.mac, budget.macs)}`;
+  $("budget-sum").textContent = `${cap} s a test alone · measured every ${a.every_h} h, within ${a.max_min ?? "–"} min · last ${clock(b.t0, false)} on ${theMac(b.on || b.mac, budget.macs)}`;
+  const load = a.load != null ? `the test Mac's load ${a.load}${a.load_after != null ? ` to ${a.load_after}` : ""} (1-minute average, as its run began and ended)` : null;
   const head = b.status === "running" ? h("div", "run", "measuring now…")
-    : b.status !== "ok" ? h("div", "bad", `the measure ${statusText(b)}${a.exit != null ? ` (remote-tests.sh exit ${a.exit})` : ""}: ${alone.length} of ${a.chosen} tests timed`)
+    : b.status !== "ok" ? h("div", "bad", `the measure ${a.stopped ? `stopped ${a.stopped}` : statusText(b)}${a.exit != null ? ` (remote-tests.sh exit ${a.exit})` : ""}: ${alone.length} of ${a.chosen} tests timed${over.length ? `, ${over.length} over ${cap} s alone` : ""}`)
     : over.length ? h("div", "bad", `${over.length} test${over.length === 1 ? "" : "s"} over ${cap} s alone`)
     : h("div", "ok", alone.length ? `every test measured under ${cap} s alone` : `no test took ${cap} s or more in the suites`);
   const rows = [...alone].sort((x, y) => y[2] - x[2]);
   box.replaceChildren(head,
-    h("div", "dim small", `picked: the slowest ${a.chosen} of the ${a.at_or_over_in_suites} tests whose median was ${cap} s or more in the last ${a.read} publishes' suites (at most ${a.slowest}), each run alone (one test thread) in publish's slot`),
+    h("div", "dim small", `picked: the slowest ${a.chosen} of the ${a.at_or_over_in_suites} tests whose median was ${cap} s or more in the last ${a.read} publishes' suites (at most ${a.slowest}; ${a.left_out ?? 0} measured under ${cap} s in the last ${a.rest ?? "–"} measures left out), each run alone (one test thread) in publish's slot`),
+    ...(load ? [h("div", "dim small", load)] : []),
     ...(rows.length ? [h("table", null,
       h("thead", null, h("tr", null, h("th", null, "test"), h("th", "opt", "binary"), h("th", "num", "alone"), h("th", "num opt", "in the suites"))),
       h("tbody", null, rows.map(([bin, name, secs, med]) => h("tr", null,

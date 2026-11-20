@@ -124,6 +124,9 @@ test("latest: the span of a kind begun last, whole, or null (the test budget's m
   await send([{ op: "end", id: "bg-2", t: T + 3060, status: "ok", attrs: { over: [["terrain", "depth::x", 12.5]] } }]);
   s = (await get("/api/jobs/latest?kind=budget")).body.span;
   assert.deepEqual([s.id, s.attrs.budget_s, s.attrs.over], ["bg-2", 10, [["terrain", "depth::x", 12.5]]]);
+  // The last n, newest first.
+  assert.deepEqual((await get("/api/jobs/latest?kind=budget&n=2")).body.spans.map((x) => x.id), ["bg-2", "bg-1"]);
+  assert.deepEqual((await get("/api/jobs/latest?kind=budget&n=500")).body.spans.map((x) => x.id), ["bg-2", "bg-1", "bg-0"]);
 });
 
 test("only POST events writes; a span that isn't there is a 404", async () => {

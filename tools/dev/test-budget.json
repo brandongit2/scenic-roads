@@ -2,5 +2,7 @@
   "budget_s": 10,
   "every_h": 24,
   "publishes": 3,
-  "slowest": 20
+  "slowest": 20,
+  "rest": 3,
+  "max_min": 10
 }
