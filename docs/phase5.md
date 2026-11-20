@@ -155,10 +155,17 @@ hi packs within U + 30 km, not the z12 tiles read (task #484), and of the lo pac
 its coarse stage read (task #1475): each run records them with their XXH3 in their packs' indexes
 (`work/asked/peaks/<u>`, buildstore::asked; `peaks::z8::tile_question`), and its key's lo line
 (`agent::idents::peaks_lo`) is that record's while those tiles read the same, so a lo pack made
-again moves only the z6 tiles whose search read a tile of it that changed. A z6 tile with no
-record yet keys every lo pack by content, as before it recorded; its first record keeps that
-line. The summits change with any z8 tile under a summit, and every z6 tile's peaks read the
-summits whole. The summits and peaks wait until terrain-hi and terrain-lo have no work left
+again moves only the z6 tiles whose search read a tile of it that changed. The summits change
+with any z8 tile under a summit, so the peaks key them by what their run read of them too (task
+#1545): the summits' own fields (id, kind, position, tagged height) are the summits set's and the
+summits' version's, a question of the record (`agent::idents::PEAKS_SUMMITS_Q`), and their z8
+heights read the z8 tiles around their pixels (`summits::z8_tiles_read`), recorded with the tiles
+read for each summit in a tile it read (the overlay's reads). Its key's summits line
+(`agent::idents::peaks_summits`) is the record's while those answer the same, so the summits made
+again for a lo change elsewhere move no z6 tile's key. A z6 tile with no record yet keys every lo
+pack by content and the summits whole, as before it recorded, and one whose record is from before
+it asked of the summits keys them whole still; its next record keeps those lines. The summits and
+peaks wait until terrain-hi and terrain-lo have no work left
 (their declared reads, `Read::Whole`: docs/readiness.md).
 
 Every step with work left (stale against what's built now) that is held for another step's

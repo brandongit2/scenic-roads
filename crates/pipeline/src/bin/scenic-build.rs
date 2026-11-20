@@ -3090,14 +3090,16 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::iter::once(format!("work/summits/{date}"))
             .chain(roads::peaks::z8::lo_packs(&out.manifest).into_iter().map(|(l, _)| l)),
     );
-    peaks_from(out, scratch, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads, &read)
+    peaks_from(out, scratch, &date, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads, &read)
 }
 
-/// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`.
+/// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`, the summits `summits` the
+/// pass `date`'s.
 #[allow(clippy::too_many_arguments)]
 fn peaks_from(
     out: &mut Out,
     scratch: &Path,
+    date: &str,
     units: &[TileId],
     pois: &[Option<store::nasfs::NasPath>],
     packs: &terrain::terrain_pack::ManifestTiles,
@@ -3150,16 +3152,26 @@ fn peaks_from(
             &u.slash(),
             &[read, &jobrt::resume_log::names(out, near), "z8 read"],
         );
-        // (What its coarse stage reads of the z8, the tiles by their XXH3, recorded with its
-        // results: its key's lo line moves only once one of those does,
-        // pipeline::agent::idents::peaks_lo. Its line worked out as the plan did, from the record
-        // before it; it asks nothing of the coverage.)
-        let (geo, lines) = pipeline::agent::idents::peaks_lo_geo(&out.manifest);
-        let reask =
-            |q: &str| roads::peaks::z8::question_tile(q).map(|(x, y)| roads::peaks::z8::tile_answer(z8.hash(x, y)));
+        // (What its coarse stage reads of the z8, the tiles by their XXH3, and of the summits,
+        // recorded with its results: its key's lo and summits lines move only once one of those
+        // does, pipeline::agent::idents::peaks_lo and peaks_summits. Its line worked out as the plan
+        // did, from the record before it, and spelled as the plan's key lines; it asks nothing of
+        // the coverage.)
+        use pipeline::agent::idents::{
+            peaks_geo, peaks_lines, peaks_summits_answer, peaks_summits_line, PEAKS_SUMMITS_Q,
+        };
+        let (geo, lines) = peaks_geo(&out.manifest, date);
+        let summits_now = peaks_summits_line(&out.manifest, date);
+        let summits_answer = peaks_summits_answer(&out.manifest, date);
+        let reask = |q: &str| {
+            if q == PEAKS_SUMMITS_Q {
+                return Some(summits_answer.clone());
+            }
+            roads::peaks::z8::question_tile(q).map(|(x, y)| roads::peaks::z8::tile_answer(z8.hash(x, y)))
+        };
         let cov = buildstore::coverage::Coverage::default();
         let asked = buildstore::asked::Run::start_target(out, "peaks", &u.slash(), &cov, geo.clone(), &reask)?
-            .spelled(|l| if l == geo { lines.join("\n") } else { l });
+            .spelled(|l| peaks_lines(&l, &geo, &lines, &summits_now).join("\n"));
         let mut pieces =
             jobrt::resume_log::Pieces::open(scratch, (u.z, u.x, u.y), "peaks", &id, jobrt::resume_log::on());
         let (res, z8_read) = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
@@ -3184,6 +3196,7 @@ fn peaks_from(
         let answers = z8_read
             .iter()
             .map(|&t| (roads::peaks::z8::tile_question(t), roads::peaks::z8::tile_answer(z8.hash(t.0, t.1))))
+            .chain([(PEAKS_SUMMITS_Q.to_string(), summits_answer.clone())])
             .collect();
         asked.put(out, answers)?;
         drop(p);

@@ -1515,7 +1515,7 @@ pub const TABLE: [Step; 65] = [
     Step {
         shared: true,
         versions: &[("peaks", || super::build::PEAKS_V.to_string())],
-        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::pass_summits) }, All { step: "terrain-lo", grain: Grain::Read(idents::peaks_lo) }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
+        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::peaks_summits) }, All { step: "terrain-lo", grain: Grain::Read(idents::peaks_lo) }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {

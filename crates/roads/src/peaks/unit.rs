@@ -563,8 +563,23 @@ fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>, BTreeSet<(u32, u32)>)
     Ok((coarse, v, read))
 }
 
+/// The z8 tiles behind what the coarse stage read of the summits (task #1545): its overlay reads
+/// the summits whose z8 pixel is in a tile it read (`Ov8`, by pixel and by tile), at their z8
+/// heights, and each of those heights reads the tiles around its pixel (crate::summits::z8_tiles_read).
+fn z8_behind(summits: &[Summit], read: &BTreeSet<(u32, u32)>) -> Vec<(u32, u32)> {
+    summits
+        .iter()
+        .filter(|s| {
+            let (x, y) = crate::summits::z8_pixel(s.lon, s.lat);
+            read.contains(&(x.div_euclid(TS) as u32, y.div_euclid(TS) as u32))
+        })
+        .flat_map(crate::summits::z8_tiles_read)
+        .collect()
+}
+
 /// Peaks of a z6 tile: (key, result) in the peaks' order, and the z8 tiles its coarse stage read
-/// (pipeline's agent::idents::peaks_lo: what its key's lo line answers); the summits as they see
+/// with those the z8 heights of the summits it read there read (crate::summits::z8_tiles_read;
+/// pipeline's agent::idents::peaks_lo: what its key's lo line answers); the summits as they see
 /// them, then each batch of them (`BATCH`), kept in `pieces` as made.
 pub fn run(
     peaks: &[UnitPeak],
@@ -947,6 +962,8 @@ pub fn run(
         read.extend(r);
     }
     eprintln!("peaks: measured ({:.0?}), {need_coarse} needed the coarse stage", t0.elapsed());
+    let behind = z8_behind(summits, &read);
+    read.extend(behind);
     outs.sort_by_key(|o| o.0);
     let outs = outs
         .into_iter()
@@ -1268,6 +1285,33 @@ mod tests {
         if wide {
             assert!(read2.len() < read.len(), "the search stops at the nearer higher ground");
         }
+    }
+
+    /// Task #1545: a run's z8 record holds the tiles behind the z8 heights of the summits its
+    /// overlay read (those whose pixel is in a tile read): the tile next door for one at its edge;
+    /// nothing for one in a tile it didn't read, or with no tagged height.
+    #[test]
+    fn the_z8_record_holds_the_tiles_behind_the_summits_read() {
+        let at = |gx: f64, gy: f64, ele: Option<f32>| {
+            let w = 256.0 * 256.0;
+            let (lon, lat) = ((gx + 0.5) / w * 360.0 - 180.0, roadcore::geo::merc_lat((gy + 0.5) / w));
+            Summit {
+                id: "n1".into(),
+                kind: "peak".into(),
+                lon: (lon * 1e7) as i32,
+                lat: (lat * 1e7) as i32,
+                ele,
+                z8: None,
+            }
+        };
+        let read: BTreeSet<(u32, u32)> = [(133, 90)].into();
+        let edge = at(133.0 * 256.0 + 255.0, 90.0 * 256.0 + 7.0, Some(1200.0));
+        let elsewhere = at(140.0 * 256.0 + 255.0, 90.0 * 256.0 + 7.0, Some(1200.0));
+        let untagged = at(133.0 * 256.0 + 255.0, 90.0 * 256.0 + 9.0, None);
+        let mut got = z8_behind(&[edge, elsewhere, untagged], &read);
+        got.sort_unstable();
+        got.dedup();
+        assert_eq!(got, [(133, 90), (134, 90)]);
     }
 
     /// A load that fails fails in its turn, after the z6 tiles before it were done.

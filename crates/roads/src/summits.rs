@@ -155,26 +155,34 @@ pub fn z8_pixel(lon: i32, lat: i32) -> (i64, i64) {
     ((x * w).floor() as i64, (y * w).floor() as i64)
 }
 
+/// The z8 pixels a summit's z8 height reads (`add_z8`): those within one pixel of its own, x
+/// wrapping, none past the poles.
+fn z8_around(s: &Summit) -> impl Iterator<Item = (i64, i64)> {
+    let w = 256i64 << crate::peaks::z8::Z;
+    let (px, py) = z8_pixel(s.lon, s.lat);
+    (-1..=1i64)
+        .flat_map(move |dy| (-1..=1i64).map(move |dx| ((px + dx).rem_euclid(w), py + dy)))
+        .filter(move |&(_, gy)| (0..w).contains(&gy))
+}
+
+/// The z8 tiles a summit's z8 height reads (`add_z8`): none without a tagged height (its z8 is
+/// none whatever the terrain), else those of the pixels within one of its own. What a peaks run
+/// records of a summit it read (crate::peaks::unit::run).
+pub fn z8_tiles_read(s: &Summit) -> impl Iterator<Item = (u32, u32)> + '_ {
+    s.ele.into_iter().flat_map(move |_| z8_around(s)).map(|(gx, gy)| ((gx / 256) as u32, (gy / 256) as u32))
+}
+
 /// Each summit's z8 height (`z8_height`), from the highest pixel within one pixel of it.
 pub fn add_z8(summits: &mut [Summit], z8: &Z8) -> Result<usize> {
     use rayon::prelude::*;
-    let w = 256i64 << crate::peaks::z8::Z;
     summits
         .par_iter_mut()
         .map(|s| -> Result<usize> {
             let Some(ele) = s.ele else { return Ok(0) };
-            let (px, py) = z8_pixel(s.lon, s.lat);
             let mut max3 = f32::MIN;
-            for dy in -1..=1i64 {
-                let gy = py + dy;
-                if gy < 0 || gy >= w {
-                    continue;
-                }
-                for dx in -1..=1i64 {
-                    let gx = (px + dx).rem_euclid(w);
-                    let t = z8.tile((gx / 256) as u32, (gy / 256) as u32)?;
-                    max3 = max3.max(t[(gy % 256 * 256 + gx % 256) as usize].max(0.0));
-                }
+            for (gx, gy) in z8_around(s) {
+                let t = z8.tile((gx / 256) as u32, (gy / 256) as u32)?;
+                max3 = max3.max(t[(gy % 256 * 256 + gx % 256) as usize].max(0.0));
             }
             s.z8 = z8_height(ele, max3);
             Ok(s.z8.is_some() as usize)
@@ -216,6 +224,36 @@ mod tests {
         assert_eq!(z8_height(1000.0, 400.0), Some(1000.0));
         assert_eq!(z8_height(10000.0, 8500.0), None);
         assert_eq!(z8_height(0.0, 10.0), None);
+    }
+
+    /// Task #1545: a summit's z8 height reads the tiles of the pixels around its own: one tile
+    /// inside, two at a tile's edge, four at its corner, wrapping at the antimeridian; none
+    /// without a tagged height.
+    #[test]
+    fn a_summits_z8_height_reads_the_tiles_around_its_pixel() {
+        let at = |gx: f64, gy: f64, ele: Option<f32>| {
+            // (A point at the centre of global z8 pixel (gx, gy).)
+            let w = 256.0 * 256.0;
+            let (x, y) = ((gx + 0.5) / w, (gy + 0.5) / w);
+            let (lon, lat) = (x * 360.0 - 180.0, roadcore::geo::merc_lat(y));
+            let s = Summit {
+                id: "n1".into(),
+                kind: "peak".into(),
+                lon: (lon * 1e7) as i32,
+                lat: (lat * 1e7) as i32,
+                ele,
+                z8: None,
+            };
+            let mut t: Vec<(u32, u32)> = z8_tiles_read(&s).collect();
+            t.sort_unstable();
+            t.dedup();
+            t
+        };
+        assert_eq!(at(133.0 * 256.0 + 100.0, 90.0 * 256.0 + 100.0, Some(1000.0)), [(133, 90)]);
+        assert_eq!(at(133.0 * 256.0 + 255.0, 90.0 * 256.0 + 100.0, Some(1000.0)), [(133, 90), (134, 90)]);
+        assert_eq!(at(133.0 * 256.0, 90.0 * 256.0, Some(1000.0)), [(132, 89), (132, 90), (133, 89), (133, 90)]);
+        assert_eq!(at(255.0 * 256.0 + 255.0, 90.0 * 256.0 + 100.0, Some(1000.0)), [(0, 90), (255, 90)]);
+        assert_eq!(at(133.0 * 256.0 + 255.0, 90.0 * 256.0 + 100.0, None), []);
     }
 
     #[test]

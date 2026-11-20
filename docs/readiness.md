@@ -188,7 +188,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | region-tiles | `regionlayer::KEY_V`, each accepted region's file path and geometry content name | versions; `in regions:geometry` (`idents::regions_geometry`) | new (task #1129): names, flags and `disabled` not keyed (the app reads them from the list) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
 | summits | (pass) | `Input`s | same |
-| peaks | candidates, summits, hi packs within 30 km, the z8 tiles its run read | `Targets pois` (its tile), `Whole summits`, `Targets terrain-hi` (30 km box), `Whole terrain-lo` (`Grain::Read`: the z8 tiles its coarse stage read, as its run recorded them, `idents::peaks_lo`) | the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box; task #1475: keyed on the z8 tiles read, not every lo pack |
+| peaks | candidates, summits, hi packs within 30 km, the z8 tiles its run read | `Targets pois` (its tile), `Whole summits` (`Grain::Read`: the summits set and version and the z8 tiles behind the heights of the summits it read, as its run recorded them, `idents::peaks_summits`), `Targets terrain-hi` (30 km box), `Whole terrain-lo` (`Grain::Read`: the z8 tiles its coarse stage read, as its run recorded them, `idents::peaks_lo`) | the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box; task #1475: keyed on the z8 tiles read, not every lo pack; task #1545: on the summits read, not the summits whole |
 | items | date, current candidates | `Whole pois` | same |
 | heritage | heritage-sources, sets, coverage | `Whole heritage-sites`, `in pass:*`, `in coverage:cover` | task #1130: the cover |
 | marks | facts, views, heritage files, every tile's pois and peaks | `Whole items`, `Whole heritage`, `Whole pois`, `Whole peaks` | same |
@@ -221,7 +221,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      page draws single-job arrows.
    - Declared reads that differ from §5's table, because the planner held them so and the keys
      read so: the peaks wait for all terrain-hi and terrain-lo (their coarse stage may read any lo
-     pack's z8; their key names the z8 tiles it read, `idents::peaks_lo`), their own tile's candidates and the hiking-route ends; the items, the
+     pack's z8; their key names the z8 tiles it read, `idents::peaks_lo`, and the summits it read, `idents::peaks_summits`), their own tile's candidates and the hiking-route ends; the items, the
      marks and the overlays also declare what their reads' keys read (trailends, summits,
      heritage-sites, the spacing and registers inputs) so none runs on a read about to change;
      bldprep reads an input (the declared release), not `Whole bld-fetch`: it runs beside the

@@ -354,11 +354,6 @@ pub fn pass_trailends(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(named(x, [format!("work/trailends/{}", x.date)]))
 }
 
-/// The pass's summits (the summits step's), when made.
-pub fn pass_summits(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(named(x, [format!("work/summits/{}", x.date)]))
-}
-
 /// The candidates of the coverage's z6 tiles now (`build::pois_units`), by content, those made;
 /// None with none (the items wait).
 pub fn pois_now(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
@@ -701,43 +696,95 @@ pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![terrain::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
 }
 
-/// What a peaks z6 tile's key reads of the terrain's lo packs by their names, its cheap test
-/// (buildstore::asked's `geo`): every lo pack by content (`<logical>=<content>`, "-" with none), the
-/// lines its key named before it recorded what it read, and their hash, the record's version. The
-/// same packs, the same z8, the same answers to what its run asked of it.
-pub fn peaks_lo_geo<'m>(m: impl Manifest<'m>) -> (String, Vec<String>) {
+/// What a peaks z6 tile's key reads of the terrain's lo packs and of the pass's summits by their
+/// names, its cheap test (buildstore::asked's `geo`): every lo pack by content
+/// (`<logical>=<content>`, "-" with none) and the summits (`peaks_summits_line`), the lines its key
+/// named before it recorded what it read, and their hash, the record's version. The same packs and
+/// summits, the same z8 and the same summits read, the same answers to what its run asked.
+pub fn peaks_geo<'m>(m: impl Manifest<'m>, date: &str) -> (String, Vec<String>) {
     let mut lines = super::steps::whole_outputs("terrain-lo", m);
     if lines.is_empty() {
         lines.push("-".to_string());
     }
+    lines.push(peaks_summits_line(m, date));
     (store::naming::hash16(lines.join("\n").as_bytes()), lines)
 }
 
-/// The terrain a peaks z6 tile reads of the lo packs: the z8 tiles its coarse stage read, as its
-/// run recorded them (roads::peaks::z8::tile_question, buildstore::asked), by their XXH3 in the lo
-/// packs' indexes now: its record's line while those answer the same, so a change elsewhere in the
-/// lo packs moves no key (task #1475). While it has no record, every lo pack by content
-/// (`peaks_lo_geo`'s lines), as its key read them before: the line it runs under, which its record
-/// keeps spelled so (buildstore::asked::Run::spelled), so recording moves no key. None while a lo
-/// pack's index can't be read. Key lines `w terrain-lo <line>`.
-pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let (geo, lines) = peaks_lo_geo(x.m);
-    let line = peaks_line(t, x.cov, x.m, x.tiles)?;
-    Some(if line == geo { lines } else { line.lines().map(str::to_string).collect() })
+/// The pass's summits (roads::summits, `work/summits/<date>`) by content, "<logical> -" with none:
+/// the line a peaks key reads them by whole, and the start of every such line (`SUMMITS_LINE`).
+pub fn peaks_summits_line<'m>(m: impl Manifest<'m>, date: &str) -> String {
+    let l = format!("{SUMMITS_LINE}{date}");
+    m.get(&l).map_or_else(|| format!("{l} -"), |c| format!("{l}={c}"))
 }
 
-/// `peaks_lo`'s line (the cheap test's hash while it has no record) of the coverage `cov`
-/// (unread: no question of it), the records `m` names and the indexes, heads and memo of `tiles`
-/// (`warm_peaks`', on any thread).
+const SUMMITS_LINE: &str = "work/summits/";
+
+/// What a peaks run asks of the summits beside the z8 tiles (buildstore::asked's `Record::also`),
+/// task #1545: the summits' own fields but their z8 heights (id, kind, position, tagged height)
+/// are the pass's summits set's and the summits step's version's, its answer; their z8 heights
+/// read the z8 tiles around them, recorded with the tiles its coarse stage read
+/// (roads::peaks::unit::run).
+pub const PEAKS_SUMMITS_Q: &str = "summits set";
+
+/// `PEAKS_SUMMITS_Q`'s answer now: the pass's summits set by content and the summits' version.
+pub fn peaks_summits_answer<'m>(m: impl Manifest<'m>, date: &str) -> String {
+    let set = inputs::osmpass::set_name(date, "summits");
+    format!("{} v{}", m.get(&set).map_or_else(|| "-".to_string(), |c| c.to_string()), super::build::SUMMITS_V)
+}
+
+/// A peaks z6 tile's key lines of the lo packs and the summits (`peaks_lo`, `peaks_summits`) from
+/// its line (`peaks_line`, the cheap test's `geo` while it has no record, whose lines are `lines`):
+/// the record's lines, or `lines`; with no summits line among them (a record from before it asked of
+/// the summits, or a new line), the summits now (`summits`) after them. The line its run runs under
+/// too, spelled so (buildstore::asked::Run::spelled): its first record moves no key.
+pub fn peaks_lines(line: &str, geo: &str, lines: &[String], summits: &str) -> Vec<String> {
+    let mut v: Vec<String> = if line == geo { lines.to_vec() } else { line.lines().map(str::to_string).collect() };
+    if !v.iter().any(|l| l.starts_with(SUMMITS_LINE)) {
+        v.push(summits.to_string());
+    }
+    v
+}
+
+/// The terrain a peaks z6 tile reads of the lo packs: the z8 tiles its coarse stage read, with
+/// those behind the z8 heights of the summits it read, as its run recorded them
+/// (roads::peaks::z8::tile_question, buildstore::asked), by their XXH3 in the lo packs' indexes now:
+/// its record's lines while those answer the same, so a change elsewhere in the lo packs moves no
+/// key (task #1475). While it has no record, every lo pack by content (`peaks_geo`'s lines), as its
+/// key read them before: the line it runs under, which its record keeps spelled so, so recording
+/// moves no key. None while a lo pack's index can't be read. Key lines `w terrain-lo <line>`.
+pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(peaks_read(t, x)?.into_iter().filter(|l| !l.starts_with(SUMMITS_LINE)).collect())
+}
+
+/// The summits a peaks z6 tile reads (task #1545): its record's summits line while what it asked
+/// answers the same (`PEAKS_SUMMITS_Q` and the z8 tiles behind their heights, `peaks_lo`), so the
+/// summits made again for a lo change elsewhere move no key; with no record, or one from before it
+/// asked of the summits, the pass's summits by content, as its key read them before. Key lines
+/// `w summits <line>`.
+pub fn peaks_summits(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(peaks_read(t, x)?.into_iter().filter(|l| l.starts_with(SUMMITS_LINE)).collect())
+}
+
+/// `peaks_lines` of a peaks z6 tile's line.
+fn peaks_read(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let (geo, lines) = peaks_geo(x.m, x.date);
+    let line = peaks_line(t, x.cov, x.m, x.date, x.tiles)?;
+    Some(peaks_lines(&line, &geo, &lines, &peaks_summits_line(x.m, x.date)))
+}
+
+/// A peaks z6 tile's line (the cheap test's hash while it has no record) of the coverage `cov`
+/// (unread: no question of it), the pass `date`, the records `m` names and the indexes, heads and
+/// memo of `tiles` (`warm_peaks`', on any thread).
 fn peaks_line<'m>(
     t: &str,
     cov: &buildstore::coverage::Coverage,
     m: impl Manifest<'m>,
+    date: &str,
     tiles: &super::tiles::TerrainTiles,
 ) -> Option<String> {
     use roads::peaks::z8::{question_tile, tile_answer, Z};
     TileId::parse(t).filter(|u| u.z == 6)?;
-    let (geo, lines) = peaks_lo_geo(m);
+    let (geo, lines) = peaks_geo(m, date);
     // (Every lo pack's index read, so each question is answered: none taken for flipped while its
     // index is only not read yet.)
     for l in &lines {
@@ -750,18 +797,22 @@ fn peaks_line<'m>(
         tiles.hash(m, Z, q.x << (Z - 3), q.y << (Z - 3)).ok()?;
     }
     let reask = |q: &str| {
+        if q == PEAKS_SUMMITS_Q {
+            return Some(peaks_summits_answer(m, date));
+        }
         let (a, b) = question_tile(q)?;
         tiles.hash(m, Z, a, b).ok().map(tile_answer)
     };
     asked_line("peaks", t, geo, cov, m, tiles, &reask)
 }
 
-/// Works out, on rayon's threads, the line of every peaks z6 tile whose lo packs moved under its
-/// record (`peaks_line`: its record read and asked again), kept in the tiles' memo for the plan's
-/// keys to find, as `warm_lakes` the lake-depth's: any lo pack made again moves the cheap test of
-/// every record, and the plan's thread reads none of them one by one. Once per what those lines
-/// read: the lo packs and the records `m` names (the plan runs it every loop: none of them
-/// changed, nothing done). One that can't be worked out now is left to the key that reads it.
+/// Works out, on rayon's threads, the line of every peaks z6 tile whose lo packs or summits moved
+/// under its record (`peaks_line`: its record read and asked again), kept in the tiles' memo for the
+/// plan's keys to find, as `warm_lakes` the lake-depth's: any lo pack made again (and the summits
+/// with it) moves the cheap test of every record, and the plan's thread reads none of them one by
+/// one. Once per what those lines read: the lo packs, the summits and their set, and the records `m`
+/// names (the plan runs it every loop: none of them changed, nothing done). One that can't be
+/// worked out now is left to the key that reads it.
 pub fn warm_peaks(x: &KeyCtx) {
     use rayon::prelude::*;
     // (None in a shadow plan, as `warm_asked`.)
@@ -769,19 +820,21 @@ pub fn warm_peaks(x: &KeyCtx) {
         return;
     }
     // (A cache filled, on other threads: each key finds its line by what it reads itself.)
-    let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
+    let (cov, m, tiles, date) = (x.cov, x.m.unrecorded_map(), x.tiles, x.date);
     let named = |p: &'static str| m.under(p);
     let asked = "work/asked/peaks/";
     let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
     if each.is_empty() {
         return;
     }
-    let from: Vec<&str> =
+    let mut from: Vec<&str> =
         named("layers/terrain/lo/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
+    let (summits, set) = (peaks_summits_line(m, date), peaks_summits_answer(m, date));
+    from.extend([summits.as_str(), set.as_str()]);
     let _ = tiles.memo("peaks:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
         each.par_iter().for_each(|t| {
             let _d = store::keyread::deriving();
-            peaks_line(t, cov, m, tiles);
+            peaks_line(t, cov, m, date, tiles);
         });
         Ok(String::new())
     });
