@@ -260,7 +260,8 @@ class Wrap(unittest.TestCase):
             for k in ("SCENIC_DEVJOB", "SCENIC_DEVJOB_PARENT", "SCENIC_DEVJOB_OUTER"):
                 env.pop(k, None)
             inner = f"{sys.executable} {devjob.__file__} wrap --kind tests --name inner -- sh -c \"echo 'progress: 0/2 x (a)'; sleep 0.2; echo 'progress: 1/2 x (b)'\""
-            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "outer", "--", "sh", "-c", f"echo 'progress: 0/1 y (alone)'; {inner}"],
+            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "outer", "--", "sh", "-c",
+                                f"echo 'progress: 0/2 y (before)'; sleep 0.3; {inner}; sleep {devjob.INNER_SLACK_S + 0.5}; echo 'progress: 1/2 y (after)'"],
                                env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("progress: 1/2 x (b)", r.stdout, "the output passed on whole")
@@ -279,7 +280,8 @@ class Wrap(unittest.TestCase):
             self.assertFalse([f for f in os.listdir(d) if f.startswith("in-")], "the mark deleted")
         ids = {e["name"]: e["id"] for e in ev if e["op"] == "start"}
         got = sorted((e["name"], e["parent"] == ids["inner"]) for e in ev if e["op"] == "span" and e["kind"] == "phase")
-        self.assertEqual(got, [("x (a)", True), ("x (b)", True)], "each phase once, the inner wrap's; the outer leaves the progress out, its own line too")
+        self.assertEqual(got, [("x (a)", True), ("x (b)", True), ("y (after)", False), ("y (before)", False)],
+                         "each phase once: the inner wrap's its own, the outer's own lines before and after it the outer's")
 
     def test_a_command_that_cant_run_is_127_and_its_span_ended(self):
         with tempfile.TemporaryDirectory() as d:

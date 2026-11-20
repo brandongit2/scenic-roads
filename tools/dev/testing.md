@@ -486,8 +486,10 @@ count changes, one open a source, the unit's words before its "(", so sources sa
 cut each other; a test's, run with `--nocapture`, under its suite and ending with it, so a 19-min
 test reads by its own stages once it says them; none from nextest's captured output, said after the
 test ended; tools/app/guards.sh says each of its checks, and check.sh's web part each step). A wrap
-inside a wrap records the progress it passes on and the outer leaves it out (`SCENIC_DEVJOB_OUTER`), so
-a phase is recorded once, under the inner's suites and runs. A span started inside another's (a cargo in a check's part) is part of it: each job exports
+inside a wrap records the progress it passes on, and writes its start and end into the outer's mark
+file (`SCENIC_DEVJOB_OUTER`); the outer leaves out the progress said in those spans (and a second
+after), keeping its own lines before and after, so a phase is recorded once, under the inner's suites
+and runs. A span started inside another's (a cargo in a check's part) is part of it: each job exports
 its id as `SCENIC_DEVJOB_PARENT`. A run of its own says who ran it: its checkout, branch, commit,
 task (`SCENIC_TASK`, else the latest `#<n>` in the branch's commits since main) and whether an agent
 did (Claude Code's `CLAUDECODE`). A span is on the Mac it ran on (#1086): remote-tests.sh's run on
