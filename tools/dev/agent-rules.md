@@ -81,15 +81,21 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   - on a file's text: `until grep -q DONE <log>; do [ -e <log> ] || break; [ $SECONDS -gt 1800 ]
     && break; sleep 20; done`, the same over `ssh`;
   - the Monitor tool, with an until-loop, for a condition.
-  Refused: a bare `sleep N` in the foreground (Claude Code); a loop over `pgrep -f` (it matches its
-  own shell); and any `while`/`until` loop that sleeps, or an `until grep`, with no bound in its own
-  condition or body, on the command line, in `sh -c`, over `ssh` or in a heredoc fed to a shell
-  (tools/dev/shell-guard.py). A bound elsewhere on the line, or in a comment, doesn't count.
+  Refused: a bare `sleep N` in the foreground (Claude Code); a loop over `pgrep -f`, or on a PID
+  taken from one (it matches its own shell); and any `while`/`until` loop (zsh's `while c { … }`,
+  `for ((;;))`) that sleeps, or an `until grep`, with no bound in its own condition or body: on the
+  command line, in a substitution, `sh -c`, `eval`, a function, over `ssh`, or in a heredoc or
+  here-string fed or piped to a shell (tools/dev/shell-guard.py). A bound elsewhere on the line,
+  in a loop inside it, or in a comment doesn't count. Not caught: a script run from a file, a loop
+  in another language (`python3 -c 'while True: …'`), a string piped to a shell (`echo … | bash`).
 - **Every wait loop has a deadline and stops when what it watches is gone** (the file, the
   folder, the process): a loop whose log was deleted with its scratch folder never ends (#1361's
-  ran for two days). *Enforced* for the deadline: shell-guard.py refuses a `while`/`until` loop
-  that sleeps with no bound in the loop (`$SECONDS`, `timeout`, a counter compared with
-  `-lt`/`-le`/`-gt`/`-ge` or `(( … ))`), but one on a PID (`kill -0`) or reading lines.
+  ran for two days). *Enforced* for the deadline: shell-guard.py refuses a loop that sleeps with
+  no bound in it. Bounds: a comparison (`[`, `[[`, `test`, `(( … ))`; -lt/-le/-gt/-ge/-eq/-ne,
+  `=`, `!=`) of the clock (`$SECONDS`, `$(date +%s)`) or of a counter the loop changes by
+  arithmetic (`let i++`, `(( i++ ))`, `i=$((i+1))`); a PID's wait as the condition (`kill -0`,
+  `ps -p`, either over ssh) or `kill -0 <pid> || break`; `timeout` round the whole loop
+  (`timeout 600 zsh -c '…'`). A loop reading lines (`while read`) passes.
 - **Before reporting, stop every background task of yours still running** (TaskStop, or your
   process's exact PID) and list them in the report.
 

@@ -191,7 +191,11 @@ if (( rc == 0 )) && [[ -z $out ]]; then print "ok: shell-guard.sh lets the own w
 # The wait-loop rule (#1525): a `while`/`until` loop that sleeps needs a deadline in its own
 # condition or body (a bound word elsewhere on the line doesn't count), a PID it waits on, or lines
 # it reads; a heredoc fed to a shell is read, prose (a quoted message, a comment) isn't; a bounded
-# for-loop and a single sleep aren't loops waiting on something.
+# for-loop and a single sleep aren't loops waiting on something. Round 2: a bound counts in its own loop only
+# (not an inner one's), a comparison only of the clock or a counter the loop changes, `kill -0` as
+# the condition or with `|| break`, `timeout` only round the whole loop; a PID from `pgrep -f`
+# refused; ssh's heredoc read only when it feeds a shell; zsh's short form, `for ((;;))`, a function,
+# a heredoc piped to a shell and a here-string read.
 wl="No wait loop without a deadline"
 for want cmd in \
   $wl "until ssh m6 'grep -q done ~/s/after.log'; do sleep 20; done" \
@@ -213,6 +217,33 @@ for want cmd in \
   ok "i=0; while [ \$i -lt 90 ]; do let i++; sleep 2; done" \
   ok "gh pr comment 1 -b 'while true; do sleep 5; done'" \
   ok "grep -n 'until grep' x" ok "echo hi # while true; do sleep 5; done" \
+  "No waiting on \`pgrep -f\`" $'while kill -0 $(pgrep -f \'check.sh\' | head -1) 2>/dev/null; do sleep 5; done' \
+  $wl $'while true; do for i in 1 2; do [ $i -gt 1 ] && echo; done; sleep 5; done' \
+  $wl $'while true; do while kill -0 1; do sleep 1; done; sleep 5; done' \
+  $wl $'until timeout 5 curl -sf localhost:8080; do sleep 2; done' \
+  $wl $'while true; do kill -0 1; sleep 5; done' \
+  ok $'while true; do kill -0 1 || break; sleep 5; done' \
+  $wl $'while true; do echo "t=$SECONDS"; sleep 5; done' \
+  $wl $'while true; do [ 1 -gt 0 ] && break; sleep 5; done' \
+  ok $'ssh m6 \'cat > ~/s/run.sh\' <<\'EOF\'\nwhile true; do sleep 5; done\nEOF' \
+  $wl $'ssh m6 bash -s <<\'EOF\'\nwhile true; do sleep 5; done\nEOF' \
+  ok $'n=0; while true; do n=$((n+1)); [ $n -eq 5 ] && break; sleep 1; done' \
+  ok $'n=0; until [ "$n" = 5 ]; do let n++; sleep 1; done' \
+  ok $'n=0; while true; do (( ++n == 5 )) && break; sleep 1; done' \
+  ok $'while IFS= read -r l; do echo $l; sleep 0.1; done < f' \
+  $wl $'while true; do command sleep 1; done' \
+  $wl $'while true; do env X=1 sleep 1; done' \
+  ok $'while ps -p 123 > /dev/null; do sleep 5; done' \
+  ok $'while ssh m6 \'kill -0 123\'; do sleep 5; done' \
+  ok $'end=$(( $(date +%s) + 60 )); while [ $(date +%s) -lt $end ]; do sleep 1; done' \
+  $wl $'cat <<E | bash\nwhile true; do sleep 1; done\nE' \
+  $wl $'cat <<E | ssh m6 bash\nwhile true; do sleep 1; done\nE' \
+  $wl $'bash <<< \'while true; do sleep 1; done\'' \
+  $wl $'function f { while true; do sleep 1; done }; f' \
+  $wl $'until test -e f { sleep 1 }' \
+  ok $'while true { [ $SECONDS -gt 60 ] && break; sleep 1 }' \
+  $wl $'for ((;;)); do sleep 1; done' \
+  ok $'for ((i=0; i<3; i++)); do sleep 1; done' \
   ok $'cat > f <<EOF\nwhile true; do sleep 1; done\nEOF'; do
   in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
   out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
