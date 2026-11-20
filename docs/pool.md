@@ -928,16 +928,27 @@ thousandths:
   as a stall of the pool's own may take longer than any while to build (forgotten after a clean
   span, one starting 60 s after the load was taken back once a job: 5,582 readings stalled
   against main's 1,550). So the first stall at a load costs one episode to learn it, its cut
-  taken back, and none after: one take-back in each run of that simulation, the stall at once or
-  60, 120 or 300 s after the load. A stall on and off (40 s on, 50 off) takes up to three: a
-  take-back in an off spell finds the weight still in use and answering, as an outside stall's
-  end does, and goes all the way back, arming nothing. Over jobs of 450 to 800 s
-  (`a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`, main 0cba2297c's in
-  brackets), readings stalled over 600: at once 1,775 (1,648), after 60 s 1,596 (1,550), 120 s
-  1,286 (1,088), 300 s 1,275 (1,190), on and off 1,450 (1,225), after 60 s then on and off 1,608
-  (1,551): 3 to 18 % more, the take-back and where the stalls then fall in the jobs' cycle; over
-  300, 3,667 (4,822) and after 60 s 4,710 (5,477). With outside stalls of 40 s every 300 s or
-  120 s, whatever the load, 1,552 and 1,472 jobs started (661 and 286).
+  taken back. **The cap**: a take-back that finds the weight the misses came at still in use and
+  answering, as an outside stall's end does and an on and off stall's off spell too (nothing
+  tells them apart), goes back no further than that weight and arms nothing, so a take-back
+  never adds load past what the misses came at. (Going one job past it, each such take-back in
+  an off spell let one more in: with jobs of an hour, none ending to arm the stall meanwhile, the
+  pool climbed to the whole NAS, 2,122 readings stalled in 12 h against main's 1,582.) An on and
+  off stall so costs a take-back each off spell a cut's span ends in, each at the load it stalls
+  at: a handful an hour with jobs of an hour or two, none adding load. In the simulation
+  (`a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`, main a4b4a7404's in
+  brackets; each case on its own), readings stalled, over 600 in 6 h over jobs of 450 to 800 s:
+  at once 1,775 (1,648), after 60 s 1,596 (1,550), 120 s 1,286 (1,088), 300 s 1,275 (1,190);
+  over 300, 3,667 (4,822) and after 60 s 4,710 (5,477). On and off over 600, 12 h, jobs a tenth
+  longer or shorter at random: of 600 s, 30 s on and 30 off 455 (512), 40 and 50 456 (397), 20
+  and 60 301 (276); of an hour 1,629 (1,487), 1,407 (1,402), 809 (834); of two hours 1,858
+  (1,841), 1,650 (1,650), 932 (946). At most 18 % more, the most in use main's (700; 800 where
+  the stall waits 120 s or more). Jobs all of exactly 600 s lock the stalls into one phase for
+  good, set by the first cuts: main's 6 h on and off reads 53 readings stalled with the answers'
+  noise drawn one way and 193 another (the rule 191 that way), so those cases are run at random
+  lengths. With outside stalls of 40 s every 300 s or 120 s, whatever the load, 1,238 and 281
+  jobs started (661 and 286): the gain the rule is for, where an outside stall ends with the pool
+  under its load; none where it's at its load.
   **With room** (the
   answers read, not rising and under the knee, the disks with room for the next job), it grows
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a

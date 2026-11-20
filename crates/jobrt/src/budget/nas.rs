@@ -154,8 +154,10 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   under what the misses came at, the window goes back a step under that weight, and misses
 ///   there or heavier are then the NAS's doing (`State::stall`), cut as any, until a miss judged
 ///   not the NAS's doing comes a step or more under it (what an outside stall does and the
-///   pool's own doesn't). The first stall at a load costs one episode to learn it, its cut taken
-///   back; after it, none: one take-back per such stall, however long it takes to build.
+///   pool's own doesn't). Taken back with the weight still in use and answering (an outside
+///   stall's end, or an on and off stall's off spell: nothing tells them apart), it goes back no
+///   further than that weight, arming nothing: a take-back never adds load past what the misses
+///   came at. The first stall at a load costs one episode to learn it.
 ///   The jobs running go on, and nothing more that's paced starts until enough of them end. No new
 ///   cut until the weight in use has fallen to the window and its answers had a `span_s` since to
 ///   show it (store::aimd's once a window: a cut compounding on readings of the jobs out before it
@@ -1196,11 +1198,15 @@ impl Pace {
             _ if back && st.undo.is_some() => {
                 let u = st.undo.take().unwrap();
                 // (The window back no further than one job past the load its readings tested, as
-                // it grows, and a step under the weight the misses came at (`State::stall`): it
-                // grows past that a step a cadence, the cut's threshold kept, its hold-off as it
-                // was; a miss there again is the NAS's doing and cuts as any.)
+                // it grows, and never past the weight the misses came at: a step under it, armed
+                // (`State::stall`), where the load has fallen under it; to it, nothing armed,
+                // where it's still in use and answering, as an outside stall's end and an on and
+                // off stall's off spell both are (a job more each such take-back would climb the
+                // second to the whole NAS). It grows past that a step a cadence, the cut's
+                // threshold kept, its hold-off as it was; a miss there again, armed, is the NAS's
+                // doing and cuts as any.)
                 let stalled = s.in_use < u.load;
-                let under = if stalled { f64::from(u.load) - step } else { f64::INFINITY };
+                let under = if stalled { f64::from(u.load) - step } else { f64::from(u.load) };
                 st.window = st.window.max(u.window.min(ceiling).min(under)).min(f64::from(WHOLE));
                 (st.cut_at, st.settled_at) = (u.cut_at, u.settled_at);
                 if stalled {
@@ -2748,8 +2754,8 @@ mod tests {
     /// Task #1554: missed deadlines with the disks well under their target and the pool's jobs all
     /// together moving under a step aren't the NAS's doing. The cut stands a span (the answers had
     /// one to show it over), then, the answers back under the knee, the window goes back to what it
-    /// was, no further than one job past the load the readings tested, its hold-off as before, the
-    /// cut's threshold kept (a restart between keeps it); the miss's stand-in ratio isn't judged
+    /// was, no further than the load the misses came at, its hold-off as before, the cut's
+    /// threshold kept (a restart between keeps it); the miss's stand-in ratio isn't judged
     /// among the answers. With the pool moving a step, the disks not read, or read within their
     /// target but not well under it, the cut stands as any cut.
     #[test]
@@ -2782,13 +2788,13 @@ mod tests {
         assert_eq!((cut, outside, w), (Verdict::Cut, true, 60), "held within a span: {within:?}");
         assert!(why.is_some_and(|w| w.contains("missing its deadlines from m1, not its doing")));
         assert!(!seen.contains(&RATIO_MOST), "{seen:?}");
-        assert_eq!((back, th, cut_at), (370, Some(60.0), None), "back to 400, one job of 250 past the 120 in use");
+        assert_eq!((back, th, cut_at), (120, Some(60.0), None), "back to the 120 the misses came at, no further");
         // (The disks at half their target: within it, not well under it.)
         let half = f64::from(DEFAULT_TARGET_PCT) * QUIET_SHARE;
         for (moving, busy) in [(STEP, Some(QUIET[0])), (10, None), (10, Some(half))] {
             let (cut, outside, _, seen, _, w, back, _, _) = case(moving, busy);
             assert_eq!((cut, outside, w), (Verdict::Cut, false, 60), "moving {moving}, the disks at {busy:?}");
-            assert!(back < 370 && seen.contains(&RATIO_MOST), "{back}");
+            assert!(back < 120 && seen.contains(&RATIO_MOST), "{back}");
         }
     }
 
@@ -2798,7 +2804,8 @@ mod tests {
     /// measured share don't show), cut as any, nothing kept to take back; however long the pool
     /// has run there without one since. A miss judged not the NAS's doing a step or more under the
     /// weight disarms it (an outside stall comes whatever the load); one within a step doesn't.
-    /// Taken back with the weight still there and no miss, it goes all the way back.
+    /// Taken back with the weight still there and no miss, it goes back to that weight, no
+    /// further.
     #[test]
     fn a_take_back_that_stalls_the_nas_again_is_not_taken_back_twice() {
         let go = |p: &mut Pace, t: u64, in_use: u32, missed: bool| {
@@ -2850,22 +2857,25 @@ mod tests {
         assert_eq!(go(&mut q, 10, 650, true), Verdict::Cut);
         assert!(q.last.as_ref().unwrap().missed_outside);
         assert_eq!((q.st.stall, q.st.undo.map(|u| u.load)), (None, Some(650)));
-        // (Taken back with the 700 still in use and no miss: back to the 800 it was.)
+        // (Taken back with the 700 still in use and no miss: no further than that 700, nothing
+        // armed; never a job past the load the misses came at, as it can't tell an on and off
+        // stall's off spell from an outside stall's end.)
         let mut r = Pace::default();
         (r.st.window, r.st.threshold) = (800.0, Some(400.0));
         go(&mut r, 0, 700, false);
         go(&mut r, 10, 700, true);
         go(&mut r, 10 + SPAN_S, 700, false);
-        assert_eq!((r.window(), r.st.stall), (800, None));
+        assert_eq!((r.window(), r.st.stall), (700, None));
     }
 
-    /// What `stalls` came to: the readings stalled, the jobs started, and the cuts on missed
-    /// deadlines judged not the NAS's doing taken back.
+    /// What `stalls` came to: the readings stalled, the jobs started, the cuts on missed deadlines
+    /// judged not the NAS's doing taken back, and the most in use.
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     struct Stalls {
         stalled: usize,
         starts: usize,
         taken_back: usize,
+        most: u32,
     }
 
     /// A stall the simulation reads, at `t` with a weight in use: true, stalled.
@@ -2885,18 +2895,20 @@ mod tests {
         })
     }
 
-    /// The pool's jobs of 100 asked without end, each running `secs`, read every 10 s for 6 h: two
-    /// Macs (m1 at home, m6 away) answering near their floors, all missing their deadlines and
-    /// nothing moving while `stalled` says, the disks at 20 % throughout.
-    fn stalls(secs: u64, mut stalled: Stalling) -> Stalls {
+    /// The pool's jobs of 100 asked without end, each running `secs` (each, with `jitter`, that
+    /// share more or less at random), read every 10 s for `hours`: two Macs (m1 at home, m6 away)
+    /// answering near their floors, all missing their deadlines and nothing moving while `stalled`
+    /// says, the disks at 20 % throughout.
+    fn stalls(secs: u64, jitter: f64, hours: u64, mut stalled: Stalling) -> Stalls {
         let k = Tuning::default();
         let mut p = Pace::default();
         let macs = [("m1", true, 5.0), ("m6", false, 40.0)];
         let mut running: Vec<(u64, usize)> = Vec::new();
-        let (mut out, mut seed) = (Stalls::default(), 0x2545_f491_u64);
-        for t in (0..6 * 3600).step_by(READ_EVERY_S as usize) {
+        let (mut out, mut seed, mut lengths) = (Stalls::default(), 0x2545_f491_u64, 0x9e37_79b9_u64);
+        for t in (0..hours * 3600).step_by(READ_EVERY_S as usize) {
             running.retain(|&(end, _)| end > t);
             let in_use = running.len() as u32 * 100;
+            out.most = out.most.max(in_use);
             let stall = stalled(t, in_use);
             out.stalled += usize::from(stall);
             let answers: Vec<Answer> = (macs.iter())
@@ -2934,7 +2946,8 @@ mod tests {
                 if !(Limits::fits_job(in_use, in_use, heaviest, 100, false, l.win()) && l.paced(in_use, 100)) {
                     break;
                 }
-                running.push((t + secs, out.starts % macs.len()));
+                let len = secs as f64 * (1.0 + jitter * (2.0 * draw(&mut lengths) - 1.0));
+                running.push((t + len.round() as u64, out.starts % macs.len()));
                 out.starts += 1;
             }
         }
@@ -2942,70 +2955,95 @@ mod tests {
     }
 
     /// Task #1554's reviews: a NAS stall of the pool's own doing that the disks (at 20 %) and the
-    /// measured share (nothing moving) don't show, jobs of 100 asked without end for 6 h: whenever
-    /// more than 600 is in use, at once, after 60, 120 or 300 s there, 40 s on and 50 off, or after
-    /// 60 s then so; and over 300, at once or after 60 s. Taking back every cut on its misses kept
-    /// the pool in it (1827 of 2160 readings with jobs of 600 s, main 53); forgetting the weight
-    /// the take-back stalled it at after a span without a miss, a stall building over longer took
-    /// one back each job (5582 readings stalled, after 60 s). Taken back once in each run (the
-    /// invariant: the first stall at a load costs one episode to learn it; on and off, up to three
-    /// times, below), it cuts as main does: summed over jobs of 450 to 800 s (the jobs' lengths
-    /// set where in a cycle the stalls fall), at most a quarter more readings stalled than main's
-    /// (18 % at most, after 120 s and on and off; 8 % at most otherwise). And the stalls the rule
-    /// is for, outside ones, 40 s every 300 s (or 120 s) whatever the load: more than twice main's
-    /// jobs started. Main's figures (`MAIN`: 0cba2297c, before the rule) by this simulation.
+    /// measured share (nothing moving) don't show, jobs of 100 asked without end. Over 600 in use,
+    /// at once or after 60, 120 or 300 s there, and over 300, at once or after 60 s, for 6 h, each
+    /// case summed over jobs of 450 to 800 s; on and off over 600 (30 s on and 30 off, 40 and 50,
+    /// 20 and 60) for 12 h with jobs of 600, 3600 and 7200 s, each a tenth longer or shorter at
+    /// random. In each case, the most in use never past the load the stall came at (main's most:
+    /// 700, or 800 where it waits 120 s or more, the pool a job heavier first; over 300, 400), and
+    /// at most a quarter more readings stalled than main's: taking back every cut on its misses kept the pool
+    /// in it (1827 of 2160 readings, main 53); forgetting the weight a stall came at after a span
+    /// without a miss took a cut back once a job (5582, main 1550); a take-back in an on and off
+    /// stall's off spell going one job past the load, each such one let one more job in, to the
+    /// whole NAS (2122, main 1582, with jobs of 3600 s). And the stalls the rule is for, outside
+    /// ones, 40 s every 300 s (or 120 s) whatever the load, summed over jobs of 450 to 800 s: as
+    /// many jobs started as main at least, within its noise (a twentieth: 1238 and 281, main 661
+    /// and 286). Main's figures (`MAIN`: a4b4a7404, before the rule) by this
+    /// simulation. (Jobs all exactly 600 s long lock the stalls into a phase, set by the first
+    /// cuts and kept for good: main's 6 h on and off over 600 reads 53 readings stalled with the
+    /// answers' noise drawn one way, 193 another; at random lengths that phase goes.)
     #[test]
     fn a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it() {
         let secs = [600, 450, 500, 550, 650, 700, 750, 800];
-        let all = |make: &dyn Fn() -> Stalling| {
-            let each: Vec<Stalls> = secs.iter().map(|&s| stalls(s, make())).collect();
-            let sum = each.iter().fold(Stalls::default(), |a, x| Stalls {
+        let summed = |make: &dyn Fn() -> Stalling| {
+            secs.iter().map(|&s| stalls(s, 0.0, 6, make())).fold(Stalls::default(), |a, x| Stalls {
                 stalled: a.stalled + x.stalled,
                 starts: a.starts + x.starts,
                 taken_back: a.taken_back + x.taken_back,
-            });
-            (sum, each.iter().map(|x| x.taken_back).max().unwrap_or(0))
+                most: a.most.max(x.most),
+            })
         };
-        // (Each case with the most take-backs a run may have: one; on and off, a take-back in an
-        // off spell finds the weight still in use and answering, as an outside stall's end does,
-        // and goes all the way back, nothing armed: tried again until one finds the stall on.)
-        let own_cases: [(&str, &dyn Fn() -> Stalling, usize); 8] = [
-            ("over 600", &|| own(600, 0, 1, 0), 1),
-            ("over 600 after 60 s", &|| own(600, 60, 1, 0), 1),
-            ("over 600 after 120 s", &|| own(600, 120, 1, 0), 1),
-            ("over 600 after 300 s", &|| own(600, 300, 1, 0), 1),
-            ("over 600, 40 s on, 50 off", &|| own(600, 0, 40, 50), 3),
-            ("over 600 after 60 s, then 40 s on, 50 off", &|| own(600, 60, 40, 50), 2),
-            ("over 300", &|| own(300, 0, 1, 0), 1),
-            ("over 300 after 60 s", &|| own(300, 60, 1, 0), 1),
-        ];
-        let outside: [(&str, &dyn Fn() -> Stalling); 2] = [
-            ("outside, 40 s every 300 s", &|| Box::new(|t, _| t % 300 < 40)),
-            ("outside, 40 s every 120 s", &|| Box::new(|t, _| t % 120 < 40)),
-        ];
-        let mut bad = Vec::new();
-        for (i, (case, make, back)) in own_cases.iter().enumerate() {
-            let (sum, most) = all(*make);
-            eprintln!("{case}: {sum:?}, taken back at most {most} in a run; main {}", MAIN.0[i]);
-            if most > *back || sum.stalled * 4 > MAIN.0[i] * 5 {
-                bad.push(format!("{case}: {sum:?}, taken back at most {most} in a run, main {}", MAIN.0[i]));
+        let mut own_cases: Vec<(String, Stalls)> = Vec::new();
+        for (name, over, after) in [
+            ("over 600", 600, 0),
+            ("over 600 after 60 s", 600, 60),
+            ("over 600 after 120 s", 600, 120),
+            ("over 600 after 300 s", 600, 300),
+            ("over 300", 300, 0),
+            ("over 300 after 60 s", 300, 60),
+        ] {
+            own_cases.push((name.into(), summed(&|| own(over, after, 1, 0))));
+        }
+        for job in [600, 3600, 7200] {
+            for (on, off) in [(30, 30), (40, 50), (20, 60)] {
+                let s = stalls(job, 0.1, 12, own(600, 0, on, off));
+                own_cases.push((format!("over 600 {on} s on, {off} off, jobs of {job} s"), s));
             }
         }
-        for (i, (case, make)) in outside.iter().enumerate() {
-            let (sum, _) = all(*make);
-            eprintln!("{case}: {sum:?}; main {} started", MAIN.1[i]);
-            if sum.starts < 2 * MAIN.1[i] {
-                bad.push(format!("{case}: {sum:?}, main {} started", MAIN.1[i]));
+        let mut bad = Vec::new();
+        for ((case, s), (main, came_at)) in own_cases.iter().zip(MAIN.0) {
+            eprintln!("{case}: {s:?}; main {main} stalled, at most {came_at} in use");
+            if s.most > came_at || s.stalled * 4 > main * 5 {
+                bad.push(format!("{case}: {s:?}, main {main} stalled, at most {came_at} in use"));
+            }
+        }
+        for ((case, every), main) in
+            [("outside, 40 s every 300 s", 300), ("outside, 40 s every 120 s", 120)].iter().zip(MAIN.1)
+        {
+            let every: u64 = *every;
+            let s = summed(&move || Box::new(move |t, _| t % every < 40));
+            eprintln!("{case}: {s:?}; main {main} started");
+            if s.starts * 20 < main * 19 {
+                bad.push(format!("{case}: {s:?}, main {main} started"));
             }
         }
         assert!(bad.is_empty(), "{bad:#?}");
     }
 
     /// Main's figures in `a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`
-    /// (0cba2297c, before task #1554's rule, the simulation grafted into its tree, nothing taken
-    /// back there):
-    /// the readings stalled in each own case, and the jobs started in each outside one.
-    const MAIN: ([usize; 8], [usize; 2]) = ([1648, 1550, 1088, 1190, 1225, 1551, 4822, 5477], [661, 286]);
+    /// (a4b4a7404, before task #1554's rule, the simulation grafted into its tree, nothing taken
+    /// back there): the readings stalled and the most in use in each own case, in its order, and
+    /// the jobs started in each outside one.
+    const MAIN: ([(usize, u32); 15], [usize; 2]) = (
+        [
+            (1648, 700),
+            (1550, 700),
+            (1088, 800),
+            (1190, 800),
+            (4822, 400),
+            (5477, 400),
+            (512, 700),
+            (397, 700),
+            (276, 700),
+            (1487, 700),
+            (1402, 700),
+            (834, 700),
+            (1841, 700),
+            (1650, 700),
+            (946, 700),
+        ],
+        [661, 286],
+    );
 
     /// A restarted lead takes its kept state up when it's younger than `restore_s`: the window,
     /// its threshold, its cut's hold-off and the readings the answers are judged on, never lifted
