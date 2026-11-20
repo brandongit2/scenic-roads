@@ -65,7 +65,7 @@ pub enum ControlMsg {
 }
 
 /// A one-slot mailbox (`mailbox`): what one part hands another to do, the latest only. A `put`
-/// replaces what still waits (handed back, so the sender can count it); the reader's `take` waits
+/// replaces what still waits (the reader counts what it never took); the reader's `take` waits
 /// for one, and while a `hold` is out (the sender busy with what the reader shouldn't run beside),
 /// and gives None once the sender is gone. Holding at most one, it never piles up behind a slow
 /// reader.
@@ -110,11 +110,9 @@ impl<T> Slot<T> {
 }
 
 impl<T> Post<T> {
-    /// `v` left for the reader in place of what still waited, which is given back.
-    pub fn put(&self, v: T) -> Option<T> {
-        let mut was = None;
-        self.0.change(|s| was = s.item.replace(v));
-        was
+    /// `v` left for the reader in place of what still waited (dropped).
+    pub fn put(&self, v: T) {
+        self.0.change(|s| s.item = Some(v));
     }
 
     /// The reader takes nothing until it's dropped (a panic dropping it too).
@@ -200,14 +198,14 @@ mod tests {
         assert_eq!(s.read().1, 4000);
     }
 
-    /// A mailbox holds the latest put alone (the one replaced handed back), keeps it from the
+    /// A mailbox holds the latest put alone, keeps it from the
     /// reader while a hold is out (a hold dropped by a panic too), and its reader's take gives None
     /// once the sender is gone, even while held.
     #[test]
     fn a_mailbox_holds_the_latest_alone() {
         let (post, inbox) = mailbox::<u32>();
-        assert_eq!(post.put(1), None);
-        assert_eq!(post.put(2), Some(1));
+        post.put(1);
+        post.put(2);
         assert_eq!(inbox.take(), Some(2));
         let hold = post.hold();
         post.put(3);

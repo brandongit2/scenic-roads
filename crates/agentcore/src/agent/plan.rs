@@ -4516,12 +4516,30 @@ mod tests {
         };
         let (t, a) = (Instant::now(), allocs::asked());
         let (manifest, _) = p.planning_records(&root).unwrap();
-        while let Err(why) = p.coverage(&root, &manifest, false) {
-            assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
+        let covs = loop {
+            match p.coverage(&root, &manifest, false) {
+                Ok(c) => break c,
+                Err(why) => assert!(t.elapsed() < Duration::from_secs(1800), "{why}"),
+            }
             std::thread::sleep(Duration::from_millis(500));
-        }
+        };
         drop(manifest);
         say(memory("the coverage", t.elapsed(), since(a)));
+        // (What naming the coverage costs a call, twice each: its digest reads every ring's points,
+        // its identity their fingerprints, kept a shape. Task #1077.)
+        for _ in 0..2 {
+            let t = Instant::now();
+            covs.all.digest();
+            let digest = t.elapsed();
+            let t = Instant::now();
+            covs.all.identity();
+            say(format!(
+                "naming the coverage: its digest {:.3} s, its identity {:.6} s",
+                digest.as_secs_f64(),
+                t.elapsed().as_secs_f64()
+            ));
+        }
+        drop(covs);
         let rounds = num("SCENIC_FROZEN_ROUNDS").unwrap_or(7);
         let sites = num("SCENIC_FROZEN_SITES");
         let sizes = num("SCENIC_FROZEN_SIZES").is_some();

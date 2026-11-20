@@ -1056,6 +1056,25 @@ impl Coverage {
         h.finalize().to_hex()[..32].to_string()
     }
 
+    /// What the coverage holds, as cheaply as `version` (the rings by their fingerprints, kept a
+    /// shape): its version and each shape's source and country, in each list. What a plan's keys
+    /// read of it (build's `context_rest`, `KeyCtx::stamp`, `bld_tiles`), several times a plan:
+    /// `digest` reads every ring's points (seconds on the lead's mapped coverage), task #1077.
+    pub fn identity(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(self.version().as_bytes());
+        for list in [&self.shapes, &self.depth_only] {
+            h.update(&(list.len() as u64).to_le_bytes());
+            for sh in list {
+                for t in [&sh.source, &sh.country] {
+                    h.update(&(t.len() as u64).to_le_bytes());
+                    h.update(t.as_bytes());
+                }
+            }
+        }
+        h.finalize().to_hex()[..32].to_string()
+    }
+
     /// What's been worked out of this coverage's version (`Kept`), the same for every coverage of it.
     pub fn kept(&self) -> std::sync::Arc<Kept> {
         let v = self.version();

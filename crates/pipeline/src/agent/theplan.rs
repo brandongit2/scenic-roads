@@ -445,6 +445,20 @@ struct Kept {
 /// little is left to it.
 const SHADOW_THREADS: usize = 2;
 
+/// The threads a shadow plan's work runs on, each at the utility QoS and `unphased`: the plan's
+/// code entering `nasread::PLAN`'s phases there (`build::plan`'s sections) changes neither the
+/// plan's phase in progress nor its slow-phase lines.
+fn shadow_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(SHADOW_THREADS)
+        .thread_name(|i| format!("plan shadow {i}"))
+        .start_handler(|_| {
+            nasread::unphased();
+            agentcore::agent::forecast::low_priority();
+        })
+        .build()
+}
+
 impl Shadowing {
     /// Its worker started, each shadow begun once no plan is being made (`Post::hold`, the plan's
     /// while it makes `build::plan`) and ended with the plan part (its mailbox's sender dropped);
@@ -456,21 +470,20 @@ impl Shadowing {
         let run = move || {
             nasread::unphased();
             agentcore::agent::forecast::low_priority();
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(SHADOW_THREADS)
-                .thread_name(|i| format!("plan shadow {i}"))
-                .start_handler(|_| agentcore::agent::forecast::low_priority())
-                .build();
-            if let Err(e) = &pool {
-                eprintln!("agent: the plan's shadow has no threads of its own ({e}): it runs on rayon's");
-            }
+            // (On rayon's threads its phases would be the plan's: no shadow without its own.)
+            let p = match shadow_pool() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("agent: the plan's shadow has no threads of its own ({e}): no shadow plans");
+                    return;
+                }
+            };
             let (mut kept, mut last): (Option<Kept>, u64) = (None, 0);
             while let Some(ask) = inbox.take() {
                 let (n, skipped) = (ask.n, ask.n - last - 1);
                 last = n;
-                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &pool {
-                    Ok(p) => p.install(|| shadow(&mut kept, ask, skipped)),
-                    Err(_) => shadow(&mut kept, ask, skipped),
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    p.install(|| shadow(&mut kept, ask, skipped))
                 }));
                 let s = match made {
                     Ok(s) => s,
@@ -1003,5 +1016,25 @@ impl PlanHeld for Held {
     fn keep_for_test(&self, p: Planned) {
         *self.kept.borrow_mut() = Some(p);
         *self.memo.borrow_mut() = Some(KeyMemo::default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::prelude::*;
+
+    /// The shadow's work, on its threads, leaves the plan's phase as the plan set it (task #1077:
+    /// `build::plan`'s sections enter `nasread::PLAN`'s phases on whatever thread runs them).
+    #[test]
+    fn a_shadow_leaves_the_plans_phase() {
+        nasread::PLAN.enter("its shadow's copy");
+        shadow_pool().unwrap().install(|| {
+            nasread::PLAN.enter("build::plan: the checklist");
+            (0..64).into_par_iter().for_each(|_| {
+                nasread::PLAN.enter("build::plan: the regions");
+            });
+        });
+        assert_eq!(nasread::PLAN.now(), Some("its shadow's copy"));
     }
 }

@@ -2132,13 +2132,13 @@ impl ReadSets {
 }
 
 /// What of a plan's context every key reads besides its entries and inputs (theplan's read sets:
-/// changed, the diff moves every key): the coverage whole (`Coverage::digest`: its shapes' countries and
+/// changed, the diff moves every key): the coverage whole (`Coverage::identity`: its shapes' countries and
 /// sources too, which some keys read, task #1077), the pass, and the reaches the keys read, by what
 /// they were read from (`reach`; None: the keys had none).
 pub fn context_rest(cov: &Coverage, date: &str, reach: Option<&str>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (cov.digest(), date, reach).hash(&mut h);
+    (cov.identity(), date, reach).hash(&mut h);
     h.finish()
 }
 
@@ -2267,7 +2267,7 @@ impl<'a> KeyCtx<'a> {
         self.memo.is_some_and(KeyMemo::shadow)
     }
 
-    /// A digest of everything a key reads of this context (`KeyMemo`): the coverage whole (its digest:
+    /// A digest of everything a key reads of this context (`KeyMemo`): the coverage whole (`Coverage::identity`:
     /// the countries and sources too, which a 3D buildings key reads, task #1077), the
     /// pass, the manifest, the planner's inputs, the reaches (their pass and format, how many z6
     /// tiles, the base packs' extents) and what the terrain packs' indexes hold now
@@ -2275,7 +2275,7 @@ impl<'a> KeyCtx<'a> {
     pub fn stamp(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.cov.digest().hash(&mut h);
+        self.cov.identity().hash(&mut h);
         self.date.hash(&mut h);
         self.m.unrecorded_map().hash(&mut h);
         self.inputs.unrecorded_map().hash(&mut h);
@@ -3840,15 +3840,9 @@ pub fn bld_targets(x: &KeyCtx) -> BldTargets {
 type BldTiles = std::sync::Arc<Vec<(u32, u32, Option<String>)>>;
 pub(crate) fn bld_tiles(cov: &Coverage, shadow: bool) -> BldTiles {
     static KEPT: std::sync::Mutex<[Option<(String, BldTiles)>; 2]> = std::sync::Mutex::new([None, None]);
-    // (The coverage by what shapes_key and meets_rect read: its version (each shape's rings,
-    // buffer and water, without reading the rings' points again: every target's key lines ask,
-    // crate::agent::idents::coverage_shapes) and each shape's country, in order.)
-    let mut id = cov.version().into_bytes();
-    for s in &cov.shapes {
-        id.extend_from_slice(s.country.as_bytes());
-        id.push(0);
-    }
-    let id = store::naming::hash16(&id);
+    // (The coverage by what shapes_key and meets_rect read, its rings, buffer, water and countries,
+    // without reading the rings' points again: `Coverage::identity`.)
+    let id = cov.identity();
     let kept =
         KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().find(|(k, _)| *k == id).map(|(_, v)| v.clone());
     if let Some(v) = kept {
@@ -7623,6 +7617,12 @@ mod tests {
         let (m, tiles) = (BTreeMap::new(), TerrainTiles::default());
         let stamp = |c: &Coverage| KeyCtx::new(c, "d", &m, &m, None, &tiles).stamp();
         assert_ne!(stamp(&c), stamp(&c2));
+        // (A source alike; the coverage the same, the same.)
+        let mut c3 = c.clone();
+        c3.shapes[0].source = format!("{}~", c3.shapes[0].source);
+        assert_ne!(context_rest(&c, "d", None), context_rest(&c3, "d", None));
+        assert_ne!(stamp(&c), stamp(&c3));
+        assert_eq!(context_rest(&c, "d", None), context_rest(&c.clone(), "d", None));
     }
 
     /// The declared elevation datasets are held by the geoid sources too, which converted their
