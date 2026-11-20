@@ -772,8 +772,13 @@ fails, and is never given more. `cargo test` runs have no such bound.
   A test over every change of a fixture takes a sample of them but before a publish, which runs
   them all (`SCENIC_PUBLISH`, set by publish.sh's run; #1539: pipeline's plan tests over each
   manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
-  six), and its own threads stay few (at most 4: nextest already runs a test a thread), but every
-  core in publish's run, which has every core and waits on its slowest tests. Where every change
+  six). A test's own threads are its share of its run's cores (#1563): remote-tests.sh exports
+  `RAYON_NUM_THREADS`, the run's cores (less the pool's jobs) over its test threads, one at least,
+  which rayon's pools in the code under test and the plan tests' own threads (`case_threads`) take
+  (a caller exporting its own keeps it; without it, at most 4). Nextest already runs a test a
+  thread: in publish's run 14 tests at once of 14 threads each had put the M4's load at 64-147 with
+  nothing else on it, and the plan tests ran about 10 times their time alone (the 20 Nov 11:24
+  publish). Where every change
   alone is still past the budget, the test is cut in parts, a test each (#1560: the plan tests'
   `agent::build::tests::Part`, `an_incremental_plan_…_1_of_2` and `_2_of_2`), each taking every
   `of`th case, so the parts together check every change; its threads take the next case left as
@@ -783,7 +788,8 @@ fails, and is never given more. `cargo test` runs have no such bound.
   a suite that passed and once a measure is due, runs `tools/dev/test-budget.py`: the slowest tests
   of the last publishes' suites (from the dev job records: each test's median there, those at or over
   the budget, the slowest few, less those measured under it in the last few measures, so the measures
-  go on down the list), each run alone (`--test-threads 1`) in publish's slot on the test Mac, on the
+  go on down the list), each run alone (`--test-threads 1`, with its own threads as in publish's
+  run, `RAYON_NUM_THREADS` from publish's slot) in publish's slot on the test Mac, on the
   build the suite just made, within a bound of its own (its run stopped past it, by its PID, what it
   timed kept); any over the budget is flagged on the dev job dashboard (its "Test budget", the latest
   measure) and in publish's output, never failing it. Its settings, each shown with the measure, are
