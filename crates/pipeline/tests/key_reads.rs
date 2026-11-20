@@ -1,12 +1,12 @@
 //! A key reads only through its context (docs/incremental-planning.md §4.1, Reads beside the
 //! arguments; task #1517): no environment, clock, local file or NAS read in the code of the key
-//! modules, steps.rs, idents.rs and TerrainTiles' readers (tiles.rs), but in the items `EXEMPT`
+//! modules, steps.rs, idents.rs, build.rs and TerrainTiles' readers (tiles.rs), but in the items `EXEMPT`
 //! lists with how many and why. What they call in other crates is held at run time instead: a NAS
 //! call or the pool's clock while a key is derived panics in the tests (store::keyread).
 //!
 //! Each entry fails when it matches nothing (or a count differs), so none can go stale.
 //!
-//! scans: crates/pipeline/src/agent/steps.rs crates/pipeline/src/agent/idents.rs crates/pipeline/src/agent/tiles.rs
+//! scans: crates/pipeline/src/agent/steps.rs crates/pipeline/src/agent/idents.rs crates/pipeline/src/agent/tiles.rs crates/pipeline/src/agent/build.rs
 
 mod common;
 
@@ -18,9 +18,12 @@ const FILES: &[&str] = &[
     "crates/pipeline/src/agent/steps.rs",
     "crates/pipeline/src/agent/idents.rs",
     "crates/pipeline/src/agent/tiles.rs",
+    "crates/pipeline/src/agent/build.rs",
 ];
 
-/// What reads beside a key's context: the environment, the clock, a local file, the NAS.
+/// What reads beside a key's context: the environment, the clock, a local file, the NAS (a
+/// nasfs path's reads, stats and listings). One starting with a name counts only where no name
+/// runs into it (`fs::`, not `gtfs::` or `nasfs::`).
 const READS: &[&str] = &[
     "env::var",
     "var_os",
@@ -28,12 +31,26 @@ const READS: &[&str] = &[
     "UNIX_EPOCH",
     "now_s",
     "Instant::now",
+    ".elapsed()",
     "read_dir",
-    "std::fs::",
+    "fs::",
     ".read()",
+    ".read_to_string()",
+    ".read_replaced()",
+    ".read_fresh()",
+    ".list()",
+    ".exists()",
+    ".is_file()",
+    "metadata(",
     "::open(",
     ".open_plain(",
 ];
+
+/// How many times `r` is in line `l`, where no name runs into its own leading name.
+fn reads_in(l: &str, r: &str) -> usize {
+    let named = r.starts_with(|c: char| c.is_alphanumeric() || c == '_');
+    l.match_indices(r).filter(|(i, _)| !named || !l[..*i].ends_with(|c: char| c.is_alphanumeric() || c == '_')).count()
+}
 
 /// Items reading so: (file, item, how many, why).
 const EXEMPT: &[(&str, &str, usize, &str)] = &[
@@ -65,7 +82,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     (
         "crates/pipeline/src/agent/tiles.rs",
         "tidy",
-        3,
+        5,
         "the plan's load: kept files no manifest names, gone after a while",
     ),
     (
@@ -101,7 +118,7 @@ fn the_key_modules_read_nothing_beside_a_key_s_context() {
             if test[i] {
                 continue;
             }
-            let n = READS.iter().map(|r| l.matches(r).count()).sum::<usize>();
+            let n = READS.iter().map(|r| reads_in(l, r)).sum::<usize>();
             if n == 0 {
                 continue;
             }

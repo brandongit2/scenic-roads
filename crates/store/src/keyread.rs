@@ -3,7 +3,8 @@
 //! NAS call (crate::waits::nas, which every one of crate::nasfs's makes) or the pool's wall clock
 //! (jobrt::jobs::now_s) panics in a build with debug assertions (the tests'), naming what it read;
 //! `recorded` lets one through: a reader's read by a content name its key read in the manifest
-//! first (pipeline's TerrainTiles::target_asked and outlines). A release build checks nothing.
+//! first (pipeline's TerrainTiles::target_asked and outlines). A release build checks and counts
+//! nothing.
 //! Per thread: work a derivation hands to other threads isn't watched.
 
 use std::cell::Cell;
@@ -21,30 +22,38 @@ pub struct Recorded(());
 
 /// A key derivation under way on this thread until the guard drops (nested: until the outermost).
 pub fn deriving() -> Deriving {
-    DEPTH.with(|d| d.set((d.get().0 + 1, d.get().1)));
+    if cfg!(debug_assertions) {
+        DEPTH.with(|d| d.set((d.get().0 + 1, d.get().1)));
+    }
     Deriving(())
 }
 
 /// A read by a content name the key read first, let through while the guard lives.
 pub fn recorded() -> Recorded {
-    DEPTH.with(|d| d.set((d.get().0, d.get().1 + 1)));
+    if cfg!(debug_assertions) {
+        DEPTH.with(|d| d.set((d.get().0, d.get().1 + 1)));
+    }
     Recorded(())
 }
 
 impl Drop for Deriving {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set((d.get().0 - 1, d.get().1)));
+        if cfg!(debug_assertions) {
+            DEPTH.with(|d| d.set((d.get().0 - 1, d.get().1)));
+        }
     }
 }
 
 impl Drop for Recorded {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set((d.get().0, d.get().1 - 1)));
+        if cfg!(debug_assertions) {
+            DEPTH.with(|d| d.set((d.get().0, d.get().1 - 1)));
+        }
     }
 }
 
 /// Whether this thread derives a key now, outside a recorded read.
-pub fn unrecorded() -> bool {
+fn unrecorded() -> bool {
     DEPTH.with(|d| matches!(d.get(), (n, 0) if n > 0))
 }
 

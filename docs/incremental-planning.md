@@ -245,14 +245,15 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      results are diffed (the inputs) or tracked above. The app's version is the process's: the state starts empty after an update.
      The manifest is a `BTreeMap`, so neither the brief's order nor a NAS listing's reaches a key
      through it. Two guards keep it so (task #1517): `tests/key_reads.rs` refuses an
-     environment, clock, local file or NAS read in the code of steps.rs, idents.rs and tiles.rs
+     environment, clock, local file or NAS read in the code of steps.rs, idents.rs, build.rs and tiles.rs
      outside the plan's loads and the two readers above, each listed with why; and
      `store::keyread` makes a NAS call (any of `nasfs`'s, through `store::waits::nas`) or the
      pool's clock (`jobrt::jobs::now_s`) panic in a debug build (the tests') while a key is
      derived on that thread (`key_lines`, `unknown_reads`, the warm loops' lines), but within those
      two readers' recorded reads: every key the tests derive runs under it. Not covered: a direct
-     `env::var` or `SystemTime::now` in another crate's code a key calls, and work a derivation
-     hands to other threads.
+     `env::var` or `SystemTime::now` in another crate's code a key calls, a local file another
+     crate reads as a key is derived (store's mirror, a cache file: watched nowhere, at run time
+     or in the scan), and work a derivation hands to other threads.
 2. **The reverse index**: entry name → keys, prefix → keys, input name → keys, and the keys that
    read `TerrainTiles`' load state. A changed name finds its keys by exact lookup and by each of its
    own prefixes (a name is ~60 bytes: ~60 lookups), and the write sets read whole are asked of it.

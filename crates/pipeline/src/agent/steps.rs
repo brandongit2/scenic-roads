@@ -514,6 +514,7 @@ pub fn derived_key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Stri
 /// nothing): its scheme, step, target and versions, then `none`. None for a step with no versions
 /// declared.
 pub fn none_key(step: &str, t: &str) -> Option<String> {
+    let _d = store::keyread::deriving();
     let mut lines = head_lines(step, t)?;
     lines.push("none".to_string());
     Some(store::naming::hash16(lines.join("\n").as_bytes()))
