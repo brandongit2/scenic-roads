@@ -7083,7 +7083,11 @@ mod tests {
     /// tests over every entry are its last to finish: with 4 threads they ran 118-131 s, alone.
     fn case_threads() -> usize {
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
-        if every_entry() { n } else { n.min(4) }
+        if every_entry() {
+            n
+        } else {
+            n.min(4)
+        }
     }
 
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
