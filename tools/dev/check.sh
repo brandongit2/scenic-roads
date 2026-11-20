@@ -178,7 +178,6 @@ fi
 notreused() { [[ -n ${why[$1]:-} ]] && print -r -- "$1: not reused: ${why[$1]}" }
 
 # (Formatting it here, not only checking: the fix is the formatting, and the run says what to commit.)
-# (A script, not a function: the part's CPU time counts a script's cargo, not a function's.)
 part fmt zsh -c '
   out=$( { cargo fmt -- -l && cargo fmt --manifest-path tools/bldfield/Cargo.toml -- -l } 2>&1 ) ||
     { print -r -- "$out"; print "cargo fmt failed (above): fix the code it cannot read and run check.sh again"; exit 1 }
