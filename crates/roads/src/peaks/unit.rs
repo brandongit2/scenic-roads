@@ -1275,6 +1275,43 @@ mod tests {
         let (first, read) = measure(&z8_of("a", &[(far, 0.0)]));
         assert!(!read.is_empty(), "the coarse stage read the z8");
         assert!(!read.contains(&far), "{far:?} is past what it reads");
+        // Task #1545 review: a tagged summit at the edge of a tile it read, beside one it didn't
+        // (far from its peaks, its z8 height none, so the results stand): the run's record holds
+        // that neighbour too, which its height reads (crate::summits::z8_tiles_read).
+        let edge = read
+            .iter()
+            .flat_map(|&(x, y)| [(x, y, 255u32, x + 1), (x, y, 0, x.wrapping_sub(1))])
+            .filter(|&(_, y, _, nx)| nx < 256 && !read.contains(&(nx, y)))
+            .map(|(x, y, px, nx)| {
+                let w = 256.0 * 256.0;
+                let (gx, gy) = ((x * 256 + px) as f64 + 0.5, (y * 256 + 128) as f64 + 0.5);
+                let (lon, lat) = (gx / w * 360.0 - 180.0, roadcore::geo::merc_lat(gy / w));
+                (lon, lat, (nx, y))
+            })
+            .find(|&(lon, lat, _)| at.iter().all(|&(a, b)| gc_m(lon, lat, a, b) > 5000.0))
+            .expect("a read tile's edge beside an unread one, away from the peaks");
+        let mut with = summits.clone();
+        with.push(Summit {
+            id: "n99".into(),
+            kind: "peak".into(),
+            lon: (edge.0 * 1e7) as i32,
+            lat: (edge.1 * 1e7) as i32,
+            ele: Some(500.0),
+            z8: None,
+        });
+        let (res, read_with) = run(
+            &peaks,
+            &with,
+            &Z8Base::new(&with),
+            &z12,
+            &z8_of("e", &[(far, 0.0)]),
+            2,
+            &mut jobrt::resume_log::Pieces::none(),
+        )
+        .unwrap();
+        assert_eq!(res.iter().map(|(k, o)| format!("{k} {}", o.json())).collect::<Vec<_>>(), first, "the same results");
+        assert!(read_with.contains(&edge.2), "its unread neighbour {:?} recorded: {read_with:?}", edge.2);
+        assert_eq!(read_with.len(), read.len() + 1, "that neighbour alone added");
         // A tile it didn't read raised: the same results, the same tiles read.
         assert_eq!(measure(&z8_of("b", &[(far, 9500.0)])), (first.clone(), read.clone()), "a tile it didn't read");
         // One it read raised past its peaks (the nearest to five z8 tiles east): nearer higher ground.
