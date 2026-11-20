@@ -1039,14 +1039,17 @@ read as absent):
   `store::nasfs::NasPath::read_by_program` (`read_files_by_program` for several): the raw path goes
   to the run alone. Its reads can't be seen, so the files' sizes times its passes (`nasio::Passes`:
   reads and opens; osmium's smart extract reads three times and opens four, the extract program's
-  three passes open three times) are what it asked of the NAS. Of them, while it runs, a look each
-  second (`nasio::CREDIT_EVERY`) credits as served the bytes this Mac's links received since the
-  last, no more than the total, so the job's NAS rates move as the program reads; what the links
-  didn't carry, when it ended, is held (this Mac's cache's). For a program that spends its time on
-  the CPU only that link bound decides which answered: a time like a read's (`cached`) is not
-  used. A known limit: the links are this Mac's, not the job's, so other traffic over them while the
-  program runs (another job's reads, the job's own copies) is credited to it too, up to its total;
-  and where the links aren't told (not macOS) the whole is counted as served when it ended. A run
+  passes, three at most, open once each) are what it asked of the NAS. Of them, while it runs, a
+  look each second (`nasio::CREDIT_EVERY`) credits as served the bytes this Mac's links received
+  since the last, less the process's own NAS reads counted meanwhile, shared among the process's
+  programs running then, none past a program's total, so the job's NAS rates move as the program
+  reads; a look after the process was stopped (a SIGCONT since: a freeze, a pause) credits none of
+  what came over the stop. What the links didn't carry, when it ended, is held (this Mac's cache's).
+  For a program that spends its time on the CPU only that link bound decides which answered: a time
+  like a read's (`cached`) is not used. A known limit: the links are this Mac's, not the job's, so
+  other processes' traffic over them while the program runs (another job's reads, the agent's) is
+  credited to it too, up to its total; and where the links aren't told (not macOS) the whole is
+  counted as served when it ended. A run
   that failed keeps what was credited (those bytes crossed the links) and counts no more. Used by
   the osmium clips of the heritage step (the areas, named and whs sets over the cover), the OSM
   pass's ways of the ferries and its extract program's reads of the pieces, and the names tables'

@@ -589,9 +589,8 @@ impl NasPath {
     /// Runs `run` (a program that opens this file where it lies, given its path), its bytes counted
     /// as it runs and when it ended (nasio::ProgramReads: the program's own reads can't be seen, so
     /// a file read whole is asked of the NAS its size each time it is read, `passes.reads`; each
-    /// open, `passes.opens`, counts a file opened). The one
-    /// way to hand a program a NAS file's path to read, so its reads are counted: the raw path is
-    /// given only to `run`.
+    /// open, `passes.opens`, counts a file opened). The way to hand a program a NAS file's path to
+    /// read with its reads counted: the raw path is given only to `run`.
     pub fn read_by_program<T>(&self, passes: nasio::Passes, run: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
         read_files_by_program(std::slice::from_ref(self), passes, |p| run(&p[0]))
     }

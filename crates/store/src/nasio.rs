@@ -652,68 +652,168 @@ impl Passes {
 /// How often a running program's bytes are credited (`ProgramReads`).
 pub const CREDIT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What a program is credited as it runs: `expected` bytes at most, as the links receive them.
-struct Credit {
-    expected: u64,
-    /// The links' received bytes at the last look (None: they aren't told), and the bytes credited
-    /// so far (changed under this lock alone).
-    state: std::sync::Mutex<(Option<u64>, u64)>,
+/// A source of a number `Links` looks at (tests give their own).
+type Gauge<T> = Box<dyn Fn() -> T + Send + Sync>;
+
+/// This Mac's links as this process's programs read over them (`ProgramReads`): at each look, what
+/// the links received since the last, less this process's own NAS bytes counted meanwhile (its
+/// readers' and streams', which crossed the same links), shared among the programs running then.
+struct Links {
+    received: Gauge<Option<u64>>,
+    /// This process's NAS bytes served but those credited to its programs (`ReadBytes` less
+    /// `CREDITED`).
+    own: Gauge<u64>,
+    /// The SIGCONTs this process has had (crate::sys::continued).
+    continued: Gauge<u64>,
+    state: std::sync::Mutex<Shared>,
 }
 
-impl Credit {
-    /// The bytes to credit now that the links have received `now` in all: what they received since
-    /// the last look (counters that went back, a restarted interface's, none), no more than what is
-    /// left of `expected`.
-    fn step(&self, now: Option<u64>) -> u64 {
-        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let (Some(was), Some(now)) = (g.0, now) else {
-            g.0 = now.or(g.0);
-            return 0;
-        };
-        g.0 = Some(now);
-        let c = now.saturating_sub(was).min(self.expected - g.1);
-        g.1 += c;
-        c
+/// `Links`' last look, and the programs running.
+#[derive(Default)]
+struct Shared {
+    /// The links' received bytes at the last look (None: they aren't told), this process's own NAS
+    /// bytes and its SIGCONTs then.
+    at: Option<u64>,
+    own: u64,
+    conts: u64,
+    running: Vec<Share>,
+    next: u64,
+}
+
+/// A running program's part: its id, its expected bytes and those credited so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Share {
+    id: u64,
+    expected: u64,
+    credited: u64,
+}
+
+/// Of this process's `ReadBytes`, those credited to its programs (`Links::look_in`).
+static CREDITED: AtomicU64 = AtomicU64::new(0);
+
+impl Links {
+    /// This Mac's, for every program of this process.
+    fn here() -> std::sync::Arc<Links> {
+        static L: OnceLock<std::sync::Arc<Links>> = OnceLock::new();
+        L.get_or_init(|| {
+            std::sync::Arc::new(Links::new(
+                Box::new(|| link().received),
+                Box::new(|| get(Count::ReadBytes).saturating_sub(CREDITED.load(Ordering::Relaxed))),
+                Box::new(crate::sys::continued),
+            ))
+        })
+        .clone()
     }
 
-    fn look(&self, now: Option<u64>) {
-        read(self.step(now));
+    fn new(received: Gauge<Option<u64>>, own: Gauge<u64>, continued: Gauge<u64>) -> Links {
+        Links { received, own, continued, state: std::sync::Mutex::new(Shared::default()) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A program of `expected` bytes begins: the links looked at (what they received since the
+    /// last look is the programs' running till now; none running, the look begins anew), and it
+    /// shares in what they receive from here. Its id, and whether the links are told.
+    fn join(&self, expected: u64) -> (u64, bool) {
+        let mut g = self.lock();
+        if g.running.is_empty() {
+            (g.at, g.own, g.conts) = ((self.received)(), (self.own)(), (self.continued)());
+        } else {
+            self.look_in(&mut g);
+        }
+        let id = g.next;
+        g.next += 1;
+        g.running.push(Share { id, expected, credited: 0 });
+        (id, g.at.is_some())
+    }
+
+    /// Program `id` leaves (after a last look, when `look`): its part as it was credited.
+    fn leave(&self, id: u64, look: bool) -> Option<Share> {
+        let mut g = self.lock();
+        if look {
+            self.look_in(&mut g);
+        }
+        let k = g.running.iter().position(|s| s.id == id)?;
+        Some(g.running.remove(k))
+    }
+
+    fn look(&self) {
+        self.look_in(&mut self.lock());
+    }
+
+    /// What the links received since the last look, less this process's own NAS bytes counted
+    /// meanwhile, shared among the running programs (`share`) and credited as the NAS's. None when
+    /// the links aren't told, their counters went back (a restarted interface's), or the process
+    /// was stopped meanwhile (a SIGCONT since: the guards' freeze or a pause, its programs stopped
+    /// with it, so what the links received over it was another's); the next look counts from this one.
+    fn look_in(&self, g: &mut Shared) {
+        let (was, was_own, was_conts) = (g.at, g.own, g.conts);
+        let now = (self.received)();
+        (g.own, g.conts, g.at) = ((self.own)(), (self.continued)(), now.or(was));
+        let (Some(was), Some(now)) = (was, now) else { return };
+        if g.conts != was_conts {
+            return;
+        }
+        let c = share(now.saturating_sub(was).saturating_sub(g.own.saturating_sub(was_own)), &mut g.running);
+        CREDITED.fetch_add(c, Ordering::Relaxed);
+        read(c);
+    }
+}
+
+/// `n` bytes shared among `running` in equal parts, none past what is left of a program's expected
+/// bytes (what a full one can't take going to the others): what was given in all.
+fn share(mut n: u64, running: &mut [Share]) -> u64 {
+    let mut given = 0;
+    loop {
+        let open = running.iter().filter(|s| s.credited < s.expected).count() as u64;
+        if open == 0 || n == 0 {
+            return given;
+        }
+        let each = (n / open).max(1);
+        for s in running.iter_mut().filter(|s| s.credited < s.expected) {
+            let c = each.min(s.expected - s.credited).min(n);
+            (s.credited, n, given) = (s.credited + c, n - c, given + c);
+        }
     }
 }
 
 /// A program's reads of NAS files it opens where they lie (osmium given a path on the mount): its
 /// own reads can't be seen. Its `expected` bytes (the files' sizes times its reads of them) are
-/// credited as the NAS's while it runs, a look a second (`CREDIT_EVERY`) at the bytes this Mac's
-/// links received since the last, no more than `expected` in all, so the job's NAS rates move as
-/// the program reads, not in one span when it ends; the rest, when it ended (`ended`), is this Mac's
-/// cache's (`held`, and `Local`): a program reading a warm file reads little off the links. A known
-/// limit: the links are this Mac's, not the job's, so other traffic over them while the program
-/// runs is credited to it too, up to `expected`; and with the links not told (not macOS) all of
-/// `expected` is credited as the NAS's, when it ended. Dropped without `ended` (a failed run), it
-/// keeps what it credited: those bytes crossed the links.
+/// credited as the NAS's while it runs, a look a second (`CREDIT_EVERY`) at this Mac's links
+/// (`Links`): what they received since the last look, less this process's own NAS reads counted
+/// meanwhile, shared among this process's programs running then, none past a program's
+/// `expected`, so the job's NAS rates move as the program reads, not in one span when it ends. The
+/// rest, when it ended (`ended`), is this Mac's cache's (`held`, and `Local`): a program reading a
+/// warm file reads little off the links. Known limits: the links are this Mac's, so the traffic of
+/// its other processes while the program runs (another job's, the agent's) is credited to it too,
+/// up to `expected` (the agent would have to share the links among its jobs' programs, each job's
+/// process telling it which run); the equal parts can leave a program short as it ends (one that
+/// read faster than the others it ran beside was given only its part), its rest then counted as
+/// this Mac's cache's, so the job's NAS total may come out low, never high; and with the links not
+/// told (not macOS) all of `expected` is credited as the NAS's, when it ended. Dropped without `ended` (a failed run), it keeps what it
+/// credited: those bytes crossed the links.
 pub struct ProgramReads {
-    credit: std::sync::Arc<Credit>,
+    links: std::sync::Arc<Links>,
+    id: u64,
+    expected: u64,
     told: bool,
-    received: std::sync::Arc<dyn Fn() -> Option<u64> + Send + Sync>,
+    began: std::time::Instant,
     ticker: Option<(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>, std::thread::JoinHandle<()>)>,
 }
 
 impl ProgramReads {
     pub fn begin(expected: u64) -> Self {
-        Self::begin_with(expected, CREDIT_EVERY, std::sync::Arc::new(|| link().received))
+        Self::begin_with(Links::here(), expected, CREDIT_EVERY)
     }
 
-    /// `begin`, looking every `every` at what `received` says the links received (tests').
-    fn begin_with(
-        expected: u64,
-        every: std::time::Duration,
-        received: std::sync::Arc<dyn Fn() -> Option<u64> + Send + Sync>,
-    ) -> Self {
-        let first = received();
-        let credit = std::sync::Arc::new(Credit { expected, state: std::sync::Mutex::new((first, 0)) });
+    /// `begin` on `links`, looking every `every` (tests').
+    fn begin_with(links: std::sync::Arc<Links>, expected: u64, every: std::time::Duration) -> Self {
+        let (id, told) = links.join(expected);
         let stop = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-        let ticker = (first.is_some() && expected > 0).then(|| {
-            let (c, s, r) = (credit.clone(), stop.clone(), received.clone());
+        let ticker = (told && expected > 0).then(|| {
+            let (l, s) = (links.clone(), stop.clone());
             let h = std::thread::spawn(move || loop {
                 let (m, cv) = &*s;
                 let g = m.lock().unwrap_or_else(|e| e.into_inner());
@@ -722,11 +822,11 @@ impl ProgramReads {
                     return;
                 }
                 drop(g);
-                c.look(r());
+                l.look();
             });
             (stop, h)
         });
-        Self { credit, told: first.is_some(), received, ticker }
+        Self { links, id, expected, told, began: std::time::Instant::now(), ticker }
     }
 
     /// The looks ended, the thread joined.
@@ -739,14 +839,15 @@ impl ProgramReads {
     }
 
     /// The program ended having read each of `files` (a path, the bytes read of it in all its
-    /// reads), opening each `opens` times: each counted opened, a last look at the links, and what
-    /// of `expected` wasn't credited the cache's (all the NAS's with the links not told).
+    /// reads), opening each `opens` times: each counted opened (noted with the run's time), a last
+    /// look at the links, and what of `expected` wasn't credited the cache's (all the NAS's with
+    /// the links not told).
     pub fn ended(mut self, files: &[(&Path, u64)], opens: u32) {
         self.stop();
-        self.credit.look((self.received)());
-        let left = self.credit.expected - self.credit.state.lock().unwrap_or_else(|e| e.into_inner()).1;
+        let left = self.expected - self.links.leave(self.id, true).map_or(0, |s| s.credited);
+        let ms = self.began.elapsed().as_millis() as u64;
         for (path, bytes) in files {
-            opened(path, *bytes, 0);
+            opened(path, *bytes, ms);
             add(Count::Files, u64::from(opens.saturating_sub(1)));
         }
         if self.told {
@@ -761,6 +862,7 @@ impl ProgramReads {
 impl Drop for ProgramReads {
     fn drop(&mut self) {
         self.stop();
+        self.links.leave(self.id, false);
     }
 }
 
@@ -1430,59 +1532,140 @@ mod tests {
         assert!(ns < 20_000, "{ns} ns of CPU a call"); // (bound ok: CPU time, not wall)
     }
 
+    /// Links of a test's own: what they received, this process's own NAS bytes and its SIGCONTs,
+    /// each a number the test sets.
+    fn test_links() -> (std::sync::Arc<Links>, [std::sync::Arc<AtomicU64>; 3]) {
+        let n = [(); 3].map(|()| std::sync::Arc::new(AtomicU64::new(0)));
+        let [r, o, c] = n.clone();
+        let l = Links::new(
+            Box::new(move || Some(r.load(Ordering::Relaxed))),
+            Box::new(move || o.load(Ordering::Relaxed)),
+            Box::new(move || c.load(Ordering::Relaxed)),
+        );
+        (std::sync::Arc::new(l), n)
+    }
+
     /// A program is credited what the links received, no more than its bytes, never by counters
-    /// that went back; with the links not told, nothing as it runs.
+    /// that went back; with the links not told, nothing.
     #[test]
     fn a_program_is_credited_as_the_links_receive() {
-        let c = Credit { expected: 1000, state: std::sync::Mutex::new((Some(10), 0)) };
-        assert_eq!(c.step(Some(310)), 300);
-        assert_eq!(c.step(Some(310)), 0);
+        let (l, [r, ..]) = test_links();
+        r.store(10, Ordering::Relaxed);
+        let (id, told) = l.join(1000);
+        assert!(told);
+        let credited = |at: u64| {
+            r.store(at, Ordering::Relaxed);
+            let was = l.lock().running[0].credited;
+            l.look();
+            l.lock().running[0].credited - was
+        };
+        assert_eq!(credited(310), 300);
+        assert_eq!(credited(310), 0);
         // (A restarted interface's counter: none, and the next look from there.)
-        assert_eq!(c.step(Some(5)), 0);
-        assert_eq!(c.step(Some(205)), 200);
-        assert_eq!(c.step(Some(100_000)), 500);
-        assert_eq!(c.step(Some(200_000)), 0);
-        let dark = Credit { expected: 1000, state: std::sync::Mutex::new((None, 0)) };
-        assert_eq!(dark.step(None), 0);
+        assert_eq!(credited(5), 0);
+        assert_eq!(credited(205), 200);
+        assert_eq!(credited(100_000), 500);
+        assert_eq!(credited(200_000), 0);
+        assert_eq!(l.leave(id, true).map(|s| s.credited), Some(1000));
+        let dark = Links::new(Box::new(|| None), Box::new(|| 0), Box::new(|| 0));
+        let (id, told) = dark.join(1000);
+        dark.look();
+        assert_eq!((told, dark.leave(id, true).map(|s| s.credited)), (false, Some(0)));
+    }
+
+    /// Task #1561: two programs running at once on one link credit the link's bytes once between
+    /// them, in equal parts, a full one's part going to the other; this process's own NAS reads
+    /// meanwhile (its readers', which crossed the same link) aren't the programs'.
+    #[test]
+    fn programs_at_once_share_what_the_links_received() {
+        let (l, [r, own, _]) = test_links();
+        let (a, _) = l.join(10_000);
+        let (b, _) = l.join(700);
+        r.store(600, Ordering::Relaxed);
+        l.look();
+        let parts = |l: &Links| l.lock().running.iter().map(|s| s.credited).collect::<Vec<_>>();
+        assert_eq!(parts(&l), [300, 300], "600 bytes once: 300 each");
+        r.store(1600, Ordering::Relaxed);
+        l.look();
+        assert_eq!(parts(&l), [900, 700], "what the full one can't take to the other");
+        own.store(400, Ordering::Relaxed);
+        r.store(2600, Ordering::Relaxed);
+        l.look();
+        assert_eq!(parts(&l), [1500, 700], "less the 400 this process read itself");
+        assert_eq!(l.leave(b, true).map(|s| s.credited), Some(700));
+        assert_eq!(l.leave(a, true).map(|s| s.credited), Some(1500));
+        assert_eq!(share(7, &mut [Share { id: 0, expected: 9, credited: 0 }; 3]), 7, "a remainder given too");
+    }
+
+    /// Task #1561: a look after the process was stopped (a SIGCONT since: the guards' freeze, a
+    /// pause) credits nothing of what the links received over the stop; the next counts from it.
+    #[test]
+    fn a_look_after_a_stop_credits_none_of_it() {
+        let (l, [r, _, conts]) = test_links();
+        let (id, _) = l.join(1_000_000);
+        r.store(500_000, Ordering::Relaxed);
+        conts.store(1, Ordering::Relaxed);
+        l.look();
+        r.store(500_100, Ordering::Relaxed);
+        l.look();
+        assert_eq!(l.leave(id, true).map(|s| s.credited), Some(100));
     }
 
     /// A long program's bytes show across its run, not in one span as it ends: credited while it
     /// runs (seen before it ended), and `expected` exactly in all once it has, the rest held.
     #[test]
     fn a_running_programs_bytes_are_credited_as_it_runs() {
-        use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-        let links = std::sync::Arc::new(AtomicU64::new(0));
-        let l = links.clone();
-        let (r0, h0) = (get(Count::ReadBytes), own_held());
-        let p = ProgramReads::begin_with(
-            10_000,
-            std::time::Duration::from_millis(2),
-            std::sync::Arc::new(move || Some(l.fetch_add(100, Relaxed))),
-        );
+        let (l, [r, ..]) = test_links();
+        let (r0, h0, f0) = (get(Count::ReadBytes), own_held(), get(Count::Files));
+        let p = ProgramReads::begin_with(l.clone(), 10_000, std::time::Duration::from_millis(2));
         // (Seen served while the program is still running: no `ended` yet.)
-        crate::testkit::eventually("its bytes credited as it runs", || get(Count::ReadBytes) - r0 >= 500);
+        crate::testkit::eventually("its bytes credited as it runs", || {
+            r.fetch_add(100, Ordering::Relaxed);
+            get(Count::ReadBytes) - r0 >= 500
+        });
         assert_eq!(own_held(), h0, "none held before it ended");
         p.ended(&[(Path::new("/Volumes/x/a.osm.pbf"), 6_000), (Path::new("/Volumes/x/b"), 4_000)], 4);
         assert_eq!(get(Count::ReadBytes) - r0 + own_held() - h0, 10_000);
-        assert_eq!(get(Count::Files), 8, "each opened four times");
+        assert_eq!(get(Count::Files) - f0, 8, "each opened four times");
+        assert!(l.lock().running.is_empty());
+    }
+
+    /// Task #1561: a program dropped stops its looks (the ticker joined: no look after the drop,
+    /// none credited) and its part leaves the links.
+    #[test]
+    fn a_dropped_program_looks_no_more() {
+        let looks = std::sync::Arc::new(AtomicU64::new(0));
+        let n = looks.clone();
+        let l = std::sync::Arc::new(Links::new(
+            Box::new(move || Some(n.fetch_add(1, Ordering::Relaxed) * 100)),
+            Box::new(|| 0),
+            Box::new(|| 0),
+        ));
+        let p = ProgramReads::begin_with(l.clone(), u64::MAX, std::time::Duration::from_millis(2));
+        crate::testkit::eventually("a few looks", || looks.load(Ordering::Relaxed) >= 3);
+        drop(p);
+        let (seen, r0) = (looks.load(Ordering::Relaxed), get(Count::ReadBytes));
+        std::thread::sleep(std::time::Duration::from_millis(50)); // (absence)
+        assert_eq!((looks.load(Ordering::Relaxed), get(Count::ReadBytes)), (seen, r0), "no look after the drop");
+        assert!(l.lock().running.is_empty());
     }
 
     /// A program that failed (dropped without `ended`) leaves what it was credited, and no thread.
     #[test]
     fn a_program_that_failed_keeps_only_what_was_credited() {
-        let r0 = get(Count::ReadBytes);
-        let p = ProgramReads::begin_with(100, std::time::Duration::from_secs(3600), std::sync::Arc::new(|| Some(0)));
-        drop(p);
-        assert_eq!((get(Count::ReadBytes) - r0, own_held()), (0, 0));
+        let (l, _) = test_links();
+        let (r0, h0) = (get(Count::ReadBytes), own_held());
+        drop(ProgramReads::begin_with(l, 100, std::time::Duration::from_secs(3600)));
+        assert_eq!((get(Count::ReadBytes) - r0, own_held() - h0), (0, 0));
     }
 
     /// With the links not told the whole is the NAS's, counted as it ended; opened once.
     #[test]
     fn a_program_with_no_links_told_counts_its_bytes_served() {
-        let r0 = get(Count::ReadBytes);
-        ProgramReads::begin_with(700, CREDIT_EVERY, std::sync::Arc::new(|| None))
-            .ended(&[(Path::new("/Volumes/x/a"), 700)], 1);
-        assert_eq!((get(Count::ReadBytes) - r0, own_held(), get(Count::Files)), (700, 0, 1));
+        let l = std::sync::Arc::new(Links::new(Box::new(|| None), Box::new(|| 0), Box::new(|| 0)));
+        let (r0, h0, f0) = (get(Count::ReadBytes), own_held(), get(Count::Files));
+        ProgramReads::begin_with(l, 700, CREDIT_EVERY).ended(&[(Path::new("/Volumes/x/a"), 700)], 1);
+        assert_eq!((get(Count::ReadBytes) - r0, own_held() - h0, get(Count::Files) - f0), (700, 0, 1));
     }
 
     /// A reader counted as it reads: a file read through shows its bytes, whichever answered, and

@@ -1,4 +1,4 @@
-//! Every NAS access goes through store::nasfs (docs/nas-access.md §5, task #530). The NAS project
+//! Every NAS access goes through store::nasfs (docs/nas-access.md §3, task #530). The NAS project
 //! folder is a `NasRoot`, its files `NasPath`s: no `Path`, so a raw `std::fs` call on a NAS file
 //! doesn't compile, and the type is the guard there. What this scan catches is the escapes, in
 //! every item outside `#[cfg(test)]` code and outside store::nasfs itself:

@@ -143,9 +143,12 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
 /// tests hold it to osmium (`the_cut_streams_the_nas_file_over_ssh`).
 pub const SMART: store::nasio::Passes = store::nasio::Passes { reads: 3, opens: 4 };
 
-/// How the extract program (`extract` without `--trailends`) reads its piece: pass 1 (the ways),
-/// pass 1b (the hiking routes' end nodes) and pass 2 (the nodes), each opening it once. The
-/// program's passes are marked `// ---- Pass` in tools/extract.rs, which holds it to this.
+/// How the extract program (`extract` without `--trailends`) reads its piece at most: pass 1 (the
+/// ways), pass 1b (the hiking routes' end nodes) and pass 2 (the nodes), each opening it once. Pass
+/// 1b runs only for a piece holding a hiking route: a piece with none is read and opened twice, and
+/// counted as three (the third pass's open, and its bytes as held, the links having carried none
+/// of them: store::nasio::ProgramReads). The program's passes are marked `// ---- Pass` in tools/extract.rs,
+/// which holds it to this.
 pub const EXTRACT: store::nasio::Passes = store::nasio::Passes { reads: 3, opens: 3 };
 
 /// The filtered planet `src` cut to boxes (`osmium extract`, one run for them all, its smart
@@ -869,16 +872,20 @@ impl UnitLinks {
     }
 }
 
-/// `run` (`unit_links` of a piece's path) on the piece `src` on the NAS, read where it lies: the
-/// extract program's reads of it counted (`EXTRACT`).
-fn unit_links_of(src: &store::nasfs::NasPath, run: impl FnOnce(&Path) -> Result<UnitLinks>) -> Result<UnitLinks> {
-    src.read_by_program(EXTRACT, run)
+/// Run `extract` (of the programs in `bin`: jobrt::sys::program) on z6 tile `unit`'s piece and work
+/// out its chaining inputs. The piece is this Mac's file (the cut's), or the NAS's read where it
+/// lies: the program's reads of it counted then (`EXTRACT`, store::nasfs::NasPath::read_by_program).
+/// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
+fn unit_links(bin: &Path, spacing: &Path, piece: store::nasfs::Loc, unit: TileId, work: &Path) -> Result<UnitLinks> {
+    let run = |p: &Path| links_by_extract(bin, spacing, p, unit, work);
+    match piece {
+        store::nasfs::Loc::Local(p) => run(p),
+        store::nasfs::Loc::Nas(n) => n.read_by_program(EXTRACT, run),
+    }
 }
 
-/// Run `extract` (of the programs in `bin`: jobrt::sys::program) on a extract and work out its z6
-/// tile's chaining inputs.
-/// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
-pub fn unit_links(bin: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
+/// `unit_links` of the piece at `piece`, a path the program opens.
+fn links_by_extract(bin: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
     let mut c = jobrt::sys::program(bin, "extract");
     c.arg(work).arg(spacing).arg(piece);
@@ -1257,7 +1264,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
                 let _p = jobrt::timings::sub("working out how their roads connect (extract)");
-                let ul = unit_links(bin, &spacing, f, u, &work)?;
+                let ul = unit_links(bin, &spacing, f.into(), u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;
             }
@@ -1295,8 +1302,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
                 Err(_) => {
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
-                    // (The extract program's input, read where it lies: counted once.)
-                    unit_links_of(&src, |p| unit_links(bin, &spacing, p, unit, &scratch.join("extract-work")))?
+                    unit_links(bin, &spacing, (&src).into(), unit, &scratch.join("extract-work"))?
                 }
             };
             all.push((unit, ul));
@@ -1827,21 +1833,39 @@ mod tests {
         assert_eq!(get(Count::Files) - files, 1);
     }
 
-    /// A piece the extract program reads where it lies is counted by the program's passes
-    /// (`EXTRACT`), opened as often, exactly; and what `run` gives is what comes back.
+    /// Task #1561: `unit_links`, as both its call sites call it, on a piece the extract program
+    /// reads where it lies on the NAS: counted by the program's passes (`EXTRACT`), opened as
+    /// often, exactly; on this Mac's own piece (the cut's), nothing counted. The program is a
+    /// stand-in writing an extract of no ways, given the piece's path.
     #[test]
     fn a_piece_read_by_the_extract_program_counts_its_passes() {
         use store::nasio::{get, own_held, Count};
         let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("scenic-build");
+        // (`tool extract <work> <spacing> <piece>`: a ways file of its header alone, one vertex, no strings.)
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$2\" = extract ] && [ -f \"$5\" ] || exit 1\n\
+             printf 'RDWAYS02\\000\\000\\000\\000\\000\\000\\000\\000' >\"$3/ways.bin\"\n\
+             printf '\\000\\000\\000\\000\\000\\000\\000\\000' >\"$3/verts.bin\"\n: >\"$3/strings.txt\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path());
-        root.join("6-1-1.osm.pbf").write(vec![1u8; 100_000]).unwrap();
+        let piece = root.join("6-1-1.osm.pbf");
+        piece.write(vec![1u8; 100_000]).unwrap();
+        let (unit, spacing, work) = (TileId { z: 6, x: 1, y: 1 }, d.path().join("spacing"), d.path().join("work"));
         let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
-        let got = unit_links_of(&root.join("6-1-1.osm.pbf"), |_| Ok(UnitLinks { ways: vec![(7, 1.0)], pairs: vec![] }))
-            .unwrap();
-        assert_eq!(got.ways, [(7, 1.0)]);
+        let got = unit_links(&bin, &spacing, (&piece).into(), unit, &work).unwrap();
+        assert!(got.ways.is_empty() && got.pairs.is_empty());
         // (Three passes, each opening it: the program's own, tools/extract.rs's test holds the constant to them.)
         assert_eq!(get(Count::ReadBytes) + own_held() - asked, 3 * 100_000);
         assert_eq!(get(Count::Files) - files, 3);
+        let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
+        unit_links(&bin, &spacing, d.path().join("6-1-1.osm.pbf").as_path().into(), unit, &work).unwrap();
+        assert_eq!((get(Count::ReadBytes) + own_held() - asked, get(Count::Files) - files), (0, 0), "a local piece");
     }
 
     /// The ways a ferries piece holds among some ids, read where it lies by osmium: found, and the

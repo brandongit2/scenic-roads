@@ -52,9 +52,11 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
   readers that take both: a local copy or the NAS's file (buildstore::localread), the packs a step reads. A caller passes a `&Path` or a
   `&NasPath`.
 - **The escape** is `unchecked_path()` on a `NasRoot`, a `NasPath` or a `Loc`. It is for a program's
-  argument, a library that opens a path itself, a statfs of the mount, and the store's own readers
-  below the type (the I/O pool, content-named uploads). Each item making one is listed by the
-  guard (§3).
+  or a child process's argument (a folder, or an input read where it lies and not yet counted: §5),
+  a library or reader that opens a path itself (counted by it or not: §5), a statfs of the mount,
+  and the store's own readers below the type (the I/O pool, content-named uploads). A program given
+  a NAS file to read has it from `read_by_program` instead, which counts its reads (§4). Each item
+  making one is listed by the guard (§3).
 
 `pool::nas::Nas` stays the pool protocol's trait (decision D5). `NasRoot` implements it, so the
 `made` set and whole writes live in one place; the simulator keeps its own.
@@ -124,17 +126,22 @@ Mac (a test's, a scratch run's `--out`) is a `NasRoot` too; the heritage chain's
 local folder of links, is a `Path`.
 
 A program or a library that opens a NAS path itself (osmium, the extract program, the names tables)
-is given the path by `NasPath::read_by_program` (`read_files_by_program` for several), the one way to
-a raw path for a read: the path goes to the run alone. The run's bytes are counted, through
+is given the path by `NasPath::read_by_program` (`read_files_by_program` for several), which counts
+its reads: the path goes to the run alone. The run's bytes are counted, through
 `nasio::ProgramReads`, as the file's size times the passes it makes (`nasio::Passes`: reads and
-opens; osmium's smart extract is `inputs::osmpass::SMART`, the extract program's `EXTRACT`). They
-are credited as the NAS's while it runs, a look a second at the bytes this Mac's links received
-(never more than the passes' total), and what the links didn't carry is held (the page cache's) as it
-ends. A known limit: the links are this Mac's, so other traffic during the run is credited to the
-program too, up to its total. A file streamed over SSH is counted as each piece moves
-(`osmpass::stream_counted`); a library's reader of a file is wrapped in `nasio::Counting`.
+opens; osmium's smart extract is `inputs::osmpass::SMART`, the extract program's `EXTRACT`, three
+passes at most). They are credited as the NAS's while it runs, a look a second at the bytes this
+Mac's links received less the process's own NAS reads counted meanwhile, shared among the process's
+programs running then (never more than a program's total; a look after a stop, a SIGCONT since,
+credits none of what came over it), and what the links didn't carry is held (the page cache's) as it
+ends. A known limit: the links are this Mac's, so other processes' traffic during the run (another
+job's, the agent's) is credited to the program too, up to its total; and the equal shares can leave
+a program short as it ends (one that read faster than those beside it), its rest counted as held,
+so the job's NAS total may come out low, never high. A file streamed over SSH is
+counted as each piece moves (`osmpass::stream_counted`); a library's reader of a file is wrapped in
+`nasio::Counting`.
 
-## 5. What is not done
+## 5. What stays outside the type, and what is counted another way
 
 - `Out::path`'s run-time refusal of inputs-folder paths stays as it was (docs/inputs.md §7.1); it did
   not become a typed `inputs()` accessor.
