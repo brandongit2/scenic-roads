@@ -845,15 +845,15 @@ thousandths:
     spans), neither: past the knee, held.
   - Not the pool's, slow answers neither cut the window nor hold it at the knee, but only with the
     disks read; nothing measured, they hold it, never cut it.
-- **The window**: **congested** (the disks over the target; the counted Mac missing its deadlines;
+- **The window**: **congested** (the disks over the target, smoothed, or a reading's busiest disk at
+  it or over: the smoothing lags a burst by half a minute; the counted Mac missing its deadlines;
   or the answers rising, past 3 times their best, `nas-slow`), it drops at once to half the weight
   in use (`nas-decrease`), never under a step, and nothing paced starts until enough jobs end; no
   further cut until the load has fallen to the window and a span has passed. **With room** (the
   answers read, not rising and under the knee, the disks with room for the next job), it grows
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a
   minute, never more than one job past the load its readings tested, and only on fresh readings
-  from every Mac holding leased jobs, never while this reading's busiest disk is at the target or
-  over it (the smoothed share lags a burst by half a minute). Otherwise it holds, and says why
+  from every Mac holding leased jobs. Otherwise it holds, and says why
   (`nas::Hold`). It is never more than the whole: the weights are estimates, so the answers may say
   the NAS is full before them, but past the whole they'd admit more than the probe measured. It is
   kept in the lead's store, so a restart within 30 minutes takes it up.
@@ -907,16 +907,20 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 264 (146) | 185 (215) | 26, 4 (26, 4) | 0 (0) |
-  | jobs of 100, on a Mac not answering | 1,093 (685) | 473 (315) | 8 (63) | 114, 13 (41, 4) | 11, 1 (6, 1) |
-  | jobs of 250, on a Mac not answering | 439 (342) | 552 (416) | 56 (81) | 125, 7 (76, 7) | 12, 2 (6, 1) |
-  | jobs of 100, on the mini | 1,155 (685) | 511 (315) | 70 (63) | 114, 9 (41, 4) | 11, 1 (6, 1) |
-  | jobs of 250, on the mini | 507 (342) | 613 (416) | 103 (81) | 114, 7 (76, 7) | 15, 1 (6, 1) |
+  | the readings as they were | – | 190 (146) | 216 (215) | 26, 4 (26, 4) | 0 (0) |
+  | jobs of 100, on a Mac not answering | 819 (685) | 364 (315) | 21 (63) | 66, 9 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 354 (342) | 427 (416) | 75 (81) | 95, 9 (76, 7) | 9, 1 (6, 1) |
+  | jobs of 100, on the mini | 898 (685) | 405 (315) | 38 (63) | 60, 4 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on the mini | 372 (342) | 467 (416) | 134 (81) | 65, 4 (76, 7) | 8, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
-  It runs more work and so holds the NAS busier: at the disks' target and at the model's cliff
-  (outside spikes on top of the pool's load) about twice as often. **Assumed:** a job adds to the
-  disks' busy share what a thousandth of measured use added over those readings (0.046 %).
+  It starts 4 to 31 % more jobs than the rule judging against the weight, at the model's cliff
+  about as often (5 to 9 readings against 6, never two in a row), at the disks' target up to 1.6
+  times as often. As the readings were, its time at the floor is the same (216 readings against
+  215), most of it after cuts on deadlines missed (145 against 140), held there while the counted
+  Mac's own jobs moved (149). On 20 Nov 08:15-08:29 it held the window at 44 %, never cut, where
+  the weight's rule cut it to 5 % and regrew it to 9 %. **Assumed:** a job adds to the disks' busy
+  share what a thousandth of measured use added over those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and

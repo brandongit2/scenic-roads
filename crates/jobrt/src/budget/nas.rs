@@ -126,7 +126,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///
 /// Then, as the NAS's own readers decide their reads in flight (store::aimd):
 ///
-/// - **congested** (the disks over the target; the counted Mac missing its deadlines; or its
+/// - **congested** (the disks over the target, smoothed, or this reading's busiest at it or over;
+///   the counted Mac missing its deadlines; or its
 ///   answers judged rising past `Tuning::slow`): the window drops to `Tuning::decrease` of the
 ///   weight in use at once, never under `Tuning::step`; the slow start's threshold is set there.
 ///   The jobs running go on, and nothing more that's paced starts until enough of them end. No new
@@ -136,8 +137,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// - **spare** (a Mac's answers read and not rising; under `Tuning::slow`, the knee (this reading's,
 ///   and the last `span_s`'s lower quartile), or past it, judged not the pool's, the disks read;
 ///   and the disks with room for the next job: their busy share smoothed and the room it needs, a
-///   share of the NAS as probed, within the target, and this reading's under it; the disks not
-///   read, the answers alone say): it grows,
+///   share of the NAS as probed, within the target; the disks not read, the answers alone say): it
+///   grows,
 ///   only while it's what limits (the weight in use and the least a job waiting for the budget weighs past it;
 ///   none waiting, the weight in use within a step of it: a window no job asks for isn't credit
 ///   for a later burst, nor is room left by a job just ended), only on readings every Mac holding
@@ -358,8 +359,7 @@ pub enum Hold {
     /// This reading's answers past the knee, or the last span's (their lower quartile), and not
     /// judged the pool's or not (undecidable among them).
     Slow,
-    /// The disks' busy share (smoothed) and the room the next job needs past the target, or this
-    /// reading's busiest disk at it or over.
+    /// The disks' busy share (smoothed) and the room the next job needs past the target.
     Busy,
     /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
     NotFresh,
@@ -872,7 +872,9 @@ impl Pace {
         let j = judge(seen, t, k);
         let rising = j.rising;
         let slow = rising && j.done && j.quick.is_some_and(|q| q > k.slow);
-        let over = self.load.is_some_and(|l| l > s.pct as f64);
+        // (Over the target: the smoothed share past it, or this reading's busiest disk at it or
+        // over: the smoothing's half minute lags a burst, and the cliff is a reading away.)
+        let over = self.load.is_some_and(|l| l > s.pct as f64) || busiest.is_some_and(|b| b >= f64::from(s.pct));
         let missed = counted.as_ref().is_some_and(|a| a.missed);
         let past = over || missed || slow;
         // (The knee: this reading's answers past it, or the last span's, their lower quartile;
@@ -881,11 +883,11 @@ impl Pace {
         let span = seen.iter().filter(|x| x.t + k.span_s > t).map(|x| x.ratio);
         let knee = !outside && (ratio.is_some_and(|r| r > k.slow) || quartile(span, 1).is_some_and(|q| q > k.slow));
         // (Room for a job of weight `w`: the disks' busy share smoothed and its weight, a share of
-        // the NAS as probed, within the target, and this reading's busiest disk under it (the
-        // smoothing's half minute lags a burst); the disks not read, the answers alone say. Spare: a
-        // step's room, the answers read, not rising, not held at the knee.)
-        let (load, under) = (self.load, busiest.is_none_or(|b| b < f64::from(s.pct)));
-        let room_for = |w: u32| under && load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
+        // the NAS as probed, within the target (a reading at the target or over is congested); the
+        // disks not read, the answers alone say. Spare: a step's room, the answers read, not rising,
+        // not held at the knee.)
+        let load = self.load;
+        let room_for = |w: u32| load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
         let room = room_for(s.wants.unwrap_or(k.step));
         let spare = ratio.is_some() && !rising && !j.swelling && !knee && room_for(k.step);
         // (The lone way's hold: begun at a congested reading; once it has lasted its time
@@ -1934,25 +1936,26 @@ mod tests {
         assert_eq!(q.window(), WHOLE);
     }
 
-    /// Task #1506's review: no growth while this reading's busiest disk is at the target or over
-    /// it, whatever the answers and the smoothed share say. Quiet for a minute, the window grows;
-    /// one reading at 85 % (the smoothed share still under half of it) holds it, `Busy`; under the
-    /// target again, with the smoothed share's room, it grows.
+    /// Task #1506's review: a reading whose busiest disk is at the target or over it is congested,
+    /// whatever the answers and the smoothed share say (the smoothing lags a burst by half a
+    /// minute; the cliff is a reading away): never grown on, and cut. Quiet for a minute, 300 in
+    /// use, the window grows; one reading at 85 % (the smoothed share still under half of it) cuts
+    /// it to half what's in use; quiet again, past the hold-off, it grows.
     #[test]
-    fn a_reading_with_the_disks_at_the_target_never_grows_the_window() {
+    fn a_reading_with_the_disks_at_the_target_cuts_the_window() {
         let (mut p, mut t) = (Pace::default(), 0);
         let best = [ans("m1", 5.0, 5.0)];
-        for _ in 0..6 {
+        for _ in 0..9 {
             t += READ_EVERY_S;
-            assert_eq!(disks(&mut p, t, &best, &[10.0], 0, Some(150)), Verdict::Grew);
+            disks(&mut p, t, &best, &[10.0], 300, Some(150));
         }
-        let w = p.window();
+        assert!(p.window() > 300, "grown: {}", p.window());
         t += READ_EVERY_S;
-        assert_eq!(disks(&mut p, t, &best, &[85.0], 0, Some(150)), Verdict::Held(Hold::Busy));
+        assert_eq!(disks(&mut p, t, &best, &[85.0], 300, Some(150)), Verdict::Cut);
         assert!(p.load.is_some_and(|l| l + 15.0 <= 85.0), "the smoothed share alone had room: {:?}", p.load);
-        assert_eq!(p.window(), w);
-        t += READ_EVERY_S;
-        assert_eq!(disks(&mut p, t, &best, &[10.0], 0, Some(150)), Verdict::Grew);
+        assert_eq!(p.window(), 150);
+        let v = run(&mut p, &mut t, 12, 5.0, 150, Some(150));
+        assert!(v.contains(&Verdict::Grew) && !v.contains(&Verdict::Cut), "{v:?}");
     }
 
     /// Task #1506's two readings of 19 Nov as cases, the jobs moving what they weigh. 18:51: the
@@ -2049,9 +2052,10 @@ mod tests {
         );
         assert_eq!(p.last.as_ref().unwrap().verdict.hold(), Some(Hold::NoAnswer));
         assert_eq!(p.load, Some(60.0));
-        assert!(matches!(busy(&mut p, 40, Some(&[95.0])), Verdict::Held(_)), "smoothed: one busy reading isn't over");
+        assert_eq!(busy(&mut p, 40, Some(&[95.0])), Verdict::Cut, "a reading over the target: cut at once");
+        assert!(p.load.is_some_and(|l| l < 85.0), "the smoothed share not yet over: {:?}", p.load);
         let cut = (5..10).map(|k| busy(&mut p, k * 10, Some(&[95.0]))).filter(|v| *v == Verdict::Cut).count();
-        assert_eq!(cut, 1, "cut once: its jobs out before the cut still run");
+        assert_eq!(cut, 0, "cut once: its jobs out before the cut still run");
         assert_eq!(p.window(), 50, "half the 100 in use");
         assert!(p.why().unwrap().contains("% busy, over the target 85 %"), "{:?}", p.why());
         let w = p.window();
@@ -2848,7 +2852,9 @@ mod tests {
     /// judged the pool's or not (`unjudged`) and the ones the jobs let go had slowed past the knee
     /// on their own (`on_the_pool`: their slowing over the recorded's past `Tuning::slow`), the
     /// jobs it started, the readings with the disks at the target or more (`hot`), at the model's
-    /// cliff and the most of them in a row, and those the jobs let go slowed past the knee.
+    /// cliff and the most of them in a row, those the jobs let go slowed past the knee, and the
+    /// readings at the window's floor by the cause of the cut before, and whether held there as
+    /// undecidable.
     #[derive(Debug, Default)]
     struct Replayed {
         windows: Vec<(u64, u32)>,
@@ -2862,6 +2868,7 @@ mod tests {
         cliff: usize,
         longest: usize,
         slowed: usize,
+        floor_by: std::collections::BTreeMap<String, usize>,
     }
 
     /// Unix s of 19 Nov 2026 at `h:m` UTC (`h` past 23: 20 Nov's).
@@ -2897,6 +2904,7 @@ mod tests {
         let mut running: Vec<u64> = Vec::new();
         let mut out = Replayed::default();
         let (mut in_row, mut hot_row) = (0, 0);
+        let mut cut_by = "never cut";
         for r in &rows {
             let t = r.t;
             running.retain(|&end| end > t);
@@ -2940,11 +2948,13 @@ mod tests {
             match p.read(&s, &k) {
                 Verdict::Cut => {
                     let why = match () {
-                        _ if p.load.is_some_and(|l| l > 85.0) => "disks",
+                        _ if p.load.is_some_and(|l| l > 85.0) => "disks smoothed",
+                        _ if busy >= 85.0 => "a disk reading",
                         _ if missed => "missed",
                         _ => "answers",
                     };
                     out.cuts.push((t, why));
+                    cut_by = why;
                 }
                 Verdict::Grew => {
                     let l = p.last.as_ref().unwrap();
@@ -2961,6 +2971,12 @@ mod tests {
                 _ => {}
             }
             out.windows.push((t, p.window()));
+            if p.window() <= STEP {
+                let held = p.last.as_ref().is_some_and(|l| l.undecided);
+                *out.floor_by
+                    .entry(format!("{cut_by}{}", if held { ", held undecidable" } else { "" }))
+                    .or_default() += 1;
+            }
             let l = Limits { window: p.window(), small: k.small, alone: p.lone(), ..Default::default() };
             let held = |n: usize| r.weight + n as u32 * w;
             while admit && l.paced(held(running.len()), w) && l.win().takes(held(running.len()), w) {
@@ -3014,6 +3030,7 @@ mod tests {
                 r.longest,
                 r.slowed,
             );
+            eprintln!("  at the floor by why: {:?}", r.floor_by);
             eprintln!("  window: {}", line.join(", "));
             eprintln!("  cuts ({}): {}", cuts.len(), cuts.join(", "));
         };
@@ -3027,6 +3044,13 @@ mod tests {
         );
         let r = replay(STEP, false, "jobs");
         say("the readings as they were", &r);
+        let late: Vec<u32> = r.windows.iter().filter(|x| x.0 >= nov19(32, 15)).map(|x| x.1).collect();
+        let cuts = r.cuts.iter().filter(|c| c.0 >= nov19(32, 15)).count();
+        eprintln!(
+            "  20 Nov 08:15-08:29 (task #1506's case): the window {} to {}, {cuts} cuts",
+            late.iter().min().unwrap(),
+            late.iter().max().unwrap()
+        );
         assert_eq!(r.unjudged.iter().map(|t| hms(*t)).collect::<Vec<_>>(), Vec::<String>::new());
         assert!(
             r.cuts.iter().any(|c| (nov19(19, 10)..nov19(19, 15)).contains(&c.0)),
