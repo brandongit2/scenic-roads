@@ -145,8 +145,11 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   none waiting, the weight in use within a step of it: a window no job asks for isn't credit
 ///   for a later burst, nor is room left by a job just ended), only on readings every Mac holding
 ///   leased jobs gave fresh (none older than its span and a beat: no growth on stale data), and
-///   only once the jobs last started have run a `span_s` (their answers in the reading), and a
-///   `grow_s` more where they rose a step or more (a growth cadence of their answers read):
+///   only once the jobs last started have run a `span_s` (their answers in the reading), and,
+///   where they rose a step or more to the knee or past it (`Judged::knee`: the heaviest weight
+///   in use with answers under `Tuning::slow` lately) or no knee is known, a `grow_s` more (a
+///   growth cadence of their answers read): fast where the answers were good at that weight,
+///   cautious beyond it:
 ///   doubling a `Tuning::grow_s` up to the slow start's threshold (none before the first cut),
 ///   then a step a `grow_s`; and never more than one job past the load its readings tested: the
 ///   weight in use and the next job waiting (a step at least), or under the threshold twice the
@@ -179,7 +182,8 @@ pub struct Pace {
     restored: bool,
     /// The weight in use at the reading before, when it last rose, and what it rose from at the
     /// first rise of those since a span and a growth cadence (M2: no growth until the jobs last
-    /// started have run a span, and a growth cadence more where they rose a step or more).
+    /// started have run a span, and a growth cadence more where they rose a step or more to the
+    /// knee or past it).
     prev_in_use: u32,
     rose_at: Option<u64>,
     rose_from: u32,
@@ -379,8 +383,8 @@ pub enum Hold {
     /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
     NotFresh,
     /// The jobs last started haven't run a `Tuning::span_s` (their answers aren't in the reading),
-    /// or, where they rose a step or more, a span and a `Tuning::grow_s` (a growth cadence of
-    /// their answers not yet read).
+    /// or, where they rose a step or more to the knee or past it (or no knee is known), a span and
+    /// a `Tuning::grow_s` (a growth cadence of their answers not yet read).
     Started,
     /// The window isn't what limits: the room the next job waiting needs fits beside what's in use
     /// (none waiting: the weight in use more than a step under it).
@@ -888,9 +892,12 @@ impl Pace {
             seen.push(Seen { t, used, own, held: s.in_use, ratio: r });
         }
         seen.retain(|x| x.t + k.track_s > t);
-        let stepped = s.in_use >= self.rose_from.saturating_add(k.step);
-        let started = self.rose_at.is_some_and(|r| t < r + k.span_s || (stepped && t < r + k.span_s + k.grow_s));
         let j = judge(seen, t, k);
+        // (Under the knee, the answers known good there: a span. At it or past, or no knee known,
+        // a growth cadence more where the weight rose a step or more.)
+        let under = j.knee.is_some_and(|at| s.in_use < at);
+        let stepped = !under && s.in_use >= self.rose_from.saturating_add(k.step);
+        let started = self.rose_at.is_some_and(|r| t < r + k.span_s || (stepped && t < r + k.span_s + k.grow_s));
         let rising = j.rising;
         let slow = rising && j.done && j.quick.is_some_and(|q| q > k.slow);
         // (Undecidable answers swelling past the knee: the counted Mac's link or the NAS, which
@@ -2129,6 +2136,30 @@ mod tests {
             );
         }
         assert_eq!(p.window(), 100, "back to the knee before the cadence");
+    }
+
+    /// Task #1506's review: the jobs last started are held a span (their answers in the reading)
+    /// where the weight they rose to is under the knee (answers known good there lately), and a
+    /// growth cadence more at the knee or past it. Past the knee: a minute at 100 in use at its
+    /// best, then 300: still held four readings after the rise. Under it: two minutes at 400 at
+    /// its best, then 100, then 300: grown on, no longer held, four readings after the rise.
+    #[test]
+    fn the_jobs_started_are_judged_longer_past_the_knee_than_under_it() {
+        let best = [ans("m1", 5.0, 5.0)];
+        let held_after = |phases: &[(usize, u32)]| {
+            let (mut p, mut t) = (Pace::default(), 0);
+            for &(n, in_use) in phases {
+                for _ in 0..n {
+                    t += READ_EVERY_S;
+                    disks(&mut p, t, &best, &QUIET, in_use, Some(150));
+                }
+            }
+            p.last.as_ref().unwrap().verdict.hold()
+        };
+        let span = (SPAN_S / READ_EVERY_S) as usize;
+        assert_eq!(held_after(&[(12, 100), (span + 1, 300)]), Some(Hold::Started), "past the knee");
+        assert_ne!(held_after(&[(12, 400), (12, 100), (span + 1, 300)]), Some(Hold::Started), "under the knee");
+        assert_eq!(held_after(&[(12, 400), (12, 100), (1, 300)]), Some(Hold::Started), "a span all the same");
     }
 
     /// Task #1506's two readings of 19 Nov as cases, the jobs moving what they weigh. 18:51: the

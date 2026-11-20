@@ -859,8 +859,9 @@ thousandths:
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a
   minute, never more than one job past the load its readings tested, only on fresh readings from
   every Mac holding leased jobs, and only once the jobs last started have run a span (their
-  answers in the reading) and, where the weight in use rose a step or more, a growth cadence more
-  (their answers judged). Otherwise it holds, and says why
+  answers in the reading) and, where the weight in use rose a step or more to the knee or past it
+  (or no knee is known), a growth cadence more (their answers judged): fast where the answers were
+  good at that weight lately, cautious beyond it. Otherwise it holds, and says why
   (`nas::Hold`). It is never more than the whole: the weights are estimates, so the answers may say
   the NAS is full before them, but past the whole they'd admit more than the probe measured. It is
   kept in the lead's store, so a restart within 30 minutes takes it up.
@@ -917,19 +918,22 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 118 (146) | 245 (215) | 26, 4 (26, 4) | 0 (0) |
-  | jobs of 100, on a Mac not answering | 598 (685) | 308 (315) | 52 (63) | 46, 4 (41, 4) | 3, 1 (6, 1) |
-  | jobs of 250, on a Mac not answering | 269 (342) | 378 (416) | 135 (81) | 49, 4 (76, 7) | 3, 1 (6, 1) |
-  | jobs of 100, on the mini | 578 (685) | 306 (315) | 105 (63) | 48, 6 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on the mini | 282 (342) | 360 (416) | 93 (81) | 58, 4 (76, 7) | 4, 1 (6, 1) |
+  | the readings as they were | – | 177 (146) | 222 (215) | 26, 4 (26, 4) | 0 (0) |
+  | jobs of 100, on a Mac not answering | 806 (685) | 361 (315) | 106 (63) | 57, 9 (41, 4) | 6, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 320 (342) | 403 (416) | 136 (81) | 49, 4 (76, 7) | 6, 1 (6, 1) |
+  | jobs of 100, on the mini | 844 (685) | 381 (315) | 37 (63) | 63, 9 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on the mini | 342 (342) | 423 (416) | 89 (81) | 65, 4 (76, 7) | 5, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
-  It starts 13 to 21 % fewer jobs than the rule judging against the weight, at the model's cliff
-  less often (3 to 5 readings against 6, never two in a row), at the disks' target at most 1.2
-  times as often. As the readings were it is at its floor more (245 readings against 215); by the last
-  cut's cause, 134 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a
+  With jobs of 100 it starts 18 to 23 % more jobs than the rule judging against the weight; with
+  jobs of 250 as many on the mini, and 6 % fewer on a Mac not answering. It sits at its floor more
+  than that rule in three of the four closed-loop rows (106, 136 and 89 readings against 63, 81
+  and 81), less with jobs of 100 on the mini (37 against 63). At the model's cliff about as often
+  (5 or 6 readings against 6, never two in a row); at the disks' target at most 1.5 times as often.
+  As the readings were it is at its floor a little more (222 readings against 215); by the last
+  cut's cause, 111 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a
   disk reading at the target (the rule has no such cut; 7 of its floor readings followed a cut
-  that fell on one) and 20 on the smoothed share (20). In 177 of the 245 the answers were
+  that fell on one) and 20 on the smoothed share (20). In 155 of the 222 the answers were
   undecidable too: a coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window
   at 32 %, cut once (back to the knee), where the weight's rule went from 5 % to 22 % with 2 cuts.
   With the disks read at half the NAS's true load, or not read
@@ -938,8 +942,8 @@ thousandths:
 
   | | paced | heavy | H1 | R2 | Q1 | one Mac, paced | one Mac, R2 |
   |---|---|---|---|---|---|---|---|
-  | the disks at half | 25 (135) | 105 (260) | 140 (295) | 270 (300) | 220 (280) | 15 (135) | 300 (270) |
-  | the disks not read | 25 (135) | 105 (260) | 140 (295) | 270 (300) | 35 (280) | 15 (135) | 300 (270) |
+  | the disks at half | 100 (135) | 105 (260) | 145 (295) | 270 (300) | 225 (280) | 15 (135) | 300 (270) |
+  | the disks not read | 100 (135) | 105 (260) | 140 (295) | 270 (300) | 225 (280) | 15 (135) | 300 (270) |
 
   **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
   those readings (0.046 %).
