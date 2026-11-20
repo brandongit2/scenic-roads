@@ -10861,6 +10861,28 @@ mod tests {
         assert!(g.is_some() && !held.nothing_here, "granted: {held:?}");
     }
 
+    /// Task #1472 review: the lead's own ask offered no work at all says so (`own_offered_none`);
+    /// one whose work is held back (for its disk here) doesn't.
+    #[test]
+    fn the_leads_own_ask_says_when_no_work_is_offered_it() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        let cap = Capacity {
+            at: unix_now(),
+            cores: 8,
+            cores_free: 8,
+            free_mb: 56 << 10,
+            target_mb: 50 << 10,
+            reserved_mb: 6 << 10,
+            ..Default::default()
+        };
+        let ask = Ask { cap: Some(cap), ..every_ask("m4", "slope-hi", 30_000, 0) };
+        assert!(c.ask_own(&ask, &BTreeSet::new(), 0).is_none());
+        assert!(c.own_offered_none(), "nothing offered: {:?}", c.refusals());
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((4000, 7_000, 60)))]);
+        assert!(c.ask_own(&ask, &BTreeSet::new(), 0).is_none());
+        assert!(!c.own_offered_none(), "held for its disk: {:?}", c.refusals());
+    }
+
     /// Task #1478: the hold a member's last answer named for its disk stands through an answer held
     /// back before the disk is weighed (its Mac below its memory floor: `Rule::decides_disk`), but
     /// not once its target is in backoff against that member, which nothing grants it meanwhile.

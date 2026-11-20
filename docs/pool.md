@@ -376,7 +376,11 @@ it. Other steps keep their starting grant.
     standard error (`threads::Yields`, the last 8 minute windows of each count of threads, those
     under a quarter waited). A step with no windows on one thread more is tried there once these
     threads are measured (two windows). A thread so grown that didn't pay is cut back the next
-    minute, and all of them are given back once work waits for the Mac's cores again.
+    minute, and all of them are given back once work waits for the Mac's cores again (those a
+    job hasn't taken yet, its target under way still on fewer, at once: its file set back,
+    `Agent::give_back_untaken`). A Mac with every slot full asks for no work (`takes_more`), so
+    after a minute it no longer knows that nothing waits, and it grows no job this way, even on a
+    dry queue.
   - Past the most it may run on (the owner back): cut to that.
   The gap between 0.9 and 0.5 is the hysteresis: a grow that didn't pay is cut back the next
   minute (4 busy of 4, doubled to 8, still 4 busy: back to 6). These figures are the rule's form,

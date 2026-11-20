@@ -8132,6 +8132,7 @@ impl Agent {
     /// file (taken as its next target begins, a paced job's within the second) and logged; each job
     /// decided on watched afresh. Its lead hears what each runs on in its capacity (`capacity`).
     fn tend_threads(&mut self, c: &Conditions) {
+        self.give_back_untaken();
         let due: Vec<usize> = (0..self.slots.len())
             .filter(|&k| {
                 self.slots[k].running.as_ref().is_some_and(|r| {
@@ -8205,6 +8206,33 @@ impl Agent {
             r.grown_idle = d.grown_idle;
             free -= f64::from(d.threads.saturating_sub(w.threads));
             grown = grown.saturating_sub(before) + self.grown_mb(k);
+        }
+    }
+
+    /// The threads the next thread's rule grew a job by that it hasn't taken yet (its file says more
+    /// than its target under way runs on: a step taking them as a target begins, its next not
+    /// begun), given back at once once work may wait for this Mac's cores (`nothing_waits`): its
+    /// file set back to what it runs on, so neither this Mac's room (`grown_mb`) nor the lead's
+    /// count holds them while it runs its target (a job of one target would hold them to its end).
+    /// One that took them is decided on as ever (`tend_threads`, threads::decide).
+    fn give_back_untaken(&mut self) {
+        if self.nothing_waits() {
+            return;
+        }
+        for k in 0..self.slots.len() {
+            let f = self.threads_path(k);
+            let Some(r) = self.slots[k].running.as_mut() else { continue };
+            let Some(w) = r.watch.filter(|w| r.grown_idle > 0 && w.threads as usize != r.threads) else { continue };
+            if let Err(e) = jobrt::control::grant(&f, w.threads as usize) {
+                eprintln!("agent: telling {} its threads: {e:#}", r.spec.id);
+                continue;
+            }
+            eprintln!(
+                "agent: {} on {} threads (was {}, not taken yet): its threads grown while nothing waited given back: work may wait for its Mac's cores",
+                r.spec.id, w.threads, r.threads
+            );
+            r.threads = w.threads as usize;
+            r.grown_idle = 0;
         }
     }
 
@@ -13539,6 +13567,46 @@ mod tests {
         cpu(&a, 9 * 61 * s + s / 10);
         a.tend_threads(&cond);
         assert_eq!(file(&a), 4.min(a.threads_room(&cond) as u32));
+        // Task #1472: 0.8 cores busy a thread on 2, never doubled. While its Mac's last ask was
+        // offered no work (`asked`), once its step's windows on 2 measure it (two minutes): tried on
+        // 3, a thread grown while nothing waited (`grown_idle`, kept to its next decision).
+        let mut total = 9 * 61 * s + s / 10;
+        let mut busy = |a: &mut Agent, cores: f64| {
+            minute(a);
+            total += (cores * 61.0) as u64 * s;
+            cpu(a, total);
+            a.tend_threads(&cond);
+        };
+        let grown = |a: &Agent| a.slots[0].running.as_ref().unwrap().grown_idle;
+        jobrt::control::grant(&a.threads_path(0), 2).unwrap();
+        a.slots[0].running.as_mut().unwrap().threads = 2;
+        a.watch_threads(0);
+        // (Its step's windows so far forgotten: those above, idle on 3, say a third doesn't pay.)
+        a.yields = threads::Yields::default();
+        a.asked = Some((Instant::now(), true));
+        busy(&mut a, 1.6);
+        assert_eq!((file(&a), grown(&a)), (2, 0), "one window on 2: not measured yet");
+        busy(&mut a, 1.6);
+        assert_eq!((file(&a), grown(&a)), (3, 1), "measured on 2, nothing waiting: a thread more tried");
+        // Work waits again before it took the third (its target under way still on 2): given back
+        // at once, its file on 2 again.
+        a.asked = Some((Instant::now(), false));
+        a.watch_ahead = Duration::ZERO;
+        a.tend_threads(&cond);
+        assert_eq!(
+            (file(&a), grown(&a), a.slots[0].running.as_ref().unwrap().threads),
+            (2, 0, 2),
+            "untaken: given back"
+        );
+        // Grown again and taken (watched on 3), then work waits: cut back by the rule itself.
+        a.asked = Some((Instant::now(), true));
+        busy(&mut a, 1.6);
+        assert_eq!((file(&a), grown(&a)), (3, 1), "tried on 3 again");
+        a.watch_threads(0);
+        assert_eq!(a.slots[0].running.as_ref().unwrap().watch.map(|w| w.threads), Some(3), "taken");
+        a.asked = Some((Instant::now(), false));
+        busy(&mut a, 2.4);
+        assert_eq!((file(&a), grown(&a)), (2, 0), "taken, then work waits: given back");
         if let Some(mut r) = a.slots[0].running.take() {
             r.stop(Duration::from_secs(1));
         }
