@@ -211,11 +211,32 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
-            let n = streamed(&ssh, SSH_START, STREAM_STALL, &remote, reads, dir, |input| run(input, false))?;
-            jobrt::timings::count(n, 1);
-            Ok(())
+            stream_counted(&ssh, SSH_START, STREAM_STALL, p, &remote, reads, dir, |input| run(input, false))
         }
     }
+}
+
+/// `streamed` of file `path` (`remote` on the NAS), the bytes it read off the NAS counted: as the
+/// enclosing phase's, and as the job's NAS reads (store::nasio, all of them served: the stream
+/// crosses the link, never this Mac's cache), the file counted opened. Counted once it ends: a
+/// stream that failed counts nothing.
+#[allow(clippy::too_many_arguments)]
+fn stream_counted(
+    ssh: &(dyn Fn() -> Command + Sync),
+    start: std::time::Duration,
+    stall: std::time::Duration,
+    path: &Path,
+    remote: &str,
+    reads: u32,
+    dir: &Path,
+    run: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let t = std::time::Instant::now();
+    let n = streamed(ssh, start, stall, remote, reads, dir, run)?;
+    jobrt::timings::count(n, 1);
+    store::nasio::opened(path, n, t.elapsed().as_millis() as u64);
+    store::nasio::read(n);
+    Ok(())
 }
 
 /// The ciphers `ssh` prefers for the planet's stream, in order: AES-GCM (hardware-accelerated on
@@ -1257,8 +1278,8 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
                 Err(_) => {
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
-                    // (The extract program's input, read where it lies: tests/nas_access.rs.)
-                    unit_links(bin, &spacing, &src.unchecked_path(), unit, &scratch.join("extract-work"))?
+                    // (The extract program's input, read where it lies: counted once.)
+                    src.read_by_program(1, |p| unit_links(bin, &spacing, p, unit, &scratch.join("extract-work")))?
                 }
             };
             all.push((unit, ul));
@@ -1463,9 +1484,8 @@ pub fn patch_ferries(
         if ids.is_empty() {
             continue;
         }
-        // (Read where it is: copied only when it lacks some.)
-        // (osmium's input, read where it lies: tests/nas_access.rs.)
-        let lacks = ids.len() - way_ids(&out.path(content).unchecked_path(), Some(&ids))?.len();
+        // (Read where it is, counted once: copied only when it lacks some.)
+        let lacks = ids.len() - out.path(content).read_by_program(1, |p| way_ids(p, Some(&ids)))?.len();
         if lacks == 0 {
             continue;
         }
@@ -1758,6 +1778,28 @@ mod tests {
                 c
             })
         }
+    }
+
+    /// A file streamed over SSH is counted in what the job's NAS reads served (`read_b`: the bytes
+    /// crossed the link, none from this Mac's cache), every read of it, and opened once.
+    #[test]
+    fn a_streamed_file_counts_what_was_read_off_the_nas() {
+        use store::nasio::{get, Count};
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("filtered.osm.pbf");
+        let len = 1 << 20;
+        std::fs::write(&src, vec![9u8; len]).unwrap();
+        let ssh = fake_ssh(d.path());
+        let (read, files) = (get(Count::ReadBytes), get(Count::Files));
+        stream_counted(&*ssh(""), WAIT, WAIT, &src, src.to_str().unwrap(), 2, &d.path().join("stream"), |p| {
+            for _ in 0..2 {
+                ensure!(std::fs::read(p)?.len() == len);
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(get(Count::ReadBytes) - read >= 2 * len as u64, "two whole reads served");
+        assert!(get(Count::Files) > files);
     }
 
     /// The stream's `ssh` asks for the AES-GCM-first cipher list.

@@ -586,6 +586,16 @@ impl NasPath {
         self.retry("open", || crate::range::PlainFile::open(&p))
     }
 
+    /// Runs `run` (a program that opens this file where it lies, given its path) and, once it
+    /// succeeded, counts the file's bytes as read `reads` times (nasio::ProgramReads::ended: the
+    /// program's own reads can't be seen, so a file read whole is asked of the NAS its size each
+    /// time it is read; `osmium extract --strategy smart` reads its input three times). The one
+    /// way to hand a program a NAS file's path to read, so its reads are counted: the raw path is
+    /// given only to `run`.
+    pub fn read_by_program<T>(&self, reads: u32, run: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+        read_files_by_program(std::slice::from_ref(self), reads, |p| run(&p[0]))
+    }
+
     /// A stat (`std::fs::metadata`). One `Stats`.
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
         let _w = crate::waits::nas();
@@ -969,6 +979,19 @@ impl NasPath {
         let _w = crate::waits::nas();
         self.change("touch", &[], move |p| std::fs::File::options().write(true).open(p.full())?.set_modified(t))
     }
+}
+
+/// `NasPath::read_by_program` for several files: `run` is given their raw paths (in `files`'
+/// order) and, once it succeeded, each file's bytes are counted as read `reads` times.
+pub fn read_files_by_program<T>(files: &[NasPath], reads: u32, run: impl FnOnce(&[PathBuf]) -> Result<T>) -> Result<T> {
+    let sizes = files.iter().map(|f| Ok(f.metadata()?.len())).collect::<io::Result<Vec<u64>>>()?;
+    let paths: Vec<PathBuf> = files.iter().map(NasPath::full).collect();
+    let counting = nasio::ProgramReads::begin();
+    let v = run(&paths)?;
+    let read: Vec<(&Path, u64)> =
+        paths.iter().zip(&sizes).map(|(p, n)| (p.as_path(), n.saturating_mul(u64::from(reads)))).collect();
+    counting.ended(&read);
+    Ok(v)
 }
 
 /// The NAS file at `p` read whole, moving as its bytes come (`read_all_told`).

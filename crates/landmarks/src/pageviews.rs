@@ -400,7 +400,8 @@ impl Months {
     /// checked.
     fn copy_into(&self, month: &str, src: &Path, dst: &Path) -> io::Result<()> {
         let p = phase("copying the months' indexes from the NAS");
-        let mut a = Counted { r: File::open(src)?, n: self.counter(month, "copied") };
+        // (The NAS's file read through store::nasio::Counting: the job's NAS reads, task #1470.)
+        let mut a = Counted { r: store::nasio::Counting::new(File::open(src)?), n: self.counter(month, "copied") };
         let mut b = File::options().write(true).truncate(true).open(dst)?;
         io::copy(&mut a, &mut b)?;
         b.sync_all()?;
@@ -841,6 +842,28 @@ mod tests {
         assert!(no_nas.index("2025-11", &langs_of(&fr), false).unwrap().is_none());
         let en: HashSet<String> = HashSet::from(["en|A".to_string()]);
         assert!(no_nas.index("2025-11", &langs_of(&en), false).unwrap().is_some());
+    }
+
+    /// A month's index copied from the NAS is counted in what the job asked of it (`read_b` and
+    /// `held_b`, whichever answered): a 600 MB file is a run's biggest in-process read of it.
+    #[test]
+    fn an_index_copied_from_the_nas_is_counted() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let (nas, dst) = (d.path().join("2026-02.tsv.zst"), d.path().join("copy.tsv.zst"));
+        let mut lines = format!("#langs\t{}\n", LANGS.join(","));
+        for k in 0..60000 {
+            lines += &format!("en|Page_{k}\t{}\n", (k * 7919) % 100003);
+        }
+        index(&nas, &lines);
+        File::create(&dst).unwrap();
+        let size = std::fs::metadata(&nas).unwrap().len();
+        let m = Months::new(d.path().join("months"), Some(d.path().to_path_buf()), String::new());
+        let asked = || get(Count::ReadBytes) + own_held();
+        let before = asked();
+        m.copy_into("2026-02", &nas, &dst).unwrap();
+        assert_eq!(std::fs::metadata(&dst).unwrap().len(), size);
+        assert!(asked() - before >= size, "{} asked of {size}", asked() - before);
     }
 
     /// Room-making mid-job (docs/building.md §2): the months' indexes looked up again and again

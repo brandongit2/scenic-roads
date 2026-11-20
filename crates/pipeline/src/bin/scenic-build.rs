@@ -3496,10 +3496,8 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     stage(2, 5, "clipping the pass's named places to the coverage (osmium)");
     let p = phase("clipping the named places to the cover (osmium)");
-    // (osmium's input, read where it lies: tests/nas_access.rs.)
-    let named = osmium_clip(
-        &out.path(out.get(&::inputs::osmpass::set_name(&date, "named")).context("the pass's named set")?)
-            .unchecked_path(),
+    let named = osmium_clip_nas(
+        &out.path(out.get(&::inputs::osmpass::set_name(&date, "named")).context("the pass's named set")?),
         &poly,
         &scratch.join("named-cover.osm.pbf"),
     )?;
@@ -3661,6 +3659,9 @@ fn osmium_quiet(mut c: std::process::Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// The reads `osmium extract --strategy smart` makes of its input (three, osmium 1.19: inputs::osmpass).
+const OSMIUM_EXTRACT_READS: u32 = 3;
+
 /// `src` within the polygon file (whole relations: smart), into `dest`.
 fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
     let mut c = ::inputs::osmpass::osmium();
@@ -3672,12 +3673,17 @@ fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
     Ok(dest.to_path_buf())
 }
 
+/// `osmium_clip` of a set read where it lies on the NAS: its reads of the set counted
+/// (store::nasfs::NasPath::read_by_program).
+fn osmium_clip_nas(src: &store::nasfs::NasPath, poly: &Path, dest: &Path) -> Result<PathBuf> {
+    src.read_by_program(OSMIUM_EXTRACT_READS, |p| osmium_clip(p, poly, dest))
+}
+
 /// The pass's protected areas and Indigenous lands within the cover, as heritage.py's areas.geojsonseq.
 fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &Path) -> Result<()> {
     let set = out.path(out.get(&::inputs::osmpass::set_name(date, "areas")).context("the pass's areas set")?);
     let p = phase("clipping the protected areas to the cover (osmium)");
-    // (osmium's input, read where it lies: tests/nas_access.rs.)
-    let clip = osmium_clip(&set.unchecked_path(), poly, &scratch.join("areas-cover.osm.pbf"))?;
+    let clip = osmium_clip_nas(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
     drop(p);
     let _p = phase("exporting the protected areas (osmium)");
     let mut c = ::inputs::osmpass::osmium();
@@ -3709,18 +3715,14 @@ fn whs_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path, scratch: &Pa
         let src = out.path(set);
         let local = scratch.join("whs.osm.pbf");
         let room = jobrt::room::free_past(scratch, jobrt::room::job_target()) > 3 * src.metadata()?.len();
-        let read = if room {
+        if room {
             let _p = jobrt::timings::sub("copying the whs set here");
             jobrt::timings::count(src.copy_data_to_local(&local)?, 1);
-            local.clone()
-        } else {
-            // (osmium's input, read where it lies: tests/nas_access.rs.)
-            src.unchecked_path()
-        };
+        }
         let (tmp, held) = store::cachefile::scratch(&cache.join(format!("{name}.tmp.osm.pbf")))?;
         let pbf = tmp.with_extension("osm.pbf");
         std::fs::hard_link(&tmp, &pbf)?;
-        let clipped = osmium_clip(&read, poly, &pbf);
+        let clipped = if room { osmium_clip(&local, poly, &pbf) } else { osmium_clip_nas(&src, poly, &pbf) };
         std::fs::remove_file(&local).ok();
         // (osmium writes in place, but one that made a file of its own there is followed:
         // store::cachefile::publish. The same file under both names: the rename does nothing.)

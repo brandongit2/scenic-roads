@@ -1027,14 +1027,29 @@ read as absent):
   pages' rounding, over by a held-up read's bytes and a cold-then-warm run's warm part within what
   the links could carry, under by at most a read a run where a Wi-Fi's stated rate falls short.
 
-  Not counted at all (no store::nasio count; tests/nas_access.rs lists them): readers that open a
-  NAS path in-process themselves, lakefill's basemap, outlines and zips, railfeeds' catalogue,
-  checked list and keys, pageviews' month indexes, the names tables' translation files, GDAL and the shapefile reader in
-  inputs::regions::data, lake_folder's GLOBathy and HydroLAKES zips, the GTFS counters' zips; and
-  the programs given a NAS path to read where it lies: osmium (the OSM pass, ferries, heritage,
-  the areas and heritage sites over the cover), the extract and convert programs (pois, the OSM
-  pass, the declared DEM conversions), the trees program (its CHM store, leaf folders and mids),
-  heritage.py, the scenic program's linked building tiles, and the counting program's rail zips.
+  What reads a NAS path itself is counted one of four ways (task #1470). A reader of
+  `store::range::PlainFile` (the zips of lakefill, lake-depth's GLOBathy and HydroLAKES and the GTFS
+  counters, the basemap, the trees program's CHM store, leaf folders and mids, the rail counting program's zips) counts through `Reads` as any, and a Rust
+  program a job starts counts into the job's own folder (it inherits `SCENIC_NAS_COUNTS`).
+  `store::nasio::Counting` counts a library's reader of a NAS file as it reads (pageviews' month
+  indexes copied from the NAS). A program or a library that opens the path itself is given it by
+  `store::nasfs::NasPath::read_by_program` (`read_files_by_program` for several): the raw path goes
+  to the run alone and, once it succeeded, the file's bytes are counted as read once for each read
+  it makes (osmium extract's smart strategy reads its input three times), told by the run's own
+  time as `cached` tells a read's and bounded by the bytes this Mac's links received meanwhile
+  (`store::nasio::ProgramReads`: a warm file a slow program reads would else count whole). Used by
+  the osmium clips of the heritage step (the areas, named and whs sets over the cover), the OSM
+  pass's ways of the ferries and its extract program's reads of the pieces, the names tables'
+  translation files, and the regions' GeoJSON datasets (read whole, `NasPath::read`). A file streamed over SSH (the OSM pass's planet
+  and filtered planet, `inputs::osmpass::stream_counted`) counts what was read off the NAS as
+  served.
+
+  Not counted (no store::nasio count; tests/nas_access.rs lists the raw paths): railfeeds'
+  catalogue, checked list and keys (about 4 MB a run); osmium's runs over the ferries set
+  (landmarks::ovconv, 5-9 MB); the extract program's hiking-route ends (pois); the declared DEM
+  conversions' inputs, read where they lie by the converting program; heritage.py's registers and
+  matches, linked where they lie (about 150 MB); the scenic program's building tiles linked where
+  they lie (`unit-snap`, run by hand: a job's own are copies counted as they're made).
 - `done`: `end` (its agent's: `done`, `paused`, `failed`, `interrupted`, `cancelled`; only `done` did its whole
   job, the others' figures are a part's), `targets` it finished of the `of` it was given (its
   agent's, as the history's end says them), `resumed` the blocks or pieces it found kept by an

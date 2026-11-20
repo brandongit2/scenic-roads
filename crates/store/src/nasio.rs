@@ -600,6 +600,88 @@ fn read_ahead() -> u64 {
     })
 }
 
+/// A reader of a NAS file that opens it by its path itself (a library's `File::open`), its reads
+/// counted as `Reads` counts a file's: each of its calls timed and told the NAS's or this Mac's
+/// cache's. It reads its source `crate::sys::COPY_BUF` at a time and gives those out, as
+/// crate::nasfs::NasFile does (a reader taking a few kB a call is told by calls too quick to say
+/// which answered).
+pub struct Counting<R> {
+    r: R,
+    reads: Reads,
+    at: u64,
+    buf: Vec<u8>,
+    given: usize,
+}
+
+impl<R: std::io::Read> Counting<R> {
+    pub fn new(r: R) -> Self {
+        Self { r, reads: Reads::default(), at: 0, buf: Vec::new(), given: 0 }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.given == self.buf.len() {
+            self.buf.resize(crate::sys::COPY_BUF, 0);
+            let t = std::time::Instant::now();
+            let k = self.r.read(&mut self.buf)?;
+            self.reads.read(self.at, k as u64, t.elapsed());
+            self.buf.truncate(k);
+            (self.at, self.given) = (self.at + k as u64, 0);
+        }
+        let n = out.len().min(self.buf.len() - self.given);
+        out[..n].copy_from_slice(&self.buf[self.given..self.given + n]);
+        self.given += n;
+        Ok(n)
+    }
+}
+
+/// A program's reads of NAS files it opens where they lie (osmium given a path on the mount): its
+/// own reads can't be seen, so the file's bytes are counted as the program ends, once per read it
+/// makes (`ended`). Begun as the program starts.
+pub struct ProgramReads {
+    began: std::time::Instant,
+    received: Option<u64>,
+}
+
+impl ProgramReads {
+    pub fn begin() -> Self {
+        Self { began: std::time::Instant::now(), received: link().received }
+    }
+
+    /// The program ended having read each of `files` (a path, the bytes read of it): each counted
+    /// opened, their bytes together the NAS's (`ReadBytes`) or this Mac's cache's (`held`, and
+    /// `Local`), by `split`.
+    pub fn ended(self, files: &[(&Path, u64)]) {
+        let took = self.began.elapsed();
+        let n = files.iter().map(|f| f.1).sum();
+        let (served, cached) = split(n, took, self.received, link().received);
+        for (path, bytes) in files {
+            opened(path, *bytes, took.as_millis() as u64);
+        }
+        read(served);
+        add(Count::Local, cached);
+        held(cached);
+    }
+}
+
+/// Of the `n` bytes a program read of NAS files in `took`, those the NAS served and those this Mac's
+/// cache answered, with the links' received bytes before and after (None: not told). A program
+/// that read them quicker than `cached` says could only have had them from the cache; a slower one's
+/// are the NAS's, but no more than the links received meanwhile (a warm file read by a slow
+/// program would else count whole: the links' bytes, other traffic's among them, bound it).
+fn split(n: u64, took: std::time::Duration, before: Option<u64>, after: Option<u64>) -> (u64, u64) {
+    if cached(n, took) {
+        return (0, n);
+    }
+    let carried = match (before, after) {
+        (Some(a), Some(b)) => b.saturating_sub(a),
+        _ => u64::MAX,
+    };
+    let served = n.min(carried);
+    (served, n - served)
+}
+
 /// `n` bytes an upload read back from the NAS (crate::naming's read-back, past the cache): NAS reads
 /// like any (`read`), and counted apart too (`ReadBack`).
 pub fn read_back(n: u64) {
@@ -1264,5 +1346,44 @@ mod tests {
         let ns = (crate::testkit::thread_cpu_ns() - t) / 100_000;
         eprintln!("note: {ns} ns a call");
         assert!(ns < 20_000, "{ns} ns of CPU a call"); // (bound ok: CPU time, not wall)
+    }
+
+    /// A program's bytes are told by its time and bounded by what the links carried: a quick one
+    /// the cache's whole, a slow one the NAS's up to the links' received bytes, the rest the cache's;
+    /// links not told, no bound.
+    #[test]
+    fn a_programs_reads_are_split_by_its_time_and_the_links() {
+        use std::time::Duration;
+        let slow = Duration::from_secs(100);
+        assert_eq!(split(1 << 30, Duration::from_millis(10), Some(0), Some(1 << 30)), (0, 1 << 30));
+        assert_eq!(split(1 << 30, slow, Some(10), Some(10 + (1 << 30))), (1 << 30, 0));
+        assert_eq!(split(1 << 30, slow, Some(10), Some(10 + (1 << 29))), (1 << 29, 1 << 29));
+        assert_eq!(split(1 << 30, slow, Some(10), Some(10)), (0, 1 << 30));
+        assert_eq!(split(1 << 30, slow, None, Some(5)), (1 << 30, 0));
+        // (Counters that went back, a restarted interface's: no bytes carried, none the NAS's.)
+        assert_eq!(split(100, slow, Some(50), Some(20)), (0, 100));
+    }
+
+    /// A program that ended counts the file once in what was asked of the NAS (`read_b + held_b`),
+    /// opened once, whichever answered.
+    #[test]
+    fn a_program_that_ended_counts_the_files_bytes_asked() {
+        let asked = || get(Count::ReadBytes) + own_held();
+        let (a, f) = (asked(), get(Count::Files));
+        ProgramReads::begin().ended(&[(Path::new("/Volumes/x/a.osm.pbf"), 2 << 20), (Path::new("/Volumes/x/b"), 1 << 20)]);
+        assert!(asked() - a >= 3 << 20 && get(Count::Files) >= f + 2);
+    }
+
+    /// A reader counted as it reads: a file read through shows its bytes, whichever answered, and
+    /// gives its bytes unchanged.
+    #[test]
+    fn a_counting_reader_counts_the_bytes_it_gives() {
+        let asked = || get(Count::ReadBytes) + own_held();
+        let data: Vec<u8> = (0..(2 << 20) + 17).map(|i| (i % 251) as u8).collect();
+        let a = asked();
+        let mut got = Vec::new();
+        std::io::copy(&mut Counting::new(&data[..]), &mut got).unwrap();
+        assert_eq!(got, data);
+        assert!(asked() - a >= data.len() as u64);
     }
 }

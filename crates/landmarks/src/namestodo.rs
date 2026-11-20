@@ -750,15 +750,27 @@ fn described(accepted: &inputs::inputs::Accepted) -> Result<HashSet<String>> {
     Ok(set)
 }
 
-/// The translations' accepted files as the tables read them: by inputs-folder path, the copy and its
-/// content name.
-pub fn translation_files(accepted: &inputs::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
-    accepted
+/// The translations' tables, read from the accepted files' copies on the NAS (the names crate's
+/// tables open their files by path: each file's bytes counted once as read, store::nasfs::
+/// read_files_by_program).
+pub fn read_translations(accepted: &inputs::inputs::Accepted) -> Result<Names> {
+    let files: Vec<(String, store::nasfs::NasPath, String)> = accepted
         .files()
         .filter(|(p, _)| p.ends_with(".jsonl"))
-        // (The names crate's tables read their files by path: tests/nas_access.rs.)
-        .map(|(p, path)| (p.clone(), (path.unchecked_path(), accepted.index.files[p].file.clone())))
-        .collect()
+        .map(|(p, f)| (p.clone(), f, accepted.index.files[p].file.clone()))
+        .collect();
+    tables_of(&files)
+}
+
+/// The tables of `files` (inputs-folder path, the checked copy, its content name), read where
+/// they lie and counted.
+fn tables_of(files: &[(String, store::nasfs::NasPath, String)]) -> Result<Names> {
+    let nas: Vec<store::nasfs::NasPath> = files.iter().map(|f| f.1.clone()).collect();
+    store::nasfs::read_files_by_program(&nas, 1, |paths| {
+        let tables: BTreeMap<String, (PathBuf, String)> =
+            files.iter().zip(paths).map(|(f, raw)| (f.0.clone(), (raw.clone(), f.2.clone()))).collect();
+        Ok(Names::from_files(&tables))
+    })
 }
 
 /// An English Wikipedia article's title, from a record's tags (`wikipedia` "en:…", Wikidata's
@@ -952,7 +964,7 @@ pub fn run(
     let p = phase("reading the catalog, the languages spoken and the translations");
     let cat = coordwire::map_now(root)?.context("no map")?.catalogue()?;
     let spoken = spoken_for(root, &cat)?;
-    let mut names = Names::from_files(&translation_files(translations));
+    let mut names = read_translations(translations)?;
     let failed = names.take_warnings();
     anyhow::ensure!(failed.is_empty(), "the translations' accepted files: {}", failed.join("; "));
     drop(p);
@@ -1046,6 +1058,35 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The translations' files are counted as read, each once, in what the job asked of the NAS
+    /// (`read_b + held_b`), and their lines are the tables'.
+    #[test]
+    fn the_translations_files_read_are_counted() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let mut files = Vec::new();
+        let mut size = 0u64;
+        for (rel, fr) in [("a/fr.jsonl", "Lake Noir"), ("a/fr2.jsonl", "Black Lake")] {
+            let mut text = String::new();
+            for k in 0..4000 {
+                text += &json!({"n": format!("Lac {k}"), "kind": "other", "langs": ["fr"], "main": null, "sub": fr, "via": "test"})
+                    .to_string();
+                text.push('\n');
+            }
+            root.join(rel).parent().unwrap().create_dir_all().unwrap();
+            root.join(rel).write(&text).unwrap();
+            size += text.len() as u64;
+            files.push((rel.to_string(), root.join(rel), format!("{rel}.1")));
+        }
+        let asked = || get(Count::ReadBytes) + own_held();
+        let (before, opened) = (asked(), get(Count::Files));
+        let mut names = tables_of(&files).unwrap();
+        assert!(names.take_warnings().is_empty());
+        assert!(asked() - before >= size, "{} asked of {size}", asked() - before);
+        assert!(get(Count::Files) >= opened + 2);
+    }
 
     /// The lists' key moves with a batch touching any of their inputs'
     /// prefixes (a section's key, or a file of one), and with nothing else; across a reopened log.
