@@ -889,7 +889,8 @@ Mac's server (§6.1.9).
 - **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
   (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
   Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
-  check, and reports the most points one operation held.
+  check, and reports the most points one operation held (of the operations it ran: a piece taken
+  from a lasting folder runs none, so a rerun's figure is its own run's).
 - **Pieces** (crate::inputs::regions::kept, tasks #897 and #1548): the check's work is kept as
   pieces, each by a key of what it reads (`tiles::Reads`): each region without water resolved
   (`resolve::key`); each region with water's land (its outline, `minus` and `intersect` as

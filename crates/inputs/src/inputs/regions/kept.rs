@@ -344,7 +344,8 @@ impl Lasting {
             if !(name.ends_with(&format!(".{EXT}")) || name.contains(TMP)) {
                 continue;
             }
-            let m = e.metadata()?;
+            // (A file another check's sweep deleted, or a write it renamed, since the listing: passed over.)
+            let Ok(m) = e.metadata() else { continue };
             v.push((m.modified()?, m.len(), e.path()));
         }
         v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
@@ -354,7 +355,10 @@ impl Lasting {
         for (_, len, path) in v {
             full |= s.bytes + len > cap;
             if full {
-                std::fs::remove_file(&path).with_context(|| format!("delete {}", path.display()))?;
+                match std::fs::remove_file(&path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    r => r.with_context(|| format!("delete {}", path.display()))?,
+                }
                 s.deleted += 1;
                 s.deleted_bytes += len;
             } else {
