@@ -14162,6 +14162,7 @@ mod tests {
                 lone_at: Some(t),
                 lone_n: 2,
                 seen: Vec::new(),
+                undo: None,
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             (s.offers[0].clone(), s.lead_name.clone())
@@ -14295,6 +14296,7 @@ mod tests {
                 lone_at: Some(t),
                 lone_n: 1,
                 seen: Vec::new(),
+                undo: None,
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             s.lead_name.clone()
