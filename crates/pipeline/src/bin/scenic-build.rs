@@ -4304,7 +4304,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let mut aside: Vec<(TileId, String)> = Vec::new();
     // The cache files held for the z6 tiles (store::cachefile): each z6 tile's let go once the z6 tile after
     // it is under way (what this z6 tile and the next's copying ahead hold stays), so room-making may
-    // take them meanwhile, and a job of hundreds of z6 tiles doesn't hold them all.
+    // take them meanwhile, and a job of hundreds of z6 tiles doesn't hold them all. (What a z6 tile's
+    // folders link to, its roadside buildings, its tail reads later: held with it, `Built`'s.)
     let mut held_since: Option<u64> = None;
     for (k, &u) in units.iter().enumerate() {
         if let Some(m) = held_since.replace(store::cachefile::mark()) {
@@ -4441,12 +4442,14 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             continue;
         };
         // Its pieces (task #889: roads::unit::PREPARE, tail_piece), taken while its folders are
-        // as its last piece left them; else afresh.
+        // as its last piece left them, what their links name held again (roads::unit::take_up);
+        // else afresh.
         let dirs = [dir.as_path(), bdir.as_path()];
         let id = unit_resume_id(out, args, &pilot, &blobs, &date, u, &reach, &tools);
         let open = || jobrt::resume_log::Pieces::open(scratch, (6, u.x, u.y), "unit", &id, jobrt::resume_log::on());
         let mut pieces = open();
-        if pieces.kept(roads::unit::PREPARE) && pieces.folders_as_kept(&dirs) {
+        let linked = roads::unit::take_up(&pieces, &dirs);
+        if linked.is_some() {
             eprintln!("unit {}: resumed where its last run stopped", u.slash());
         } else {
             pieces.finish();
@@ -4508,8 +4511,19 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             Ok(serde_json::to_vec(&rep)?)
         });
         std::fs::remove_file(&local_piece).ok();
-        let rep: roads::unit::Report = match prepared.and_then(|p| Ok(serde_json::from_slice(&p)?)) {
-            Ok(rep) => rep,
+        // (The cache files its folders link to, its roadside buildings, held for as long as it's
+        // built: its tail may run long after the z6 tiles after it let go of the job's holds, here
+        // or with another worker reading them through the links (store::cachefile::hold_links).
+        // Staged now, they're held already: no moment between.)
+        let prepared = prepared.and_then(|p| {
+            let linked = match linked {
+                Some(l) => l,
+                None => store::cachefile::hold_links(&dirs)?,
+            };
+            Ok((serde_json::from_slice(&p)?, linked))
+        });
+        let (rep, linked): (roads::unit::Report, _) = match prepared {
+            Ok(got) => got,
             // (Paused once its preparing's kept: the job ends at its safe point below, its folders and
             // pieces kept for its run resumed.)
             Err(e) if jobrt::control::is_paused(&e) => {
@@ -4577,6 +4591,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             anywhere: anywhere.to_vec(),
             sizes,
             pieces,
+            _linked: linked,
         };
         let offering = phase("offering tails to other workers");
         let offered = match &offload {
@@ -4699,6 +4714,9 @@ struct Built {
     sizes: BTreeMap<String, u64>,
     /// Its pieces kept (roads::unit::PREPARE, tail_piece): let go once it's committed.
     pieces: jobrt::resume_log::Pieces,
+    /// The cache files its folders link to, held until it's committed or set aside (dropped with
+    /// it, after its folders go: store::cachefile::hold_links).
+    _linked: store::cachefile::Linked,
 }
 
 /// Where a z6 tile's folder keeps what its ways asked of the coverage (buildstore::asked::Record),
@@ -7382,6 +7400,112 @@ mod tests {
         let e = aside_end(&aside, 3).unwrap_err().to_string();
         assert!(e.starts_with("1 of 3 z6 tiles set aside") && e.contains("6/13/26"), "{e}");
         assert!(aside_end(&[], 3).is_ok());
+    }
+
+    /// Task #1562: a z6 tile's roadside buildings, staged as links to this Mac's copies, are read
+    /// by its tail however late it runs (taken back from a worker, z6 tiles after it): the job lets
+    /// go of its own holds on them as those begin, room-making deletes what no one holds between,
+    /// and the links still name their files. A later run whose kept folders' links name files gone
+    /// since stages them again, and one taking its folders up holds them again.
+    #[test]
+    fn a_z6_tiles_staged_buildings_outlive_room_making_until_its_tail() {
+        use super::TileId;
+        use bld::buildtiles::{stage, tile_path, tiles_for, Index, TEST_RELEASE};
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let u = TileId { z: 6, x: 32, y: 21 };
+        let near = tiles_for(u, None);
+        let index = Index {
+            fmt: 1,
+            release: TEST_RELEASE.into(),
+            zoom: 8,
+            tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(),
+            tag: "0123456789abcdef".into(),
+        };
+        for (t, n) in [(near[0], 5usize), (near[7], 9)] {
+            let p = tile_path(&root, TEST_RELEASE, t);
+            p.parent().unwrap().create_dir_all().unwrap();
+            p.write(vec![t.x as u8; 16 * n]).unwrap();
+        }
+        let (cache, scratch) = (d.path().join("cache"), d.path().join("scratch"));
+        let (dir, bdir) = (scratch.join("units/6-32-21"), scratch.join("units/6-32-21-buildings"));
+        let dirs = [dir.as_path(), bdir.as_path()];
+        let copies: Vec<std::path::PathBuf> = [near[0], near[7]]
+            .iter()
+            .map(|t| cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", t.x, t.y)))
+            .collect();
+        // Its tail's buildings step: every staged file read through its link.
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$2\"/*.f32 > \"$1/bld\"\n").unwrap();
+        std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = roads::unit::Tools {
+            bin,
+            cache: cache.clone(),
+            buildings: Some(bdir.clone()),
+            sources: None,
+            shared: None,
+            chm: None,
+            stores_read_only: false,
+            elevation: None,
+            declared: None,
+            snap: None,
+        };
+        let tail = || -> anyhow::Result<()> {
+            let run = roads::unit::Run {
+                what: "scoring the scenery (buildings)".into(),
+                prog: "step".into(),
+                args: vec!["{dir}".into(), "{buildings}".into()],
+                env: Vec::new(),
+                reads: Vec::new(),
+            };
+            std::fs::remove_file(dir.join("bld")).ok();
+            roads::unit::run_tail(&[run], &dir, &tools)?;
+            anyhow::ensure!(std::fs::metadata(dir.join("bld"))?.len() == 16 * 14, "every tile read");
+            Ok(())
+        };
+        // Its preparing (kept as its piece, as the job keeps it): the buildings staged, held as
+        // they're copied; what they link to held with the z6 tile, as the job's `Built`.
+        let prepare = |p: &mut jobrt::resume_log::Pieces| {
+            p.folder_piece(roads::unit::PREPARE, &dirs, || {
+                std::fs::create_dir_all(&dir)?;
+                stage(&root, &index, u, None, &bdir, Some(&cache))?;
+                Ok(Vec::new())
+            })
+            .unwrap();
+            store::cachefile::hold_links(&dirs).unwrap()
+        };
+        // (The job's own holds let go as the z6 tiles after it begin: release_before.)
+        let let_go = || copies.iter().for_each(|c| store::cachefile::release(c));
+        let open = || jobrt::resume_log::Pieces::open(&scratch, (6, u.x, u.y), "unit", "a", true);
+        let mut p = open();
+        let linked = prepare(&mut p);
+        let_go();
+        assert_eq!(store::cachefile::remove_tree(&cache).freed, 0, "held with the z6 tile");
+        tail().unwrap();
+        // The job stopped before its commit (its process gone, its holds with it): room-making
+        // takes them. A later run doesn't take its folders up: staged again, and its tail reads them.
+        drop((p, linked));
+        // (A sibling test's child may hold a copy of a descriptor a moment: five minutes a watchdog.)
+        store::testkit::wait_for("the copies deleted", || {
+            store::cachefile::remove_tree(&cache);
+            Some(()).filter(|_| copies.iter().all(|c| !c.exists()))
+        });
+        assert!(tail().is_err(), "its links name files gone");
+        let p = open();
+        assert!(roads::unit::take_up(&p, &dirs).is_none());
+        p.finish();
+        let mut p = open();
+        let linked = prepare(&mut p);
+        drop((p, linked));
+        let_go();
+        // Its folders as they were left: taken up, what they link to held again.
+        let p = open();
+        let linked = roads::unit::take_up(&p, &dirs).expect("taken up");
+        assert_eq!(store::cachefile::remove_tree(&cache).freed, 0, "held again");
+        tail().unwrap();
+        drop((p, linked));
     }
 
     /// A pack job opens its tiles' owners and no other z6 tile (`owners_of`, as their keys read

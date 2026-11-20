@@ -50,7 +50,8 @@ pub fn safe(path: &str) -> Option<&Path> {
 
 /// A clone of `src` at `dst` (store::sys::copy_data: copy-on-write where the volume can, else a
 /// copy); a link stays a link (to the same file, served from there: a z6 tile's roadside buildings
-/// are links to the NAS's).
+/// are links to its Mac's copies in the caches, which its job holds until the z6 tile is
+/// committed: store::cachefile::hold_links).
 pub fn clone(src: &Path, dst: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     if std::fs::symlink_metadata(src)?.file_type().is_symlink() {

@@ -123,7 +123,11 @@ from the first (`edit_held`).
     through one accessor that refills a missing file from where that cache fills from, so a wrong
     deletion costs a fetch, never a failure. A job holds each cache file it uses with a shared
     `flock`; a file is deleted only under an exclusive lock taken without waiting; a file is made
-    under a temporary name and named only if the name is free. A guard test fails on code naming a
+    under a temporary name and named only if the name is free. A folder staged as links to cache
+    files (a unit z6 tile's roadside buildings) holds what they name for as long as its z6 tile is
+    built, its tail too however late that runs, here or with another worker
+    (`cachefile::hold_links`); a z6 tile resumed holds them again, and one whose kept links name
+    files gone since is staged again (`resume_log::Pieces::folders_as_kept`). A guard test fails on code naming a
     cache path outside the accessor (`tests/cache_accessor.rs`), and chaos tests delete cache files
     under real steps and check the outputs are byte-identical. What can't be refilled (the heritage clip without its planet, raw tiles and pageview
     months the NAS lacks) stays. What a job on this Mac is known to read goes after what none is,

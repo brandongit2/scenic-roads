@@ -6,6 +6,9 @@
 //!   it by name (osmium, the Python steps, scenic-metrics) are covered: the lock is on the file
 //!   itself, whoever holds it. A file that isn't there is filled first (`refill`: from the NAS, or
 //!   wherever that cache fills from), so a file deleted wrongly costs a fetch, never a failure.
+//! - A folder staged as links to cache files (a z6 tile's roadside buildings) is read through its
+//!   links by whatever reads the folder, for as long as it's kept: the files its links name are held
+//!   with it (`hold_links`, until its `Linked` is dropped), whatever the process lets go of meanwhile.
 //! - Room-making deletes a file only with an exclusive lock taken without waiting (`try_remove`:
 //!   LOCK_EX|LOCK_NB), its name checked to still be that file, and unlinked while it's held; a file
 //!   in use is skipped.
@@ -130,11 +133,6 @@ pub fn cap() -> usize {
 pub fn open_files_limit() -> u64 {
     held();
     LIMIT.load(Ordering::Relaxed)
-}
-
-/// The files this process holds now.
-pub fn held_count() -> usize {
-    held().lock().unwrap().files.len()
 }
 
 /// A point in this process's holding: files held from now on are after it (`release_before`).
@@ -300,20 +298,69 @@ pub fn hold_untouched(path: &Path) -> io::Result<Option<PathBuf>> {
 }
 
 fn hold_there(path: &Path, mark_used: bool) -> io::Result<Option<PathBuf>> {
+    let Some(f) = open_there(path)? else { return Ok(None) };
+    keep(f, path)?;
+    if mark_used {
+        touch(path);
+    }
+    Ok(Some(path.to_path_buf()))
+}
+
+/// `path`'s file with a shared lock (`open_shared`, again while a deleter races it): None when it
+/// isn't there.
+fn open_there(path: &Path) -> io::Result<Option<File>> {
     for _ in tries() {
         match open_shared(path)? {
-            Some(f) => {
-                keep(f, path)?;
-                if mark_used {
-                    touch(path);
-                }
-                return Ok(Some(path.to_path_buf()));
-            }
+            Some(f) => return Ok(Some(f)),
             None if !path.exists() => return Ok(None),
             None => {}
         }
     }
     Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
+}
+
+/// The files the links of a folder name, held (each its own shared lock) until this is dropped:
+/// `hold_links`.
+pub struct Linked {
+    _files: Vec<File>,
+}
+
+/// Holds the file each link in folders `dirs` (and their subfolders) names, marked used, for as
+/// long as the `Linked` is kept: a folder staged as links into the caches stays readable through
+/// them, whatever this process lets go of meanwhile (`release_before`). A folder that isn't there
+/// has none. An error when a link names a file that isn't there: the folder is to be staged again.
+pub fn hold_links(dirs: &[&Path]) -> io::Result<Linked> {
+    fn walk(d: &Path, top: bool, files: &mut Vec<File>) -> io::Result<()> {
+        let es = match std::fs::read_dir(d) {
+            Ok(es) => es,
+            Err(e) if top && e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(with(e, "list", d)),
+        };
+        for e in es {
+            let e = e.map_err(|x| with(x, "list", d))?;
+            let p = e.path();
+            let t = e.file_type().map_err(|x| with(x, "stat", &p))?;
+            if t.is_dir() {
+                walk(&p, false, files)?;
+            } else if t.is_symlink() {
+                let f = open_there(&p)?.ok_or_else(|| {
+                    let to = std::fs::read_link(&p).unwrap_or_default();
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{} links to {}, which isn't there", p.display(), to.display()),
+                    )
+                })?;
+                touch(&p);
+                files.push(f);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    for d in dirs {
+        walk(d, true, &mut files)?;
+    }
+    Ok(Linked { _files: files })
 }
 
 /// The bytes of the cache file at `path`, read under a shared lock (let go once read: a file read
@@ -1011,5 +1058,29 @@ mod tests {
         assert_eq!(Tree { freed, left }, Tree { freed: 6, left: 3 });
         assert!(t.join("a/2").exists() && !t.join("b").exists());
         release(&t.join("a/2"));
+    }
+
+    /// A folder of links into the caches holds what they name until its `Linked` goes, though the
+    /// process lets go of its own holds; a link naming a file that's gone is an error.
+    #[test]
+    fn a_folders_links_hold_what_they_name() {
+        let d = tempfile::tempdir().unwrap();
+        let (cache, staged) = (d.path().join("cache"), d.path().join("staged"));
+        std::fs::create_dir_all(staged.join("sub")).unwrap();
+        for (n, at) in [("a", "a.f32"), ("b", "sub/b.f32")] {
+            hold(&cache.join(n), &mut |t: &Path| std::fs::write(t, n)).unwrap();
+            std::os::unix::fs::symlink(cache.join(n), staged.join(at)).unwrap();
+        }
+        std::fs::write(staged.join("plain"), b"x").unwrap();
+        let linked = hold_links(&[&staged, &d.path().join("none")]).unwrap();
+        release(&cache.join("a"));
+        release(&cache.join("b"));
+        assert_eq!(remove_tree(&cache).freed, 0, "held by the folder's links");
+        assert_eq!(std::fs::read(staged.join("sub/b.f32")).unwrap(), b"b");
+        drop(linked);
+        // (A sibling test's child may hold a copy of a descriptor a moment: five minutes a watchdog.)
+        crate::testkit::wait_for("both let go", || Some(remove_tree(&cache).freed).filter(|&n| n > 0));
+        let e = hold_links(&[&staged]).err().expect("a link to a file that's gone");
+        assert_eq!(e.kind(), io::ErrorKind::NotFound, "{e}");
     }
 }

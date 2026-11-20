@@ -751,9 +751,9 @@ impl Pieces {
     }
 
     /// A piece whose work is files in folders `dirs` (kept on this Mac's disk between runs): `make`'s
-    /// payload kept after the folders' digest once it has run (`folder_digest`), handed back without
-    /// it. A step made of such pieces (a z6 tile's preparing and tail, crate::unit; the heritage
-    /// chain's stages) takes what an earlier run kept only while `folders_as_kept`.
+    /// payload kept after the folders' digest once it has run (`folder_digest`; `UNREAD` for folders
+    /// not read whole), handed back without it. A step made of such pieces (a z6 tile's preparing
+    /// and tail, roads::unit) takes what an earlier run kept only while `folders_as_kept`.
     pub fn folder_piece(
         &mut self,
         b: BlockId,
@@ -767,16 +767,18 @@ impl Pieces {
         let p = self.piece(b, || {
             let m = make()?;
             // (The digest once it has run: what it left.)
-            Ok([folder_digest(dirs), m].concat())
+            Ok([folder_digest(dirs).unwrap_or(UNREAD).as_slice(), &m].concat())
         })?;
         Ok(p.get(32..).map(<[u8]>::to_vec).unwrap_or_default())
     }
 
     /// Whether folders `dirs` are as the last `folder_piece` an earlier run kept left them (none
-    /// kept: true). Else what it kept is of folders since changed: the step starts afresh.
+    /// kept: true), and read whole: a link naming what isn't there, or an entry that can't be read,
+    /// is never taken as kept (`folder_digest`). Else the step starts afresh.
     pub fn folders_as_kept(&self, dirs: &[&Path]) -> bool {
         let Some(last) = self.last.filter(|b| self.kept.contains_key(b)) else { return true };
-        self.read_kept(last).is_some_and(|p| p.get(..32) == Some(folder_digest(dirs).as_slice()))
+        let Some(now) = folder_digest(dirs) else { return false };
+        self.read_kept(last).is_some_and(|p| p.get(..32) == Some(now.as_slice()))
     }
 
     /// Pieces of floats (`piece`, the floats by their bits).
@@ -851,30 +853,46 @@ impl Pieces {
     }
 }
 
+/// The digest a `folder_piece` keeps for folders it couldn't read whole: no folders' digest, so
+/// never taken as kept.
+const UNREAD: [u8; 32] = [0; 32];
+
 /// Folders `dirs`' digest: each file's path in them, length and time written (what a program
-/// changes), in order.
-pub fn folder_digest(dirs: &[&Path]) -> Vec<u8> {
-    fn walk(d: &Path, rel: &str, h: &mut blake3::Hasher) {
-        let mut es: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().collect();
+/// changes; a link's own, not its file's), in order. A folder of `dirs` not there has none. None
+/// when they can't be read whole: a folder or entry that can't be listed or looked at, or a link
+/// naming a file that isn't there (room-making may delete a cache file a folder links to, once
+/// no job holds it: store::cachefile::hold_links).
+fn folder_digest(dirs: &[&Path]) -> Option<[u8; 32]> {
+    fn walk(d: &Path, rel: &str, top: bool, h: &mut blake3::Hasher) -> Option<()> {
+        let mut es = match std::fs::read_dir(d) {
+            Ok(es) => es.collect::<std::io::Result<Vec<_>>>().ok()?,
+            Err(e) if top && e.kind() == std::io::ErrorKind::NotFound => return Some(()),
+            Err(_) => return None,
+        };
         es.sort_by_key(|e| e.file_name());
         for e in es {
             let name = format!("{rel}/{}", e.file_name().to_string_lossy());
-            let Ok(m) = e.metadata() else { continue };
+            // (The entry itself, a link not followed.)
+            let m = e.metadata().ok()?;
             if m.is_dir() {
-                walk(&e.path(), &name, h);
+                walk(&e.path(), &name, false, h)?;
                 continue;
+            }
+            if m.file_type().is_symlink() {
+                std::fs::metadata(e.path()).ok()?;
             }
             let at = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).unwrap_or_default();
             h.update(name.as_bytes());
             h.update(&m.len().to_le_bytes());
             h.update(&at.as_nanos().to_le_bytes());
         }
+        Some(())
     }
     let mut h = blake3::Hasher::new();
     for (k, d) in dirs.iter().enumerate() {
-        walk(d, &k.to_string(), &mut h);
+        walk(d, &k.to_string(), true, &mut h)?;
     }
-    h.finalize().as_bytes().to_vec()
+    Some(*h.finalize().as_bytes())
 }
 
 /// A record's bytes before what its step keeps: its payload's length and BLAKE3 (40), the block's
@@ -1385,6 +1403,49 @@ mod tests {
         std::fs::write(crate::control::no_carry_mark(&chan), b"").unwrap();
         let (s, copy) = run("memory", false);
         assert!(path(&s, (6, 1, 2)).exists() && !copy.exists(), "drained for memory: nothing carried");
+    }
+
+    /// Task #1562: a z6 tile's folders kept by its last run, one of them links to cache files, are
+    /// taken up only while every link names a file that's there and every entry reads.
+    #[test]
+    fn a_kept_folder_with_a_link_to_what_is_gone_or_an_entry_unread_is_made_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (s, dir, bdir, cache) =
+            (d.path().join("scratch"), d.path().join("u"), d.path().join("u-buildings"), d.path().join("cache"));
+        for f in [&dir, &bdir, &cache] {
+            std::fs::create_dir_all(f).unwrap();
+        }
+        std::fs::write(dir.join("ways.bin"), b"w").unwrap();
+        std::fs::write(cache.join("8-1-2.f32"), b"b").unwrap();
+        std::os::unix::fs::symlink(cache.join("8-1-2.f32"), bdir.join("8-1-2.f32")).unwrap();
+        let t = (6, 1, 2);
+        let dirs = [dir.as_path(), bdir.as_path()];
+        let mut p = Pieces::open(&s, t, "unit", "a", true);
+        p.folder_piece((6, 0, 0), &dirs, || Ok(vec![1])).unwrap();
+        drop(p);
+        let open = || Pieces::open(&s, t, "unit", "a", true);
+        assert!(open().folders_as_kept(&dirs));
+        // The file a link names deleted (room-making, once no job held it): made again.
+        std::fs::remove_file(cache.join("8-1-2.f32")).unwrap();
+        assert!(!open().folders_as_kept(&dirs));
+        // There again (filled again: its link is as it was), taken.
+        std::fs::write(cache.join("8-1-2.f32"), b"b").unwrap();
+        assert!(open().folders_as_kept(&dirs));
+        // A folder in them that can't be read: made again, never passed over.
+        std::fs::create_dir(dir.join("scache")).unwrap();
+        let mut p = open();
+        p.folder_piece((6, 1, 0), &dirs, || Ok(vec![2])).unwrap();
+        drop(p);
+        assert!(open().folders_as_kept(&dirs));
+        std::fs::set_permissions(dir.join("scache"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(!open().folders_as_kept(&dirs));
+        // Kept while unread: never taken, even once it can be read.
+        let mut p = open();
+        p.folder_piece((6, 1, 1), &dirs, || Ok(vec![3])).unwrap();
+        drop(p);
+        std::fs::set_permissions(dir.join("scache"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!open().folders_as_kept(&dirs));
     }
 
     /// Task #889: pieces kept are handed back, not made again, to a run of the same identity; to

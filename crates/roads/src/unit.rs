@@ -842,11 +842,23 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
 // on this Mac's disk between runs: its preparing (`PREPARE`: the piece copied, the buildings
 // staged, `prepare_folder`; what's kept, its `Report`), then each program of its tail run here
 // (`tail_piece`). Each piece kept with its folders' digest (jobrt::resume_log::Pieces::folder_piece):
-// a run resumed takes them only when its folders are as the last piece left them
-// (`Pieces::folders_as_kept`).
+// a run resumed takes them only when its folders are as the last piece left them, every link in
+// them naming a file that's there (`Pieces::folders_as_kept`), and the files those links name are
+// held again for as long as it's built (`take_up`).
 
 /// The piece of a z6 tile's preparing.
 pub const PREPARE: jobrt::resume_log::BlockId = (6, 0, 0);
+
+/// A z6 tile's folders `dirs` kept by its last run, taken up: its preparing kept, its folders as
+/// that left them (`Pieces::folders_as_kept`), and the cache files their links name held again
+/// (store::cachefile::hold_links), as its preparing's staging held them. None: it starts afresh.
+pub fn take_up(pieces: &jobrt::resume_log::Pieces, dirs: &[&Path]) -> Option<store::cachefile::Linked> {
+    if !(pieces.kept(PREPARE) && pieces.folders_as_kept(dirs)) {
+        return None;
+    }
+    // (Deleted since it was looked at: made again.)
+    store::cachefile::hold_links(dirs).inspect_err(|e| eprintln!("unit: its kept folders made again ({e})")).ok()
+}
 
 /// The piece of its tail's program `i` (its place in `tail`).
 pub fn tail_piece(i: usize) -> jobrt::resume_log::BlockId {

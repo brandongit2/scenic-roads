@@ -89,9 +89,9 @@ impl Index {
 
 /// Tile `t`'s buildings in `cache` (`blobs/buildings/<index's hash>/<x>-<y>.f32`: the files an index
 /// was made with; among the copies of the NAS's files, which room-making may take), copied from the
-/// NAS whole when it isn't there and held for the job (store::cachefile): a unit's buildings step
-/// reads its tiles whole, and units side by side read the same ones. None when the tile has no
-/// buildings.
+/// NAS whole when it isn't there and held (store::cachefile; a unit's staged links hold what they
+/// name until its buildings step has read them: `stage`): a unit's buildings step reads its tiles
+/// whole, and units side by side read the same ones. None when the tile has no buildings.
 pub fn local_tile(root: &store::nasfs::NasRoot, index: &Index, t: TileId, cache: &Path) -> Result<Option<PathBuf>> {
     let Some((src, local, want)) = tile_copy(root, index, t, cache) else { return Ok(None) };
     fetch_tile(&src, &local, want)?;
@@ -405,7 +405,10 @@ fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
 /// A folder of the buildings unit `u` reads (`scenic-metrics buildings` reads every `.f32` in
 /// it): links to its tiles' files (`tiles_for` with its reach), those without buildings left out.
 /// The number of tiles linked.
-/// With `cache`, the links are to the tiles' copies there (`local_tile`), else to the NAS's files.
+/// With `cache`, the links are to the tiles' copies there (`local_tile`), held as they're made;
+/// whoever keeps the folder past this process's turn of holding them holds what they name
+/// (store::cachefile::hold_links: the unit job, until the z6 tile is committed). Else to the NAS's
+/// files.
 pub fn stage(
     root: &store::nasfs::NasRoot,
     index: &Index,

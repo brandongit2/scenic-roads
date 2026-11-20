@@ -48,7 +48,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/roads/src/unit.rs", "scenic_kept", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/roads/src/unit.rs", "move_kept_to_shared", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/codecs/src/basepart.rs", "index_path", "a path: open reads, keeps and removes the index through store::cachefile"),
-    ("crates/bld/src/buildtiles.rs", "tile_copy", "a path: fetch_tile holds each copy (store::cachefile) before the buildings step reads it"),
+    ("crates/bld/src/buildtiles.rs", "tile_copy", "a path: fetch_tile holds each copy (store::cachefile), and the unit job what its staged links name until the buildings step has read them (hold_links)"),
     ("crates/roads/src/unit.rs", "tail", "a task's arguments: where its caches are"),
     ("crates/roads/src/unit.rs", "run_tail", "a task's arguments: where its caches are"),
     ("crates/roads/src/unit.rs", "prepare_folder", "the unit's steps' arguments: where its caches are"),
