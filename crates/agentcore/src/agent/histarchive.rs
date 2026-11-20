@@ -408,15 +408,15 @@ thread_local! {
 }
 
 /// The tar's members with `new`'s lines merged in, by name: each line a member doesn't hold yet
-/// appended to it, in order (the lead's history packed again as its day fills: a line packed
-/// before not again).
+/// appended to it once, in order (the lead's history packed again as its day fills: a line packed
+/// before not again, nor a line `new` holds twice).
 fn merge_lines(old: &[(String, Vec<u8>)], new: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
     let mut m: std::collections::BTreeMap<String, Vec<u8>> = old.iter().cloned().collect();
     for (name, b) in new {
         let have = m.entry(name).or_default();
-        let held: std::collections::HashSet<Vec<u8>> = have.split(|&c| c == b'\n').map(<[u8]>::to_vec).collect();
+        let mut held: std::collections::HashSet<Vec<u8>> = have.split(|&c| c == b'\n').map(<[u8]>::to_vec).collect();
         for l in b.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
-            if !held.contains(l) {
+            if held.insert(l.to_vec()) {
                 have.extend_from_slice(l);
                 have.push(b'\n');
             }
@@ -616,6 +616,24 @@ mod tests {
             [("d/m-1.jsonl".to_string(), b"a\nb\n".to_vec()), ("d/m-2.jsonl".to_string(), b"x\n".to_vec())],
             "the other writer's line and ours"
         );
+    }
+
+    /// Task #1565: a batch holding a line twice, merged into a tar, then the same batch twice in
+    /// one merge, and merged again: each line archived once, in the order first seen.
+    #[test]
+    fn a_line_twice_in_a_batch_is_archived_once() {
+        let r = tempfile::tempdir().unwrap();
+        let (root, _) = lead_and_history(r.path(), &[]);
+        let tar = root.join(ARCHIVE).join("d.tar");
+        let batch = || ("d/m-1.jsonl".to_string(), b"a\nb\na\nc\nb\n".to_vec());
+        assert!(merge_into_tar(&tar, vec![batch()], merge_lines).unwrap());
+        let read = || list_tar(&std::fs::read(r.path().join(ARCHIVE).join("d.tar")).unwrap()).unwrap();
+        assert_eq!(read(), [("d/m-1.jsonl".to_string(), b"a\nb\nc\n".to_vec())], "the batch's repeats once");
+        let more = ("d/m-1.jsonl".to_string(), b"d\na\nd\n".to_vec());
+        assert!(merge_into_tar(&tar, vec![batch(), more.clone(), batch(), more], merge_lines).unwrap());
+        assert_eq!(read(), [("d/m-1.jsonl".to_string(), b"a\nb\nc\nd\n".to_vec())], "batches merged together");
+        assert!(!merge_into_tar(&tar, vec![batch()], merge_lines).unwrap(), "held already: not written");
+        assert_eq!(merge_lines(&[], vec![batch(), batch()]), [("d/m-1.jsonl".to_string(), b"a\nb\nc\n".to_vec())]);
     }
 
     /// Task #1442 review round 3: a file rewritten to a subset of what was packed (lines gone from
