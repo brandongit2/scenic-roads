@@ -16,6 +16,7 @@ use roads::reach::Reaches;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use store::nasfs::{NasPath, NasRoot};
@@ -341,6 +342,9 @@ struct Held {
     /// The plans' shadow (docs/incremental-planning.md step 4): its worker, started with the first
     /// plan.
     shadow: RefCell<Option<Shadowing>>,
+    /// Whether its worker's failing to start was said since one last started (`say_once`): one that
+    /// lasts, as its threads never built, is said once, not with every plan.
+    shadow_failed: Arc<AtomicBool>,
     /// Whether each plan has its shadow made (off only in a test of what it costs).
     shadowing: Cell<bool>,
 }
@@ -456,8 +460,10 @@ impl Shadowing {
     /// while it makes `build::plan`) and ended with the plan part (its mailbox's sender dropped);
     /// None, said, when no thread can be. A worker that ends on its own (its pool not built, or
     /// unwound) leaves its mailbox closed (`bus::Post::closed`: its inbox dropped), and the plan
-    /// starts another with its next (`Held::shadow_hold`), copying nothing for it meanwhile.
-    fn start() -> Option<Shadowing> {
+    /// starts another with its next (`Held::shadow_hold`), copying nothing for it meanwhile. Its
+    /// failing to start said once until one starts (`failed`, `say_once`).
+    fn start(failed: &Arc<AtomicBool>) -> Option<Shadowing> {
+        let told = failed.clone();
         let (asks, inbox) = agentcore::agent::bus::mailbox::<Ask>();
         #[cfg(test)]
         let (say, said) = std::sync::mpsc::channel();
@@ -468,12 +474,11 @@ impl Shadowing {
             let p = match shadow_pool() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!(
-                        "agent: the plan's shadow has no threads of its own ({e}); tried again with the next plan"
-                    );
+                    say_once(&told, &format!("the plan's shadow has no threads of its own ({e})"));
                     return;
                 }
             };
+            told.store(false, Ordering::Relaxed);
             let (mut kept, mut last): (Option<Kept>, u64) = (None, 0);
             while let Some(ask) = inbox.take() {
                 let (n, skipped) = (ask.n, ask.n - last - 1);
@@ -511,11 +516,21 @@ impl Shadowing {
                 last: (0, None),
             }),
             Err(e) => {
-                eprintln!("agent: the plan's shadow has no thread now ({e}); tried again with the next plan");
+                say_once(failed, &format!("the plan's shadow has no thread now ({e})"));
                 None
             }
         }
     }
+}
+
+/// `what` (the shadow's worker failing to start) said, unless `said` says it was since one last
+/// started: whether it was said now.
+fn say_once(said: &AtomicBool, what: &str) -> bool {
+    let now = !said.swap(true, Ordering::Relaxed);
+    if now {
+        eprintln!("agent: {what}; tried again with each plan, said again only once one has started");
+    }
+    now
 }
 
 /// How many of the differing keys a shadow's lines say what changed in (`key_lines_apart`); the rest
@@ -787,6 +802,7 @@ impl Held {
             kept: RefCell::default(),
             memo: RefCell::default(),
             shadow: RefCell::default(),
+            shadow_failed: Arc::default(),
             shadowing: Cell::new(true),
         }
     }
@@ -894,7 +910,7 @@ impl Held {
         }
         let mut s = self.shadow.borrow_mut();
         if live(&mut s).is_none() {
-            *s = Shadowing::start();
+            *s = Shadowing::start(&self.shadow_failed);
         }
         s.as_ref().map(|s| s.asks.hold())
     }
@@ -1076,9 +1092,62 @@ mod tests {
         *held.shadow.borrow_mut() = ended();
         let hold = held.shadow_hold().expect("a shadow started again");
         drop(hold);
-        let s = held.shadow.borrow();
-        let s = s.as_ref().unwrap();
-        assert!(!s.asks.closed(), "a new worker's");
-        assert_eq!(s.asked, 0);
+        {
+            let s = held.shadow.borrow();
+            let s = s.as_ref().unwrap();
+            assert!(!s.asks.closed(), "a new worker's");
+            assert_eq!(s.asked, 0);
+        }
+        // (And it plans: a plan of no regions, shadowed, the same.)
+        let covs = Arc::new(agentcore::agent::Coverages { all: Default::default(), each: Vec::new() });
+        let (none, tiles, memo) = (BTreeMap::<String, String>::new(), TerrainTiles::default(), KeyMemo::default());
+        let on_map = BTreeMap::new();
+        let publish = Publish {
+            each: &covs.each,
+            on_map: &on_map,
+            served: &none,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+        };
+        let planned = build::plan_with(&memo, &covs.all, "d", &none, &Keys::default(), &none, None, &tiles, publish);
+        {
+            let mut s = held.shadow.borrow_mut();
+            let sh = s.as_mut().unwrap();
+            sh.asked += 1;
+            sh.asks.put(Ask {
+                n: sh.asked,
+                covs: covs.clone(),
+                date: "d".into(),
+                manifest: none.clone(),
+                inputs: none.clone(),
+                done: Keys::default(),
+                reach: None,
+                tiles: tiles.clone(),
+                on_map: on_map.clone(),
+                served: none.clone(),
+                since_catalogue: None,
+                held_for: None,
+                held: false,
+                way: Default::default(),
+                planned,
+                keys: memo.keys(),
+                wall: Duration::ZERO,
+                cpu: Duration::ZERO,
+            });
+        }
+        let said = held.shadow().expect("the new worker's shadow plan").said;
+        assert!(said.starts_with("plan shadow 1 (") && !said.contains("panicked"), "{said}");
+    }
+
+    /// Task #1540's review: a shadow's worker failing to start is said once, not with every plan,
+    /// until one has started.
+    #[test]
+    fn a_shadow_failing_to_start_is_said_once() {
+        let said = AtomicBool::new(false);
+        assert_eq!([say_once(&said, "down"), say_once(&said, "down")], [true, false]);
+        said.store(false, Ordering::Relaxed);
+        assert!(say_once(&said, "down"), "said again after one started");
     }
 }
