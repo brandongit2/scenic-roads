@@ -1241,9 +1241,10 @@ pub fn thread_cpu_ns() -> u64 {
 }
 
 /// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times
-/// a second (started by the first reset), under the lock; a sample taken before a reset is dropped
-/// (`GROUP_EPOCH`), so an earlier target's peak isn't counted in the next.
-static GROUP_PEAK: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
+/// a second (started by the first reset), under the lock, and the threads in force as it was
+/// reached (crate::control::in_force; 0: none said); a sample taken before a reset is dropped (its
+/// epoch, the first), so an earlier target's peak isn't counted in the next.
+static GROUP_PEAK: std::sync::Mutex<(u64, u64, usize)> = std::sync::Mutex::new((0, 0, 0));
 static SAMPLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Starts the job's peak memory again (a target's start: `group_peak` is then that target's).
@@ -1256,8 +1257,9 @@ pub fn reset_group_peak() {
                     let epoch = GROUP_PEAK.lock().map_or(0, |g| g.0);
                     if let Some(v) = group_footprint() {
                         if let Ok(mut g) = GROUP_PEAK.lock() {
-                            if g.0 == epoch {
-                                g.1 = g.1.max(v);
+                            if g.0 == epoch && v > g.1 {
+                                g.1 = v;
+                                g.2 = threads_in_force();
                             }
                         }
                     }
@@ -1268,7 +1270,7 @@ pub fn reset_group_peak() {
     if sampled {
         let now = group_footprint().unwrap_or(0);
         if let Ok(mut g) = GROUP_PEAK.lock() {
-            *g = (g.0 + 1, now);
+            *g = (g.0 + 1, now, threads_in_force());
         }
     }
 }
@@ -1282,6 +1284,24 @@ pub fn group_peak() -> u64 {
     }
     let now = group_footprint().unwrap_or(0);
     GROUP_PEAK.lock().map_or(now, |g| g.1.max(now))
+}
+
+/// The threads in force as `group_peak` was reached (task #1550 review: a live target's threads
+/// change under it, and its memory a thread is read at those its peak came on, not at the most it
+/// was grown to: buildstore::costin's `threads_peak`); None where the group isn't sampled, or no
+/// target said its threads then.
+pub fn group_peak_threads() -> Option<usize> {
+    if SAMPLED.get() != Some(&true) {
+        return None;
+    }
+    let now = group_footprint().unwrap_or(0);
+    let g = GROUP_PEAK.lock().ok()?;
+    let n = if now > g.1 { threads_in_force() } else { g.2 };
+    Some(n).filter(|&n| n > 0)
+}
+
+fn threads_in_force() -> usize {
+    crate::control::in_force().unwrap_or(0)
 }
 
 /// The osmium program, found in Homebrew's folder first (task #916: from inputs::osmpass, which

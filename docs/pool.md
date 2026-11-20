@@ -1071,7 +1071,8 @@ tile's area, one a target, and its source's time below):
   size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, a smaller run's
   peak grown by the step's slope over size, `model::slope`, at most in proportion; no slope, and no
   growth, with fewer than `MIN_RUNS` runs, their sizes all equal or a falling fit: task #1535),
-  each at the threads asked: past a run's threads, the step's memory per thread for each more
+  each at the threads asked: past a run's threads (a live target's, those in force as its job's
+  peak was reached: its cost line's `threads_peak`), the step's memory per thread for each more
   (fitted by least squares over size and threads, at least `needs-thread-share`, 50 %, of the
   peaks over threads; more threads never read as less memory). Of every run the way the step runs
   now: a small new run can't lower a large target's. Disk alike, at `needs-high-pct` (95). Both

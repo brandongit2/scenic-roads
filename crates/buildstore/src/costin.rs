@@ -220,10 +220,12 @@ pub fn take() -> BTreeMap<String, u64> {
     if let Some(f) = jobrt::control::fewest_allowed().filter(|&f| f < threads) {
         m.insert("threads_least".into(), f as u64);
     }
-    // (More allowed meanwhile, a live target grown and cut back: the most, which its peak may have
-    // come on, its step's memory a thread read at them: agentcore's `needs` runs.)
-    if let Some(f) = jobrt::control::most_allowed().filter(|&f| f > threads) {
-        m.insert("threads_most".into(), f as u64);
+    // (A live target's threads changed under it: those in force as its job's peak was reached,
+    // its step's memory a thread read at them (agentcore's `needs` runs), where not those it began
+    // on; the most it was allowed where its job's memory isn't sampled, which its peak may have
+    // come on: never fewer than its peak came on, a grow in a light phase not booked as more.)
+    if let Some(f) = peak_threads().filter(|&f| f != threads) {
+        m.insert("threads_peak".into(), f as u64);
     }
     if let (Some(a), Some(b)) = (s.cpu_at, jobrt::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
@@ -328,6 +330,13 @@ pub fn threads() -> usize {
         .unwrap_or_else(rayon::current_num_threads)
 }
 
+/// The threads a target's job's peak memory came on (`threads_peak`): those in force as it was
+/// reached (jobrt::sys::group_peak_threads), else the most it was allowed (jobrt::control::
+/// most_allowed: its job's memory not sampled, its peak may have come on them); None: neither said.
+fn peak_threads() -> Option<usize> {
+    jobrt::sys::group_peak_threads().or_else(jobrt::control::most_allowed)
+}
+
 /// A tile's area in km² (a sphere of the Earth's mean radius, 6371 km).
 pub fn tile_km2(z: u8, _x: u32, y: u32) -> u64 {
     let n = (1u64 << z) as f64;
@@ -356,16 +365,17 @@ mod tests {
         assert_eq!(m.get("threads_least").copied(), (m["threads"] > 1).then_some(1));
     }
 
-    /// Task #1550 review: a target grown under way past the threads it ends on (a live target's)
-    /// says the most it was allowed.
+    /// Task #1550 review: a target says the threads in force as its job's peak was reached, where
+    /// not those it began on, else (none said then) the most it was allowed.
     #[test]
-    fn a_target_grown_under_way_says_the_most_threads_it_was_allowed() {
+    fn a_target_says_the_threads_its_peak_came_on() {
         let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         jobrt::control::allowed(4096);
         begin();
         let m = take();
         assert!(m["threads"] < 4096);
-        assert_eq!(m.get("threads_most").copied(), Some(4096));
+        let want = jobrt::sys::group_peak_threads().map_or(4096, |n| n as u64);
+        assert_eq!(m.get("threads_peak").copied(), (want != m["threads"]).then_some(want));
     }
 
     #[test]

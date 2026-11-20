@@ -1081,8 +1081,9 @@ pub fn allowed(n: usize) {
 static MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The most threads this process's work has been allowed so far (`allowed`); None: none said. A
-/// target grown under way is booked in its step's memory per thread at these (buildstore::costin's
-/// `threads_most`, agentcore's `needs` runs): its peak may have come on them.
+/// target grown under way whose job's memory isn't sampled is booked in its step's memory per
+/// thread at these (buildstore::costin's `threads_peak`, agentcore's `needs` runs): its peak may
+/// have come on them.
 pub fn most_allowed() -> Option<usize> {
     Some(MOST.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }
@@ -1171,6 +1172,14 @@ fn kept_pool(
 /// thread, a live target's, `on_grant_live`): the last one made, kept while its width stands.
 static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
 
+/// A target begins (`on_grant`, `on_grant_live`): the fewest and the most its work is allowed are
+/// counted from here (`fewest_allowed`, `most_allowed`: buildstore::costin's `threads_least` and
+/// `threads_peak`), not from an earlier target's.
+fn target_begins() {
+    FEWEST.store(0, std::sync::atomic::Ordering::Relaxed);
+    MOST.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The target under way ends (`on_grant`, `on_grant_live`), however `f` ends: no target in force,
 /// none live.
 struct TargetEnds;
@@ -1199,6 +1208,7 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     };
     // (No pool to be had: the job's own, as before.)
     let Some(pool) = kept_pool(&POOL, n, None) else { return f() };
+    target_begins();
     IN_FORCE.store(n, Ordering::Relaxed);
     let _ends = TargetEnds;
     let main = crate::timings::Main::here();
@@ -1263,10 +1273,7 @@ pub fn on_grant_live<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         let g = grant.clone();
         store::waits::Turns::following(move || g.now().min(most))
     };
-    // (The fewest and the most this target runs on, from its start: buildstore::costin's
-    // `threads_least` and `threads_most`.)
-    FEWEST.store(0, Ordering::Relaxed);
-    MOST.store(0, Ordering::Relaxed);
+    target_begins();
     let t = std::sync::Arc::new(LiveTarget { grant, most, turns });
     t.now();
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
@@ -1334,10 +1341,12 @@ pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 /// target's. A live target's (`on_grant_live`): the outside pool is as wide as the Mac's cores, its
 /// work there each holding a turn as it computes (`turns`: its caller's to see to); from a thread
 /// of no pool, `f` on that thread's own pool of one thread, whose thread holds a turn while it
-/// runs (the caller's lent to it meanwhile, where it holds one): one thread computing on one turn.
+/// runs (the caller's lent to it meanwhile, where it holds one): one thread computing on one turn;
+/// from a thread of another pool, the caller's turn lent while it waits on the outside pool.
 pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     let Some(mut n) = in_force() else { return f() };
-    if let Some(t) = live_target() {
+    let live = live_target();
+    if let Some(t) = live.clone() {
         if rayon::current_thread_index().is_none() {
             return OWN.with(|p| match p.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(1).build().ok()) {
                 // (The caller's turn, if it holds one, lent while it waits on its pool, whose
@@ -1359,8 +1368,17 @@ pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         }
         n = t.most;
     }
+    let live = live.is_some();
     // (No pool to be had: the global one, as before task #948.)
     match kept_pool(&OUTSIDE, n, Some("outside work")) {
+        // (A live target's caller of another pool waits on this one, working on nothing of it: its
+        // turn, if it holds one, lent meanwhile, or a grant of 1's work there would wait on it
+        // forever, a thread of its own pool's nested call: task #1550 review. One of its own works
+        // on it; another target's turns are its caller's alone.)
+        Some(pool) if live && pool.current_thread_index().is_none() => {
+            let _lent = store::waits::other();
+            pool.install(f)
+        }
         Some(pool) => pool.install(f),
         None => f(),
     }
@@ -1561,22 +1579,43 @@ mod tests {
         assert_eq!(fewest_allowed(), Some(1));
         assert!(!is_live() && in_force().is_none(), "after it: nothing live");
         // On a grant of 1, a thread of no pool, holding the one turn or not, whose parallel work
-        // asks for a turn: done, on that turn (task #1550 review: it had waited forever).
+        // asks for a turn, and one whose call nests another, its work on the outside pool asking
+        // for turns: done, on that turn (task #1550 review: each had waited forever). Each on a
+        // thread of its own, waited for 10 s at most: a deadlock fails here, in seconds, not at
+        // the test runner's timeout. (The work is a few broadcasts of nothing: 10 s is a deadlock's
+        // bound, not a wait for work a loaded Mac may stretch.)
+        fn within<R: Send + 'static>(what: &str, f: impl FnOnce() -> R + Send + 'static) -> R {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || drop(tx.send(f())));
+            rx.recv_timeout(Duration::from_secs(10)) // (bound ok: a deadlock's, the work instant)
+                .unwrap_or_else(|_| panic!("{what}: deadlocked: the caller's turn not lent"))
+        }
         grant(&f, 1).unwrap();
-        let (bare, holding) = on_grant_live(|| {
+        let (bare, holding, nested) = on_grant_live(|| {
             let t = turns();
-            let bare = std::thread::scope(|s| s.spawn(|| on_outside_pool(|| t.computing(|| 1))).join().unwrap());
-            let holding = std::thread::scope(|s| {
-                s.spawn(|| {
+            let bare = within("a bare thread", {
+                let t = t.clone();
+                move || on_outside_pool(|| t.computing(|| 1))
+            });
+            let holding = within("a thread holding its turn", {
+                let t = t.clone();
+                move || {
                     let _mine = t.take();
                     on_outside_pool(|| t.computing(|| t.held()))
-                })
-                .join()
-                .unwrap()
+                }
             });
-            (bare, holding)
+            let nested = within("a nested call", move || {
+                on_outside_pool(|| on_outside_pool(|| rayon::broadcast(|_| t.computing(|| 1)).len()))
+            });
+            (bare, holding, nested)
         });
         assert_eq!((bare, holding), (1, 1), "the caller's turn lent to its work: one held");
+        assert_eq!(nested, most, "the nested call's work on the outside pool, each thread on the turn");
+        // Every target counts the most and the fewest it is allowed from its own start, one on
+        // its grant as it began too: none allowed it, none said.
+        assert!(most_allowed().is_some());
+        on_grant(|| ());
+        assert_eq!((most_allowed(), fewest_allowed()), (None, None), "counted from its start");
         // A target that panics ends all the same: nothing live, nothing in force after it.
         for live in [true, false] {
             let r = std::panic::catch_unwind(|| {
@@ -1592,6 +1631,58 @@ mod tests {
         }
         std::env::remove_var(THREADS_ENV);
         assert_eq!(on_grant_live(rayon::current_num_threads), rayon::current_num_threads(), "no file: as it is");
+    }
+
+    /// Task #1550 review: a live target's job's peak memory says the threads in force as it was
+    /// reached: one grown in a light phase, after its peak on 1 thread, says 1, not the most it was
+    /// allowed; one whose peak came after the grow, those. Where the job's memory is sampled. (In a
+    /// process of its own: the file's variable, the target and the job's memory are the process's.)
+    #[test]
+    fn a_live_targets_peak_says_the_threads_it_came_on() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "control::tests::a_live_targets_peak_says_the_threads_it_came_on"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::time::Duration;
+        if crate::sys::group_footprint().is_none() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        grant(&f, 1).unwrap();
+        std::env::set_var(THREADS_ENV, &f);
+        let up = 3.min(cores());
+        let hold = || {
+            let a = vec![1u8; 400 << 20];
+            std::thread::sleep(Duration::from_millis(800)); // (sleep ok: sampled four times a second)
+            drop(std::hint::black_box(a));
+        };
+        let (light, heavy) = on_grant_live(|| {
+            crate::sys::reset_group_peak();
+            hold();
+            grant(&f, up).unwrap();
+            store::testkit::eventually("its grow in force", || in_force() == Some(up));
+            std::thread::sleep(Duration::from_millis(800)); // (sleep ok: sampled four times a second)
+            let light = (crate::sys::group_peak_threads(), most_allowed());
+            crate::sys::reset_group_peak();
+            hold();
+            (light, crate::sys::group_peak_threads())
+        });
+        assert_eq!(light, (Some(1), Some(up)), "grown in a light phase: its peak on 1 of the {up}");
+        assert_eq!(heavy, Some(up), "its peak after the grow: on {up}");
+        std::env::remove_var(THREADS_ENV);
     }
 
     /// A run past the bound on its gaps says so; one within it, nothing.

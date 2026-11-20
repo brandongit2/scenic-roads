@@ -412,7 +412,7 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
             c.sizes
                 .iter()
                 .filter(|(k, _)| {
-                    !matches!(k.as_str(), "threads" | "threads_least" | "threads_most") && !k.ends_with("_ms")
+                    !matches!(k.as_str(), "threads" | "threads_least" | "threads_peak") && !k.ends_with("_ms")
                 })
                 .map(|(k, v)| (k.clone(), *v as f64))
                 .collect()
@@ -653,7 +653,7 @@ impl<'a> Book<'a> {
                 order: c.job.map_or(0, |j| j.n),
                 key: k.clone(),
                 sizes,
-                threads: ran_most(c),
+                threads: peak_threads(c),
                 work,
                 wait,
                 wall: (ran - wait) / ratio + wait,
@@ -1112,13 +1112,13 @@ pub fn own_threads(c: &Cost) -> Option<u32> {
     c.sizes.get("threads").map(|&n| least.map_or(n, |l| l.min(n)) as u32).filter(|&n| n > 0)
 }
 
-/// The most threads run `c` ran on (0: not said), its step's memory a thread read at them (its
-/// runs' `model::Obs::threads`): those it said (`threads`), or the most a live target was grown to
-/// under way where more (`threads_most`, task #1550 review: its peak may have come on them, not on
-/// the threads it ended on). A record from before it says none: its `threads`.
-fn ran_most(c: &Cost) -> u32 {
-    let said = c.sizes.get("threads").copied().unwrap_or(0);
-    c.sizes.get("threads_most").copied().map_or(said, |m| m.max(said)) as u32
+/// The threads run `c`'s peak memory came on (0: not said), its step's memory a thread read at
+/// them (its runs' `model::Obs::threads`): those in force as its job's peak was reached where a
+/// live target's changed under it (`threads_peak`, task #1550 review: not the most it was grown
+/// to, which a grow in a light phase would book its memory a thread too low at), else those it
+/// said (`threads`), as a record from before it says.
+fn peak_threads(c: &Cost) -> u32 {
+    c.sizes.get("threads_peak").or_else(|| c.sizes.get("threads")).copied().unwrap_or(0) as u32
 }
 
 /// A target's own run's cores (`Book::cores`), from `c`, its run on `t` threads: its CPU time
@@ -1273,26 +1273,29 @@ mod tests {
         }
     }
 
-    /// Task #1550 review: a live target grown to 3 threads under way and cut back to 1 by its end
-    /// (`threads_most`) is booked in its step's memory a thread at the 3 its peak may have come
-    /// on, not the 1 it ended on; a record from before `threads_most`, at the threads it says; its
-    /// own memory still read on the fewest it ran on (`own_threads`).
+    /// Task #1550 review: a live target begun on 1 thread whose peak came on 3 (`threads_peak`) is
+    /// booked in its step's memory a thread at those 3; one grown to 3 in a light phase and ending
+    /// on them (`threads` 3), its peak on 1 (`threads_peak` 1), at that 1, not at the 3; a record
+    /// without `threads_peak`, at the threads it says; its own memory still read on the fewest it
+    /// ran on (`own_threads`).
     #[test]
-    fn a_run_grown_under_way_is_booked_at_the_most_threads_it_ran_on() {
-        let book = |most: Option<u64>| {
+    fn a_run_whose_threads_changed_is_booked_at_those_its_peak_came_on() {
+        let book = |threads: u64, peak: Option<u64>| {
             let mut costs = BTreeMap::new();
             for i in 1..=4 {
                 let mut c = run("terrain-deep", "m4", 3000, 60, &[]);
-                if let Some(m) = most {
-                    c.sizes.insert("threads_most".into(), m);
+                c.sizes.insert("threads".into(), threads);
+                if let Some(m) = peak {
+                    c.sizes.insert("threads_peak".into(), m);
                 }
                 costs.insert(cost_key("terrain-deep", &format!("10/1/{i}")), c);
             }
             let b = Book::new(crate::agent::seam::for_tests(), &costs);
             (b.step_thread_mb("terrain-deep"), own_threads(&costs[&cost_key("terrain-deep", "10/1/1")]))
         };
-        assert_eq!(book(Some(3)), (Some(1000), Some(1)), "booked at 3 threads, its own on 1");
-        assert_eq!(book(None), (Some(3000), Some(1)), "an older record: at the threads it says");
+        assert_eq!(book(1, Some(3)), (Some(1000), Some(1)), "its peak on 3: booked at 3, its own on 1");
+        assert_eq!(book(3, Some(1)), (Some(3000), Some(3)), "grown in a light phase, its peak on 1: at 1");
+        assert_eq!(book(1, None), (Some(3000), Some(1)), "a record without it: at the threads it says");
     }
 
     /// A target's own run's cores (its CPU over the time it ran, task #896, #697, #1435), else its
