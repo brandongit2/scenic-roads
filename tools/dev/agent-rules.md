@@ -133,10 +133,15 @@ rely on the agent.
   tasks, as one piece of work: one slot, one builder, one branch, one review, one merge and publish.
   A small task blocked by, or conflicting with, work under way is left out. Each task keeps its own
   board item, events and close.
-- **The board enforces it:** moving a task to working is refused while its `small` is unset, and,
-  for a small task, unless the same request carries a batch id (`batch`), which only
-  `tools/dev/board.py batch` sends. A batched task back from review to working sends its `batch`
-  again; one queued again loses it.
+- **The board enforces it:** moving a task out of queued into any status in flight (working,
+  backgrounded, integrating, in review, waiting) is refused while its `small` is unset, and, for a
+  small task, unless the same request carries a batch id (`batch`). `tools/dev/board.py batch`
+  sends one; a request that makes one up goes through, and health.sh flags its batch as having no
+  start event. Resuming (to working from any other status but queued: backgrounded, integrating,
+  review, waiting, done or abandoned) needs the size set and, for a small task, its batch: a batched
+  task resumes as it is. A task queued again loses its batch, so its restart, the page's undo of a
+  requeue too, is refused like any start: "small task starting: start it through
+  tools/dev/board.py batch".
 - **Start a batch with** `tools/dev/board.py batch <the five numbers> [--note '…']`: it sets each
   queued one working with the batch's id and gives each the same `start` event ("Batch <id> of
   small tasks: #a #b …"). Fewer than five is refused while another small task is queued, unless
@@ -144,10 +149,12 @@ rely on the agent.
   number then its reason (`--left-out '#1610 (blocked by #1600); #1611 (conflicts with #1534)'`),
   only an entry's leading number counting; given twice, the lists are merged. Run again with the
   same arguments, it finishes a batch cut short without a second event; a batch grown later is
-  recorded by running it with all of it.
-- **`tools/dev/health.sh` flags** a batch under way with fewer than five members when a task queued
+  recorded by running it with all of it. A small task already in flight in no batch is put in one
+  as it is, its status kept.
+- **`tools/dev/health.sh` flags** a batch in flight with fewer than five members when a task queued
   now was already small when the batch was last recorded (its `smallAt`, set by the board) and is
-  neither in it nor named as left out; and a batch with no start event recording it.
+  neither in it nor named as left out; a batch with no start event recording it (an id made up
+  around board.py); and a small task in flight in no batch (one marked small while under way).
 
 ## Your report
 

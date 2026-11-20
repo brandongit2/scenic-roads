@@ -12,19 +12,23 @@
       --left-out is a list of entries, each a task's number then why it waits, separated by commas
       or semicolons outside parentheses; only an entry's leading #N is the task left out. Given more
       than once, the lists are merged.
-      Refused, nothing written, unless every task named is a small task (the board's `small`), open,
-      not archived and in no other batch; at most five; every left-out entry has a reason; and, when
-      fewer than five, every other queued small task is named in --left-out.
+      Refused, nothing written, unless every task named is a small task (the board's `small`),
+      queued or in flight, not archived and in no other batch; at most five; every left-out entry has
+      a reason; and, when fewer than five, every other queued small task is named in --left-out. A
+      task in flight is put in the batch as it is (its status kept): a small task in no batch, such
+      as one marked small while under way, is recorded so.
       A rerun with the same tasks and options finishes a batch cut short and writes nothing more:
-      a task already under way in the batch isn't set again, and one whose latest batch event has the
-      same text gets no second one. A batch grown later is recorded by running it with all of it
-      (its id kept).
+      a task already in the batch isn't set again, and one whose latest batch event has the same
+      text gets no second one. A batch grown later is recorded by running it with all of it (its id
+      kept).
   board.py health
       health.sh's board part: the parked tasks (backgrounded or integrating) with their last events,
-      and the small tasks under way (working or in review) by batch (their `batch`). A batch of fewer
-      than five is flagged when a task queued now was already small when the batch was recorded (its
-      `smallAt`, the server's, no later than the batch's latest start event) and is neither in it nor
-      named as left out; a batch with no start event is flagged as not recorded.
+      and the small tasks in flight (working, backgrounded, integrating, in review, waiting) by batch
+      (their `batch`). A batch of fewer than five is flagged when a task queued now was already small
+      when the batch was recorded (its `smallAt`, the server's, no later than the batch's latest start
+      event) and is neither in it nor named as left out; a batch no start event records (an id made
+      up, sent around board.py) is flagged as not recorded; a small task in flight in no batch is
+      flagged.
 
 The definition of small is the board's (tools/devtools/schema.mjs SMALL_MEANS, GET /api/schema's
 `smallMeans`). The board's address: SCENIC_BOARD, else http://mac-mini-de-brandon:8077 (board.sh).
@@ -40,7 +44,7 @@ from datetime import datetime, timezone
 BOARD = os.environ.get("SCENIC_BOARD", "http://mac-mini-de-brandon:8077")
 BATCH = 5  # small tasks started together (the owner's rule, 20 Nov)
 HEAD = re.compile(r"^Batch (\S+) of small tasks:")
-UNDER_WAY = ("working", "review")
+IN_FLIGHT = ("working", "backgrounded", "integrating", "review", "waiting")  # (tools/devtools/board.mjs IN_FLIGHT)
 NUM = re.compile(r"#(\d+)")
 ENTRY = re.compile(r"^#(\d+)\s*(.*)$", re.S)
 
@@ -135,9 +139,12 @@ def label(items, id):
 
 
 def health_small(items, events):
-    print(f"small tasks under way (started {BATCH} at a time, as one piece of work; tools/dev/board.py batch):")
-    ids = sorted({d["batch"] for id, d in items.items() if d.get("kind") == "task" and d.get("small") and d.get("status") in UNDER_WAY
-                  and d.get("batch") and not archived(items, id)})
+    print(f"small tasks in flight (started {BATCH} at a time, as one piece of work; tools/dev/board.py batch):")
+    flying = [id for id, d in sorted(items.items(), key=lambda p: p[1].get("num", 0))
+              if d.get("kind") == "task" and d.get("small") is True and d.get("status") in IN_FLIGHT and not archived(items, id)]
+    for id in (i for i in flying if not items[i].get("batch")):
+        print(f"  #{items[id]['num']} ({items[id]['status']}) is in no batch  <-- RECORD IT IN ONE (board.py batch #{items[id]['num']} …), OR MARK IT NOT SMALL")
+    ids = sorted({items[id]["batch"] for id in flying if items[id].get("batch")})
     for bid in ids:
         members = [id for id, d in sorted(items.items(), key=lambda p: p[1].get("num", 0)) if d.get("batch") == bid and d.get("status") != ""]
         names = " ".join(f"#{items[m]['num']}" for m in members)
@@ -151,7 +158,7 @@ def health_small(items, events):
                          f"{', '.join(label(items, m) for m in miss[:BATCH])}{' …' if len(miss) > BATCH else ''}  <-- ADD THEM TO ITS WORK, "
                          f"OR NAME WHY EACH IS LEFT OUT (board.py batch {names} … --left-out '#N (why)')")
         print(f"  batch {bid} of {len(members)} ({names}): " + ("; ".join(flags) if flags else "ok"))
-    if not ids:
+    if not flying:
         print("  none")
 
 
@@ -226,8 +233,8 @@ def batch(args):
             errs.append(f"#{n} is archived")
         elif d.get("small") is not True:
             errs.append(f"#{n} isn't marked small: " + ("classify it first" if d.get("small") is None else "start it alone"))
-        elif d.get("status") not in ("",) + UNDER_WAY:
-            errs.append(f"#{n} is {d['status']}, neither queued nor under way")
+        elif d.get("status") not in ("",) + IN_FLIGHT:
+            errs.append(f"#{n} is {d['status']}, neither queued nor in flight")
     for n, _ in left:
         if n in nums:
             errs.append(f"#{n} is both in the batch and left out")

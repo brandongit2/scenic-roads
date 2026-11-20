@@ -14,6 +14,8 @@ import { COLS, DEFAULT_ORDER } from "./store.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
 import { placePriority } from "./priority.mjs";
 
+// The statuses of a task in flight: started and not closed (sizeAndStart, below).
+const IN_FLIGHT = new Set(["working", "backgrounded", "integrating", "review", "waiting"]);
 const STATUS_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
 const MAX_BLOB = 20 * 1024 * 1024;
@@ -70,18 +72,25 @@ export function makeBoard(store, changed) {
 
   // ---- a task's size and its start (#1534) -------------------------------------------------------
   // `doc`, about to be written (`cur`, what it was, none for a new one; `sent`, the request's
-  // fields). `smallAt` is when `small` was last set; a task queued again leaves its batch. Moving a
-  // task to working needs its size classified, and a small task's a batch id in the same request:
-  // small tasks start five at a time, as one piece of work, through tools/dev/board.py batch, which
-  // sends it. (A batched task back from review sends its own batch again.)
+  // fields). `smallAt` is when `small` was last set; a task queued again leaves its batch.
+  // - Starting (out of queued, a new task too, into any status in flight) needs the task's size
+  //   classified, and a small task's a batch id in the same request: small tasks start five at a
+  //   time, as one piece of work, through tools/dev/board.py batch, which sends it.
+  // - Resuming (into working from any other status but queued) needs the size classified, and a
+  //   small task's a batch, stored or sent: a batched task resumes as it is.
   function sizeAndStart(doc, cur, sent) {
     if (doc.small === undefined || doc.kind !== "task") delete doc.smallAt;
     else if (cur?.small !== doc.small || cur?.kind !== "task") doc.smallAt = nowIso();
     if (doc.kind !== "task") return;
-    if (doc.status === "" && cur && cur.status !== "") delete doc.batch;
-    if (doc.status !== "working" || cur?.status === "working") return;
-    if (doc.small === undefined) invalid([{ field: "small", message: `#${doc.num} isn't classified: set "small": true or false before it starts, or with its start (a small task starts through tools/dev/board.py batch)` }]);
-    if (doc.small && typeof sent.batch !== "string") invalid([{ field: "batch", message: `#${doc.num} is a small task: start it through tools/dev/board.py batch, with the four next small tasks (it sends their batch id, "batch", with the start)` }]);
+    const from = cur?.kind === "task" ? cur.status : "";
+    if (doc.status === "" && from !== "") delete doc.batch;
+    const starting = from === "" && IN_FLIGHT.has(doc.status), resuming = from !== "" && from !== "working" && doc.status === "working";
+    if (!starting && !resuming) return;
+    const what = starting ? `it goes from queued to ${STATUS_LABEL[doc.status].toLowerCase()}` : "it resumes";
+    if (doc.small === undefined) invalid([{ field: "small", message: `#${doc.num} isn't classified: set "small": true or false before ${what}, or in the same request (a small task starts through tools/dev/board.py batch)` }]);
+    if (doc.small && (starting ? typeof sent.batch !== "string" : !doc.batch)) {
+      invalid([{ field: "batch", message: `#${doc.num} is a small task ${starting ? "starting" : "in no batch"}: start it through tools/dev/board.py batch, with the four next small tasks (it sends their batch id, "batch", with the start)` }]);
+    }
   }
 
   // ---- archived ----------------------------------------------------------------------------------

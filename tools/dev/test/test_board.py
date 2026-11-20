@@ -105,7 +105,7 @@ class Health(Base):
     def small_part(self):
         code, out, err = run(self.b, "health")
         self.assertEqual(code, 0, err)
-        return out.split("small tasks under way", 1)[1]
+        return out.split("small tasks in flight", 1)[1]
 
     def test_a_batch_of_five_is_fine_whatever_waits(self):
         self.b.batch([1, 2, 3, 4, 5])
@@ -131,11 +131,25 @@ class Health(Base):
         self.b.task(5, small=None)  # unclassified
         self.b.task(6, status="done")
         self.b.task(7, archived=True)
-        self.b.task(8, status="working", small_at=T2)  # marked small while under way: no batch, not a lone start
+        self.b.task(8, status="working", small=False, batch="b8-old")  # (not small: no batch of small tasks)
         out = self.small_part()
         self.assertIn(f"batch {B} of 2 (#1 #2): ok", out)
         self.assertNotIn("<--", out)
         self.assertNotIn("#8", out)
+
+    def test_a_small_task_in_flight_in_no_batch_is_flagged_whatever_its_status(self):
+        for n, st in enumerate(["working", "backgrounded", "integrating", "review", "waiting"], 1):
+            self.b.task(n, status=st)
+        self.b.task(6, status="done")
+        out = self.small_part()
+        for n, st in enumerate(["working", "backgrounded", "integrating", "review", "waiting"], 1):
+            self.assertIn(f"#{n} ({st}) is in no batch  <-- RECORD IT IN ONE (board.py batch #{n} …), OR MARK IT NOT SMALL", out)
+        self.assertNotIn("#6", out)
+
+    def test_a_batch_in_flight_counts_whatever_its_members_statuses(self):
+        self.b.batch([1, 2, 3, 4, 5], status="backgrounded")
+        self.b.task(6)
+        self.assertIn(f"batch {B} of 5 (#1 #2 #3 #4 #5): ok", self.small_part())
 
     def test_a_batch_without_its_start_event_is_flagged(self):
         self.b.task(1, status="working", batch="handmade")
@@ -239,8 +253,20 @@ class Batch(Base):
         self.refused("1", "2", "3", "4", "8", says="#8 is done")
         self.refused("1", "2", "3", "4", "99", says="#99 isn't a task")
         self.refused("1", "1", says="named twice")
+        self.refused("1", "2", "3", "4", "8", says="#8 is done, neither queued nor in flight")
         self.b.items["i1"].update(status="working", batch=B)
         self.refused("1", "10", "2", "3", "4", says="in different batches already (b1-20261120T0200, other)")
+
+    def test_a_small_task_in_flight_in_no_batch_is_put_in_one_as_it_is(self):
+        self.b.task(1, status="backgrounded")  # (marked small while under way)
+        for n in range(2, 6):
+            self.b.task(n)
+        code, out, err = run(self.b, "batch", "1", "2", "3", "4", "5")
+        self.assertEqual(code, 0, err)
+        patch1 = [w[2] for w in self.b.writes if w[0] == "PATCH" and w[1] == "i1"]
+        self.assertEqual(len(patch1), 1)
+        self.assertEqual(set(patch1[0]), {"batch"}, "its status kept")
+        self.assertIn("#1: already backgrounded, put in the batch", out)
 
 
 if __name__ == "__main__":

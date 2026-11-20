@@ -139,7 +139,7 @@ for (const [name, [body, says]] of Object.entries(BAD_POSTS)) test(`POST items r
 test("PATCH items: edits an existing item only", async () => {
   await refused(() => patch("items", "nope", { text: "x" }), { status: 404, code: "not_found", says: /no item "nope"/ });
   await refused(() => call("PUT", "/api/c/items/nope", { kind: "task", text: "x", parent: "", status: "", assigned: "" }), { status: 404, code: "not_found" });
-  const r = await patch("items", t1, { status: "review", priority: 3 });
+  const r = await patch("items", t1, { status: "review", priority: 3, small: false });
   assert.equal(r.status, 200);
   assert.equal((await get("items", t1)).status, "review");
   const ev = store.list("events").filter((e) => e.data.item === t1);
@@ -428,32 +428,54 @@ test("small (#1534): a task's size, three states (unset, true, false), set by PO
   assert.deepEqual([f.small, f.smallAt], [undefined, undefined]);
 });
 
-test("a task starts (to working) only classified, and a small one only with a batch id (#1534)", async () => {
+const IN_FLIGHT = ["working", "backgrounded", "integrating", "review", "waiting"];
+test("a task goes from queued into any status in flight only classified, and a small one only with a batch id in the same request (#1534)", async () => {
   const u = (await post("items", { text: "Unclassified" })).body.id;
-  await refused(() => patch("items", u, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false/ });
-  await refused(() => post("items", { text: "x", status: "working" }), { says: /small: #\d+ isn't classified/ });
-  // (Other statuses take an unclassified task, as before.)
-  for (const st of ["review", "backgrounded", "integrating", "waiting", "done", ""]) assert.equal((await patch("items", u, { status: st })).status, 200, st);
+  for (const st of IN_FLIGHT) {
+    await refused(() => patch("items", u, { status: st }), { says: new RegExp(`small: #\\d+ isn't classified: set "small": true or false before it goes from queued to ${st === "working" ? "under way" : st === "review" ? "in review" : st === "waiting" ? "waiting on you" : st}`) });
+    await refused(() => post("items", { text: "x", status: st }), { says: /small: #\d+ isn't classified/ });
+  }
+  // (Closing a queued task, or queuing it, needs no size.)
+  for (const st of ["done", "abandoned", ""]) assert.equal((await patch("items", u, { status: st })).status, 200, st);
   // Not small: started as ever, its size set before or in the same request.
   assert.equal((await patch("items", u, { status: "working", small: false })).status, 200);
   const n = (await post("items", { text: "Not small", small: false })).body.id;
-  assert.equal((await patch("items", n, { status: "working" })).status, 200);
-  // Small: never alone.
+  assert.equal((await patch("items", n, { status: "backgrounded" })).status, 200);
+  // Small: never alone, into any status in flight.
   const sm = (await post("items", { text: "Small", small: true })).body.id;
-  await refused(() => patch("items", sm, { status: "working" }), { says: /batch: #\d+ is a small task: start it through tools\/dev\/board\.py batch/ });
-  await refused(() => post("items", { text: "x", small: true, status: "working" }), { says: /is a small task: start it through tools\/dev\/board\.py batch/ });
+  for (const st of IN_FLIGHT) {
+    await refused(() => patch("items", sm, { status: st }), { says: /batch: #\d+ is a small task starting: start it through tools\/dev\/board\.py batch/ });
+    await refused(() => post("items", { text: "x", small: true, status: st }), { says: /is a small task starting: start it through tools\/dev\/board\.py batch/ });
+  }
   assert.equal((await patch("items", sm, { status: "working", batch: "b1-20261120T0300" })).status, 200);
   assert.equal((await get("items", sm)).batch, "b1-20261120T0300", "kept on the item");
-  // (Its batch stays through review; back to working, the request carries it again. Queued again,
-  // it leaves it; a batch id stored on a queued task doesn't start it either.)
-  assert.equal((await patch("items", sm, { status: "review" })).status, 200);
-  await refused(() => patch("items", sm, { status: "working" }), { says: /is a small task/ });
-  assert.equal((await patch("items", sm, { status: "working", batch: "b1-20261120T0300" })).status, 200);
+  await refused(() => post("items", { text: "x", kind: "folder", batch: "b1" }), { says: /batch: is only for tasks/ });
+});
+
+test("a task resumes (to working from any status but queued) classified, and a small one in its batch, as the page's resume and undo send it (#1534)", async () => {
+  const sm = (await post("items", { text: "Small", small: true })).body.id;
+  assert.equal((await patch("items", sm, { status: "working", batch: "b2-x" })).status, 200);
+  for (const st of ["backgrounded", "integrating", "waiting", "review", "done", "abandoned"]) {
+    assert.equal((await patch("items", sm, { status: st })).status, 200, st);
+    assert.equal((await patch("items", sm, { status: "working" })).status, 200, `back from ${st}, its own batch`);
+  }
+  // A small task in flight in no batch (marked small while under way) doesn't resume alone.
+  const late = (await post("items", { text: "Marked small late", small: false })).body.id;
+  assert.equal((await patch("items", late, { status: "review" })).status, 200);
+  assert.equal((await patch("items", late, { small: true })).status, 200);
+  await refused(() => patch("items", late, { status: "working" }), { says: /batch: #\d+ is a small task in no batch: start it through tools\/dev\/board\.py batch/ });
+  assert.equal((await patch("items", late, { status: "working", batch: "b3-x" })).status, 200);
+  // An unclassified task in flight (from before #1534) resumes only once classified.
+  const old = (await post("items", { text: "Old", small: false, status: "review" })).body.id;
+  assert.equal((await patch("items", old, { small: null })).status, 200);
+  await refused(() => patch("items", old, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false before it resumes/ });
+  // Queued again, it leaves its batch: the page's undo of a requeue is a start, refused like any.
   assert.equal((await patch("items", sm, { status: "" })).status, 200);
   assert.equal((await get("items", sm)).batch, undefined);
+  await refused(() => patch("items", sm, { status: "working" }), { says: /is a small task starting: start it through tools\/dev\/board\.py batch/ });
+  // A batch id stored on a queued task doesn't start it either.
   assert.equal((await patch("items", sm, { batch: "b9" })).status, 200);
-  await refused(() => patch("items", sm, { status: "working" }), { says: /is a small task/ });
-  await refused(() => post("items", { text: "x", kind: "folder", batch: "b1" }), { says: /batch: is only for tasks/ });
+  await refused(() => patch("items", sm, { status: "review" }), { says: /is a small task starting/ });
 });
 
 test("small: one definition, the page's and /api/schema's; the page sets the three states", async () => {

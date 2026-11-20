@@ -135,7 +135,11 @@ curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"s
 # → {"id":"i674","num":674,"order":52,"added":"…"}
 ```
 
-**Starting a task** (#1534, `board.mjs` sizeAndStart): a change of a task's `status` to `working` (a POST born working too) is refused (400) while its `small` is unset, saying to classify it, true or false, before or with the start; and, for a small task, unless the same request carries `batch`, saying to start it through `tools/dev/board.py batch`, which starts it with the four next small tasks under one batch id (tools/dev/agent-rules.md, "Starting tasks"). Other statuses, and a task already working, are as before.
+**Starting a task** (#1534, `board.mjs` sizeAndStart). A task in flight is `working`, `backgrounded`, `integrating`, `review` or `waiting` (`IN_FLIGHT`).
+- A start, a change of `status` from queued (a POST born so too) to a status in flight, is refused (400) while its `small` is unset, saying to classify it, true or false, before or in the same request; and, for a small task, unless the same request carries `batch`: "batch: #N is a small task starting: start it through tools/dev/board.py batch, with the four next small tasks …". board.py batch starts it with the four next small tasks under one batch id (tools/dev/agent-rules.md, "Starting tasks"); an id made up by another client is taken, and tools/dev/health.sh flags its batch as having no start event.
+- A resume, a change to `working` from any other status but queued, needs the size set too, and a small task's batch, stored or sent ("… is a small task in no batch: …"): a batched task resumes as it is, from the page too.
+- A task queued again loses its batch: the page's undo of a requeue is a start, refused as above.
+- Other changes (closing a queued task, moving between statuses in flight other than to working) are as before.
 
 **A priority with a fraction** (#1100) slots in between, in the same transaction as the rest of the
 write, by `priority.mjs` (the page places a drag or a typed number by the same module): a POST, PATCH

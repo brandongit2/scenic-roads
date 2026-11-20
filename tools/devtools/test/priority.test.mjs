@@ -91,7 +91,7 @@ test("done, abandoned and archived tasks, and tasks inside an archived folder, k
   const gone = await b.add({ priority: 6, status: "abandoned" });
   const arch = await b.add({ priority: 6 });
   const deep = await b.add({ priority: 6, parent: inner });
-  const open6 = await b.add({ priority: 6, status: "review" });
+  const open6 = await b.add({ priority: 6, status: "review", small: false });
   const done7 = await b.add({ priority: 7, status: "done" });
   const open8 = await b.add({ priority: 8 });
   for (const id of [folder, arch]) assert.equal((await b.patch(id, { archived: true, cascade: true })).status, 200);
