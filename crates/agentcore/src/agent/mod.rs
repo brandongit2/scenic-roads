@@ -6054,11 +6054,6 @@ impl Agent {
             threads,
             old_app,
             caches: caches_here(&self.o.home.join("cache")),
-            nas_traffic: self.live.as_ref().and_then(|l| {
-                let t = now_s();
-                let v: Option<Vec<f64>> = live::NAS_TRAFFIC.iter().map(|n| l.latest(n, t, 5)).collect();
-                v?.try_into().ok()
-            }),
             best: self.live.as_ref().and_then(|l| l.best(now_s(), self.mem_total(), cores)),
             ..Default::default()
         };

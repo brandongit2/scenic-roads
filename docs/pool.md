@@ -824,13 +824,20 @@ thousandths:
   paces the pool alone. And each disk's busy share, read from the Synology over SNMPv3
   (`crate::budget::snmp`, keys from `inputs/keys.env`, never on a command line or logged), the
   busiest smoothed.
-- **Judging the answers.** How slow the NAS answers says how slow it is, not why (on 19 Nov the
-  answers ran 1 to 40 times their best with the disks idle and the pool's jobs light). So the
-  answers are judged as TCP Vegas judges its round trips, against **the answers a step lighter**:
-  as the weight in use rises, a level of the readings at the lighter load is kept (`nas::Level`).
-  While the load is a step or more over a level, the answers are **rising** when their lower
-  quartile passes the level's upper quartile; decided after a growth cadence (a minute). A load
-  less than a step over every level isn't judged: answers slowing then aren't the pool's doing.
+- **Judging the answers.** How slow the NAS answers says how slow it is, not why: over 19 and 20
+  Nov the counted answers were past the knee in 17 % of the readings with the pool's jobs weighing
+  under 25 thousandths. A job's weight is its heaviest target's rate, held for its whole run, so
+  the answers are judged, as TCP Vegas judges its round trips, against **what the pool's jobs move
+  on the NAS as measured** (each Mac's jobs' traffic over the answers' span, carried on its beats,
+  weighed as a job is, `coord::pool_moving`), all but the counted Mac's own: its own jobs' traffic
+  stalls its answers on its own link (the probe waiting out 40-ms delayed acknowledgements on its
+  SMB session) whatever the NAS's load. Each ratio is kept with the use it was read beside for
+  `nas-track-minutes`; a growth cadence's (a minute) are judged against those a step lighter and a
+  step heavier. They are **rising** while their lower quartile is past the upper quartile of those
+  a step lighter, and **not the pool's** while they aren't rising and the use is under a step, or
+  answers a step lighter were read, or those a step heavier were no slower. Not the pool's, slow
+  answers neither cut the window nor hold it at the knee; nothing measured, they hold it, never
+  cut it.
 - **The window**: **congested** (the disks over the target; the counted Mac missing its deadlines;
   or the answers rising, past 3 times their best, `nas-slow`), it drops at once to half the weight
   in use (`nas-decrease`), never under a step, and nothing paced starts until enough jobs end; no
@@ -850,9 +857,10 @@ thousandths:
   `nas-decrease` (0.5, 0.1 to 0.9), `nas-floor-hours` (24, 1 to 24), `nas-slow` (3, 1.5 to 10),
   `nas-grow-seconds` (60, 10 to 600), `nas-read-seconds` (10, 2 to 60), `nas-span-seconds` (30, 10
   to 300), `nas-cached-ms` (0.5, 0 to 10), `nas-restore-minutes` (30, 0 to 60), `nas-lone-minutes`
-  (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240) and `nas-young-spans` (20, 5 to 100:
+  (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240), `nas-young-spans` (20, 5 to 100:
   the spans of its link's history a Mac's floor needs; a Mac whose floor is younger may cut the
-  window, never grow it).
+  window, never grow it) and `nas-track-minutes` (10, 2 to 60: how long the answers are kept to
+  judge against).
 - **The target** is the owner's: the disks' busy share the pool holds to, `nas-target` (30–95 %),
   set by `scenic nas-target [<percent> | off]` on any Mac; not set, 85 % (`DEFAULT_TARGET_PCT`),
   above the 65–80 % an outside repack alone kept the disks at, so the pool still works beside one.
@@ -883,11 +891,12 @@ thousandths:
 - **Tested** on a simulated NAS (jobrt's `a_burst_of_nas_heavy_jobs_settles_below_the_knee` and its
   cases: outside loads, restarts, a slow link, lone jobs): held to a fixed whole, a burst sat at the
   cliff 1,475 s of 1,500; paced, never past the knee. **Replayed** on the lead's readings of 19 Nov
-  (`the_readings_of_19_nov_grow_on_the_idle_nas_and_cut_at_its_load`): on the idle NAS the window
-  grew to a median 31 % and cut 10 times, never at the cliff, where a rule growing only within 1.25
-  times a day's best answer holds it at 12 % and cuts 109 times. **Assumed:** a job adds a tenth of
-  its weight to the disks' busy share (measured over 19 Nov: 0.029 % a thousandth, so the tenth is
-  the larger).
+  12:22Z to 20 Nov 08:29Z (`the_readings_of_19_and_20_nov_let_work_go_and_cut_at_the_pools_load`,
+  `nas_readings.csv`), closed on the jobs it lets go: as the readings were, the window's median
+  250 thousandths, at its floor 148 readings of 5,400 (judged against the weight, task #1417's
+  rule: 146 and 215); with jobs of 100 waiting it starts 920 (730), of 250 382 (348), the NAS at
+  the model's cliff never two readings in a row. **Assumed:** a job adds to the disks' busy share
+  what a thousandth of measured use added over those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and

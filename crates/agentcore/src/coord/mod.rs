@@ -744,9 +744,19 @@ impl Shared {
             own.chain(self.workers_around().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)))).collect();
         let holding: BTreeSet<&str> = self.leases.live(now).map(|l| crate::paces::mac_of(&l.worker)).collect();
         let answers = pool_answers(&caps, &holding, t, k);
+        let moving = self.sched.nas.as_ref().map_or_else(Vec::new, |l| pool_moving(&caps, l, t, k));
         let sends = |m: &str| caps.iter().any(|(n, c)| crate::paces::mac_of(n) == m && c.nas_at != 0);
         let blind = holding.iter().any(|m| sends(m) && !answers.iter().any(|a| a.mac == *m && a.fresh));
-        let s = jobrt::budget::nas::Sample { t, answers: &answers, blind, busy: disks, pct, in_use, wants };
+        let s = jobrt::budget::nas::Sample {
+            t,
+            answers: &answers,
+            blind,
+            busy: disks,
+            pct,
+            in_use,
+            moving: &moving,
+            wants,
+        };
         self.nas_pace.read(&s, k);
         let (window, alone, sc) = (self.nas_pace.window(), self.nas_pace.lone(), &mut self.sched);
         for l in [&mut sc.nas, &mut sc.nas_own].into_iter().flatten() {
@@ -1480,8 +1490,10 @@ pub struct Capacity {
     /// (sched's `Copies`: its room-making frees them).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub caches: BTreeMap<String, CacheHere>,
-    /// Its jobs' NAS traffic a second now (crate::agent::live::NAS_TRAFFIC's order and units, its
-    /// live store's newest): the lead sums the members' (`Coordinator::nas_view`). None: not measured.
+    /// Its jobs' NAS traffic a second (crate::agent::live::NAS_TRAFFIC's order and units: each
+    /// series' mean over the pacing's span, as its NAS answers are, crate::agent::live::Store::
+    /// answer_in): the lead sums the members' (`Coordinator::nas_view`), and paces by them weighed
+    /// (`pool_moving`). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_traffic: Option<[f64; 7]>,
     /// Its NAS calls now (crate::agent::live::Store::calls_now: in flight, missed a second, its cap
@@ -1674,6 +1686,36 @@ pub struct CacheHere {
 /// measure, summed. None while none has one.
 pub fn pool_traffic(caps: &[(String, Capacity)]) -> Option<[f64; 7]> {
     caps.iter().filter_map(|(_, c)| c.nas_traffic).reduce(|a, b| std::array::from_fn(|i| a[i] + b[i]))
+}
+
+/// What the pool's jobs move on the NAS for the lead's pacing at `t` (jobrt::budget::nas::Sample's
+/// `moving`), each Mac's (crate::paces::mac_of, in name order): its capacities' traffic
+/// (`Capacity::nas_traffic`, its mean over the pacing's span as its beat or ask sent it, from those
+/// sent within the span and a beat, as `pool_answers` takes an answer fresh) weighed as a job is
+/// by the NAS's `limits` (jobrt::budget::nas::Limits::weight: bytes read and written, files made,
+/// entries listed, files statted and deleted, each over the NAS's), summed. Empty: none measured.
+pub fn pool_moving(
+    caps: &[(String, Capacity)],
+    limits: &jobrt::budget::nas::Limits,
+    t: u64,
+    k: &jobrt::budget::nas::Tuning,
+) -> Vec<(String, u32)> {
+    const MIB: f64 = (1u64 << 20) as f64;
+    let fresh_s = k.span_s + crate::agent::beat::EVERY.as_secs();
+    let mut by: BTreeMap<String, u32> = BTreeMap::new();
+    for (n, c) in caps.iter().filter(|(_, c)| c.nas_at + fresh_s >= t) {
+        let Some(tr) = c.nas_traffic else { continue };
+        let w = limits.weight(jobrt::budget::nas::Rate {
+            bytes_s: (tr[0] + tr[2]) * MIB,
+            creates_s: tr[3],
+            listed_s: tr[4],
+            stats_s: tr[5],
+            deletes_s: tr[6],
+        });
+        let m = by.entry(crate::paces::mac_of(n).to_string()).or_default();
+        *m = m.saturating_add(w);
+    }
+    by.into_iter().collect()
 }
 
 /// The pool's NAS calls (crate::agent::live::POOL_CALLS' order): each member's with a measure,
@@ -8050,6 +8092,7 @@ mod tests {
                 busy: Some(&busy),
                 pct: 85,
                 in_use: 600,
+                moving: &[],
                 wants: None,
             };
             s.nas_pace.read(&sample, &k);
@@ -9723,16 +9766,19 @@ mod tests {
 
     /// Task #1417: the pool's NAS-heavy jobs are paced by the NAS's answers. A coordinator starting
     /// holds the window at a step, a job beside nothing going all the same; while the NAS has room
-    /// (the disks quiet, the answers not rising with the load) and a job waits, it doubles a
-    /// minute until that job fits, once the load the job out rose to is judged; once the answers
-    /// pass the knee rising with the load it drops to half what's in use, holding back what fit
+    /// (the disks quiet, the answers not rising with what the jobs move) and a job waits, it
+    /// doubles a minute until that job fits, once the job out shows in the answers; once the
+    /// answers pass the knee rising with what the jobs move (task #1506: m1's, as its beats carry
+    /// them, the lead's answers counting) it drops to half what's in use, holding back what fit
     /// before, and the lead's waiting line says why; calm again, it grows a step a minute.
     #[test]
     fn the_pools_nas_jobs_are_paced_by_the_nas_answers() {
         let (_d, c, w, clock) = every((0, 0));
         heavy_slope(&c);
         c.set_nas(Some(jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, ..Default::default() }));
-        let read = |ms: f64| {
+        // (A reading: the lead's answers `ms`, m1's a little slower (its link's), m1's `jobs`
+        // moving half the NAS each.)
+        let read = |ms: f64, jobs: f64| {
             clock.advance(Duration::from_secs(jobrt::budget::nas::READ_EVERY_S));
             let mut s = c.shared.lock().unwrap();
             let at = s.wall_s();
@@ -9743,45 +9789,46 @@ mod tests {
             let cap =
                 Capacity { at: asked, nas_ms: Some(ms), nas_floor_ms: Some(5.0), nas_at: at, ..Default::default() };
             s.own_cap = Some(cap.clone());
+            let half_mb = 50e6 / (1u64 << 20) as f64;
+            let traffic = [jobs * half_mb, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
             if let Some(w) = s.workers.get_mut("m1") {
-                w.cap = Some(cap);
+                w.cap = Some(Capacity { nas_ms: Some(ms + 0.5), nas_traffic: Some(traffic), ..cap });
             }
             s.pace_nas("m4", Some(&[2.0]), 85, &jobrt::budget::nas::Tuning::default());
             assert_eq!(s.nas.map(|l| l.window), s.nas_own.map(|l| l.window));
             s.nas_own.unwrap().window
         };
         let a = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
-        assert_eq!(read(5.0), jobrt::budget::nas::STEP);
+        assert_eq!(read(5.0, 0.0), jobrt::budget::nas::STEP);
         let g1 = w.ask(&a).unwrap().expect("a half of the NAS beside nothing");
         let mut readings = 0;
         loop {
             assert!(w.ask(&a).unwrap().is_none(), "the window under two halves: the second waits");
             assert!(w.beat(g1.lease, None).unwrap());
             readings += 1;
-            if read(5.0) >= 1000 {
+            if read(5.0, 1.0) >= 1000 {
                 break;
             }
         }
-        // (Its load judged against the answers at no load, the lead's, m4's, though m1's count
-        // once it holds the job (each over the least floor, so they compare): a span and a growth
-        // cadence, 9 readings; then 50 to 1000 doubling a minute, 25 or 26.)
+        // (Held a span for the job's answers to show, 3 readings; then 50 to 1000 doubling a
+        // minute, 25 or 26.)
         assert!(
-            (33..=36).contains(&readings),
-            "doubling a minute from a step, once the load the job out rose to is judged: {readings} readings"
+            (28..=30).contains(&readings),
+            "doubling a minute from a step, once the job out shows in the answers: {readings} readings"
         );
         let g2 = w.ask(&a).unwrap().expect("two halves now");
-        // (The NAS answering four times its best as the load rose: half what's in use, once the
-        // load is judged against m1's at 500, a span and a growth cadence's readings.)
+        // (The NAS answering four times its best as what m1 moves rose a job: half what's in use,
+        // once five in six of a growth cadence's readings, against those a job lighter, show it.)
         let mut cut = Vec::new();
-        for _ in 0..9 {
+        for _ in 0..7 {
             assert!(w.beat(g1.lease, None).unwrap() && w.beat(g2.lease, None).unwrap());
-            cut.push(read(20.0));
+            cut.push(read(20.0, 2.0));
         }
-        assert_eq!(cut, [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 500]);
+        assert_eq!(cut, [1000, 1000, 1000, 1000, 1000, 500, 500]);
         assert!(!c.shared.lock().unwrap().nas_own.unwrap().alone, "past the knee: no job beside nothing a while");
         let why = c.nas_paced().unwrap();
         assert!(
-            why.starts_with("NAS work paced to 50 % of the NAS, 100 % in use (the NAS answering m1 in 20 ms"),
+            why.starts_with("NAS work paced to 50 % of the NAS, 100 % in use (the NAS answering m4 in 20 ms"),
             "{why}"
         );
         c.finish(g1.lease, &[]);
@@ -9790,11 +9837,11 @@ mod tests {
         for _ in 0..8 {
             assert!(w.beat(g2.lease, None).unwrap());
             assert!(w.ask(&a).unwrap().is_none());
-            win = read(5.0);
+            win = read(5.0, 1.0);
         }
-        // (Fallen to 500, under every level a step: nothing to judge, so a step a minute over the
-        // 80 s read, at most.)
-        let most = 500 + jobrt::budget::nas::STEP * 80 / 60;
+        // (Cut to 500, the answers at their best again: a step a minute over the 80 s read, at
+        // most, rounded up.)
+        let most = 500 + (jobrt::budget::nas::STEP * 80).div_ceil(60);
         assert!((501..=most).contains(&win), "calm again: a step a minute at most: {win}");
     }
 
@@ -14076,7 +14123,7 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 2,
-                levels: Vec::new(),
+                seen: Vec::new(),
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             (s.offers[0].clone(), s.lead_name.clone())
@@ -14209,7 +14256,7 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 1,
-                levels: Vec::new(),
+                seen: Vec::new(),
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             s.lead_name.clone()
@@ -14258,6 +14305,31 @@ mod tests {
             answers.iter().map(|a| (a.mac.as_str(), a.fresh)).collect::<Vec<_>>(),
             [("m1", true), ("m4", false)]
         );
+    }
+
+    /// Task #1506: what the pool's jobs move is each Mac's, its slots' summed, each weighed as a
+    /// job is by the NAS's limits; a capacity not sent within the span and a beat is left out.
+    #[test]
+    fn the_pools_moving_is_each_macs_weighed() {
+        let k = jobrt::budget::nas::Tuning::default();
+        let t = 10_000;
+        let limits =
+            jobrt::budget::nas::Limits { bytes_s: 100.0 * (1u64 << 20) as f64, creates_s: 40.0, ..Default::default() };
+        // (Read and written MB/s, then creates, listed, stats and deletes a second.)
+        let cap = |at: u64, mb: f64, creates: f64| Capacity {
+            nas_at: at,
+            nas_traffic: Some([mb, 0.0, 0.0, creates, 0.0, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let caps = [
+            ("m1".to_string(), cap(t, 10.0, 0.0)),
+            ("m4 #1".to_string(), cap(t, 0.0, 4.0)),
+            ("m4 #2".to_string(), cap(t, 20.0, 0.0)),
+            ("m6".to_string(), cap(t - 3600, 50.0, 0.0)),
+            ("m7".to_string(), Capacity { nas_at: t, ..Default::default() }),
+        ];
+        assert_eq!(pool_moving(&caps, &limits, t, &k), [("m1".to_string(), 100), ("m4".to_string(), 300)]);
+        assert!(pool_moving(&caps[3..], &limits, t, &k).is_empty(), "none measured within the span");
     }
 
     /// Task #444 review: a target over the budget that fits no asking member (its measured memory

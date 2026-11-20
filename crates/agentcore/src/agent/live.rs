@@ -515,14 +515,18 @@ impl Store {
     }
 
     /// `cap`'s NAS answers (crate::coord::Capacity's `nas_ms`, `nas_floor_ms`, `nas_young`,
-    /// `nas_at`) and NAS calls at `now` as this store has them (`nas_answers`, `calls_now`): a
-    /// member's beat sets them as it goes, the lead's prober its own Mac's as it reads.
+    /// `nas_at`), its jobs' NAS traffic over the same span (`nas_traffic`: each `NAS_TRAFFIC`
+    /// series' mean over `k.span_s`; None while one has no point in it) and NAS calls at `now` as
+    /// this store has them (`nas_answers`, `calls_now`): a member's beat sets them as it goes, the
+    /// lead's prober its own Mac's as it reads.
     pub fn answer_in(&self, cap: &mut crate::coord::Capacity, now: u64, k: &jobrt::budget::nas::Tuning) {
         let a = self.nas_answers(now, k);
         (cap.nas_ms, cap.nas_floor_ms) = (a.map(|a| a.0), a.map(|a| a.1));
         cap.nas_young = a.is_some_and(|a| a.2);
         cap.nas_at = now;
         cap.nas_calls = self.calls_now(now);
+        let traffic: Option<Vec<f64>> = NAS_TRAFFIC.iter().map(|n| self.mean(n, now, k.span_s)).collect();
+        cap.nas_traffic = traffic.and_then(|v| v.try_into().ok());
     }
 
     /// This Mac's room for the pool's jobs at its quietest sustained state (task #951; the forecast's
