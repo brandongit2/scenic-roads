@@ -593,9 +593,11 @@ are its own for the disk rule and the drop below.
   `RUST_TEST_THREADS`): the checks' runs together stay within its cores. The slots: one per 4 cores
   and per 12 GB of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots of 5 test threads), or as
   `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`, either, each
-  a whole number of 1 or more; spaces, CRs and `#` comments left out; read by each run as it starts,
-  and each line it doesn't take printed with its value). Lowered, the build folders of the slots
-  above go at the next run, those not in use. Publish's run (key `publish`, publish.sh's alone: it
+  a whole number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last
+  read; read by each run as it starts, and each line it doesn't take, or a key given again, printed
+  with its value; a folder or unreadable file in its place said, and the capacity derived).
+  Lowered, the build folders of the slots above go at the next run, but one a live run holds: a
+  slot whose run is gone is freed first, as when a slot is taken. Publish's run (key `publish`, publish.sh's alone: it
   is refused without SCENIC_PUBLISH) has a slot of its own besides, slot 0 with its own build folder,
   and every core: it never waits behind a check and comes first, so while it runs the test Mac takes
   more than its cores (publish's tests are its last word; the checks' beside it are slower). Each

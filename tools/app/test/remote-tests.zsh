@@ -147,6 +147,23 @@ capacity $tmp/capacity 14 48 > $tmp/warn
 w=$(<$tmp/warn)
 [[ "$reply[1] $reply[2]" == "3 5" && $w == *"line 1: slots=0"* && $w == *"line 2: threads=x"* && $w == *"line 3: jobs=2"*unknown* && $w == *"line 4: slots"* && $(wc -l < $tmp/warn) -eq 4 ]] \
   && ok "the capacity file: each line not read says so, by its value" || no "the capacity file: each line not read says so, by its value" "$reply[1] $reply[2]: $w"
+print -r -- $'slots=1000\nthreads=0005' > $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn
+w=$(<$tmp/warn)
+[[ "$reply[1] $reply[2]" == "3 5" && $w == *"slots=1000 isn't a whole number from 1 to 999"* && $w == *"threads=0005 isn't"* ]] \
+  && ok "the capacity file: a value of more than 3 digits not read" || no "the capacity file: a value of more than 3 digits not read" "$reply[1] $reply[2]: $w"
+print -r -- $'slots=2\nthreads=4\nslots=1' > $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn
+w=$(<$tmp/warn)
+[[ "$reply[1] $reply[2]" == "1 4" && $w == *"line 3: slots given again (line 1): this line's 1 read"* && $(wc -l < $tmp/warn) -eq 1 ]] \
+  && ok "the capacity file: a key given twice says so, the last read" || no "the capacity file: a key given twice says so, the last read" "$reply[1] $reply[2]: $w"
+rm -f $tmp/capacity; mkdir $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn; w=$(<$tmp/warn); rmdir $tmp/capacity
+print 'slots=2' > $tmp/capacity; chmod 000 $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn; w2=$(<$tmp/warn); chmod 644 $tmp/capacity
+[[ "$reply[1] $reply[2]" == "3 5" && $w == *"is a folder or can't be read"* && $w2 == *"is a folder or can't be read"* ]] \
+  && ok "the capacity file a folder, or unreadable: said, the capacity derived" || no "the capacity file a folder, or unreadable: said, the capacity derived" "$reply[1] $reply[2]: $w / $w2"
+rm -f $tmp/warn
 print 'threads=3' > $tmp/capacity; capacity $tmp/capacity 14 48
 [[ $reply[3] == "slots derived: 14 cores / 4, 48 GB / 12; threads set in $tmp/capacity" ]] && ok "the capacity: the slots' and the threads' sources, each" || no "the capacity: the slots' and the threads' sources, each" "$reply[3]"
 print 'slots=2' > $tmp/capacity; capacity $tmp/capacity 14 48
@@ -218,6 +235,12 @@ out=$(run_remote c1 "true")
 [[ ! -e $fb/.build/5 && -d $fb/.build/4 && -d $fb/.build/0 && $out == *"slot 5 on the test Mac (above the test Mac's 3 slots"* ]] \
   && ok "the capacity lowered: the folders above its slots go, those in use kept" || no "the capacity lowered: the folders above its slots go, those in use kept" "$(ls $fb/.build): $out"
 rm -rf $fb/.slots/4 $fb/.build/4
+# A slot above them whose run is gone: freed, its folder gone too.
+true & dead=$!; wait $dead
+mkdir -p $fb/.build/6/target $fb/.slots/6; print -r -- "$dead 1 test" > $fb/.slots/6/owner
+out=$(run_remote c1 "true")
+[[ ! -e $fb/.build/6 && ! -e $fb/.slots/6 && $out == *"slot 6 on the test Mac (above"* ]] \
+  && ok "the capacity lowered: a slot above it whose run is gone freed, its folder gone" || no "the capacity lowered: a slot above it whose run is gone freed, its folder gone" "$(ls $fb/.build $fb/.slots): $out"
 
 base=$tmp/scenic-check
 # The slot a key tries first: its last; then the least recently used, those never used before all.

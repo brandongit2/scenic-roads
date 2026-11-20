@@ -203,17 +203,21 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # has its own slot besides (slot 0, its own build folder: it never waits behind a check) and every
 # core: it comes first, and while it runs the test Mac takes more than its cores. Set otherwise by
 # ~/scenic-check/capacity on the test Mac, lines `slots=<n>` and `threads=<n>` (either, each a whole
-# number of 1 or more; spaces, CRs and `#` comments left out), which every run reads as it starts,
-# printing each line it doesn't take. Each run says its slot, the slots and its threads, and where
+# number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last), which
+# every run reads as it starts, printing each line it doesn't take, a key given again, and a folder
+# or unreadable file in its place (the capacity then derived). Each run says its slot, the slots and its threads, and where
 # each was set; the dev jobs page records them. A caller's own NEXTEST_TEST_THREADS (or nextest's
 # --test-threads) is taken as it is. Builds aren't shared out: a run's cargo builds with every core,
 # at nice 20 as its tests (a check's compile is the larger part of its time on the test Mac, a
 # build's load passes, and its tests are what time out).
 capacity() {  # <capacity file> <cores> <memory GB>: reply=(<slots> <test threads a run> <where each was set>)
   local f=$1 cores=$2 gb=$3 slots threads line k v n=0 from_s from_t
+  local -A at  # (the line each key was read from)
   slots=$(( cores / 4 < gb / 12 ? cores / 4 : gb / 12 )); (( slots < 1 )) && slots=1
   from_s="derived: $cores cores / 4, $gb GB / 12"
-  if [[ -r $f ]]; then
+  if [[ -e $f && ( -d $f || ! -r $f ) ]]; then
+    print -r -- "remote-tests: $f is a folder or can't be read: not read, the capacity derived"
+  elif [[ -e $f ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
       (( n++ ))
       line=${${line%%\#*}//$'\r'/}; line=${${line##[[:space:]]#}%%[[:space:]]#}
@@ -221,14 +225,40 @@ capacity() {  # <capacity file> <cores> <memory GB>: reply=(<slots> <test thread
       k=${${line%%=*}%%[[:space:]]#}; v=${${line#*=}##[[:space:]]#}
       if [[ $line != *=* ]]; then print -r -- "remote-tests: $f line $n: $line isn't <key>=<value>: not read"
       elif [[ $k != (slots|threads) ]]; then print -r -- "remote-tests: $f line $n: $k=$v: unknown key (slots=, threads=): not read"
-      elif [[ $v != <1-> ]]; then print -r -- "remote-tests: $f line $n: $k=$v isn't a whole number of 1 or more: not read"
-      elif [[ $k == slots ]]; then slots=$(( v )); from_s="set in $f"
-      else threads=$(( v )); from_t="set in $f"
+      elif [[ $v != <1-> || ${#v} -gt 3 ]]; then print -r -- "remote-tests: $f line $n: $k=$v isn't a whole number from 1 to 999: not read"
+      else
+        [[ -n ${at[$k]} ]] && print -r -- "remote-tests: $f line $n: $k given again (line ${at[$k]}): this line's $v read"
+        at[$k]=$n
+        if [[ $k == slots ]]; then slots=$(( 10#$v )); from_s="set in $f"
+        else threads=$(( 10#$v )); from_t="set in $f"
+        fi
       fi
     done < $f
   fi
   [[ -n $threads ]] || { threads=$(( (cores + slots - 1) / slots )); from_t="derived: $cores cores / $slots slots"; }
   reply=($slots $threads "slots $from_s; threads $from_t")
+}
+
+free_stale_slot() {  # <base> <slot>: frees the slot if its run is gone (0), else 1
+  local base=$1 s=$2 held pid
+  # A slot whose process is gone, or is another process under the same PID (its start time
+  # differs), or never wrote its owner (10 s on), is freed: moved aside, then removed only if
+  # it still names what was read (another waiter may have freed and retaken it meanwhile).
+  # Not while a process of that run's group is left (it was killed outright, no trap ran; its
+  # watcher stops them): a build folder is one run's at a time.
+  held=$(cat $base/.slots/$s/owner 2>/dev/null); pid=${held%% *}
+  if [[ -n $held ]]; then
+    proc_alive "${held% *}" && return 1
+    [[ -n $(pgrep -g $pid 2>/dev/null) ]] && return 1
+  elif [[ -z $(find $base/.slots/$s -maxdepth 0 ! -newermt '10 seconds ago' 2>/dev/null) ]]; then return 1
+  fi
+  # (Slots set aside so, another's, go after 10 min: their runs count no longer.)
+  find $base/.slots -maxdepth 1 -name '.aside-*' ! -newermt '10 minutes ago' -exec rm -rf {} + 2>/dev/null
+  if mv $base/.slots/$s $base/.slots/.aside-$s-$$ 2>/dev/null; then
+    touch $base/.slots/.aside-$s-$$  # (its 10 min counted from now: mv keeps the old mtime)
+    if [[ $(cat $base/.slots/.aside-$s-$$/owner 2>/dev/null) == "$held" ]]; then rm -rf $base/.slots/.aside-$s-$$
+    fi  # (another's, retaken meanwhile: left aside, as with a key's lock)
+  fi
 }
 
 slot_order() {  # <base> <slots> <key folder>: the slots to try, the key's last, then the least recently used
@@ -249,7 +279,7 @@ into_build() {  # <key's copy> <build folder's copy>: the tree a slot builds (no
 
 remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   local key=$1 owner=$2 cmd=$3 origin=$4 live=$5 base=~/scenic-check
-  local dir=$base/$key slot= waited=0 s held pid mine cores=$(sysctl -n hw.ncpu)
+  local dir=$base/$key slot= waited=0 s mine cores=$(sysctl -n hw.ncpu)
   setopt nullglob
   capacity $base/capacity $cores $(( $(sysctl -n hw.memsize) / 1073741824 ))
   local slots=$reply[1] threads=$reply[2] how=$reply[3] order
@@ -279,24 +309,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
         [[ $(cat $base/.slots/$s/owner 2>/dev/null) == "$mine" ]] || continue
         slot=$s; break 2
       fi
-      # A slot whose process is gone, or is another process under the same PID (its start time
-      # differs), or never wrote its owner (10 s on), is freed: moved aside, then removed only if
-      # it still names what was read (another waiter may have freed and retaken it meanwhile).
-      # Not while a process of that run's group is left (it was killed outright, no trap ran; its
-      # watcher stops them): a build folder is one run's at a time.
-      held=$(cat $base/.slots/$s/owner 2>/dev/null); pid=${held%% *}
-      if [[ -n $held ]]; then
-        proc_alive "${held% *}" && continue
-        [[ -n $(pgrep -g $pid 2>/dev/null) ]] && continue
-      elif [[ -z $(find $base/.slots/$s -maxdepth 0 ! -newermt '10 seconds ago' 2>/dev/null) ]]; then continue
-      fi
-      # (Slots set aside so, another's, go after 10 min: their runs count no longer.)
-      find $base/.slots -maxdepth 1 -name '.aside-*' ! -newermt '10 minutes ago' -exec rm -rf {} + 2>/dev/null
-      if mv $base/.slots/$s $base/.slots/.aside-$s-$$ 2>/dev/null; then
-        touch $base/.slots/.aside-$s-$$  # (its 10 min counted from now: mv keeps the old mtime)
-        if [[ $(cat $base/.slots/.aside-$s-$$/owner 2>/dev/null) == "$held" ]]; then rm -rf $base/.slots/.aside-$s-$$
-        fi  # (another's, retaken meanwhile: left aside, as with a key's lock)
-      fi
+      free_stale_slot $base $s
     done
     if (( waited == 0 )) && [[ $key == publish ]]; then
       print "remote-tests: the test Mac's publish slot is taken ($(awk '{print $NF}' $base/.slots/0/owner 2>/dev/null)): waiting"
@@ -336,9 +349,12 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   touch $dir $dir/stamp
   # (The folder a run builds in, the same whichever key: its path is in rustc's incremental state.)
   local build=$base/.build/$slot
-  # (The capacity lowered: the build folders of the slots above it go, those not in use.)
+  # (The capacity lowered: the build folders of the slots above it go, those not in use; a slot
+  # whose run is gone freed first, as when one is taken.)
   for s in $base/.build/<1->(/N); do
-    (( ${s:t} > slots )) && drop_build $base $s "above the test Mac's $slots slots"
+    (( ${s:t} > slots )) || continue
+    [[ -d $base/.slots/${s:t} ]] && free_stale_slot $base ${s:t}
+    drop_build $base $s "above the test Mac's $slots slots"
   done
   make_room $base $key "$origin" "$live" $build
   into_build $dir/src $build/src || none "can't copy the tree into $build"
