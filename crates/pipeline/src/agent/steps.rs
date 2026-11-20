@@ -536,6 +536,7 @@ fn head_lines(step: &str, t: &str) -> Option<Vec<String>> {
 /// line of an input's identity. None while any of them can't be worked out, or for a step with no
 /// versions declared.
 pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<String>> {
+    let _d = store::keyread::deriving();
     let mut lines = head_lines(step, t)?;
     let mut reads: Vec<String> = Vec::new();
     for r in row(step)?.reads {
@@ -578,6 +579,7 @@ pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<St
 /// The reads of target `t` of `step` whose lines can't be worked out now (`key_lines` None), by
 /// what they read: what its scheme-2 key waits for.
 pub fn unknown_reads(step: &str, t: &str, x: &super::build::KeyCtx) -> Vec<String> {
+    let _d = store::keyread::deriving();
     let mut out = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         let (what, known) = match *r {

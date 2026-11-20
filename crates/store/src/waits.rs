@@ -354,8 +354,10 @@ fn wait(on: On) -> Guard {
     g
 }
 
-/// A NAS call in progress.
+/// A NAS call in progress (none while a key is derived: crate::keyread).
+#[track_caller]
 pub fn nas() -> Guard {
+    crate::keyread::check("the NAS");
     wait(On::Nas)
 }
 

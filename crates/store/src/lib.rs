@@ -11,6 +11,7 @@ pub mod catalogue;
 pub mod clock;
 pub mod deadline;
 pub mod iopool;
+pub mod keyread;
 pub mod map;
 pub mod mirror;
 pub mod naming;

@@ -316,6 +316,7 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
     };
     let reach = x.reach;
     each.par_iter().for_each(|(step, t)| {
+        let _d = store::keyread::deriving();
         let Some(u) = TileId::parse(t) else { return };
         let geo = match *step {
             "pois" => Some(clip_geo(cov, u)),
@@ -771,6 +772,7 @@ pub fn warm_lakes(x: &KeyCtx) {
         named("layers/terrain/hi/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
     let _ = tiles.memo("lake-depth:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
         each.par_iter().for_each(|t| {
+            let _d = store::keyread::deriving();
             lake_line(t, cov, m, tiles);
         });
         Ok(String::new())

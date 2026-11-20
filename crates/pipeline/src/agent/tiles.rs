@@ -507,6 +507,8 @@ impl TerrainTiles {
             return Ok(Some(r.clone()));
         }
         let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
+        // (By the content name its key read in the manifest: store::keyread's recorded read.)
+        let _r = store::keyread::recorded();
         let b = root.join(c).read().map_err(|e| Unread(format!("{c}: {e:#}")))?;
         Ok(buildstore::asked::Record::from_bytes(&b).ok().map(std::sync::Arc::new))
     }
@@ -519,6 +521,8 @@ impl TerrainTiles {
             return Some(None);
         }
         let root = self.root.as_ref()?;
+        // (By the content name its key read in the manifest: store::keyread's recorded read.)
+        let _r = store::keyread::recorded();
         buildstore::outlines::Outlines::open(&root.join(c))
             .map_err(|e| eprintln!("agent: the outlines {c} can't be read now ({e:#})"))
             .ok()

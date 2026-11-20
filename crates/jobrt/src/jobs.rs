@@ -9,8 +9,10 @@ use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Seconds since the epoch.
+/// Seconds since the epoch (never read while a key is derived: store::keyread).
+#[track_caller]
 pub fn now_s() -> u64 {
+    store::keyread::check("the clock");
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
