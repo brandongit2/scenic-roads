@@ -289,6 +289,11 @@ struct Judged {
 /// against the rest at a step or more lighter and heavier than any of them; readings with no use
 /// measured never judged.
 fn judge(seen: &[Seen], t: u64, k: &Tuning) -> Judged {
+    // (Judged against readings of the latest one's source alone, probe or listing: a listing's
+    // history, its stalls among it, says nothing of a probe's cadence.)
+    let src = seen.last().is_some_and(|x| x.apart);
+    let same: Vec<Seen> = seen.iter().filter(|x| x.apart == src).copied().collect();
+    let seen = &same[..];
     // (Answers taken apart: the counted Mac's own traffic is in `used` already, never undecidable.)
     let measured = || {
         seen.iter().filter_map(|x| Some((x.t, x.used?, if x.apart { 0 } else { x.own.unwrap_or(0) }, x.ratio, x.held)))
@@ -342,8 +347,9 @@ fn quartile(v: impl IntoIterator<Item = f64>, q: usize) -> Option<f64> {
 /// the weight in use, the pool's NAS use as measured but the counted Mac's (`Seen::used`) and the
 /// counted Mac's own (`Seen::own`), the room the next job waiting needs (`Sample::wants`), what it
 /// did
-/// (and why, where it held), the slow start's threshold after it, and until when a job beside
-/// nothing is held back (`Pace::lone`; None: it isn't).
+/// (and why, where it held), the slow start's threshold after it, until when a job beside
+/// nothing is held back (`Pace::lone`; None: it isn't), and the counted Mac's probe apart's ratio,
+/// judged or in shadow (`Answer::probe`, over the least probe floor; None: no probe answer).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Reading {
@@ -377,6 +383,8 @@ pub struct Reading {
     pub threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lone_until: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_ratio: Option<f64>,
 }
 
 /// Why a reading held the window (`Verdict::Held`): the first of `Pace::read`'s gates it failed.
@@ -431,7 +439,8 @@ impl Reading {
     /// (the counted Mac's, on its own ssh to the NAS and how often, or on its jobs' SMB session:
     /// `Answer::apart_s`; against
     /// those a step lighter, judged not the pool's, or undecidable) and disk load, its
-    /// verdict and why it held, and the lone way's hold.
+    /// verdict and why it held, the lone way's hold, and the counted Mac's probe apart (judged or
+    /// in shadow, `Answer::probe`, `Reading::probe_ratio`).
     pub fn line(&self, window: u32, now: u64) -> String {
         let th = self.threshold.map_or(String::new(), |t| format!(" (threshold {})", pct(t)));
         let mac = self.counted.as_ref().map_or("", |c| c.mac.as_str());
@@ -454,6 +463,21 @@ impl Reading {
             s => format!(" on {mac}'s own ssh to the NAS (every {s} s)"),
         });
         let ratio = self.ratio.map_or(String::new(), |x| format!(", answers{via} {x:.1}× their best{below}"));
+        // (The counted Mac's probe apart, judged or in shadow: its ratio and floor, its cadence,
+        // connections and answers past their deadline, or why it's down.)
+        let probe =
+            self.counted.as_ref().and_then(|c| c.probe.as_ref().map(|p| (c, p))).map_or(String::new(), |(c, p)| {
+                let role = if c.apart_s > 0 { "judged" } else { "in shadow" };
+                let said = match (self.probe_ratio, p.floor_ms, &p.down) {
+                    (_, _, Some(why)) => format!("down: {why}"),
+                    (Some(x), Some(f), None) => format!("{x:.1}× its best of {f:.1} ms"),
+                    _ => "no answer yet".to_string(),
+                };
+                format!(
+                    "; probe apart ({role}, every {} s, {} connections, {} past their deadline): {said}",
+                    p.every_s, p.connects, p.timeouts
+                )
+            });
         let load = self.load_pct.map_or(String::new(), |l| format!(", disks {l:.0} % busy"));
         let verdict = match self.verdict {
             Verdict::Grew => "grew".to_string(),
@@ -465,7 +489,7 @@ impl Reading {
             format!("; a job beside nothing held back {} min more", u.saturating_sub(now).div_ceil(60))
         });
         format!(
-            "NAS pacing: window {}{th}, {} in use{used}{wants}; last reading {} s ago{ratio}{load}: {verdict}{lone}",
+            "NAS pacing: window {}{th}, {} in use{used}{wants}; last reading {} s ago{ratio}{load}: {verdict}{lone}{probe}",
             pct(window),
             pct(self.in_use),
             now.saturating_sub(self.at)
@@ -477,10 +501,11 @@ impl Reading {
 /// and its floor (ms, its own: the least such mean over `Tuning::floor_s` on its link), whether it
 /// is at home (the floor's link: a Mac moved to Tailscale is another), whether its NAS calls
 /// missed their deadline lately, whether the reading is fresh (no older than its span and a
-/// beat, its floor not new on a new link: it may cut, never grow), and whether it was taken apart
+/// beat, its floor not new on a new link: it may cut, never grow), whether it was taken apart
 /// from its jobs' SMB session (`apart_s`: the cadence of the Mac's probe on an ssh of its own to
-/// the NAS, its floor that probe's, s; 0: its listings on the jobs' session, which its own jobs'
-/// traffic stalls).
+/// the NAS, its floor that probe's, s, when `Tuning::apart_judges`; 0: its listings on the jobs'
+/// session, which its own jobs' traffic stalls), and its probe apart as it stands, judged or in
+/// shadow (`probe`; None: off, or a Mac before task #1552).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Answer {
@@ -492,10 +517,30 @@ pub struct Answer {
     pub fresh: bool,
     #[serde(skip_serializing_if = "is_zero64")]
     pub apart_s: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<Apart>,
 }
 
 fn is_zero64(n: &u64) -> bool {
     *n == 0
+}
+
+/// A Mac's probe apart as it stands (agentcore::agent::apart, task #1552): its answer time and
+/// floor over the span as its listings' are read (ms; None: no answer in the span), its cadence
+/// (s), the connections it opened and the answers past their deadline since its agent started,
+/// and why it is down (None: answering).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Apart {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor_ms: Option<f64>,
+    pub every_s: u64,
+    pub connects: u64,
+    pub timeouts: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub down: Option<String>,
 }
 
 impl Answer {
@@ -610,10 +655,12 @@ pub struct Tuning {
     /// How many spans of its link's history a Mac's floor needs before it counts (measured within
     /// `floor_s`): younger, its answers may cut, never grow (agentcore::agent::live).
     pub young_spans: u64,
-    /// How often each Mac's probe on its own connection to the NAS answers (s; agentcore::agent::
-    /// apart), its answers then taken apart from its jobs' SMB session (`Answer::apart`); 0: no
-    /// probe, the answers the jobs' session's listings alone.
+    /// How often each Mac's probe on its own ssh to the NAS answers (s; agentcore::agent::apart);
+    /// 0: no probe.
     pub apart_s: u64,
+    /// Whether the window judges the probes' answers (`Answer::apart_s`); false, in shadow: they
+    /// are recorded and shown (`Answer::probe`), the window judging the jobs' session's listings.
+    pub apart_judges: bool,
 }
 
 /// How often the lead reads the pacing, by default (s).
@@ -686,6 +733,7 @@ impl Default for Tuning {
             lone_most_s: LONE_MOST_S,
             young_spans: YOUNG_SPANS,
             apart_s: APART_S,
+            apart_judges: false,
         }
     }
 }
@@ -695,7 +743,7 @@ pub type Knob = crate::settings::Knob<Tuning>;
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.
-pub const KNOBS: [Knob; 15] = [
+pub const KNOBS: [Knob; 16] = [
     Knob {
         name: "nas-step",
         what: "the window's step a growth cadence, and its least; answers are judged against those this much lighter or heavier in measured use",
@@ -824,12 +872,21 @@ pub const KNOBS: [Knob; 15] = [
     },
     Knob {
         name: "nas-apart-seconds",
-        what: "each Mac's probe on its own connection to the NAS answers this often, its answers then apart from its jobs' SMB session (0: no probe)",
+        what: "each Mac's probe on its own ssh to the NAS (a 4 KB read past its cache) answers this often (0: no probe)",
         unit: "s",
         least: 0.0,
         most: 60.0,
         get: |k| k.apart_s as f64,
         set: |k, v| k.apart_s = v as u64,
+    },
+    Knob {
+        name: "nas-apart-judges",
+        what: "1: the window judges the probes' answers apart from the jobs' SMB session; 0 (in shadow): they're recorded and shown, the window judges the jobs' session's listings",
+        unit: "",
+        least: 0.0,
+        most: 1.0,
+        get: |k| f64::from(u8::from(k.apart_judges)),
+        set: |k, v| k.apart_judges = v >= 0.5,
     },
 ];
 
@@ -913,12 +970,32 @@ impl Pace {
                 None => each.push(a),
             }
         }
-        let least = each.iter().filter(|a| a.floor_ms > 0.0).map(|a| a.floor_ms).fold(f64::INFINITY, f64::min);
-        each.sort_by(|a, b| b.ratio(least).total_cmp(&a.ratio(least)));
+        // (Each over the least floor among the answers of its own source, probe or listing: a
+        // listing's 2 ms never divides a probe's excess.)
+        let least_of = |apart: bool| {
+            each.iter()
+                .filter(|a| a.floor_ms > 0.0 && (a.apart_s > 0) == apart)
+                .map(|a| a.floor_ms)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let (least_listed, least_apart) = (least_of(false), least_of(true));
+        let ratio_of = |a: &Answer| a.ratio(if a.apart_s > 0 { least_apart } else { least_listed });
+        each.sort_by(|a, b| ratio_of(b).total_cmp(&ratio_of(a)));
         // (A Mac at home missing its deadlines: past the knee whatever its rank.)
         let home_missed = each.iter().find(|a| a.home && a.missed).copied();
         let counted = home_missed.or(each.get(usize::from(each.len() >= 2)).copied()).cloned();
-        let ratio = counted.as_ref().map(|a| a.ratio(least));
+        let ratio = counted.as_ref().map(ratio_of);
+        // (The counted Mac's probe apart, judged or in shadow: over the least probe floor among
+        // the Macs' probes.)
+        let probe_least = s
+            .answers
+            .iter()
+            .filter_map(|a| a.probe.as_ref()?.floor_ms.filter(|f| *f > 0.0))
+            .fold(f64::INFINITY, f64::min);
+        let probe_ratio = counted.as_ref().and_then(|c| {
+            let p = c.probe.as_ref()?;
+            Some((1.0 + (p.ms? - p.floor_ms?).max(0.0) / probe_least).min(RATIO_MOST))
+        });
         let fresh = !s.blind && each.iter().all(|a| a.fresh);
         // (The pool's use the answers are judged beside: what the Macs' jobs move on the NAS as
         // measured, the counted Mac's own apart; judged with the rest where its answers were taken
@@ -968,7 +1045,7 @@ impl Pace {
         // (The knee: this reading's answers past it, or the last span's, their lower quartile;
         // unless a growth cadence of them is judged not the pool's doing, the disks read.)
         let outside = j.outside && j.done && self.load.is_some();
-        let span = seen.iter().filter(|x| x.t + k.span_s > t).map(|x| x.ratio);
+        let span = seen.iter().filter(|x| x.t + k.span_s > t && x.apart == apart).map(|x| x.ratio);
         let knee = !outside && (ratio.is_some_and(|r| r > k.slow) || quartile(span, 1).is_some_and(|q| q > k.slow));
         // (Room for a job of weight `w`: the disks' busy share smoothed and its weight, a share of
         // the NAS as probed, within the target (a reading at the target or over is congested); the
@@ -1078,6 +1155,7 @@ impl Pace {
             verdict,
             threshold,
             lone_until,
+            probe_ratio,
         });
         verdict
     }
@@ -1631,7 +1709,7 @@ mod tests {
 
     /// A Mac's answers: `ms` over its floor `floor`, at home, fresh.
     fn ans(mac: &str, ms: f64, floor: f64) -> Answer {
-        Answer { mac: mac.into(), home: true, ms, floor_ms: floor, missed: false, fresh: true, apart_s: 0 }
+        Answer { mac: mac.into(), home: true, ms, floor_ms: floor, missed: false, fresh: true, apart_s: 0, probe: None }
     }
 
     /// The disks quiet: 2 % busy.
@@ -2043,6 +2121,90 @@ mod tests {
         let r = p.last.as_ref().unwrap();
         assert!(r.undecided, "{r:?}");
         assert!(r.line(p.window(), t).contains("answers on m6's jobs' SMB session"), "{}", r.line(p.window(), t));
+    }
+
+    /// Task #1552's review (B1): a probe's excess is over the least probe floor, never a listing's:
+    /// the mini's probe at 10 ms (floor 6) is 1.67 times its best beside the M4's listings (floor 2
+    /// ms), not 3.0; at 31.7 ms, 5.3, not 13.9.
+    #[test]
+    fn a_probes_ratio_is_over_the_least_probe_floor() {
+        for (ms, want) in [(10.0, 1.0 + 4.0 / 6.0), (31.7, 1.0 + 25.7 / 6.0)] {
+            let answers = [
+                Answer { apart_s: 5, ..ans("m6", ms, 6.0) },
+                ans("m4", 2.0, 2.0),
+                // (The highest, so the mini's counts.)
+                ans("m1", 80.0, 2.0),
+            ];
+            let mut p = Pace::default();
+            sample(&mut p, 10, &answers, &QUIET, 50, &jobs(0), None);
+            let r = p.last.as_ref().unwrap();
+            assert_eq!(r.counted.as_ref().map(|c| c.mac.as_str()), Some("m6"));
+            assert!((r.ratio.unwrap() - want).abs() < 1e-9, "{ms} ms: {:?} against {want}", r.ratio);
+        }
+    }
+
+    /// Task #1552's review (B1): the answers are judged against readings of their own source. Five
+    /// minutes of stalled listings (20 times their best at a use of 30), then the mini's probe at
+    /// a use of 30 (1.2 times) and at 300 (10 times): judged against the probe's own lighter
+    /// readings, rising, cut; against the listings' (all 20), it would hold as slow, never cut.
+    #[test]
+    fn the_answers_are_judged_against_their_own_sources_readings() {
+        let k = Tuning { apart_judges: true, ..Tuning::default() };
+        let (mut p, mut t) = (Pace::default(), 0);
+        let mut v = Vec::new();
+        for i in 0..72 {
+            t += READ_EVERY_S;
+            let (a, used) = match i {
+                0..30 => (ans("m6", 40.0, 2.0), 30),
+                30..48 => (Answer { apart_s: 5, ..ans("m6", 7.2, 6.0) }, 30),
+                _ => (Answer { apart_s: 5, ..ans("m6", 60.0, 6.0) }, 300),
+            };
+            let moving = [("m6".to_string(), used)];
+            let s = Sample {
+                t,
+                answers: &[a],
+                blind: false,
+                busy: Some(&QUIET),
+                pct: 85,
+                in_use: 300,
+                moving: &moving,
+                wants: Some(100),
+            };
+            v.push(p.read(&s, &k));
+        }
+        assert!(v[48..].contains(&Verdict::Cut), "{v:?}");
+    }
+
+    /// Task #1552: in shadow (`nas-apart-judges` off, the answers on the jobs' session, the probe's
+    /// figures beside them), the window does as it does without a probe: the same verdicts and
+    /// windows, reading by reading; the probe's ratio said.
+    #[test]
+    fn a_probe_in_shadow_changes_nothing_judged() {
+        let run = |probe: bool| {
+            let (mut p, mut t) = (Pace::default(), 0);
+            let mut v = Vec::new();
+            for i in 0..90 {
+                t += READ_EVERY_S;
+                let ms = if i < 30 { 2.0 } else { 40.0 };
+                let shadow =
+                    Apart { ms: Some(6.0 + f64::from(i)), floor_ms: Some(6.0), every_s: 5, ..Default::default() };
+                let a = Answer { probe: probe.then_some(shadow), ..ans("m6", ms, 2.0) };
+                let moving = [("m6".to_string(), if i < 30 { 30 } else { 300 })];
+                v.push((sample(&mut p, t, &[a], &[39.0], 300, &moving, Some(100)), p.window()));
+            }
+            (v, p.last.unwrap())
+        };
+        let ((with, r), (without, _)) = (run(true), run(false));
+        assert_eq!(with, without);
+        assert_eq!(r.probe_ratio, Some(1.0 + 89.0 / 6.0));
+        let line = r.line(300, r.at);
+        assert!(
+            line.contains(
+                "; probe apart (in shadow, every 5 s, 0 connections, 0 past their deadline): 15.8× its best of 6.0 ms"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("answers on m6's jobs' SMB session"), "{line}");
     }
 
     /// Task #1506's review: no dead band between rising and not the pool's left a cadence a hair
@@ -2917,6 +3079,7 @@ mod tests {
                                 missed,
                                 fresh: true,
                                 apart_s: 0,
+                                probe: None,
                             };
                             said[i] = Some((t, a));
                         }

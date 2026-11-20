@@ -21,10 +21,10 @@ const EVERY_MS = 1500;
 const LOOP_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "nas_files_s", "nas_creates_s", "net_req_s", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
   "mem_free_pct", "mem_avail_gb", "mem_compressible_gb", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
-  "build_cores_max", "mem_floor_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
+  "build_cores_max", "mem_floor_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_apart_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
   "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "pool_nas_stats_s",
-  "pool_nas_calls", "pool_nas_missed", "pool_nas_held_cap", "nas_disk_busy_pct", "pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x"];
+  "pool_nas_calls", "pool_nas_missed", "pool_nas_held_cap", "nas_disk_busy_pct", "pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x", "pool_nas_apart_x"];
 
 let cfg = null;
 // Per host: {series, step, now, mac, at (ms), error, asking, url (the address that answered)}.

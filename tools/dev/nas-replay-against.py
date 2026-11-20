@@ -13,7 +13,8 @@
       as main to 6e92eb8bf) is given the replay without it, its `Reading` without `outside`,
       `undecided` and `own` (taken as false); a burst without `disks` is given it; an `Answer`
       without `apart_s` (main before task #1552) is given the answers on the jobs'
-      session alone, its cases with the answers apart then the same as without. The folder is
+      session alone, its cases with the answers apart then the same as without (what's asserted
+      of the answers apart, and the cliff's bound, not asked of it). The folder is
       deleted after (--keep: made there and kept).
       Exit: the run's.
 """
@@ -53,7 +54,17 @@ def graft(theirs, ours):
                      ("|l| l.undecided", "|_| false"), ("|l| l.own.is_some_and(|o| o >= k.step)", "|_| false")]:
             block = block.replace(x, y)
     if "pub apart_s:" not in theirs:
-        block = block.replace("apart_s: if apart { APART_S } else { 0 }, ", "")
+        x = "                        apart_s: if apart { APART_S } else { 0 },\n"
+        assert block.count(x) == 1, x
+        block = block.replace(x, "")
+        # (Its rows with the answers apart are its rows on the jobs' session: what's asserted of
+        # the answers apart isn't asked of it, so every row prints.)
+        for x in ['        assert_eq!(a.undecided, 0, "every Mac\'s answers apart: none undecidable");\n',
+                  '        assert!(floor(&a) <= floor(&r), "at the floor {} readings, against {}", floor(&a), floor(&r));\n',
+                  '            assert!(!apart || r.undecided == 0, "{name}: {} readings undecidable", r.undecided);\n',
+                  '            assert!(r.cliff <= 6, "{name}: {} readings at the cliff", r.cliff);\n']:
+            assert block.count(x) == 1, x
+            block = block.replace(x, "")
     if "disks: Option<f64>" not in theirs:
         for x, y in DISKS:
             assert theirs.count(x) == 1, x

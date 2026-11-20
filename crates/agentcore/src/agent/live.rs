@@ -192,8 +192,9 @@ pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
 /// The pacing of the pool's NAS work on the lead, every 10 s (`record_pace`; task #1417,
 /// jobrt::budget::nas::Pace): its window and the weight the pool's leased jobs hold (% of the NAS
 /// as probed), and the counted Mac's ratio (one more than its excess over the least floor: a Mac
-/// missing its deadlines at jobrt::budget::nas::RATIO_MOST).
-pub const POOL_PACE: [&str; 3] = ["pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x"];
+/// missing its deadlines at jobrt::budget::nas::RATIO_MOST), and its probe apart's, judged or in
+/// shadow (jobrt::budget::nas::Reading::probe_ratio, task #1552).
+pub const POOL_PACE: [&str; 4] = ["pool_nas_window_pct", "pool_nas_used_pct", "pool_nas_answer_x", "pool_nas_apart_x"];
 
 /// The NAS files kept for the file stream (the newest).
 pub const FILES: usize = 200;
@@ -383,12 +384,14 @@ pub struct Store {
 }
 
 /// The NAS as the agent reaches it (`Store::root`): its root (None: away), the link and since
-/// when (`Store::set_link`; None: not said yet), and why the probe apart is down (None:
-/// answering, or off; crate::agent::apart).
+/// when (`Store::set_link`; None: not said yet), and the probe apart's connections opened, its
+/// answers past their deadline, and why it is down (None: answering, or off; crate::agent::apart).
 #[derive(Default)]
 struct Reach {
     root: Option<store::nasfs::NasRoot>,
     links: Vec<Stint>,
+    apart_connects: u64,
+    apart_timeouts: u64,
     apart_down: Option<String>,
 }
 
@@ -442,7 +445,7 @@ impl Store {
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
-            root: Mutex::new(Reach { root: None, links, apart_down: None }),
+            root: Mutex::new(Reach { root: None, links, ..Default::default() }),
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
@@ -486,10 +489,15 @@ impl Store {
     /// a new link under load would read the load as its best). None: no listing over the span but
     /// the cache's. Of the series `name`: `NAS_MS`, the listings on the jobs' session, or
     /// `NAS_APART_MS`, the probe apart's answers (over its cadence where that's longer than the
-    /// span).
+    /// span). A span counts toward the floor when its points leave no gap longer than the series'
+    /// cadence (`NAS_EVERY`, `Tuning::apart_s`) from its start on (for the listings, every bucket
+    /// of the span: a probe 15 s apart fills two buckets of three), and each bucket stands for
+    /// that cadence's buckets in the young test.
     pub fn nas_answers(&self, name: &str, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
         use jobrt::budget::nas::answer_of;
-        let span_s = if name == NAS_APART_MS { k.span_s.max(k.apart_s) } else { k.span_s };
+        let apart = name == NAS_APART_MS;
+        let span_s = if apart { k.span_s.max(k.apart_s) } else { k.span_s };
+        let every = if apart { k.apart_s } else { NAS_EVERY.as_secs() };
         let k = &jobrt::budget::nas::Tuning { span_s, ..*k };
         let from = now.saturating_sub(k.floor_s);
         let spans: Vec<(u64, u64)> = {
@@ -506,7 +514,9 @@ impl Store {
             }
         };
         let (step, _) = TIERS[1];
-        let m = (k.span_s / step).max(1) as usize;
+        let m = (k.span_s / step).max(1);
+        // (The most buckets from one point to the next: 1 for listings every 5 s.)
+        let gap = every.div_ceil(step).max(1);
         let s = self.series.lock().ok()?;
         let series = s.get(name)?;
         let ms = answer_of(
@@ -516,12 +526,27 @@ impl Store {
         let (mut least, mut measured) = (ms, 0u64);
         for (a, b) in spans {
             let b = series.buckets(1, a, b);
-            measured += b.len() as u64;
-            least = b
-                .windows(m)
-                .filter(|w| w[m - 1].slot - w[0].slot == m as u64 - 1)
-                .filter_map(|w| answer_of(w.iter().flat_map(samples_of), k.cached_ms))
-                .fold(least, f64::min);
+            measured += b.len() as u64 * gap;
+            let mut first = 0;
+            for (i, end) in b.iter().enumerate() {
+                // (The span ending at this bucket: those of its `m` slots, each within `gap` of
+                // the one before, the first of the span's own start.)
+                let start = (end.slot + 1).saturating_sub(m);
+                while b[first].slot < start {
+                    first += 1;
+                }
+                let w = &b[first..=i];
+                let mut prev = start.wrapping_sub(1);
+                let whole = end.slot + 1 >= m
+                    && w.iter().all(|x| {
+                        let ok = x.slot.wrapping_sub(prev) <= gap;
+                        prev = x.slot;
+                        ok
+                    });
+                if let Some(x) = whole.then(|| answer_of(w.iter().flat_map(samples_of), k.cached_ms)).flatten() {
+                    least = least.min(x);
+                }
+            }
         }
         let young = measured * step < k.young_spans * k.span_s;
         Some((ms, least.max(store::aimd::NAS_LEAST.as_secs_f64() * 1000.0), young))
@@ -531,21 +556,33 @@ impl Store {
     /// `nas_at`), its jobs' NAS traffic over the same span (`nas_traffic`: each `NAS_TRAFFIC`
     /// series' mean over `k.span_s`; None while one has no point in it) and NAS calls at `now` as
     /// this store has them (`nas_answers`, `calls_now`): a member's beat sets them as it goes, the
-    /// lead's prober its own Mac's as it reads. The answers are the probe apart's while it is on
-    /// (`Tuning::apart_s`) and has answered over the span (`nas_apart_s` its cadence), else the
-    /// jobs' session's listings, today's, with why the probe isn't answering (`nas_apart_down`).
-    /// The cadence is kept for the NAS thread (`spawn`).
+    /// lead's prober its own Mac's as it reads. The answers judged are the probe apart's while it
+    /// is on (`Tuning::apart_s`), judges (`Tuning::apart_judges`) and has answered over the span
+    /// (`nas_apart_s` its cadence), else the jobs' session's listings; the probe as it stands
+    /// either way (`nas_apart`: its answer and floor, cadence, connections and answers past their
+    /// deadline, and why it is down while it has no answer in the span; None: off). The cadence
+    /// is kept for the NAS thread (`spawn`).
     pub fn answer_in(&self, cap: &mut crate::coord::Capacity, now: u64, k: &jobrt::budget::nas::Tuning) {
         self.apart_s.store(k.apart_s, Ordering::Relaxed);
-        let apart = (k.apart_s > 0).then(|| self.nas_answers(NAS_APART_MS, now, k)).flatten();
-        let a = apart.or_else(|| self.nas_answers(NAS_MS, now, k));
+        let probe = (k.apart_s > 0).then(|| self.nas_answers(NAS_APART_MS, now, k)).flatten();
+        let judged = probe.filter(|_| k.apart_judges);
+        let a = judged.or_else(|| self.nas_answers(NAS_MS, now, k));
         (cap.nas_ms, cap.nas_floor_ms) = (a.map(|a| a.0), a.map(|a| a.1));
         cap.nas_young = a.is_some_and(|a| a.2);
-        cap.nas_apart_s = if apart.is_some() { k.apart_s } else { 0 };
-        cap.nas_apart_down = match apart {
-            None if k.apart_s > 0 => self.root.lock().ok().and_then(|r| r.apart_down.clone()),
-            _ => None,
-        };
+        cap.nas_apart_s = if judged.is_some() { k.apart_s } else { 0 };
+        cap.nas_apart = (k.apart_s > 0).then(|| {
+            let r = self.root.lock();
+            let (connects, timeouts, down) =
+                r.as_ref().map_or((0, 0, None), |r| (r.apart_connects, r.apart_timeouts, r.apart_down.clone()));
+            jobrt::budget::nas::Apart {
+                ms: probe.map(|p| p.0),
+                floor_ms: probe.map(|p| p.1),
+                every_s: k.apart_s,
+                connects,
+                timeouts,
+                down: down.filter(|_| probe.is_none()),
+            }
+        });
         cap.nas_at = now;
         cap.nas_calls = self.calls_now(now);
         let traffic: Option<Vec<f64>> = NAS_TRAFFIC.iter().map(|n| self.mean(n, now, k.span_s)).collect();
@@ -625,7 +662,8 @@ impl Store {
     }
 
     /// The pacing's reading at `t` (`POOL_PACE`): its window, the weight in use, and the counted
-    /// Mac's ratio where one was read (jobrt::budget::nas::Reading::ratio).
+    /// Mac's ratio and its probe apart's where read (jobrt::budget::nas::Reading::ratio,
+    /// `probe_ratio`).
     pub fn record_pace(&self, t: u64, p: &jobrt::budget::nas::Pace) {
         let pct = |w: u32| f64::from(w) / 10.0;
         self.record(POOL_PACE[0], t, pct(p.window()));
@@ -633,6 +671,9 @@ impl Store {
             self.record(POOL_PACE[1], t, pct(r.in_use));
             if let Some(x) = r.ratio {
                 self.record(POOL_PACE[2], t, x);
+            }
+            if let Some(x) = r.probe_ratio {
+                self.record(POOL_PACE[3], t, x);
             }
         }
     }
@@ -1060,12 +1101,19 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
         .name("live-nas-apart".into())
         .spawn(move || {
             let mut probe: Option<super::apart::Probe> = None;
+            // (The counts of the probes dropped: the status's are the agent's whole run's.)
+            let mut ended = (0u64, 0u64);
+            let fold_in = |p: Option<super::apart::Probe>, ended: &mut (u64, u64)| {
+                if let Some(p) = p {
+                    *ended = (ended.0 + p.connects, ended.1 + p.timeouts);
+                }
+            };
             loop {
                 let every = apart.apart_s.load(Ordering::Relaxed);
                 let root = apart.nas.lock().ok().and_then(|n| n.clone()).filter(|_| every > 0);
                 let down = match root.map(|r| store::nas::on_nas(&r.unchecked_path())) {
                     None => {
-                        probe = None;
+                        fold_in(probe.take(), &mut ended);
                         None
                     }
                     Some(None) => Some("the share isn't mounted".to_string()),
@@ -1073,19 +1121,21 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                         let cmd = super::apart::ssh_command(&dir);
                         let p = match probe.take() {
                             Some(p) if p.cmd() == cmd => probe.insert(p),
-                            _ => probe.insert(super::apart::Probe::new(cmd, buildstore::nasssh::SSH_START)),
-                        };
-                        match p.ask(super::nasread::DEADLINE) {
-                            Ok(d) => {
-                                apart.record(NAS_APART_MS, now_s(), d.as_secs_f64() * 1000.0);
-                                None
+                            other => {
+                                fold_in(other, &mut ended);
+                                probe.insert(super::apart::Probe::new(cmd, buildstore::nasssh::SSH_START))
                             }
-                            Err(why) => Some(why),
+                        };
+                        if let Ok(d) = p.ask(super::nasread::DEADLINE) {
+                            apart.record(NAS_APART_MS, now_s(), d.as_secs_f64() * 1000.0);
                         }
+                        p.down().map(str::to_string)
                     }
                 };
+                let now = probe.as_ref().map_or((0, 0), |p| (p.connects, p.timeouts));
                 if let Ok(mut r) = apart.root.lock() {
                     r.apart_down = down;
+                    (r.apart_connects, r.apart_timeouts) = (ended.0 + now.0, ended.1 + now.1);
                 }
                 std::thread::sleep(if every == 0 { NAS_EVERY } else { Duration::from_secs(every) });
             }
@@ -1753,11 +1803,14 @@ mod tests {
     }
 
     /// Task #1552: a Mac's answers for its lead are its probe's on its own ssh while it answers
-    /// (its cadence said, `nas_apart_s`), its floor that probe's; the probe down or off, its
-    /// listings on the jobs' session as before, and why it is down said (`nas_apart_down`).
+    /// and the pool's `nas-apart-judges` is on (its cadence said, `nas_apart_s`), its floor that
+    /// probe's; in shadow (the default) its listings on the jobs' session, the probe's figures
+    /// beside them (`nas_apart`); down or off, the listings, why it's down said only while it has
+    /// no answer in the span.
     #[test]
-    fn a_macs_answers_are_its_probe_aparts_while_it_answers() {
-        let k = jobrt::budget::nas::Tuning::default();
+    fn a_macs_answers_are_its_probe_aparts_while_it_answers_and_judges() {
+        let shadow = jobrt::budget::nas::Tuning::default();
+        let k = jobrt::budget::nas::Tuning { apart_judges: true, ..shadow };
         let s = Store::new(None, "m6");
         let t0 = 1_700_000_000;
         for i in 0..6 {
@@ -1765,24 +1818,69 @@ mod tests {
             s.record(NAS_MS, t0 + 5 * i, 300.0);
             s.record(NAS_APART_MS, t0 + 5 * i, 12.0);
         }
+        {
+            let mut r = s.root.lock().unwrap();
+            (r.apart_connects, r.apart_timeouts) = (2, 1);
+            // (A reason left from before its last answers: not said while it answers.)
+            r.apart_down = Some("an old one".into());
+        }
         let mut cap = crate::coord::Capacity::default();
         s.answer_in(&mut cap, t0 + 29, &k);
         assert_eq!((cap.nas_ms, cap.nas_floor_ms, cap.nas_apart_s), (Some(12.0), Some(12.0), 5));
-        assert_eq!(cap.nas_apart_down, None);
+        let probe = jobrt::budget::nas::Apart {
+            ms: Some(12.0),
+            floor_ms: Some(12.0),
+            every_s: 5,
+            connects: 2,
+            timeouts: 1,
+            down: None,
+        };
+        assert_eq!(cap.nas_apart.as_ref(), Some(&probe));
         assert_eq!(s.apart_s.load(Ordering::Relaxed), 5, "the cadence kept for the NAS thread");
-        // (Off: the jobs' session's, nothing said down.)
+        // (In shadow: the listings judged, the probe's figures beside them.)
+        s.answer_in(&mut cap, t0 + 29, &shadow);
+        assert_eq!((cap.nas_ms, cap.nas_apart_s), (Some(300.0), 0));
+        assert_eq!(cap.nas_apart.as_ref(), Some(&probe));
+        // (Off: the listings, no probe said.)
         let off = jobrt::budget::nas::Tuning { apart_s: 0, ..k };
         s.answer_in(&mut cap, t0 + 29, &off);
-        assert_eq!((cap.nas_ms, cap.nas_apart_s, cap.nas_apart_down.as_deref()), (Some(300.0), 0, None));
+        assert_eq!((cap.nas_ms, cap.nas_apart_s, cap.nas_apart.as_ref()), (Some(300.0), 0, None));
         assert_eq!(s.apart_s.load(Ordering::Relaxed), 0);
-        // (Down: none of its answers in the span; the jobs' session's, and why.)
+        // (Down: none of its answers in the span; the listings, and why.)
         s.root.lock().unwrap().apart_down = Some("its connection ended".into());
         for i in 0..6 {
             s.record(NAS_MS, t0 + 60 + 5 * i, 250.0);
         }
         s.answer_in(&mut cap, t0 + 89, &k);
         assert_eq!((cap.nas_ms, cap.nas_apart_s), (Some(250.0), 0));
-        assert_eq!(cap.nas_apart_down.as_deref(), Some("its connection ended"));
+        let p = cap.nas_apart.unwrap();
+        assert_eq!((p.ms, p.down.as_deref()), (None, Some("its connection ended")));
+    }
+
+    /// Task #1552's review: a probe answering less often than the 10-s ring's buckets (15 s
+    /// apart: two buckets of three) still has a floor, the least of its spans; one answering
+    /// every minute, over a span its cadence long, an answer at all.
+    #[test]
+    fn a_sparse_probes_floor_is_its_spans_least() {
+        let k = jobrt::budget::nas::Tuning { apart_s: 15, ..Default::default() };
+        let s = Store::new(None, "m6");
+        let t0 = 1_700_000_000;
+        // (Ten minutes at 6 ms, then a minute at 30 ms.)
+        for i in 0..44 {
+            s.record(NAS_APART_MS, t0 + 15 * i, if i < 40 { 6.0 } else { 30.0 });
+        }
+        let now = t0 + 15 * 43 + 1;
+        assert_eq!(s.nas_answers(NAS_APART_MS, now, &k), Some((30.0, 6.0, false)), "its spans' least, not its answer");
+        let minute = jobrt::budget::nas::Tuning { apart_s: 60, ..Default::default() };
+        let s = Store::new(None, "m6");
+        for i in 0..5 {
+            s.record(NAS_APART_MS, t0 + 60 * i, 8.0);
+        }
+        assert_eq!(
+            s.nas_answers(NAS_APART_MS, t0 + 4 * 60 + 50, &minute).map(|a| a.0),
+            Some(8.0),
+            "over its cadence: an answer 50 s back"
+        );
     }
 
     #[test]

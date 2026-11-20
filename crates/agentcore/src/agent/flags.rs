@@ -93,11 +93,12 @@
 //!   by the old code's runs; or their inputs moved as much. A flag per step and side: how many targets,
 //!   the one off the most with both peaks, and the Mac of its run. Flagged until the version is
 //!   raised (its costs then of an older way) or those targets run again alike.
-//! - **NAS apart** (`nas-apart`): a Mac whose NAS answers for the lead's pacing are its listings on
-//!   its jobs' SMB session because its probe on its own ssh to the NAS is down
-//!   (crate::coord::Capacity::nas_apart_down, crate::agent::apart), with why: its own jobs'
-//!   traffic then leaves its answers undecidable (docs/pool.md §7.7). Flagged until the probe
-//!   answers again, or the pool's `nas-apart-seconds` is set to 0 (off: no flag).
+//! - **NAS apart** (`nas-apart`): a Mac answering the lead's pacing whose probe on its own ssh to
+//!   the NAS is down (crate::coord::Capacity::nas_apart's `down`, crate::agent::apart), with why
+//!   (its key's agent not answering among the causes): its probe's figures are missing, and with
+//!   the pool's `nas-apart-judges` on its answers are its listings on its jobs' SMB session,
+//!   undecidable while its own jobs move (docs/pool.md §7.7). Flagged until the probe answers
+//!   again, or the pool's `nas-apart-seconds` is set to 0 (off: no flag).
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -224,19 +225,19 @@ pub fn of(
     v
 }
 
-/// The NAS-apart flags (the module's doc): a Mac answering the NAS's pacing from its jobs' SMB
-/// session because its probe on its own ssh is down (crate::coord::Capacity::nas_apart_down).
+/// The NAS-apart flags (the module's doc): a Mac answering the NAS's pacing whose probe on its own
+/// ssh is down (crate::coord::Capacity::nas_apart's `down`).
 pub fn apart(st: &Status) -> Vec<Flag> {
     st.capacity
         .iter()
         .filter_map(|(n, c)| {
-            let why = c.nas_apart_down.as_deref().filter(|_| c.nas_ms.is_some())?;
+            let why = c.nas_apart.as_ref()?.down.as_deref().filter(|_| c.nas_ms.is_some())?;
             let mac = crate::paces::mac_of(n);
             Some(Flag {
                 kind: "nas-apart".into(),
                 mac: mac.to_string(),
                 said: format!(
-                    "{mac}'s NAS answers are its listings on its jobs' SMB session: its probe on its own ssh to the NAS is down ({why}), so while its own jobs move a step or more the pacing can't tell their stalls from the NAS's (undecidable)"
+                    "{mac}'s probe on its own ssh to the NAS is down ({why}): its figures are missing, and with nas-apart-judges on its answers are its listings on its jobs' SMB session, undecidable while its own jobs move a step or more"
                 ),
             })
         })
@@ -710,16 +711,18 @@ mod tests {
         assert!(f[0].said.contains("cores: 0 of 8 left"), "{}", f[0].said);
     }
 
-    /// Task #1552: a Mac answering from its jobs' session because its probe apart is down is
-    /// flagged with why; one answering apart, off, or not answering at all isn't.
+    /// Task #1552: a Mac answering whose probe apart is down is flagged with why; one whose probe
+    /// answers, is off, or a Mac not answering at all isn't.
     #[test]
     fn a_mac_whose_probe_apart_is_down_is_flagged() {
         use crate::coord::Capacity;
+        use jobrt::budget::nas::Apart;
         let mut st = lead();
-        let down =
-            Capacity { nas_ms: Some(80.0), nas_apart_down: Some("its connection ended".into()), ..Default::default() };
-        let answering = Capacity { nas_ms: Some(12.0), nas_apart_s: 5, ..Default::default() };
-        let quiet = Capacity { nas_apart_down: Some("its connection ended".into()), ..Default::default() };
+        let gone = || Some(Apart { every_s: 5, down: Some("its connection ended".into()), ..Default::default() });
+        let down = Capacity { nas_ms: Some(80.0), nas_apart: gone(), ..Default::default() };
+        let probe = Some(Apart { ms: Some(12.0), floor_ms: Some(6.0), every_s: 5, ..Default::default() });
+        let answering = Capacity { nas_ms: Some(12.0), nas_apart: probe, ..Default::default() };
+        let quiet = Capacity { nas_apart: gone(), ..Default::default() };
         st.capacity = vec![("m6".into(), down), ("m4".into(), answering), ("m1".into(), quiet)];
         let f = apart(&st);
         assert_eq!(f.len(), 1, "{f:?}");
