@@ -829,15 +829,22 @@ thousandths:
   under 25 thousandths. A job's weight is its heaviest target's rate, held for its whole run, so
   the answers are judged, as TCP Vegas judges its round trips, against **what the pool's jobs move
   on the NAS as measured** (each Mac's jobs' traffic over the answers' span, carried on its beats,
-  weighed as a job is, `coord::pool_moving`), all but the counted Mac's own: its own jobs' traffic
-  stalls its answers on its own link (the probe waiting out 40-ms delayed acknowledgements on its
-  SMB session) whatever the NAS's load. Each ratio is kept with the use it was read beside for
-  `nas-track-minutes`; a growth cadence's (a minute) are judged against those a step lighter and a
-  step heavier. They are **rising** while their lower quartile is past the upper quartile of those
-  a step lighter, and **not the pool's** while they aren't rising and the use is under a step, or
-  answers a step lighter were read, or those a step heavier were no slower. Not the pool's, slow
-  answers neither cut the window nor hold it at the knee; nothing measured, they hold it, never
-  cut it.
+  weighed as a job is, `coord::pool_moving`), the counted Mac's own apart: its own jobs' traffic
+  stalls its answers on its own link (the probe waiting out 40-ms delayed acknowledgements on the
+  jobs' SMB session) whatever the NAS's load, so they're judged against the others'. Each ratio is
+  kept with the uses it was read beside for `nas-track-minutes`; a growth cadence's (a minute) are
+  judged against those a step lighter and a step heavier.
+  - While the counted Mac's own jobs move a step or more, its answers can't tell the NAS from its
+    link: **undecidable**. They never cut the window and never let it grow past the knee, and
+    while they rise against those a step lighter in all the pool moves (its own too) it doesn't
+    grow at all. (On 19 and 20 Nov, 30 % of the readings, nearly all the mini's.)
+  - Otherwise they are **rising** while their lower quartile is past the upper quartile of those a
+    step lighter, and **not the pool's** while all the pool's jobs move under a step, or their
+    median is within the upper quartile of those a step lighter, or those a step heavier were no
+    slower. Between the two (the lower quartile past, the median not; a cadence is some three
+    spans), neither: past the knee, held.
+  - Not the pool's, slow answers neither cut the window nor hold it at the knee, but only with the
+    disks read; nothing measured, they hold it, never cut it.
 - **The window**: **congested** (the disks over the target; the counted Mac missing its deadlines;
   or the answers rising, past 3 times their best, `nas-slow`), it drops at once to half the weight
   in use (`nas-decrease`), never under a step, and nothing paced starts until enough jobs end; no
@@ -892,11 +899,22 @@ thousandths:
   cases: outside loads, restarts, a slow link, lone jobs): held to a fixed whole, a burst sat at the
   cliff 1,475 s of 1,500; paced, never past the knee. **Replayed** on the lead's readings of 19 Nov
   12:22Z to 20 Nov 08:29Z (`the_readings_of_19_and_20_nov_let_work_go_and_cut_at_the_pools_load`,
-  `nas_readings.csv`), closed on the jobs it lets go: as the readings were, the window's median
-  250 thousandths, at its floor 148 readings of 5,400 (judged against the weight, task #1417's
-  rule: 146 and 215); with jobs of 100 waiting it starts 920 (730), of 250 382 (348), the NAS at
-  the model's cliff never two readings in a row. **Assumed:** a job adds to the disks' busy share
-  what a thousandth of measured use added over those readings (0.046 %).
+  `nas_readings.csv`; the windows recorded were #1417's rule's to 19 Nov 23:06Z, then
+  20261119-2306's), closed on the jobs it lets go, beside the rule judging against the weight (main
+  at 6e92eb8bf) on the same readings and model:
+
+  | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
+  |---|---|---|---|---|---|
+  | the readings as they were | – | 268 (146) | 185 (215) | 26 (26) | 0 (0) |
+  | jobs of 100, on a Mac not answering | 991 (685) | 428 (315) | 8 (63) | 94, 13 (41, 4) | 12, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 471 (342) | 554 (416) | 95 (81) | 109, 8 (76, 7) | 20, 2 (6, 1) |
+  | jobs of 100, on the mini | 1,139 (685) | 493 (315) | 70 (63) | 103, 9 (41, 4) | 13, 1 (6, 1) |
+  | jobs of 250, on the mini | 520 (342) | 589 (416) | 51 (81) | 123, 7 (76, 7) | 18, 2 (6, 1) |
+
+  It never grows past the knee where the jobs it let go slowed the answers past it on their own.
+  It runs more work and so holds the NAS busier: at the disks' target and at the model's cliff
+  (outside spikes on top of the pool's load) about twice as often. **Assumed:** a job adds to the
+  disks' busy share what a thousandth of measured use added over those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and
