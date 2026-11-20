@@ -154,7 +154,7 @@ folders. The map's server writes nothing on the NAS.
 lead queues each file as it stops being held, and the `gc` job removes what's due, a chunk at a
 time. The job is the lead's own (`LEAD_ONLY`), planned whenever GC's queue has a chunk for it or one
 of its sweeps is due (`Planner::gc_work`), and run when the NAS is quiet: only beside leased jobs
-that leave its measured weight room (pool.md §7.2, `Limits::fits_quiet`; unmeasured the way it runs
+that leave its measured weight room (pool.md §7.7, `Limits::fits_quiet`; unmeasured the way it runs
 now, weighing the whole NAS beside no job weighing the whole, as the lead's own unmeasured NAS steps
 go, so its first run measures it), or, held back 24 hours, as an aged job of the lead's own
 (`QUIET_AGE`); running, it yields at its next safe point (between
