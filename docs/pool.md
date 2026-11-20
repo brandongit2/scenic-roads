@@ -367,11 +367,23 @@ it. Other steps keep their starting grant.
     a quarter of its minute or more is never grown: more threads would wait with it.
   - **Threads left idle** (under half busy, `threads::IDLE`): cut to those that keep it busy at
     0.9, plus one to overlap its waits.
+  - **The next thread pays while nothing waits** (task #1472): busy short of 0.9 a thread (a
+    wave's tail, a dry queue), grown one thread at a time while nothing waits for the Mac's cores
+    (its last ask, within the minute, was offered no work at all: `sched::Rule::offers_none`, the
+    lead's own ask's refusal or a member's 202 saying `nothing_here`), it waits under a quarter of
+    its minute, a core and the memory are free, and one thread more pays: its step's jobs on this
+    Mac kept more cores busy on one thread more than on these by more than that difference's
+    standard error (`threads::Yields`, the last 8 minute windows of each count of threads, those
+    under a quarter waited). A step with no windows on one thread more is tried there once these
+    threads are measured (two windows). A thread so grown that didn't pay is cut back the next
+    minute, and all of them are given back once work waits for the Mac's cores again.
   - Past the most it may run on (the owner back): cut to that.
   The gap between 0.9 and 0.5 is the hysteresis: a grow that didn't pay is cut back the next
   minute (4 busy of 4, doubled to 8, still 4 busy: back to 6). These figures are the rule's form,
   not limits: the Mac's cores and memory bound a job's threads. The agent logs `agent: <job> on
-  <n> threads (was <m>): <why>`.
+  <n> threads (was <m>): <why>`. A grow reaches a job as its next target begins (or within the
+  second, a paced job's): a job of one target runs it on its start grant. Growing within a
+  target, for the steps whose pools could be resized, isn't built.
 - **What the lead counts**: each capacity lists the jobs' threads, and the lead counts each job at
   the more of its current and its file's threads (a grow at once, a cut once a target runs on it),
   its memory at its grant's figure plus what a grow took past the threads its grant covers

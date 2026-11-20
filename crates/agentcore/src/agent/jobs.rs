@@ -322,6 +322,9 @@ pub struct Running {
     /// (`Agent::watch_threads`; crate::agent::threads): what it used on them since. None while it
     /// doesn't say them (a job not taking its threads as they change) or is stopped.
     pub watch: Option<crate::agent::threads::Watch>,
+    /// Its threads its agent grew it by while nothing waited for its Mac's cores (the next thread's
+    /// rule, crate::agent::threads::decide), given back once work waits again.
+    pub grown_idle: u32,
 }
 
 /// The job record kept on disk while a job runs, so an agent started after a crash can stop an
@@ -471,6 +474,7 @@ impl Running {
             moved: None,
             threads,
             watch: None,
+            grown_idle: 0,
         })
     }
 
@@ -707,6 +711,7 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
             moved: None,
             threads: rec.threads.max(1),
             watch: None,
+            grown_idle: 0,
         },
         hand,
     ))

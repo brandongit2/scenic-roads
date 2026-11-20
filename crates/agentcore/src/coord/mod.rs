@@ -1360,6 +1360,11 @@ pub const CAP_FRESH_S: u64 = 120;
 /// `Shared::granted`).
 pub const HELD_DISK: &str = "held_disk_mb";
 
+/// The key of a member's answer with nothing granted saying no work was offered it at all
+/// (`sched::Rule::offers_none`): nothing waits for its cores (crate::agent::threads, the next
+/// thread's rule). A 202 then, as for `HELD_DISK`.
+pub const NOTHING_HERE: &str = "nothing_here";
+
 /// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
 /// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
 /// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
@@ -2783,6 +2788,12 @@ impl Coordinator {
     /// and reservations. None: that ask held no job back for its disk alone.
     pub fn own_held_disk_mb(&self) -> Option<u64> {
         self.shared.lock().unwrap().refused.get(&self.me).and_then(|(_, h)| h.disk_mb)
+    }
+
+    /// Whether this Mac's own last ask (`ask_own`) was offered no work at all
+    /// (`sched::Rule::offers_none`): nothing waits for its cores.
+    pub fn own_offered_none(&self) -> bool {
+        self.shared.lock().unwrap().refused.get(&self.me).is_some_and(|(_, h)| h.rule.offers_none())
     }
 
     /// Why nothing more runs on each worker, as its last ask was packed (`Shared::refused`), the
@@ -5174,13 +5185,20 @@ fn route(
             }
             // Nothing granted. A job held back for its disk alone: the disk it needs said
             // (`HELD_DISK`, `sched::Held::disk_mb`), for the member to free its caches toward
-            // (crate::agent's `held_room`). A 202, which an older member takes for nothing granted,
-            // as it does the 204 an older lead sends.
-            match s.refused.get(&a.worker).and_then(|(_, h)| h.disk_mb) {
-                Some(mb) => {
-                    Ok((202, serde_json::Value::Object([(HELD_DISK.to_string(), mb.into())].into_iter().collect())))
-                }
-                None => Ok((204, serde_json::Value::Null)),
+            // (crate::agent's `held_room`); no work offered it at all: said too (`NOTHING_HERE`),
+            // nothing waiting for its cores. A 202, which an older member takes for nothing
+            // granted, as it does the 204 an older lead sends.
+            let held = s.refused.get(&a.worker).map(|(_, h)| h);
+            let mut said = serde_json::Map::new();
+            if let Some(mb) = held.and_then(|h| h.disk_mb) {
+                said.insert(HELD_DISK.to_string(), mb.into());
+            }
+            if held.is_some_and(|h| h.rule.offers_none()) {
+                said.insert(NOTHING_HERE.to_string(), true.into());
+            }
+            match said.is_empty() {
+                false => Ok((202, serde_json::Value::Object(said))),
+                true => Ok((204, serde_json::Value::Null)),
             }
         }
         "/work/beat" => {
@@ -10814,15 +10832,33 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         measured_offer(&c, "slope-hi", &[("6/1/1", Some((2000, 30_000, 60)))]);
         let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
-        assert!(g.is_none() && held.is_some_and(|mb| mb >= 30_000), "{held:?}");
+        assert!(g.is_none() && held.disk_mb.is_some_and(|mb| mb >= 30_000), "{held:?}");
         assert!(w.ask(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap().is_none());
         // Past the whole memory of its Mac too: nothing named.
-        assert!(matches!(w.ask_held(&every_ask("m1", "slope-hi", 1_000, 20_000)).unwrap(), (None, None)));
+        assert!(
+            matches!(w.ask_held(&every_ask("m1", "slope-hi", 1_000, 20_000)).unwrap(), (None, h) if h == client::Held::default())
+        );
         // Granted a job, another held back for its disk: the 200 names it too (task #1477 third
         // review: the member's hold ended at each grant, the lead's didn't).
         measured_offer(&c, "slope-hi", &[("6/2/1", Some((2000, 1_000, 60))), ("6/2/2", Some((2000, 30_000, 60)))]);
         let (g, held) = w.ask_held(&Ask { want: 2, ..every_ask("m1", "slope-hi", 64_000, 20_000) }).unwrap();
-        assert!(g.is_some() && held.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
+        assert!(g.is_some() && held.disk_mb.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
+    }
+
+    /// Task #1472: a member's ask offered no work at all is told so (a 202's `NOTHING_HERE`):
+    /// nothing waits for its cores, and its agent may grow a job whose next thread pays. One whose
+    /// work is held back (for its disk here) is not, nor one granted work.
+    #[test]
+    fn a_members_answer_says_when_no_work_is_offered_it() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
+        assert!(g.is_none() && held.nothing_here, "nothing offered: {held:?} ({:?})", c.refusals());
+        measured_offer(&c, "slope-hi", &[("6/1/1", Some((2000, 30_000, 60)))]);
+        let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
+        assert!(g.is_none() && !held.nothing_here && held.disk_mb.is_some(), "work held back for its disk: {held:?}");
+        measured_offer(&c, "slope-hi", &[("6/2/1", Some((2000, 1_000, 60)))]);
+        let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
+        assert!(g.is_some() && !held.nothing_here, "granted: {held:?}");
     }
 
     /// Task #1478: the hold a member's last answer named for its disk stands through an answer held
@@ -10833,7 +10869,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         measured_offer(&c, "slope-hi", &[("6/1/1", Some((2000, 30_000, 60)))]);
         let (g, held) = w.ask_held(&every_ask("m1", "slope-hi", 64_000, 20_000)).unwrap();
-        assert!(g.is_none() && held.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
+        assert!(g.is_none() && held.disk_mb.is_some_and(|mb| mb >= 30_000), "{g:?} {held:?}");
         let pressed = Ask {
             cap: Some(Capacity {
                 at: unix_now(),
@@ -10852,7 +10888,7 @@ mod tests {
             s.failed.insert(("m1".into(), cost_key("slope-hi", "6/1/1")), (now, 1));
         }
         let (g, kept) = w.ask_held(&pressed).unwrap();
-        assert!(g.is_none() && kept.is_none(), "in backoff here: {kept:?}");
+        assert!(g.is_none() && kept.disk_mb.is_none(), "in backoff here: {kept:?}");
         assert!(why().contains("memory"), "the memory's hold-back still: {}", why());
     }
 

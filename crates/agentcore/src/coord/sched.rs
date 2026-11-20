@@ -126,6 +126,12 @@ impl Rule {
         matches!(self, Rule::Room | Rule::Waiting | Rule::Away | Rule::Empty | Rule::Nas)
     }
 
+    /// Whether an answer held back by it offered its worker no work at all (none offered, or none
+    /// for it): nothing waits for that Mac's cores (crate::agent::threads, the next thread's rule).
+    pub fn offers_none(self) -> bool {
+        matches!(self, Rule::Away | Rule::Empty)
+    }
+
     /// The rule in a few words.
     pub fn name(self) -> &'static str {
         match self {

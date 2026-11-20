@@ -1577,6 +1577,12 @@ pub struct Agent {
     /// Time a test adds to how long each job has been watched on its threads (`watched_for`; zero
     /// but in a test, so none dates an `Instant` back past the Mac's uptime).
     watch_ahead: Duration,
+    /// The busy cores each step's jobs kept here on each count of threads (threads::Yields): what
+    /// the next thread's rule reads a thread more's yield by (`tend_threads`).
+    yields: threads::Yields,
+    /// When this Mac last asked for work and whether nothing waited for its cores then (its answer
+    /// offered it no work: `sched::Rule::Empty` or `Rule::Away`; `nothing_waits`).
+    asked: Option<(Instant, bool)>,
     /// The owner's disk room target (room::Target), read each loop from the agent's folder.
     room_target: Option<room::Target>,
     /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
@@ -2139,6 +2145,8 @@ impl Agent {
             free_set: None,
             grace: DRAIN_GRACE,
             watch_ahead: Duration::ZERO,
+            yields: threads::Yields::default(),
+            asked: None,
             room_target: None,
             in_use_share: None,
             mem_floor: None,
@@ -2628,7 +2636,10 @@ impl Agent {
             self.know_pause(None);
         }
         match &asked {
-            Ok((_, held)) => self.answer_hold(*held),
+            Ok((g, held)) => {
+                self.answer_hold(held.disk_mb);
+                self.asked = Some((Instant::now(), g.is_none() && held.nothing_here));
+            }
             // (Refused, the build paused or this Mac given no work: a decision too.)
             Err(e) if e.downcast_ref::<crate::coord::client::Refused>().is_some() => self.end_answer_hold(),
             Err(_) => {}
@@ -2956,6 +2967,7 @@ impl Agent {
         // the reservations its ask's disk left out (`disk_room`), as far as they can give it,
         // beside other jobs too; none held, none freed for one: `held_room`.)
         self.answer_hold(co.own_held_disk_mb());
+        self.asked = Some((Instant::now(), got.is_none() && co.own_offered_none()));
         let Some(mut g) = got else { return Vec::new() };
         nasread::phase("the grants: the leases held in slots");
         let more = std::mem::take(&mut g.more);
@@ -8114,7 +8126,9 @@ impl Agent {
     /// of it waited, within the most a job may run on here (`threads_room`), the cores its Mac has free (its capacity's, less the in-use share's
     /// while the owner uses it, less what the jobs grown before it this round took) and its Mac's
     /// memory (its capacity's for a job, `mem_mb`, less its jobs' growth, `grown_mb`, at the job's
-    /// memory a thread, `thread_mb`; none while it admits no work). Each change written to the job's
+    /// memory a thread, `thread_mb`; none while it admits no work), and, for the next thread's rule,
+    /// what a thread more yields its step here (`yields`, each window kept as it's decided on) and
+    /// whether nothing waits for this Mac's cores (`nothing_waits`). Each change written to the job's
     /// file (taken as its next target begins, a paced job's within the second) and logged; each job
     /// decided on watched afresh. Its lead hears what each runs on in its capacity (`capacity`).
     fn tend_threads(&mut self, c: &Conditions) {
@@ -8133,6 +8147,7 @@ impl Agent {
         let room = self.threads_room(c) as u32;
         let mut free = f64::from(cap.cores_free.saturating_sub(mac_cores().saturating_sub(room)));
         let mut grown: u64 = (0..self.slots.len()).map(|k| self.grown_mb(k)).sum();
+        let nothing_waits = self.nothing_waits();
         for k in due {
             let (per, covers) = self.slots[k].thread_mb;
             let f = self.threads_path(k);
@@ -8149,6 +8164,12 @@ impl Agent {
                 cpu_ms: cpu.saturating_sub(w.cpu_ns) / 1_000_000,
                 waited_ms: waited.saturating_sub(w.waited_ns) / 1_000_000,
             };
+            // (Its window kept by its step, and what a thread more and its last yield by them.)
+            let step =
+                r.spec.record.as_ref().map(|x| x.step.clone()).or_else(|| step_of(&r.spec.id)).unwrap_or_default();
+            self.yields.saw(&step, &window);
+            let (next, last) =
+                (self.yields.next(&step, w.threads), self.yields.next(&step, w.threads.saturating_sub(1)));
             let d = threads::decide(
                 &window,
                 &threads::Room {
@@ -8158,7 +8179,11 @@ impl Agent {
                     mem_mb: cap.mem_mb.saturating_sub(grown),
                     thread_mb: per,
                     covers,
+                    nothing_waits,
                 },
+                r.grown_idle,
+                next,
+                last,
             );
             r.watch = Some(threads::Watch {
                 since: Instant::now(),
@@ -8168,6 +8193,7 @@ impl Agent {
                 threads: w.threads,
             });
             if d.threads == w.threads {
+                r.grown_idle = d.grown_idle;
                 continue;
             }
             if let Err(e) = jobrt::control::grant(&f, d.threads as usize) {
@@ -8176,9 +8202,17 @@ impl Agent {
             }
             eprintln!("agent: {} on {} threads (was {}): {}", r.spec.id, d.threads, w.threads, d.why);
             r.threads = d.threads as usize;
+            r.grown_idle = d.grown_idle;
             free -= f64::from(d.threads.saturating_sub(w.threads));
             grown = grown.saturating_sub(before) + self.grown_mb(k);
         }
+    }
+
+    /// Whether nothing waits for this Mac's cores (the next thread's rule, crate::agent::threads):
+    /// its last ask, within the minute its jobs' threads are judged over (`threads::EVERY`), offered
+    /// it no work at all (`asked`).
+    fn nothing_waits(&self) -> bool {
+        self.asked.is_some_and(|(at, none)| none && at.elapsed() <= threads::EVERY)
     }
 
     /// Slot `k`'s job's channel (jobrt::control: "run" or "drain").

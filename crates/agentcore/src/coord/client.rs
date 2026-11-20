@@ -66,6 +66,16 @@ pub enum Handed {
     Refused(String),
 }
 
+/// What a worker's ask's answer says beside its grant: the disk (MB) a job held back for its disk
+/// alone needs, granted or not (super::HELD_DISK; None: none, or a lead too old to say), and, with
+/// nothing granted, whether no work was offered it at all (super::NOTHING_HERE: none offered, or
+/// none for it; false from a lead too old to say), so nothing waits for its cores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub disk_mb: Option<u64>,
+    pub nothing_here: bool,
+}
+
 /// The lease calls a worker makes on the coordinator: work asked for, its lease kept alive, the work
 /// handed back, failed or given back; the owner's cancel and pause passed on; the pool's beat.
 pub trait LeaseCalls {
@@ -75,9 +85,8 @@ pub trait LeaseCalls {
         Ok(self.ask_held(a)?.0)
     }
 
-    /// `ask`, and the disk (MB) a job held back for its disk alone needs, granted or not
-    /// (super::HELD_DISK; None: none, or a lead too old to say).
-    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)>;
+    /// `ask`, and what its answer says beside it (`Held`).
+    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Held)>;
 
     /// Keeps lease `lease` alive; false when the coordinator no longer holds it for this worker (the
     /// work should stop: it was offered again).
@@ -149,11 +158,15 @@ pub trait LeaseCalls {
 }
 
 impl LeaseCalls for Client {
-    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Option<u64>)> {
+    fn ask_held(&self, a: &Ask) -> Result<(Option<Grant>, Held)> {
         let a = Ask { worker: self.worker.clone(), sent: Some(super::held::sent()), ..a.clone() };
+        let said = |v: &serde_json::Value| Held {
+            disk_mb: v[super::HELD_DISK].as_u64(),
+            nothing_here: v[super::NOTHING_HERE].as_bool() == Some(true),
+        };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => {
-                let held = v[super::HELD_DISK].as_u64();
+                let held = Held { nothing_here: false, ..said(&v) };
                 Ok((Some(serde_json::from_value(v)?), held))
             }
             (409, v) => Err(Refused {
@@ -161,8 +174,8 @@ impl LeaseCalls for Client {
                 pause: serde_json::from_value(v["pause"].clone()).ok().flatten(),
             }
             .into()),
-            (202, v) => Ok((None, v[super::HELD_DISK].as_u64())),
-            _ => Ok((None, None)),
+            (202, v) => Ok((None, said(&v))),
+            _ => Ok((None, Held::default())),
         }
     }
 
