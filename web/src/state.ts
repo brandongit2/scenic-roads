@@ -346,11 +346,16 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
  * own metric's. */
 export function railLookIn(p: AppState, m: RailMetric): MetricLook {
   if (p.rail.metric === m) return lookOfScale(p.rail);
-  return p.rail.looks[m] ?? railLookIn(seed, m);
+  return p.rail.looks[m] ?? (p === seed ? unlisted(seed.rail, railMetricDef(m).range) : railLookIn(seed, m));
 }
 export function ferryLookIn(p: AppState, m: FerryMetric): MetricLook {
   if (p.ferry.metric === m) return lookOfScale(p.ferry);
-  return p.ferry.looks[m] ?? ferryLookIn(seed, m);
+  return p.ferry.looks[m] ?? (p === seed ? unlisted(seed.ferry, ferryMetricDef(m).range) : ferryLookIn(seed, m));
+}
+/** A metric the seed doesn't list (a test's checks that it lists every one, links.test.ts): the
+ * seed's shown look over the metric's own range, its highlight at its middle. */
+function unlisted(x: ScaleFields, range: [number, number]): MetricLook {
+  return { ...lookOfScale(x), auto: true, range: [...range], thrValue: +((range[0] + range[1]) / 2).toPrecision(3) };
 }
 
 /** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts), and what a
@@ -360,32 +365,44 @@ export function ferryLookIn(p: AppState, m: FerryMetric): MetricLook {
 export const railFreshLook = (m: RailMetric): MetricLook => railLookIn(seed, m);
 export const ferryFreshLook = (m: FerryMetric): MetricLook => ferryLookIn(seed, m);
 
-/** The metrics but the one shown, their palettes and percentiles in a link value (rail,
- * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
- * left empty and the percentiles left out where they are that look's, joined by '/'
- * ("freq_magma/curvy__5_95"; a reversed ramp's palette ends in _r: "view_plasma_r"). */
+/** The metrics but the one shown, their palettes, percentiles, low-end fades and spans in a link
+ * value (rail, ferries): `key_palette_lo_hi~fade~span` for each whose differ from its look when
+ * first picked, the palette left empty and the percentiles, fade and span left out where they are
+ * that look's (an empty fade before a span; no `~` when both are the look's), joined by '/'
+ * ("freq_magma/curvy__5_95/view~0.2", "water~~0.4"; a reversed ramp's palette ends in _r:
+ * "view_plasma_r"). A link before task #1247 has no `~`: its fades and spans are the first look's. */
 function looksField<K extends string>(looks: Partial<Record<K, MetricLook>>, shown: K, keys: readonly K[], fresh: (k: K) => MetricLook): string {
   return keys.flatMap((k) => {
     const l = looks[k];
     if (k === shown || !l) return [];
     const f = fresh(k);
     const pal = l.palette === f.palette ? '' : l.palette, fit = samePair(l.fit, f.fit) ? '' : `_${+l.fit[0]}_${+l.fit[1]}`;
-    return pal || fit ? [`${k}_${pal}${fit}`] : [];
+    const one = (x: number, y: number) => (+x.toFixed(2) === +y.toFixed(2) ? '' : `${+x.toFixed(2)}`);
+    const fade = one(l.lowFade, f.lowFade), span = one(l.lowSpan, f.lowSpan);
+    const ends = span ? `~${fade}~${span}` : fade ? `~${fade}` : '';
+    return pal || fit || ends ? [`${k}${pal || fit ? `_${pal}${fit}` : ''}${ends}`] : [];
   }).join('/');
 }
 /** The looks a link value lists (looksField): each its look when first picked with the listed
- * palette and percentiles; metrics not among `keys`, the one shown and malformed entries dropped. */
+ * palette, percentiles, fade and span; metrics not among `keys`, the one shown and malformed
+ * entries dropped. */
 function looksOfField<K extends string>(v: string | undefined, shown: K, keys: readonly K[], fresh: (k: K) => MetricLook): Partial<Record<K, MetricLook>> {
   const out: Partial<Record<K, MetricLook>> = {};
   for (const e of v ? v.split('/') : []) {
-    const parts = e.split('_'), n = parts.length, k = parts[0] as K;
-    if (n < 2 || k === shown || !keys.includes(k)) continue;
+    const [head, fadeS, spanS, ...more] = e.split('~');
+    const parts = head.split('_'), n = parts.length, k = parts[0] as K;
+    if (more.length || k === shown || !keys.includes(k)) continue;
+    const frac = (x: string | undefined, lo: number) => (x === undefined || x === '' || !Number.isFinite(Number(x)) ? undefined : Math.min(1, Math.max(lo, Number(x))));
+    const fade = frac(fadeS, 0), span = frac(spanS, 0.1);
     const tail: Pair = [Number(parts[n - 2]), Number(parts[n - 1])];
     const hasFit = n >= 4 && parts[n - 2] !== '' && parts[n - 1] !== '' && validFit(tail);
-    const pal = parts.slice(1, hasFit ? n - 2 : n).join('_');
+    const pal = n < 2 ? '' : parts.slice(1, hasFit ? n - 2 : n).join('_');
     if (pal && !/^[a-z0-9-]+(_r)?$/i.test(pal)) continue;
-    if (!pal && !hasFit) continue;
-    out[k] = { ...fresh(k), ...(pal ? { palette: pal } : {}), ...(hasFit ? { fit: tail } : {}) };
+    if (!pal && !hasFit && fade === undefined && span === undefined) continue;
+    out[k] = {
+      ...fresh(k), ...(pal ? { palette: pal } : {}), ...(hasFit ? { fit: tail } : {}),
+      ...(fade !== undefined ? { lowFade: fade } : {}), ...(span !== undefined ? { lowSpan: span } : {}),
+    };
   }
   return out;
 }
@@ -740,7 +757,7 @@ export class Store {
  * double-click on the fade) takes the profile's for the display type shown. */
 export function roadLookIn(p: AppState, g: ModeGroup): Look {
   if (modeGroup(p.mode) === g) return lookOf(p);
-  return p.looks[g] ?? roadLookIn(seed, g);
+  return p.looks[g] ?? (p === seed ? lookOf(seed) : roadLookIn(seed, g));
 }
 const freshLookOf = (g: ModeGroup): Look => roadLookIn(seed, g);
 

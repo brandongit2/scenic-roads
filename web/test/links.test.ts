@@ -296,6 +296,71 @@ for (const b of [base.s, seed]) {
   // A metric first picked takes the seed's look (rail's ride score: rocket over its top 30 %).
   assert.deepEqual(st.railFreshLook('rscore'), st.railLookIn(seed, 'rscore'));
   assert.equal(st.railFreshLook('rscore').palette, 'rocket');
+  // The seed's listed looks are in their metrics' own units: each one's range its definition's.
+  const { railMetricDef } = await import('../src/rail.ts');
+  const { ferryMetricDef } = await import('../src/ferry.ts');
+  for (const [m, l] of Object.entries(seed.rail.looks)) assert.deepEqual(l!.range, railMetricDef(m as never).range, m);
+  for (const [m, l] of Object.entries(seed.ferry.looks)) assert.deepEqual(l!.range, ferryMetricDef(m as never).range, m);
+  for (const l of [...Object.values(seed.rail.looks), ...Object.values(seed.ferry.looks)]) assert.ok(l!.thrValue >= l!.range[0] && l!.thrValue <= l!.range[1]);
+  // A metric the seed didn't list ends at the seed's shown look over the metric's own range (no
+  // endless reading back): a road display type at the seed's own fields.
+  const keptRail = seed.rail.looks.elev, keptRoad = seed.looks.grade;
+  delete seed.rail.looks.elev;
+  delete seed.looks.grade;
+  try {
+    const e = st.railLookIn(structuredClone(saved), 'elev');
+    assert.deepEqual([e.palette, e.range, e.auto], [seed.rail.palette, railMetricDef('elev').range, true]);
+    assert.equal(st.roadLookIn(saved, 'grade').lowFade, 0.15, 'shown: its own');
+    const prof2 = structuredClone(saved);
+    prof2.mode = 'relief';
+    prof2.looks = {};
+    assert.deepEqual([st.roadLookIn(prof2, 'grade').palette, st.roadLookIn(prof2, 'grade').lowFade], [seed.palette, seed.lowFade]);
+  } finally {
+    seed.rail.looks.elev = keptRail;
+    seed.looks.grade = keptRoad;
+  }
+}
+
+// Task #1247: a link carries the other rail and ferry metrics' fades and spans too, where they differ
+// from the metric's first look (`key_palette_lo_hi~fade~span`, each part left out where it is that
+// look's), and reads them back; a link before it (no `~`) still reads, its fades the first look's.
+{
+  const s = structuredClone(seed);
+  s.rail.metric = 'rscore';
+  Object.assign(s.rail, st.scaleOfLook(st.railFreshLook('rscore')));
+  s.rail.looks = {
+    freq: { ...st.railFreshLook('freq'), lowFade: 0.2, lowSpan: 0.35 },
+    view: { ...st.railFreshLook('view'), palette: 'magma', lowFade: 0.25 },
+    water: { ...st.railFreshLook('water'), lowSpan: 0.4 },
+  };
+  s.ferry.metric = 'freq';
+  s.ferry.looks = { months: { ...st.ferryFreshLook('months'), fit: [5, 95], lowFade: 0.6 } };
+  const h = toHash(s, true, { id: 'base', name: 'Default', s: seed });
+  const rs = params(h).get('rs')!, fy = params(h).get('fy')!;
+  assert.match(rs, /freq~0\.2~0\.35/);
+  assert.match(rs, /view_magma~0\.25(\/|,|$)/);
+  assert.match(rs, /water~~0\.4/);
+  assert.match(fy, /months__5_95~0\.6/);
+  const back = fromHash(h, true, seed);
+  assert.deepEqual(back.rail.looks, s.rail.looks);
+  assert.deepEqual(back.ferry.looks, s.ferry.looks);
+  // An old link's entry (palette only): read over the first look of today. Rail's sailings a day's
+  // first look is the seed's since task #1247 (fire_r, the 1st to 99th percentile, fade 0.4, span
+  // 0.6); before it, viridis over the 2nd to 98th. So an old `freq_magma` now reads magma over the
+  // 1st to 99th, and an old link leaving sailings a day out shows it fire_r once picked.
+  const withRs = (v: string) => {
+    const q = params(h);
+    q.set('rs', v);
+    return `#${q}`;
+  };
+  const old = withRs(rs.replace(/[^,]*$/, 'freq_magma'));
+  const o = fromHash(old, true, seed);
+  assert.deepEqual(Object.keys(o.rail.looks), ['freq']);
+  assert.deepEqual([o.rail.looks.freq!.palette, o.rail.looks.freq!.fit, o.rail.looks.freq!.lowFade, o.rail.looks.freq!.lowSpan], ['magma', [1, 99], 0.4, 0.6]);
+  assert.deepEqual([st.railFreshLook('freq').palette, st.railFreshLook('freq').fit], ['fire_r', [1, 99]]);
+  // (Malformed: a third `~`, a fade that isn't a number: dropped or the first look's.)
+  const bad = withRs(rs.replace(/[^,]*$/, 'freq~0.2~0.3~1/view~x'));
+  assert.deepEqual(fromHash(bad, true, seed).rail.looks, {});
 }
 
 // Links and saves in shapes the app doesn't write (a param it doesn't have, a value with too few
