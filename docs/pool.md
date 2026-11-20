@@ -646,7 +646,8 @@ cores again and the Mac is granted nothing more until they fit.
   history and the log.
 - **A hand-off refused every time backs off**: from the second refusal of a target in a row, it is
   held from the worker as a failure is (§7.5, Failures back off), and flagged (§10, Flags:
-  *refused*). A first refusal holds nothing (it may be a one-off). A page's retry lifts it.
+  *refused*). A first refusal holds nothing (it may be a one-off). A page's retry lifts it, and
+  its "retry" history event keeps it lifted across a lead's restart.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the lead's
   whose entry carries only a done record, merged only by the lead whose member it is.
 - **Sizes ride along:** `Out` records each file's size and the hand-off carries them, so the
@@ -695,9 +696,9 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   backoff-start-hours|backoff-ceiling-hours <hours>|off`, the build page's Settings, "Backoff"; the
   start 0.1 to 24 h, the ceiling 1 to 168 h, the history's week), taken as set. A lead's start
   counts the holds and the refusals in a row again from its history (`seed_backoff`): its "fail",
-  "done" (failed: its "lease"'s targets less those done), own "end" (`held`), "refused" and
-  "merged" events, in order, each hold from its event's time; a page's retry, which the history
-  doesn't hold, isn't replayed.
+  "done" (failed: its "lease"'s targets less those done), own "end" (`held`), "refused",
+  "merged" and "retry" (a page's retry, `clear_failed`: its target's holds and refusals
+  forgotten) events, in order, each hold from its event's time.
 - **What a job waited on**: the coordinator writes on each "start" and "lease" event `after`: the
   numbers of the "end"/"done" events of the jobs it waited on (per step its targets wait on in the
   forecast's dependencies, the one that finished last). The build page's schedule draws its arrows

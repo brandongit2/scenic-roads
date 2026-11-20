@@ -1,5 +1,5 @@
 //! How long a failure keeps a target from the worker it failed on (agentcore::coord::sched's
-//! `Sched::failed`; docs/pool.md §7.1, Failures): `start` after its first, twice as long after each
+//! `Sched::failed`; docs/pool.md §7.5, Failures back off): `start` after its first, twice as long after each
 //! more, at most `ceiling`. A hand-off the lead's merge refuses again holds it as a failure does
 //! (agentcore::coord's `Coordinator::merged`). Both are pool settings (`KNOBS`:
 //! agentcore::coord::asks, `scenic pool set <name>`, the build page's Settings), read by the lead

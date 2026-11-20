@@ -3632,16 +3632,18 @@ impl Coordinator {
 
     /// A target's failures forgotten (a page's retry, crate::pool::driver::Act::Retry): every
     /// worker's, of its step (any step: None), and its hand-offs' refusals in a row; how many
-    /// failures.
+    /// failures. In the history ("retry"), so a lead's restart forgets them too (`seed_backoff`).
     pub fn clear_failed(&self, step: Option<&str>, target: &str) -> usize {
         let mut s = self.shared.lock().unwrap();
         let before = s.failed.len();
-        s.failed.retain(|(_, k), _| match step {
-            Some(st) => *k != cost_key(st, target),
-            None => k != target && !k.ends_with(&format!(" {target}")),
-        });
+        s.failed.retain(|(_, k), _| !retried(k, step, target));
         // (Its refusals in a row counted afresh: the next one alone holds nothing.)
-        s.handoffs_refused.retain(|(st, t), _| t != target || step.is_some_and(|x| x != st));
+        s.handoffs_refused.retain(|(st, t), _| !(t == target && step.is_none_or(|x| x == st)));
+        s.history.add(history::Event {
+            step: step.map(str::to_string),
+            targets: vec![target.to_string()],
+            ..history::Event::new("retry")
+        });
         before - s.failed.len()
     }
 
@@ -4673,6 +4675,15 @@ fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
     Ok(())
 }
 
+/// Whether a failure's key `k` (crate::coord::cost_key) is of `target` of `step` (any step: None),
+/// as a page's retry forgets it (`Coordinator::clear_failed`).
+fn retried(k: &str, step: Option<&str>, target: &str) -> bool {
+    match step {
+        Some(st) => k == cost_key(st, target),
+        None => k == target || k.ends_with(&format!(" {target}")),
+    }
+}
+
 /// The failures' holds (`Sched::failed`) and the hand-offs' refusals in a row
 /// (`Shared::handoffs_refused`) as the lead before its restart had them (task #1447): the history's
 /// events replayed in order, counted as the live code counts them (`Coordinator::merged`,
@@ -4684,8 +4695,8 @@ fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
 /// "refused" counts each of its targets, and from crate::agent::flags::REFUSED_AGAIN in a row on
 /// holds it against its job's worker (its "lease"'s, else the Mac of its "done" or "end", as
 /// `refused_worker`). Each hold dates from its event; a failure past the backoff's ceiling counts
-/// afresh, and those past it now are forgotten. Not replayed: a page's retry (`clear_failed`),
-/// which the history doesn't hold.
+/// afresh, and those past it now are forgotten. A page's "retry" (`clear_failed`) forgets its
+/// target's holds and refusals as it did then.
 fn seed_backoff(s: &mut Shared, me: &str) {
     use crate::pool::records::MergedJob;
     use std::collections::{HashMap, HashSet};
@@ -4755,6 +4766,12 @@ fn seed_backoff(s: &mut Shared, me: &str) {
             "end" if e.held && e.job.is_some_and(|j| !by_lead.contains(&j)) && lease.is_some_and(|l| l.0 == me) => {
                 for t in rest() {
                     fail(&mut failed, me, step, t, e.t, None);
+                }
+            }
+            "retry" => {
+                for t in &e.targets {
+                    failed.retain(|(_, k), _| !retried(k, e.step.as_deref(), t));
+                    refused.retain(|(st, x), _| !(x == t && e.step.as_deref().is_none_or(|y| y == st)));
                 }
             }
             "merged" => {
@@ -13211,6 +13228,45 @@ mod tests {
         let st = crate::agent::Status { handoffs_refused: b.handoffs_refused(), ..Default::default() };
         let f = crate::agent::flags::refused(&st, unix_now());
         assert!(f.len() == 1 && f[0].kind == "refused", "still flagged after the restart: {f:?}");
+    }
+
+    /// Task #1447 review: a page's retry (`clear_failed`) is in the history, so a restarted lead
+    /// forgets what it forgot: a target retried of its step and one retried of any step come back
+    /// neither held nor refused in a row; another target stays held.
+    #[test]
+    fn a_page_s_retry_holds_across_a_lead_restart() {
+        let (d, c, w, _clock) = every((0, 0));
+        c.set_epoch(1);
+        let offer =
+            |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 0)], job: None };
+        c.offer("p", vec![offer("pack", "6/1/1"), offer("pack", "6/1/2"), offer("pack", "6/1/3")]);
+        let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        // (Each failed in turn: one held, the next ask is granted the next.)
+        for _ in 0..3 {
+            let g = w2.ask(&every_ask("m2", "pack", 24_000, 50_000)).unwrap().expect("granted");
+            w2.fail(g.lease, "boom", None).unwrap();
+        }
+        let refused = crate::pool::records::Again {
+            member: "m-000000000000000b".into(),
+            job: jobrt::jobid::JobId { epoch: 1, n: 900 },
+            step: "pack".into(),
+            targets: vec![("6/1/2".into(), "k".into())],
+            refused: Some("writes outside its step's names".into()),
+        };
+        c.merged(&[], &[refused]);
+        assert_eq!(c.shared.lock().unwrap().failed.len(), 3, "all three failed on m2");
+        assert_eq!(c.shared.lock().unwrap().handoffs_refused.len(), 1);
+        assert_eq!(c.clear_failed(Some("pack"), "6/1/1"), 1);
+        assert_eq!(c.clear_failed(None, "6/1/2"), 1);
+        let kept = |c: &Coordinator| {
+            let s = c.shared.lock().unwrap();
+            let failed: Vec<String> = s.failed.keys().map(|(w, k)| format!("{w} {k}")).collect();
+            (failed, s.handoffs_refused.len())
+        };
+        assert_eq!(kept(&c), (vec![format!("m2 {}", cost_key("pack", "6/1/3"))], 0));
+        c.stop();
+        let (b, _) = start_for_test(&d.path().join("coord"), "m4", "");
+        assert_eq!(kept(&b), (vec![format!("m2 {}", cost_key("pack", "6/1/3"))], 0), "as retried before the restart");
     }
 
     /// Task #1170: room held for the first offer refused for its room is the hold the status says
