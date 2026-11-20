@@ -1093,8 +1093,7 @@ measured by an earlier app's replay. The inputs from `--split` on (default a day
 are the test set, scored apart from those before (train): what the model was chosen on is never what
 it's scored on. Run it on a copy of `state/coord` and `state/build/term` (`--root`), or on the NAS
 (reads only). A term's file last written over an hour before `--from` holds no input in the span and
-isn't read (`fccheck::inputs`; the hour for the clocks; task #1527: the 352 terms' files, 276 MB,
-were read on every run). Where its time went is said on stderr, the report on stdout as before: the
+isn't read (`fccheck::inputs`; the hour for the clocks). Where its time went is said on stderr, the report on stdout as before: the
 history read, the inputs read and the backtest, and inside it the decodes, the inputs made ready,
 the forecasts, their check and the jobs' lengths (`fccheck::Spent`; `spent` in `--json`).
 
