@@ -985,7 +985,7 @@ commit; re-exports at the old paths as before.
         the checklist, the forecast when due, the view) and writes a line per plan to
         `SCENIC_FROZEN_OUT`: its time, the bytes and blocks it asked the allocator for, and the
         process's footprint, its most, its resident size and its reusable pages
-        (`agent::allocs`: the unit tests' allocator, the system's with counts; `Memory::now`).
+        (`agent::allocs`: the unit tests' allocator, the system's with counts; `Memory::now`), after the coverage's own line and what naming it costs a call (`Coverage::digest` against `Coverage::identity`, twice each).
         `SCENIC_FROZEN_SIZES` adds each plan's blocks by size (asked for, the most live at once,
         live now); `SCENIC_FROZEN_SITES=<n>` the `n` functions and sites allocating the most
         bytes, in the first plan and in the plans after it, from one stack sampled per 4 MB asked
