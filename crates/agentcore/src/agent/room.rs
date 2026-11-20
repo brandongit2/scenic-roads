@@ -1237,6 +1237,14 @@ impl Freeable {
     }
 }
 
+/// The bytes the regions check's pieces take in the cache at `cache` (`PIECES`), as `sizes` counts
+/// them: for the build page's setting of their cap.
+pub fn pieces_bytes(cache: &Path) -> u64 {
+    let mut files = Vec::new();
+    walk_cheap(cache, PIECES, None, &mut files);
+    files.iter().map(|f| f.1).sum()
+}
+
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
 /// member's leaves its loose raw tiles out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`

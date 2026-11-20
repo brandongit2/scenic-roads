@@ -154,18 +154,6 @@ pub fn set_regions_pieces(home: &Path, what: &str, by: &str) -> Result<Option<ro
     Ok(Some(t))
 }
 
-/// The bytes the regions check's pieces take in the cache at `cache` (its `kept::POOL_DIR`).
-fn regions_pieces_held(cache: &Path) -> u64 {
-    std::fs::read_dir(cache.join(inputs::inputs::regions::kept::POOL_DIR))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.metadata().ok())
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .sum()
-}
-
 /// The most NAS calls a process may hold past their deadline (`set_nas_held`).
 pub const NAS_HELD_MAX: usize = 1000;
 
@@ -429,7 +417,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         "regions_pieces": {
             "bytes": pieces.as_ref().map_or(inputs::inputs::regions::kept::KEEP_MB * 1_000_000, |m| m.bytes),
             "default": inputs::inputs::regions::kept::KEEP_MB * 1_000_000,
-            "held": regions_pieces_held(&home.join("cache")),
+            "held": room::pieces_bytes(&home.join("cache")),
             "set": pieces.is_some(),
             "by": pieces.as_ref().map(|m| m.by.clone()),
             "at": pieces.as_ref().map(|m| m.at),
