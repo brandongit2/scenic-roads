@@ -210,7 +210,12 @@ CARGO_BIN_EXE_server=$PWD/target/release/server $serves >> $tests_log 2>&1 \
 # slot's build folder kept there, at nice 20; here when this is the test Mac or with
 # SCENIC_TESTS_LOCAL=1; kept from it otherwise, not run, a failure): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
+# Built first, then its tests once the test Mac is publish's alone (#1563: SCENIC_TEST_MAC_ALONE,
+# remote-tests.sh's wait for the other runs there to end, which prints the test threads the pool's
+# jobs leave), so the build goes on beside the runs it waits for and the tests have the cores.
 suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0
+cargo nextest run --no-fail-fast --hide-progress-bar --workspace --no-run || exit $?
+if [[ -n ${SCENIC_TEST_MAC_ALONE:-} ]]; then t=$($SCENIC_TEST_MAC_ALONE) && export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t; fi
 cargo nextest run --no-fail-fast --hide-progress-bar --workspace || rc=$?
 exit $rc'
 # One publish's suite and clippy at a time on this Mac (two at once overload the test Mac, #684): the

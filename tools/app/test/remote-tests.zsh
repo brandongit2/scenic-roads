@@ -17,6 +17,9 @@ eval "$(cd ${0:A:h:h:h:h} && mise env -s zsh 2>/dev/null)" 2>/dev/null
 source ${0:A:h:h:h}/dev/ran.zsh
 tmp=$(ran_dir remote-tests)
 failed=0
+# (No pool here, whatever this Mac's agent runs: the runs' shares the same on any Mac.)
+print -r -- "  9 1 30.0 /usr/bin/true" > $tmp/ps0
+export SCENIC_TESTS_PS=$tmp/ps0
 ok() { print "PASS  $1" }
 no() { print "FAIL  $1: $2"; failed=1 }
 
@@ -222,12 +225,101 @@ run_setup publish
 rm -f $tmp/pub
 out=$(run_remote publish "print -r -- ran > $tmp/pub")
 [[ ! -e $tmp/pub && $out == *"@@remote-tests-status none"*SCENIC_PUBLISH* ]] && ok "key publish without SCENIC_PUBLISH: not run" || no "key publish without SCENIC_PUBLISH: not run" "$(cat $tmp/pub 2>&1): $out"
-out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub")
-[[ $(<$tmp/pub) == "*/.build/0/src $(sysctl -n hw.ncpu)" || $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) ]] && [[ $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
-  && ok "publish's run: its own slot, every core" || no "publish's run: its own slot, every core" "$(<$tmp/pub): $out"
+rm -rf $fb/.slots/{2,3}
+out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub; ls ../../../.slots > $tmp/pubslots")
+[[ $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) && $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
+  && ok "publish's run: its own slot, every core as it builds" || no "publish's run: its own slot, every core as it builds" "$(<$tmp/pub): $out"
 out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS > $tmp/chk")
 n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
 [[ $(<$tmp/chk) == $n && $out == *" of 3, $n test threads"* ]] && ok "a check's run: its share of the cores" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+
+# The pool's jobs (#1563): the CPU of the agent's process and every process under it, nothing else;
+# taken off a check's share, and off publish's tests' threads, half the cores left them at least.
+print -r -- "    1     0   0.0 /sbin/launchd
+  610     1   1.0 scenic-launcher agent
+  611   610  55.0 /Users/x/Library/Application Support/scenic/app/current/scenic agent
+  700   611   0.0 /bin/sh -c s=\$1; shift
+  701   700 310.0 /Users/x/Library/Application Support/scenic/app/v1/scenic-build unit --root /n
+  702   701  40.0 /Users/x/Library/Application Support/scenic/app/v1/scenic-build tool scenic-metrics
+  800     1 900.0 rustc --crate-name scenic agentx
+  801     1 200.0 awk /(^|\\/)scenic agent( |\$)/" > $tmp/ps
+[[ $(SCENIC_TESTS_PS=$tmp/ps pool_busy) == "4 4.0 4" ]] && ok "the pool's jobs: its agent's tree alone" || no "the pool's jobs: its agent's tree alone" "$(SCENIC_TESTS_PS=$tmp/ps pool_busy)"
+[[ $(SCENIC_TESTS_PS=$tmp/ps0 pool_busy) == "0 0.0 0" ]] && ok "the pool's jobs: no agent, none" || no "the pool's jobs: no agent, none" "$(SCENIC_TESTS_PS=$tmp/ps0 pool_busy)"
+rm -f $tmp/capacity; capacity $tmp/capacity 14 48 5
+[[ "$reply[1] $reply[2]" == "3 3" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots" ]] \
+  && ok "the capacity: a check's share of what the pool leaves" || no "the capacity: a check's share of what the pool leaves" "$reply"
+capacity $tmp/capacity 14 48 20
+[[ $reply[2] == 1 ]] && ok "the capacity: a test thread at least" || no "the capacity: a test thread at least" "$reply[2]"
+a=$(publish_share 14 4 ""; print $REPLY); b=$(publish_share 14 11 ""; print $REPLY); c=$(publish_share 14 11 6; print $REPLY $reply[1])
+[[ $a == 10 && $b == 7 && $c == "6 publish_threads set in the capacity file" ]] && ok "publish's threads: what the pool leaves, half at least, or as set" || no "publish's threads: what the pool leaves, half at least, or as set" "$a, $b, $c"
+print -r -- $'publish_threads=9\npublish_wait=2' > $tmp/capacity; capacity $tmp/capacity 14 48
+[[ $reply[4] == 9 && $reply[5] == 120 ]] && ok "the capacity file: publish's threads and wait" || no "the capacity file: publish's threads and wait" "$reply"
+rm -f $tmp/capacity
+
+# While publish's run holds slot 0, every other run waits at start, in no slot (a run outside
+# check.sh's too: any key); publish's tests wait for the runs under way, each check slot taken as it
+# frees; then every slot is publish's, and all are freed as it ends.
+rm -rf $fb/.slots; mkdir -p $fb/.slots/2; print -r -- $holdme > $fb/.slots/2/owner  # (a run under way, in slot 2)
+run_setup publish; run_setup t1560-base; rm -f $tmp/{pubgo,pubtests,pubend,chkran,pubthreads,slotsheld}
+run_remote publish "export SCENIC_PUBLISH=1; touch $tmp/pubgo; t=\$(\$SCENIC_TEST_MAC_ALONE); print \$t > $tmp/pubthreads; ls $fb/.slots > $tmp/slotsheld; date +%s > $tmp/pubtests; until [[ -e $tmp/pubend ]]; do sleep 0.2; done" > $tmp/pubout 2>&1 &
+pp=$!
+wait_for $tmp/pubgo
+run_remote t1560-base "date +%s > $tmp/chkran; ls $fb/.slots >> $tmp/chkran" > $tmp/chkout 2>&1 &
+cp=$!
+sleep 3
+[[ ! -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/chkout) == *"is publish's run's (slot 0 since"* && -d $fb/.slots/1 && -d $fb/.slots/3 ]] \
+  && ok "behind publish: another run waits at start, publish's tests wait for the run under way" || no "behind publish: another run waits at start, publish's tests wait for the run under way" "$(cat $tmp/chkout $tmp/pubout)"
+rm -rf $fb/.slots/2  # (the run under way ends)
+wait_for $tmp/pubtests
+[[ -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/slotsheld) == $'0\n1\n2\n3' && $(<$tmp/pubthreads) == $(sysctl -n hw.ncpu) \
+   && $(<$fb/.slots/2/owner) == $(<$fb/.slots/0/owner) ]] \
+  && ok "publish's tests: once every slot is its own" || no "publish's tests: once every slot is its own" "$(cat $tmp/slotsheld $tmp/pubthreads $tmp/pubout)"
+[[ $(<$tmp/pubout) == *"wait for the test Mac's other runs to end"*"slot 2 test (since"*"the test Mac is publish's after"* ]] \
+  && ok "publish's wait said: what for, and how it went" || no "publish's wait said: what for, and how it went" "$(<$tmp/pubout)"
+touch $tmp/pubend; wait $pp $cp
+[[ -e $tmp/chkran && $(<$tmp/chkout) == *"got a test-Mac slot after"* && $(<$tmp/chkout) == *"@@remote-tests-status 0"* && ! -e $fb/.slots/0 ]] \
+  && ok "the run behind publish goes once it ends, its slots all freed" || no "the run behind publish goes once it ends, its slots all freed" "$(cat $tmp/chkout; ls $fb/.slots)"
+[[ -z $(ls $fb/.slots) ]] && ok "nothing held after" || no "nothing held after" "$(ls $fb/.slots)"
+
+# Publish's run killed outright mid-wait: its slots are a gone run's, taken by the next run.
+mkdir -p $fb/.slots/3; print -r -- $holdme > $fb/.slots/3/owner; rm -f $tmp/pubgo
+run_remote publish "export SCENIC_PUBLISH=1; touch $tmp/pubgo; \$SCENIC_TEST_MAC_ALONE" >/dev/null 2>&1 &
+pp=$!
+wait_for $tmp/pubgo; for i in {1..50}; do [[ -d $fb/.slots/1 && -d $fb/.slots/2 ]] && break; sleep 0.1; done
+pm=$(o=$(<$fb/.slots/0/owner); print ${o%% *})
+kill -KILL $pm; wait $pp 2>/dev/null; rm -rf $fb/.slots/3
+out=$(run_remote t1560-base "true")
+[[ $out == *"@@remote-tests-status 0"* ]] && ! publish_holds $fb && ok "publish killed outright: its slots freed for the next run" || no "publish killed outright: its slots freed for the next run" "$out; $(ls $fb/.slots)"
+rm -rf $fb/.slots
+
+# Publish's wait is bounded (publish_wait): past it, its tests go on, saying what is left.
+mkdir -p $fb/.slots/{0,1}; print -r -- $holdme > $fb/.slots/1/owner
+out=$(wait_alone $fb 1 1 14 "" "me" 2>&1)
+[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == 14 ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
+rm -rf $fb/.slots
+
+# A run on the test Mac itself (no copy): a slot taken, behind publish's run too, freed as it ends.
+mkdir -p $tmp/here; hold_two
+out=$(HOME=$fh here_on_test_mac h1 $tmp/here "cat $fb/.slots/1/owner; print \$NEXTEST_TEST_THREADS" 2>&1)
+[[ $out == *"running here (this is the test Mac;"*"slot 1 of 3, $n test threads"* && $out == *" h1"$'\n'$n && ! -e $fb/.slots/1 ]] \
+  && ok "a run on the test Mac itself: counted in a slot, its share, freed" || no "a run on the test Mac itself: counted in a slot, its share, freed" "$out; $(ls $fb/.slots)"
+rm -f $tmp/up $tmp/sl
+( HOME=$fh here_on_test_mac h2 $tmp/here "touch $tmp/up; sleep 30 & print \$! > $tmp/sl; wait" >/dev/null 2>&1 ) &
+hp=$!
+wait_for $tmp/up && [[ -d $fb/.slots/1 ]]; held=$?
+kill -TERM $hp; wait $hp 2>/dev/null
+for i in {1..50}; do [[ -e $fb/.slots/1 ]] || break; sleep 0.1; done
+(( held == 0 )) && [[ ! -e $fb/.slots/1 ]] && ok "a run on the test Mac itself stopped: its slot freed" || no "a run on the test Mac itself stopped: its slot freed" "$held; $(ls $fb/.slots)"
+[[ -s $tmp/sl ]] && kill $(<$tmp/sl) 2>/dev/null
+# Behind publish's run, it waits too.
+rm -rf $fb/.slots/1; mkdir -p $fb/.slots/0; print -r -- "$holdme" > $fb/.slots/0/owner; rm -f $tmp/hran
+( HOME=$fh here_on_test_mac h3 $tmp/here "touch $tmp/hran" > $tmp/hout 2>&1 ) &
+hp=$!
+sleep 2
+[[ ! -e $tmp/hran && $(<$tmp/hout) == *"is publish's run's"* ]] && ok "a run on the test Mac itself waits behind publish's" || no "a run on the test Mac itself waits behind publish's" "$(<$tmp/hout)"
+rm -rf $fb/.slots/0; wait $hp
+[[ -e $tmp/hran ]] && ok "and goes once publish's run ends" || no "and goes once publish's run ends" "$(<$tmp/hout)"
+rm -rf $fb/.slots
 
 # The capacity lowered: the build folders above its slots go, but one in use.
 mkdir -p $fb/.build/{4,5}/target $fb/.slots/4; print -r -- $holdme > $fb/.slots/4/owner

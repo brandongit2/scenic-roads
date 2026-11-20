@@ -202,7 +202,11 @@ RT = "remote-tests: "
 RT_KEY_WAIT = re.compile(r"^remote-tests: key \S+ is in use on the test Mac \((.*)\): waiting")
 RT_KEY_GOT = re.compile(r"^remote-tests: got key \S+ after (\d+) s")
 RT_COPIED = re.compile(r"^remote-tests: tree copied to the test Mac in (\d+) s \(this Mac's load ([\d.]+)\)")
-RT_SLOT_WAIT = re.compile(r"^remote-tests: the test Mac's (?:\d+ test slots are|publish slot is) taken")
+RT_SLOT_WAIT = re.compile(r"^remote-tests: the test Mac(?:'s (?:\d+ test slots are|publish slot is) taken| is publish's run's)")
+# (#1563: publish's tests waiting for the test Mac's other runs to end, and how it went.)
+RT_ALONE_WAIT = re.compile(r"^remote-tests: publish's tests wait for the test Mac's other runs to end")
+RT_ALONE = re.compile(r"^remote-tests: (?:the test Mac is publish's|publish's tests went on) after (\d+) s")
+RT_ALONE_THREADS = re.compile(r"the pool's jobs keep ([\d.]+) cores busy, \d+ processes\): (\d+) test threads")
 RT_SLOT_GOT = re.compile(r"^remote-tests: got a test-Mac slot after (\d+) s")
 RT_ON = re.compile(r"^remote-tests: on the test Mac (\S+) \(load ([\d.]+), slot (\d+)(?: of (\d+), (\d+) test threads)?")
 RT_TOOK = re.compile(r"^remote-tests: the run took ([\d.]+)s on the test Mac, cpu ([\d.]+)s user \+ ([\d.]+)s sys")
@@ -374,7 +378,7 @@ def parse(lines, kinds, t_start, t_end):
                 suites[home]["kids"].extend(phases(got, suites[home]["t1"]))
     attrs = {}
     if "remote" in kinds:
-        key_wait = slot_wait = on = None
+        key_wait = slot_wait = alone_wait = on = None
         for t, l in lines:
             if not l.startswith(RT):
                 continue
@@ -390,6 +394,16 @@ def parse(lines, kinds, t_start, t_end):
             elif (m := RT_SLOT_GOT.match(l)) and slot_wait:
                 out.append(span("wait", "a test-Mac slot", slot_wait, t))
                 slot_wait = None
+            elif RT_ALONE_WAIT.match(l):
+                alone_wait = alone_wait or t
+            elif m := RT_ALONE.match(l):
+                if a := RT_ALONE_THREADS.search(l):
+                    out.append(span("wait", "the test Mac to publish alone", alone_wait or t - int(m.group(1)), t,
+                                    pool_cores=a.group(1), test_threads=a.group(2)))
+                else:  # (its bound passed: "went on after", what was left said)
+                    alone_wait = alone_wait or t - int(m.group(1))
+                    out.append(span("wait", "the test Mac to publish alone", alone_wait, t, went_on_beside=l.partition("other runs:")[2].strip()))
+                alone_wait = None
             elif m := RT_ON.match(l):
                 # (The slot, and the test Mac's slots and this run's test threads, #1539.)
                 on = (t, m.group(1), m.group(2), m.group(3), {k: v for k, v in (("slots", m.group(4)), ("threads", m.group(5))) if v})
