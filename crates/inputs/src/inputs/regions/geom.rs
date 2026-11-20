@@ -995,17 +995,22 @@ fn split_in(
         }
     }
     let labels = coasts.iter().map(|c| c.1).max().map_or(0, |m| m + 1);
-    // A bucket grid of the samples, 50 steps square (0.01° to 0.5°): a search scans the samples of
-    // the buckets round its point, so a dense coast (a 100 m grid's samples) is read near it only.
-    let cell = how.bucket.unwrap_or(((deg as i64) * 50).clamp(100_000, 5_000_000));
-    // (Rings searched at most: 200° of them.)
-    let rings = 2_000_000_000 / cell;
+    // A bucket grid of the samples, 50 steps of longitude wide at the area's latitude farthest from
+    // the equator (0.01° to 0.5°): a search scans the samples of the buckets round its point, so a
+    // dense coast (a 100 m grid's samples) is read near it only. (Near a pole a degree of longitude
+    // is short, and the search reads the buckets of every longitude near it: half a degree there.)
+    let box_cos = ((bb[1].abs().max(bb[3].abs()) as f64 * 1e-7).min(90.0)).to_radians().dcos().max(0.01);
+    let cell = how.bucket.unwrap_or((deg * 50.0 / box_cos).clamp(100_000.0, 5_000_000.0) as i64);
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+    // (The buckets' box: a ring reads only its buckets within it, and past the ring that holds it
+    // all, every sample is read.)
+    let mut held = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
     for (k, (q, _, _)) in samples.iter().enumerate() {
-        grid.entry((q[0].div_euclid(cell), q[1].div_euclid(cell))).or_default().push(k);
+        let (gx, gy) = (q[0].div_euclid(cell), q[1].div_euclid(cell));
+        grid.entry((gx, gy)).or_default().push(k);
+        held = [held[0].min(gx), held[1].min(gy), held[2].max(gx), held[3].max(gy)];
     }
-    // (The least cosine of the band searched: a degree of longitude is shortest there.)
-    let cos_at = |lat_e7: i64| ((lat_e7.clamp(-900_000_000, 900_000_000) as f64) * 1e-7).to_radians().dcos().max(0.02);
+    let m_least = A * (1.0 - F * (2.0 - F));
     // (Each sample's radii at the middle of its latitude and the row's, `length_m`'s, kept for the
     // row: every search along it reads them.)
     let radii_at = std::cell::RefCell::new(vec![(i64::MIN, 0.0, 0.0); samples.len()]);
@@ -1020,12 +1025,26 @@ fn split_in(
         let mut found: Option<((f64, Pt, usize, usize), i64)> = None;
         let mut least = vec![f64::INFINITY; if beyond.is_some() { labels } else { 0 }];
         let mut radii_at = radii_at.borrow_mut();
+        // (The ring holding every bucket of a sample.)
+        let rings = (cx - held[0]).max(held[2] - cx).max(cy - held[1]).max(held[3] - cy).max(0);
         let mut r = 0i64;
         loop {
-            // (Ring r's buckets: its top and bottom rows, then its sides between them.)
-            let side = (cy - r + 1..cy + r).flat_map(|gy| [(cx - r, gy), (cx + r, gy)]);
-            let ends = (cx - r..=cx + r).flat_map(|gx| [(gx, cy - r), (gx, cy + r)]);
-            for (gx, gy) in ends.take(if r == 0 { 1 } else { usize::MAX }).chain(side) {
+            // (Ring r's buckets within the samples' box: its top and bottom rows, then its sides
+            // between them.)
+            let (rows, cols) = if r == 0 { (1, 0) } else { (2, 2) };
+            let (x0, x1) = ((cx - r).max(held[0]), (cx + r).min(held[2]));
+            let (y0, y1) = ((cy - r + 1).max(held[1]), (cy + r - 1).min(held[3]));
+            let ends = [cy - r, cy + r]
+                .into_iter()
+                .take(rows)
+                .filter(|gy| (held[1]..=held[3]).contains(gy))
+                .flat_map(|gy| (x0..=x1).map(move |gx| (gx, gy)));
+            let side = [cx - r, cx + r]
+                .into_iter()
+                .take(cols)
+                .filter(|gx| (held[0]..=held[2]).contains(gx))
+                .flat_map(|gx| (y0..=y1).map(move |gy| (gx, gy)));
+            for (gx, gy) in ends.chain(side) {
                 {
                     if let Some(v) = grid.get(&(gx, gy)) {
                         for &k in v {
@@ -1056,14 +1075,18 @@ fn split_in(
                     }
                 }
             }
-            // (Every sample past ring r is at least r buckets away: 110 km of latitude a degree,
-            // less of longitude by the latitude's cosine. So the nearest found is the nearest,
-            // whatever the buckets' size.)
-            let reach = (r + 1) * cell;
-            let coslat = cos_at(p[1] - reach).min(cos_at(p[1] + reach));
-            let past = (r as f64) * (cell as f64 * 1e-7 * 110_000.0) * coslat * 0.95;
-            if found.is_none() && (best.0 < past || r > rings) {
-                if best.0 > decides {
+            // (Every sample past ring r is in a bucket more than r off p's, in latitude or in
+            // longitude, so more than r·cell off p. In latitude, at least `m_least` a radian. In
+            // longitude, at least A·cos(φ) a radian, φ the middle latitude `length_with` takes: its
+            // latitude within r + 1 buckets of p's, φ within half that of p's, and short of the
+            // pole by half p's way to it. So the nearest found is the nearest at every latitude.)
+            let span = ((r * cell) as f64 * 1e-7).to_radians();
+            let lat = (p[1] as f64 * 1e-7).abs();
+            let far = (lat + ((r + 1) * cell) as f64 * 0.5e-7).min((lat + 90.0) / 2.0).to_radians();
+            let past = span * m_least.min(A * far.dcos()) * (1.0 - 1e-9);
+            if found.is_none() && (best.0 < past || past > decides || r >= rings) {
+                // (None found within the reach, or none at all.)
+                if best.0 > decides || best.3 == usize::MAX {
                     return None;
                 }
                 found = Some((best, r));
@@ -1072,9 +1095,11 @@ fn split_in(
                 }
             }
             if let (Some((b, at)), Some(beyond)) = (found, beyond) {
+                // (The nearest of another label is the least seen, or past ring r: never nearer.
+                // With every sample read, the least seen: none, infinitely far.)
                 let other =
                     least.iter().enumerate().filter(|(l, _)| *l != b.2).map(|(_, d)| *d).fold(f64::INFINITY, f64::min);
-                if r > rings {
+                if r >= rings {
                     return Some((b, other));
                 }
                 if other <= past || past >= b.0 + beyond || r >= (2 * at).max(at + 8) {
@@ -1087,13 +1112,6 @@ fn split_in(
     // Rows of `step`, each split into runs of cells whose middles are nearest one label's coasts.
     // The grid is anchored at 0°, 0° (rows and, in each row, cells in whole steps from it), so
     // splits of neighbouring areas fall on the same cells and meet without gaps or overlaps.
-    // (A cell after one decided at distance d1, its nearest of another label at least d2 off, `j`
-    // cells on: its nearest of the first is at most d1 + n1·j·dx off (n1 the parallel's radius at
-    // the middle of the cell's and its nearest's latitudes, the same along the row), and every one
-    // of another label at least d2 − n·j·dx, n at most the parallel's radius at the latitude of a
-    // sample nearer than d2: so `j` cells take the first's label while those two stay apart.)
-    let (e2, m_least) = (F * (2.0 - F), A * (1.0 - F * (2.0 - F)));
-    let n_most = |lat: f64| A / (1.0 - e2).sqrt() * lat.max(0.0).dcos() * (1.0 + 1e-9);
     let dy = (step / roadcore::geo::M_PER_DEG * 1e7).max(1.0) as i64;
     let mut rects: Vec<Vec<Ring>> = vec![Vec::new(); labels];
     let mut y = bb[1].div_euclid(dy) * dy;
@@ -1102,9 +1120,9 @@ fn split_in(
         let mid = (y + y1) / 2;
         let coslat = ((mid as f64) * 1e-7).to_radians().dcos().max(0.01);
         let dx = ((step / (roadcore::geo::M_PER_DEG * coslat)) * 1e7).max(1.0) as i64;
-        // (A cell's middle, `(x + x1) / 2`, rounds toward zero: two a cell apart are dx, or dx ± 1
-        // across 0°, apart.)
-        let dx_rad = ((dx + 1) as f64 * 1e-7).to_radians();
+        // (A cell's middle, `(x + x1) / 2`, rounds toward zero: two a cell apart are dx apart, or
+        // dx − 1 across 0°, never more.)
+        let dx_rad = (dx as f64 * 1e-7).to_radians();
         let lat = ((mid as f64) * 1e-7).to_radians().abs();
         let mut x = bb[0].div_euclid(dx) * dx;
         let mut run: Option<(i64, usize)> = None;
@@ -1127,17 +1145,7 @@ fn split_in(
                 // (Searched on as far as the rest of the row needs, both radii at their most.)
                 let (b, other) = query(p, Some(1e-3 + 2.0 * n_most(0.0) * dx_rad * (left - 1) as f64))?;
                 let n1 = radii(((p[1] + b.1[1]) as f64 * 0.5e-7).to_radians()).1;
-                let gap = other - b.0 - (1e-6 * (b.0 + other.min(1e9)) + 1e-3);
-                if gap > 0.0 {
-                    let n = n_most(lat - other.min(1e9) / (2.0 * m_least)) + n1;
-                    let mut most = (gap / (n * dx_rad)).floor();
-                    if reach.is_some() && n1 > 0.0 {
-                        most = most.min(((decides - b.0) / (n1 * dx_rad)).floor());
-                    }
-                    if most >= 1.0 {
-                        j += (most as i64).min(left - 1);
-                    }
-                }
+                j += settled(b.0, other, n1, lat, dx_rad, reach.map(|_| decides)).min(left - 1);
                 b
             } else {
                 query(p, None)?.0
@@ -1154,6 +1162,43 @@ fn split_in(
             .map(|(g, &l)| g.unwrap_or_else(|| within.intersect(&union_contours(std::mem::take(&mut rects[l])))))
             .collect(),
     )
+}
+
+/// The most a parallel's radius (`radii`'s second) can be at latitude `lat` (radians, its size) or
+/// nearer the equator: the ellipsoid's largest prime vertical radius, the pole's, by the cosine.
+fn n_most(lat: f64) -> f64 {
+    A / (1.0 - F * (2.0 - F)).sqrt() * lat.max(0.0).dcos() * (1.0 + 1e-9)
+}
+
+/// How many of a row's cells after one decided at distance `d1` take its label unsearched: its
+/// nearest of another label at least `other` off, `n1` the parallel's radius at the middle of the
+/// cell's and its nearest's latitudes (`length_with`'s, the same all along the row), `lat` the
+/// row's latitude (radians, its size), the cells' middles at most `dx_rad` apart, and with a reach,
+/// none farther from its nearest than `decides`.
+///
+/// `j` cells on, the cell's nearest of the first label is at most d1 + n1·J off (J = j·dx_rad),
+/// and each sample of another label s at least d − n_s·J, d ≥ `other` its distance from the cell:
+/// along a row, a sample's distance is a plane's (`length_with`'s radii fixed by its latitude).
+/// n_s is at most `n_most` at s's middle latitude, which lies within d / (2·m_least) of the row's,
+/// so at most `n_most(lat − d / (2·m_least))`: that grows with d by at most half `n_most(0)` /
+/// m_least a metre, so d − n_s·J grows with d while J is under 1.9, and then `other` bounds it.
+/// Past that the radius at its most anywhere, `n_most(0)`. A cell is taken only while the two stay
+/// apart by more than the distances' rounding (`1e-6` of them, and a millimetre): one at a tie is
+/// searched.
+fn settled(d1: f64, other: f64, n1: f64, lat: f64, dx_rad: f64, decides: Option<f64>) -> i64 {
+    let gap = other - d1 - (1e-6 * (d1 + other.min(1e9)) + 1e-3);
+    if !(gap > 0.0) {
+        return 0;
+    }
+    let m_least = A * (1.0 - F * (2.0 - F));
+    let near =
+        (gap / ((n_most(lat - other.min(1e9) / (2.0 * m_least)) + n1) * dx_rad)).floor().min((1.9 / dx_rad).floor());
+    let anywhere = (gap / ((n_most(0.0) + n1) * dx_rad)).floor();
+    let mut most = near.max(anywhere);
+    if let Some(d) = decides.filter(|_| n1 > 0.0) {
+        most = most.min(((d - d1) / (n1 * dx_rad)).floor());
+    }
+    most.max(0.0) as i64
 }
 
 /// A ring's points with none more than `step` metres apart.
@@ -1552,15 +1597,26 @@ mod tests {
     /// The splits' way (`FAST`: the skip along a row, the buckets by the step) changes no label:
     /// every split equal to every cell searched in half-degree buckets, and, the coasts given
     /// whole, to the split by hand, west and east of 0° and across it, at the equator, mid and high
-    /// latitudes, north and south, with and without a reach (one too short for some points: None
-    /// both ways), two labels and four.
+    /// latitudes, north and south, within half a degree of the poles, at the antimeridian, with
+    /// and without a reach (one too short for some points: None both ways), two labels and four.
     #[test]
     fn split_skips_nothing_it_decides() {
         let deg = 10_000_000i64;
-        let at = [(10i64, 0i64, 1000.0), (-58, 45, 1000.0), (10, 64, 300.0), (0, -70, 1000.0), (-120, -34, 700.0)];
-        for (k, &(lon, lat, step)) in at.iter().enumerate() {
-            let (x, y) = (lon * deg + deg / 4, lat * deg);
-            let within = Area::from_rings(&[sq(x - deg / 2, y - deg / 4, deg / 2)]);
+        // (Each: the area's middle (E7), its side, the step.)
+        let at = [
+            (10 * deg + deg / 4, 0, deg / 2, 1000.0),
+            (-58 * deg + deg / 4, 45 * deg, deg / 2, 1000.0),
+            (10 * deg + deg / 4, 64 * deg, deg / 2, 300.0),
+            (deg / 4, -70 * deg, deg / 2, 1000.0),
+            (-120 * deg + deg / 4, -34 * deg, deg / 2, 700.0),
+            (10 * deg, -896 * deg / 10, deg / 4, 300.0),
+            (10 * deg, -897 * deg / 10, deg / 4, 1000.0),
+            (-40 * deg, 895 * deg / 10, deg / 4, 1000.0),
+            (1798 * deg / 10, 30 * deg, deg / 4, 1000.0),
+        ];
+        for (k, &(x, y, side, step)) in at.iter().enumerate() {
+            let (lon, lat) = (x as f64 * 1e-7, y as f64 * 1e-7);
+            let within = Area::from_rings(&[sq(x - side / 2 - deg / 4, y - side / 2, side)]);
             let coasts: Vec<Area> =
                 (0..4).map(|j| islands(k as u64 * 10 + j as u64, x - deg / 4, y, 3, deg / 12)).collect();
             for labels in [vec![0, 1, 0, 1], vec![0, 1, 2, 3]] {
@@ -1627,5 +1683,132 @@ mod tests {
                 assert_eq!(all[k], one, "coast {k}, reach {reach:?}");
             }
         }
+    }
+
+    /// A coast of one point.
+    fn point(p: Pt) -> Area {
+        Area { polys: vec![vec![vec![p, [p[0], p[1] + 1]]]] }
+    }
+
+    /// `split_in` of point coasts, `FAST` and every cell searched in half-degree buckets the same,
+    /// and the split by hand's too (without a reach): the split.
+    fn split_checked(within: &Area, coasts: &[(Pt, usize)], step: f64, reach: Option<f64>) -> Option<Vec<Area>> {
+        let areas: Vec<Area> = coasts.iter().map(|c| point(c.0)).collect();
+        let labelled: Vec<(&Area, usize)> = areas.iter().zip(coasts.iter().map(|c| c.1)).collect();
+        let wanted: Vec<usize> = (0..=coasts.iter().map(|c| c.1).max().unwrap()).collect();
+        let fast = split_in(within, &labelled, &wanted, step, reach, FAST);
+        let each = split_in(within, &labelled, &wanted, step, reach, Search { skip: false, bucket: Some(5_000_000) });
+        assert_eq!(fast, each, "searched each cell");
+        if reach.is_none() {
+            assert_eq!(fast.as_ref(), Some(&split_by_hand(within, &labelled, &wanted, step)), "by hand");
+        }
+        fast
+    }
+
+    /// A row's cells far from every coast (one search past 200° of longitude, across the
+    /// antimeridian's side of the grid) go to their nearest, north and south of the equator: none
+    /// taken unsearched from a search that saw no other coast.
+    #[test]
+    fn a_split_far_from_its_coasts_searches_on() {
+        let deg = 10_000_000i64;
+        for (y0, y1) in [(-deg / 10, -1), (1, deg / 10)] {
+            let within = Area::from_rings(&[vec![
+                [-30 * deg, y0],
+                [1795 * deg / 10, y0],
+                [1795 * deg / 10, y1],
+                [-30 * deg, y1],
+            ]]);
+            let v = split_checked(&within, &[([178 * deg, 0], 0), ([179 * deg, 0], 1)], 20_000.0, None).unwrap();
+            assert!(!v[1].is_empty(), "the cells east of 178.5° are the second's");
+        }
+    }
+
+    /// Across the antimeridian (the grid's longitudes as they are, 179.9° and −179.9° 359.8° apart)
+    /// and at a pole, with and without a reach.
+    #[test]
+    fn a_split_at_the_antimeridian_and_the_poles_is_each_cells_nearest() {
+        let deg = 10_000_000i64;
+        let within = Area::from_rings(&[sq(1795 * deg / 10, -deg / 10, 4 * deg / 10)]);
+        let coasts =
+            [([1797 * deg / 10, 0], 0), ([1799 * deg / 10 + deg / 20, deg / 10], 1), ([-1799 * deg / 10, 0], 1)];
+        for reach in [None, Some(450_000.0)] {
+            split_checked(&within, &coasts, 1000.0, reach);
+        }
+        for lat in [-899 * deg / 10, 898 * deg / 10] {
+            let within = Area::from_rings(&[sq(-deg / 10, lat - deg / 20, deg / 10)]);
+            let s = lat.signum();
+            // (The nearest a quarter-turn of longitude off, nearer than one 40 km south.)
+            let coasts =
+                [([0, lat - s * 4 * deg / 10], 0), ([90 * deg, lat], 1), ([-170 * deg, lat + s * deg / 20], 2)];
+            for reach in [None, Some(450_000.0)] {
+                split_checked(&within, &coasts, 300.0, reach);
+            }
+        }
+    }
+
+    /// A search that stops before it sees another coast bounds that coast by how far it looked: the
+    /// cells past the median line with a coast 20° on are that coast's, not the first's.
+    #[test]
+    fn a_coast_out_of_sight_bounds_the_skip_by_how_far_it_looked() {
+        let deg = 10_000_000i64;
+        let within =
+            Area::from_rings(&[vec![[0, -deg / 200], [20 * deg, -deg / 200], [20 * deg, deg / 200], [0, deg / 200]]]);
+        let v = split_checked(&within, &[([-deg / 20, 0], 0), ([20 * deg + deg / 20, 0], 1)], 1000.0, None).unwrap();
+        assert!(!v[1].is_empty(), "the second's half");
+    }
+
+    /// With a reach, cells farther from their nearest than it are never taken unsearched: past it,
+    /// None.
+    #[test]
+    fn a_skip_stops_at_the_reach() {
+        let deg = 10_000_000i64;
+        let within =
+            Area::from_rings(&[vec![[0, -deg / 200], [5 * deg, -deg / 200], [5 * deg, deg / 200], [0, deg / 200]]]);
+        let coasts = [([-deg / 20, 0], 0), ([30 * deg, 0], 1)];
+        assert_eq!(split_checked(&within, &coasts, 1000.0, Some(450_000.0)), None);
+    }
+
+    /// `settled` never takes a cell its first's coast could lose: for coasts on a row's parallel
+    /// behind it and on a parallel nearer the equator ahead (whose distance falls faster along the
+    /// row than the row's own radius), at high latitudes, every cell it takes is nearer the first.
+    #[test]
+    fn settled_takes_no_cell_another_coast_is_nearer() {
+        let deg = 10_000_000.0;
+        for lat in [60.0f64, 70.0, 80.0, 85.0, 89.0] {
+            for south in [0.0005f64, 0.002, 0.004, 0.008, 0.02] {
+                for ahead in [0.05f64, 0.15, 0.3, 0.5, 0.8] {
+                    for step in [100.0, 1000.0] {
+                        let y = (lat * deg) as i64;
+                        let n = radii(lat.to_radians()).1;
+                        let dx = ((step / n).to_degrees() * deg) as i64;
+                        let p = [0i64, y];
+                        let q = [-dx / 3, y];
+                        let s = [(ahead.to_degrees() * deg) as i64, ((lat - south.to_degrees()) * deg) as i64];
+                        let (d1, d2) = (length_m(p, q), length_m(p, s));
+                        let n1 = radii(((p[1] + q[1]) as f64 * 0.5e-7).to_radians()).1;
+                        let dx_rad = (dx as f64 * 1e-7).to_radians();
+                        let j = settled(d1, d2, n1, lat.to_radians(), dx_rad, None);
+                        for k in 1..=j.min(1_000_000) {
+                            let pk = [k * dx, y];
+                            assert!(
+                                length_m(pk, q) < length_m(pk, s),
+                                "{lat}°, {south} rad south, {ahead} rad ahead, step {step}: cell {k} of {j}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A cell at what may be a tie, by the bound, is searched: a gap of exactly four cells' bound
+    /// takes three, one more than the distances' rounding takes four.
+    #[test]
+    fn settled_leaves_a_tie_to_the_search() {
+        let (d1, n1, dx_rad) = (1000.0, 6_000_000.0, 1e-4);
+        let cell = (n_most(0.0) + n1) * dx_rad;
+        assert_eq!(settled(d1, d1 + 4.0 * cell, n1, 0.0, dx_rad, None), 3);
+        let rounding = 1e-6 * (d1 + d1 + 4.0 * cell) + 1e-3;
+        assert_eq!(settled(d1, d1 + 4.0 * cell + rounding + 0.01, n1, 0.0, dx_rad, None), 4);
     }
 }

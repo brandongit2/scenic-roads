@@ -565,7 +565,9 @@ reports it (`disabled`, per region and in all, and `enabled_km2`).
   on a grid of `step` (default 1 km; 100 m to 20 km): the split follows the median line within a
   cell. (Along each row of the grid, a cell's nearest coast is searched, and the cells after it that
   the triangle inequality settles, no other coast's point able to come nearer within them, take its
-  side unsearched: `geom::split_in`, the same split as a search of every cell. A remainder's median
+  side unsearched: `geom::split_in`, the same split as a search of every cell. A cell's search reads
+  its coasts' points in buckets outward from it until no unread point can be nearer, at every
+  latitude, the poles' included, and reads them all before it gives up. A remainder's median
   line splits among all its regions in one pass, `geom::nearest_split`.) A split by nearest coast names every competing coast in `than`; the complementary split
   (`to` and `than` swapped) is exactly the rest (ties go the same way in both) when each coast is passed as its own part, one per region (`land:a`, `land:b`, not `{ union = ["land:a", "land:b"] }`): a point two coasts share goes to the coast that orders first (by box, point count, point sums, then rings), so the order is total only between coasts given separately.
 - `{ cut = <part>, by = "line:<name>", keep = "left" | "right" }`: the part on one side of a line as
