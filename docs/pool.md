@@ -838,11 +838,11 @@ thousandths:
     the NAS from its link: **undecidable** (on 19 and 20 Nov 57.5 % of the readings by the
     cadence, 34.5 % reading by reading; nearly all the mini's). They never halve the window and
     never let it grow past the knee. While they rise against those a step lighter in all the pool
-    moves (its own too) it doesn't grow at all (the hold the burst's H5 needs, and what keeps
-    jobs of 250 on the mini within the replay's cliff bound: without it, 18 readings at the cliff,
-    7 in a row). Risen past 3 times their best, the window goes back to **the knee**: the heaviest
+    moves (its own too) it doesn't grow at all (what keeps jobs of 250 on the mini within the
+    replay's cliff bound: without it, 18 readings at the cliff, 7 in a row; the burst's H5 doesn't
+    need it). Risen past 3 times their best, the window goes back to **the knee**: the heaviest
     weight in use read in the last `nas-track-minutes`, before the cadence, with answers under 3
-    times their best; never under it.
+    times their best; never under it, or halved where there's none.
   - Otherwise they are **rising** while their lower quartile is past the upper quartile of those a
     step lighter, and **not the pool's** while all the pool's jobs move under a step, or their
     median is within the upper quartile of those a step lighter, or those a step heavier were no
@@ -857,8 +857,10 @@ thousandths:
   further cut until the load has fallen to the window and a span has passed. **With room** (the
   answers read, not rising and under the knee, the disks with room for the next job), it grows
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a
-  minute, never more than one job past the load its readings tested, and only on fresh readings
-  from every Mac holding leased jobs. Otherwise it holds, and says why
+  minute, never more than one job past the load its readings tested, only on fresh readings from
+  every Mac holding leased jobs, and only once the jobs last started have run a span (their
+  answers in the reading) and, where the weight in use rose a step or more, a growth cadence more
+  (their answers judged). Otherwise it holds, and says why
   (`nas::Hold`). It is never more than the whole: the weights are estimates, so the answers may say
   the NAS is full before them, but past the whole they'd admit more than the probe measured. It is
   kept in the lead's store, so a restart within 30 minutes takes it up.
@@ -915,22 +917,32 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 181 (146) | 222 (215) | 26, 4 (26, 4) | 0 (0) |
-  | jobs of 100, on a Mac not answering | 848 (685) | 382 (315) | 21 (63) | 70, 9 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on a Mac not answering | 340 (342) | 400 (416) | 75 (81) | 82, 9 (76, 7) | 6, 1 (6, 1) |
-  | jobs of 100, on the mini | 930 (685) | 413 (315) | 18 (63) | 82, 9 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on the mini | 380 (342) | 464 (416) | 83 (81) | 80, 5 (76, 7) | 7, 1 (6, 1) |
+  | the readings as they were | – | 118 (146) | 245 (215) | 26, 4 (26, 4) | 0 (0) |
+  | jobs of 100, on a Mac not answering | 598 (685) | 308 (315) | 52 (63) | 46, 4 (41, 4) | 3, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 269 (342) | 378 (416) | 135 (81) | 49, 4 (76, 7) | 3, 1 (6, 1) |
+  | jobs of 100, on the mini | 578 (685) | 306 (315) | 105 (63) | 48, 6 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on the mini | 282 (342) | 360 (416) | 93 (81) | 58, 4 (76, 7) | 4, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
-  It starts about as many jobs as the rule judging against the weight, or up to 36 % more, at the
-  model's cliff about as often (5 to 7 readings against 6, never two in a row), at the disks'
-  target up to twice as often. As the readings were it is at its floor a little more (222
-  readings against 215); by the last cut's cause, 111 of them after cuts on deadlines missed (140),
-  57 on the answers (45), 31 on a disk reading at the target (the rule has no such cut; 7 of its
-  cuts fell on one) and 20 on the smoothed share (20). In 155 of the 222 the answers were
-  undecidable too: a coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 32 to 35 %, cut once (back
-  to the knee), where the weight's rule cut it to 5 %. **Assumed:** a job adds to the disks' busy
-  share what a thousandth of measured use added over those readings (0.046 %).
+  It starts 13 to 21 % fewer jobs than the rule judging against the weight, at the model's cliff
+  less often (3 to 5 readings against 6, never two in a row), at the disks' target at most 1.2
+  times as often. As the readings were it is at its floor more (245 readings against 215); by the last
+  cut's cause, 134 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a
+  disk reading at the target (the rule has no such cut; 7 of its floor readings followed a cut
+  that fell on one) and 20 on the smoothed share (20). In 177 of the 245 the answers were
+  undecidable too: a coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window
+  at 32 %, cut once (back to the knee), where the weight's rule went from 5 % to 22 % with 2 cuts.
+  With the disks read at half the NAS's true load, or not read
+  (`bursts_with_the_disks_read_low_or_not_at_all`), the burst's cases at the cliff (s; the
+  weight's rule's in brackets, the same either way):
+
+  | | paced | heavy | H1 | R2 | Q1 | one Mac, paced | one Mac, R2 |
+  |---|---|---|---|---|---|---|---|
+  | the disks at half | 25 (135) | 105 (260) | 140 (295) | 270 (300) | 220 (280) | 15 (135) | 300 (270) |
+  | the disks not read | 25 (135) | 105 (260) | 140 (295) | 270 (300) | 35 (280) | 15 (135) | 300 (270) |
+
+  **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
+  those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and

@@ -9810,11 +9810,11 @@ mod tests {
                 break;
             }
         }
-        // (Held a span for the job's answers to show, 3 readings; then 50 to 1000 doubling a
-        // minute, 25 or 26.)
+        // (Held a span for the job's answers to show and a growth cadence for them to be read, 9
+        // readings; then 50 to 1000 doubling a minute, 25 or 26.)
         assert!(
-            (28..=30).contains(&readings),
-            "doubling a minute from a step, once the job out shows in the answers: {readings} readings"
+            (33..=36).contains(&readings),
+            "doubling a minute from a step, once the job out is judged in the answers: {readings} readings"
         );
         let g2 = w.ask(&a).unwrap().expect("two halves now");
         // (The NAS answering four times its best as what m1 moves rose a job: half what's in use,
