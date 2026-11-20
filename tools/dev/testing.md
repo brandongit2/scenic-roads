@@ -112,7 +112,7 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
 ## Before reporting: tools/dev/check.sh (#273, 18 Oct)
 
 Run `tools/dev/check.sh` in your worktree after your last commit, and report only after it prints
-PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
+PASS. It runs what publish would refuse your work on: `cargo fmt` (run, not only checked: below), publish's clippy line
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`) on the crates the change
 affects (#1123: the packages of the tests' set below and those holding a changed file; every crate
 when a manifest, Cargo.lock, clippy.toml, the toolchain, `.cargo/`, a crate outside the workspace or
@@ -123,7 +123,7 @@ when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/tes
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/report-guard.zsh` when report-guard.sh (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records, its check-running file) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/report-guard.zsh` when report-guard.sh (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records, its check-running file, its stop at a failed part, its tests' key) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -136,6 +136,15 @@ them for nothing. Each test is its own process, as in publish's suite. guards.sh
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
 Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
+**It stops at a failed part (#1524).** The parts before clippy (fmt, guards and the other checks
+of seconds) all run, so each of their failures shows in one run; after any failure, clippy, prod,
+the tests and python don't run (`not run (<parts> failed)`), the run ends `FAIL: <parts> failed`
+and records nothing. (A run failing fmt at its 4th second had gone on 16 min through clippy, prod
+and the tests, #1076; one failing fmt on a change to `names` ended at 237 s, now at 10 s.)
+fmt runs `cargo fmt -- -l` (and tools/bldfield's) in the checkout: a file it formats fails the part,
+the run naming it (`check.sh formatted these files here`): commit it and run again. rustfmt writes
+only a file it changes, so a formatted tree is left untouched; a run that formatted one fails, and
+records nothing either way (its tree changed during the run).
 Clippy runs after the other parts, then prod, just before the tests; when two of the three run
 here, they take one turn with the shared build folder (#1123, below: a hold, let
 go as the first test starts), so the tests' build doesn't queue again behind other agents (10 Nov:
@@ -503,8 +512,11 @@ send and its end of a gone span) and devjob.zsh's events, whatever the names hol
 ## Tests on the test Mac (#442, 19 Oct)
 
 check.sh's `tests` part and publish.sh's nextest suite run on the test Mac through
-`tools/app/remote-tests.sh <key> <tree> <command>` (tracked). Key: the worktree's folder name
-(`main-checkout` for the main checkout, `publish` for publish's snapshot).
+`tools/app/remote-tests.sh <key> <tree> <command>` (tracked). Key: check.sh's is the worktree's
+folder name and `.check` (`main-checkout.check` for the main checkout), an agent's own runs' the
+worktree's folder name, `publish` for publish's snapshot. check.sh's own key (#1524): one shared with
+the agent's runs kept #1076's check 490 s behind its agent's 22-min run. Both of a worktree's keys
+are its own for the disk rule and the drop below.
 - One run per key at a time: a lock on the test Mac (`~/scenic-check/<key>/.busy`, naming this Mac, the
   process, its start time and a nonce), taken before the copy and held to the end. A second run of
   the same key prints "key … is in use … waiting" and waits (30 min, then refuses: below). A lock whose
@@ -567,7 +579,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   sends that repo's worktrees), then the least recently used, then the other slots' build folders,
   least recently used first. Never a locked key (a lock younger
   than 6 h) nor a slot in use; a folder is removed by taking its lock or slot first. The sweep also drops a removed
-  worktree's key (`remote-tests.sh --drop <key>`). Tests: `tools/app/test/remote-tests.zsh`.
+  worktree's keys (`remote-tests.sh --drop <key>`: `<key>` and `<key>.check`). Tests: `tools/app/test/remote-tests.zsh`.
 fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)

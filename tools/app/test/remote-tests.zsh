@@ -272,6 +272,19 @@ out=$(make_room $base me "m1:/repo/.git" "me live other" $base/.build/1)
 [[ $(have) == "elsewhere heldgone live me plain" && $(<$base/me/origin) == "m1:/repo/.git" ]] \
   && ok "a gone worktree's copy goes" || no "a gone worktree's copy goes" "left $(have): $out"
 
+# check.sh's key, <worktree>.check (#1524), is its worktree's: kept while the worktree is live, gone
+# with it.
+fresh; target 1
+copy me 10 1; copy live.check 10 5 "m1:/repo/.git"; copy gone.check 10 5 "m1:/repo/.git"
+disk_kb=$(( $(du -sk $base | cut -f1) + 100000 ))
+out=$(make_room $base me "m1:/repo/.git" "me live" $base/.build/1)
+[[ $(have) == "live.check me" ]] && ok "a check's key goes with its worktree" || no "a check's key goes with its worktree" "left $(have): $out"
+
+# A drop removes a key's folder and its check's, not one in use nor another key's.
+fresh; copy wt 10 1; copy wt.check 10 1; copy wt2 10 1; copy u 10 1; copy u.check 10 1; mkdir $base/u.check/.busy
+out=$(HOME=$tmp; remote_drop wt; remote_drop u)
+[[ $(have) == "u.check wt2" && $out == "in use: u.check" ]] && ok "a drop: the key's and its check's" || no "a drop: the key's and its check's" "left $(have): $out"
+
 # A removal cut short (.gone-*) is finished.
 fresh; copy me 10 1; mkdir -p $base/.gone-x-1/target
 disk_kb=$(( $(du -sk $base | cut -f1) + 100000 ))

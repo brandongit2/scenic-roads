@@ -3,7 +3,9 @@
 # worktree, after committing:
 #   tools/dev/check.sh
 # It checks the branch's change against main (merge-base..working tree, untracked files included):
-#   fmt       cargo fmt --check (and tools/bldfield's)
+#   fmt       cargo fmt in this checkout (and tools/bldfield's), listing what it formatted: a file it
+#             formatted fails the part (commit it and run again; nothing is recorded for a tree changed
+#             during the run)
 #   clippy    publish's line on the crates the change affects (#1123: the tests' packages and those
 #             changed; every crate when a manifest, the lints or the toolchain changed; none when no
 #             crate did): cargo clippy -q -p … --all-targets -- -A clippy::all
@@ -27,7 +29,7 @@
 #   gitguard  tools/dev/test/git-guard.zsh (whose checkout a git write goes to), when the git guard,
 #             shell-guard.sh or shellwords.py changed
 #   record    tools/dev/test/check-record.zsh (this script on a toy repo: what it records, its
-#             check-running file), when it changed
+#             check-running file, its stop at a failed part, its tests' key), when it changed
 #   reportguard tools/dev/test/report-guard.zsh (the SubagentStop hook's verdicts), when it changed
 #   prodtest  tools/dev/test/check-prod.zsh (this script's clippy and prod on a toy workspace, real cargo),
 #             when it changed
@@ -43,12 +45,16 @@
 #             keep time testkit and the cargo shim say), when ran.zsh, its test, testkit or the shim changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     the tests tools/dev/affected-tests.sh prints, as one `cargo nextest run` (its --nextest),
-#             run on the test Mac (tools/app/remote-tests.sh; here on the test Mac or with SCENIC_CHECK_LOCAL=1;
-#             else, kept from it, not run: a FAIL)
+#             run on the test Mac (tools/app/remote-tests.sh, key <worktree>.check: never its agent's
+#             own runs' key; here on the test Mac or with SCENIC_CHECK_LOCAL=1; else, kept from it,
+#             not run: a FAIL)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
 # Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one build
 # at a time (#915): a wait for another worktree's build is printed here as it happens (SCENIC_CARGO_SAY).
+# It stops at a failed part (#1524): the parts listed before clippy all run (fmt, guards and the
+# other checks of seconds), so each of their failures shows at once; after a failure, clippy, prod,
+# the tests and python don't run ("not run", naming what failed) and nothing is recorded.
 # Prints PASS/FAIL/REUSE/skip per part, with its wall and CPU time on this Mac (tests: the test Mac's
 # too); each part's whole output is kept in ~/Library/Logs/scenic/check-<time>/. A clean checkout
 # whose tree and merge-base tree a pass already recorded passes at once (no part runs again).
@@ -124,7 +130,7 @@ if [[ -n $treekey ]] && same=$(grep -F -- " $treekey" $passed 2>/dev/null | tail
   exit 0
 fi
 has() { local p; for p in $changed; do [[ $p == ${~1} ]] && return 0; done; return 1 }
-typeset -a summary; failed=0
+typeset -a summary fails  # (fails: the parts that failed)
 part() {  # part [--parse <kinds>] <name> <command...>: runs it, its output to $logs/<name>.log, with its wall and CPU time
   local name rc t parse=; [[ $1 == --parse ]] && { parse=$2; shift 2 }
   name=$1; shift
@@ -139,10 +145,18 @@ part() {  # part [--parse <kinds>] <name> <command...>: runs it, its output to $
   [[ -n $fid ]] && { (( rc )) && dj_end $fid fail exit $rc || dj_end $fid ok }
   t=( ${${=t}%s} 0 0 0 ); t=$(printf '%.0f s, cpu %.0f s' ${t[1]} $(( t[2] + t[3] )))
   if (( rc == 0 )); then summary+="PASS  $name  ($t)"; print "PASS  ($t)"
-  else summary+="FAIL  $name  ($t; $logs/$name.log)"; print "FAIL  ($t)"; failed=1
+  else summary+="FAIL  $name  ($t; $logs/$name.log)"; print "FAIL  ($t)"; fails+=$name
     tail -25 $logs/$name.log | sed 's/^/    /'; fi
 }
 skip() { summary+="skip  $1  ($2)"; dj_span part $1 $EPOCHREALTIME $EPOCHREALTIME skip why $2 }
+# The stop (#1524): after a failed part, the parts of minutes don't run (a run failing fmt at its
+# 4th second had gone on 16 min through clippy, prod and the tests, #1076).
+stopped() {  # stopped <part>: 0 when a part failed: <part> not run, said so
+  (( ${#fails} )) || return 1
+  local why="not run: ${(j:, :)fails} failed"
+  summary+="skip  $1  ($why)"; print -r -- "$1 ... not run (${(j:, :)fails} failed)"
+  dj_span part $1 $EPOCHREALTIME $EPOCHREALTIME skip why $why
+}
 reused=
 reuse() {  # reuse <name> <commit> <why>: the part's pass at <commit> holds here
   summary+="REUSE $1  (passed at ${2:0:7}: $3)"; reused+=" reused $1=$2"
@@ -163,7 +177,17 @@ if [[ -n $treekey ]]; then
 fi
 notreused() { [[ -n ${why[$1]:-} ]] && print -r -- "$1: not reused: ${why[$1]}" }
 
-part fmt zsh -c 'cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml'
+# (Formatting it here, not only checking: the fix is the formatting, and the run says what to commit.)
+fmtpart() {
+  local out
+  out=$( { cargo fmt -- -l && cargo fmt --manifest-path tools/bldfield/Cargo.toml -- -l } 2>&1 ) ||
+    { print -r -- "$out"; print "cargo fmt failed (above): fix the code it can't read and run check.sh again"; return 1 }
+  [[ -z $out ]] && return 0
+  print -r -- "check.sh formatted these files here (cargo fmt):"; print -r -- "${out//${(b)root}\//}"
+  print "Commit them and run check.sh again (the run was on the code before the formatting)."
+  return 1
+}
+part fmt fmtpart
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
@@ -257,8 +281,9 @@ holdoff() {
 }
 clippyset; cset=( $reply )
 if [[ ${verdict[clippy]:-} == reuse ]]; then nrun=0; else nrun=$(( (${#cset} > 0) + rustin )); fi
-(( nrun + willtest >= 2 )) && holdon
+(( nrun + willtest >= 2 && ! ${#fails} )) && holdon
 if [[ ${verdict[clippy]:-} == reuse ]]; then reuse clippy ${from[clippy]} ${why[clippy]}
+elif stopped clippy; then :
 else notreused clippy
   if (( ${#cset} )); then
     print -r -- "${(j: :)cset}" > $logs/clippy-packages
@@ -274,6 +299,7 @@ fi
 # user may be what breaks), run when a crate or what all build from changed; its inputs are clippy's,
 # so clippy's reuse stands for it.
 if [[ ${verdict[clippy]:-} == reuse ]]; then reuse prod ${from[clippy]} ${why[clippy]}
+elif (( rustin )) && stopped prod; then :
 elif (( rustin )); then part --parse cargo prod cargo check -q --workspace --lib --bins
 else skip prod "no workspace crate changed"; fi
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
@@ -283,6 +309,7 @@ else skip prod "no workspace crate changed"; fi
 rt=$root/tools/app/remote-tests.sh
 # (Test builds without debug info: Cargo.toml's [profile.test], #918, the same as an agent's own runs.)
 if (( ${#tests} )) && [[ ${verdict[tests]:-} == reuse ]]; then reuse tests ${from[tests]} ${why[tests]}
+elif (( ${#tests} )) && stopped tests; then :
 else
   if (( ${#tests} )) && [[ ${verdict[tests]:-} == partial ]]; then
     # (Only the tests reading main's changes at run time; the pass vouches for the rest.)
@@ -301,9 +328,11 @@ else
     run+='; exit $rc'
   fi
   if (( ${#tests} )) && (( ! ${#nx} )); then
-    summary+="FAIL  tests  (affected-tests.sh --nextest couldn't read $logs/tests-run)"; print "tests ... FAIL"; failed=1
+    summary+="FAIL  tests  (affected-tests.sh --nextest couldn't read $logs/tests-run)"; print "tests ... FAIL"; fails+=tests
   elif (( ${#tests} )); then
-    key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout
+    # (Its own key, <worktree>.check (#1524): an agent's own runs take the worktree's name, and
+    # #1076's check queued 490 s behind its agent's 22-min run on that key.)
+    key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout; key+=.check
     part tests $rt $key $root $run
     # (The test Mac's own wall and CPU, which this Mac's time of the part doesn't count.)
     r=$(grep -h '^remote-tests: the run took' $logs/tests.log | tail -1)
@@ -330,13 +359,16 @@ if (( ${#py} )); then
       (cd $d && uv run --quiet --project $root/$proj python -m unittest discover -p 'test_*.py') || return 1
     done
   }
-  part python pycheck
+  stopped python || part python pycheck
 else skip python "no producers/ or dem/ Python changed"; fi
 
 print "\n== check.sh summary (${head0:0:7}) =="
 print -l -- $summary
 djstatus=fail
-if (( failed )); then print "FAIL: fix the parts above before reporting"; exit 1; fi
+if (( ${#fails} )); then
+  print -r -- "FAIL: ${(j:, :)fails} failed (each one's output above, whole in its log): fix and run check.sh again"
+  exit 1
+fi
 # (Not recorded: a pass names the tree it checked, which must be HEAD's, the same at both ends.)
 notrec() { print -r -- "PASS, but NOT recorded: $1"; djwhy=$2; exit 1 }
 head1=$(git rev-parse HEAD)

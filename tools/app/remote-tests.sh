@@ -11,12 +11,16 @@
 # Mac, so the others keep building and serving.)
 #
 #   tools/app/remote-tests.sh <key> <source dir> <shell command>
-#   tools/app/remote-tests.sh --drop <key>     removes the test Mac's folder for <key> (unless in use)
+#   tools/app/remote-tests.sh --drop <key>     removes the test Mac's folders for <key> and <key>.check
+#                                              (unless in use)
 #
 # The key's lock: one run per key at a time (~/scenic-check/<key>/.busy, naming this Mac, process,
 # its start time and a nonce), taken before the copy and held until this script exits; a second run
 # of the same key waits for it (up to 30 min, then refuses). A lock whose process on this Mac is
 # gone (or is another process under a reused PID), or older than 6 h, is taken over.
+# A worktree's keys: its folder name, an agent's own runs', and <name>.check, tools/dev/check.sh's
+# tests part's (#1524: a key of its own, so a check never waits behind its agent's run, as #1076's
+# did 490 s); both are the worktree's for the disk rule and the drop below.
 # The tree: the source dir's tracked files and its untracked, not-ignored ones (as on disk,
 # uncommitted edits and symlinks included) are copied by rsync into the test Mac's
 # ~/scenic-check/<key>/src; any file or symlink there not in that list, and then any empty folder,
@@ -159,7 +163,7 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
   if [[ -n $origin ]]; then
     print -r -- "$origin" > $base/$key/origin
     for d in $base/*(/); do
-      [[ ${d:t} != $key && $(cat $d/origin 2>/dev/null) == "$origin" && ${live[(Ie)${d:t}]} == 0 ]] || continue
+      [[ ${d:t} != $key && $(cat $d/origin 2>/dev/null) == "$origin" && ${live[(Ie)${${d:t}%.check}]} == 0 ]] || continue
       drop_copy $base $d "its worktree is gone"
     done
   fi
@@ -339,11 +343,13 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   exit 0
 }
 
-remote_drop() {  # on the test Mac: <key>
-  local base=~/scenic-check key=$1
+remote_drop() {  # on the test Mac: <key>: its folder and <key>.check's
+  local base=~/scenic-check key=$1 k
   [[ -n $key && $key != .* && $key != */* ]] || exit 2
-  [[ -d $base/$key/.busy ]] && { print "in use: $key"; exit 0; }
-  rm -rf $base/$key
+  for k in $key $key.check; do
+    if [[ -d $base/$k/.busy ]]; then print "in use: $k"; else rm -rf $base/$k; fi
+  done
+  return 0
 }
 
 # --- This side ------------------------------------------------------------------------------------
@@ -452,16 +458,16 @@ local_main() {  # <key> <source dir> <command>
   print -rn -- '' > $tmp/status
   local full="$envs$cmd"
   # The key's origin, for the test Mac's disk (make_room): a key naming a linked worktree of this
-  # Mac's repo is that worktree's; sent with the names of the repo's worktrees now, so a gone one's
-  # copy goes. (Another key, as main-checkout or publish, has none.)
+  # Mac's repo (its name, or check.sh's <name>.check) is that worktree's; sent with the names of the repo's worktrees now, so a gone one's
+  # copy goes. (Another key, as main-checkout.check or publish, has none.)
   # (The list read whole, or none sent: it must name this key, or nothing is taken for gone.)
   local origin= live= gd common
   local -a wts
   gd=$(git -C $src rev-parse --absolute-git-dir 2>/dev/null)
   common=$(git -C $src rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-  if [[ -n $gd && $gd != "$common" && $key == ${src:t} ]] && wts=(${(f)"$(git -C $src worktree list --porcelain)"}); then
+  if [[ -n $gd && $gd != "$common" && ${key%.check} == ${src:t} ]] && wts=(${(f)"$(git -C $src worktree list --porcelain)"}); then
     wts=(${(M)wts:#worktree *}); wts=(${wts##*/})
-    if (( ${wts[(Ie)$key]} )); then origin="$me:$common"; live=${(j: :)wts}; fi
+    if (( ${wts[(Ie)${key%.check}]} )); then origin="$me:$common"; live=${(j: :)wts}; fi
   fi
   # (No MULTIOS here: a coprocess's stdin plus the script's would be joined into one never-ending input.)
   setopt localoptions nomultios

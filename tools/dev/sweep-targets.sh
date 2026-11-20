@@ -203,10 +203,11 @@ for wt in $repo/.claude/worktrees/*(N/); do
   if [[ -z $dry ]]; then
     [[ -n $lock ]] && git worktree unlock $wt 2>/dev/null
     git worktree remove $wt 2>/dev/null || say "could not remove ${wt:t}"
-    # Its copy and build folder on the test Mac (tools/app/remote-tests.sh, #442), unless a run uses it;
-    # an unreachable test Mac drops it later itself (the next run from this repo: its worktree gone).
+    # Its copies on the test Mac (tools/app/remote-tests.sh, #442: its key's and check.sh's,
+    # <name>.check), unless a run uses one; an unreachable test Mac drops them later itself (the next
+    # run from this repo: its worktree gone).
     if [[ ! -d $wt && -x $repo/tools/app/remote-tests.sh ]]; then
-      $repo/tools/app/remote-tests.sh --drop ${wt:t} >/dev/null 2>&1 && say "dropped ${wt:t}'s folder on the test Mac"
+      $repo/tools/app/remote-tests.sh --drop ${wt:t} >/dev/null 2>&1 && say "dropped ${wt:t}'s folders on the test Mac"
     fi
   fi
 done

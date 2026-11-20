@@ -2,8 +2,11 @@
 # tools/dev/check.sh on a toy repo (#980): what it records in check-passed. A pass names the tree
 # it checked; nothing is recorded when HEAD moved during the run, a file was written or appeared
 # then, or the checkout wasn't clean at the start. Its parts are stubs (cargo, guards.sh,
-# affected-tests.sh, check-reuse.py); the stub cargo's clippy can hold the run while the test
-# changes the checkout; and its check-running file, there while it runs, gone after. Run by check.sh.
+# affected-tests.sh, check-reuse.py, remote-tests.sh); the stub cargo's clippy can hold the run
+# while the test changes the checkout; its check-running file, there while it runs, gone after; its
+# stop at a failed part (#1524): fmt formatting a file, or guards failing, and clippy, prod and the
+# tests don't run; and its tests' key, <worktree>.check, free while its agent's own run holds the
+# worktree's. Run by check.sh.
 set -u
 setopt no_bg_nice   # (a run in the background: no nice, which the test Mac's utility priority refuses)
 here=${0:A:h}
@@ -17,19 +20,33 @@ w() { mkdir -p ${1:h}; print -r -- "$2" > $1; chmod +x $1 }
 g init -q -b main .
 mkdir -p tools/dev tools/app
 cp $here/../check.sh $here/../devjob.zsh $here/../devjob.py tools/dev/
-w tools/dev/affected-tests.sh '#!/bin/zsh'
+# (A test to run while $tmp/tests is there; its --nextest line as affected-tests.sh's.)
+w tools/dev/affected-tests.sh "#!/bin/zsh
+[[ -e $tmp/tests ]] || exit 0
+[[ \${1:-} == --nextest ]] && print 'cargo nextest run -p toy' || print 'cargo test -p toy'"
 w tools/dev/check-reuse.py ''
-w tools/app/guards.sh '#!/bin/zsh'
-# (clippy, while $tmp/hold is there: says it started, then waits for $tmp/go, a minute at most.)
+w tools/app/guards.sh "#!/bin/zsh
+[[ -e $tmp/guardsfail ]] && { print 'guards: a stub failure'; exit 1 }; exit 0"
+# (The test Mac's runner: refuses a key whose lock $tmp/locks/<key> holds, where remote-tests.sh
+# would wait for it; else notes the key.)
+w tools/app/remote-tests.sh "#!/bin/zsh
+[[ -d $tmp/locks/\$1 ]] && { print \"remote-tests: key \$1 is in use on the test Mac: waiting\"; exit 3 }
+print -r -- \$1 > $tmp/key"
+# (Each call noted in $tmp/calls. fmt, while $tmp/fmtfail is there: formats docs/a.md and says so,
+# as cargo fmt -- -l. clippy, while $tmp/hold is there: says it started, then waits for $tmp/go, a
+# minute at most.)
 w tools/dev/bin/cargo "#!/bin/zsh
+print -r -- \"\$*\" >> $tmp/calls
+[[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtfail ]] && { print formatted >> docs/a.md; print -r -- \$PWD/docs/a.md; exit 0 }
 [[ \$1 == clippy && -e $tmp/hold ]] || exit 0
 : > $tmp/started
 for i in {1..600}; do [[ -e $tmp/go ]] && exit 0; sleep 0.1; done
 exit 1"
 w README.md 1
+w docs/a.md 1
 g add -A; g commit -m b0
 g checkout -q -b br
-w docs/a.md 1; g add -A; g commit -m branch; P=$(git rev-parse HEAD)
+w docs/a.md 2; g add -A; g commit -m branch; P=$(git rev-parse HEAD)
 passed=$tmp/r/.git/check-passed
 
 # run <name> <want: recorded[:<a text the output has>] | a text the output has> [<what to do while
@@ -62,8 +79,7 @@ w tools/dev/affected-tests.sh '#!/bin/zsh
 exit 3'
 g add -A; g commit -m broken
 run "affected-tests.sh failing" "affected-tests.sh failed"
-w tools/dev/affected-tests.sh '#!/bin/zsh'
-g add -A; g commit -m mended
+g checkout main -- tools/dev/affected-tests.sh; g commit -m mended
 export CARGO_PROFILE_TEST_OPT_LEVEL=0
 g commit --allow-empty -m env
 run "the environment setting how tests build" "NOT recorded: the environment sets how the tests build"
@@ -78,11 +94,11 @@ g reset -q --hard $P
 run "HEAD reset to another commit" "HEAD moved during the run" 'g reset -q --hard main'
 g reset -q --hard $P
 run "HEAD reset away and back" "files written during the run" 'g reset -q --hard main; g reset -q --hard '$P
-run "a file edited and put back" "files written during the run" 'print 2 > docs/a.md; print 1 > docs/a.md'
+run "a file edited and put back" "files written during the run" 'print 3 > docs/a.md; print 2 > docs/a.md'
 run "an untracked file appearing" "untracked files" 'print x > new.txt'
 run "an untracked file there from the start" "untracked files"
 rm new.txt
-run "an uncommitted edit" "uncommitted changes" 'print 2 > docs/a.md'
+run "an uncommitted edit" "uncommitted changes" 'print 3 > docs/a.md'
 g checkout -q docs/a.md
 run "a clean run after" recorded
 # While it runs, its git folder's check-running.<pid> holds its start time (report-guard.sh reads
@@ -96,4 +112,40 @@ w docs/b.md 1; g add -A; g commit -m running
 run "a run, its check-running file" recorded running
 f=( .git/check-running.*(N) )
 (( ! ${#f} )) && ok "no check-running file left by the runs" || bad "check-running files left: ${f[*]}"
+
+# The stop at a failed part (#1524): fmt formatting a file, or guards failing, and the parts of
+# minutes (clippy, prod, the tests) don't run, each saying why; the run fails and records nothing.
+# stop <name> <what failed> <a text the output has>
+stop() {
+  local out rc before after
+  rm -f $tmp/calls $tmp/key; before=$(cat $passed 2>/dev/null | wc -l)
+  HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1; rc=$?
+  out=$(<$tmp/out); after=$(cat $passed 2>/dev/null | wc -l)
+  if (( rc != 0 && after == before )) && [[ $out == *"clippy ... not run ($2 failed)"* && $out == *"prod ... not run ($2 failed)"* &&
+      $out == *"tests ... not run ($2 failed)"* && $out == *"FAIL: $2 failed"* && $out == *"$3"* ]] &&
+      ! grep -qE '^(clippy|check)' $tmp/calls && [[ ! -e $tmp/key ]]; then
+    ok "$1: stopped before clippy, prod and the tests"
+  else bad "$1: wanted $2 failed, clippy, prod and the tests not run, nothing recorded; exit $rc, records $before -> $after, calls: $(tr '\n' ';' < $tmp/calls):"
+    print -r -- $out | tail -12 | sed 's/^/    /'; fi
+}
+w docs/c.md 1; g add -A; g commit -m stop; : > $tmp/tests
+: > $tmp/fmtfail
+stop "fmt formatting a file" fmt "check.sh formatted these files here (cargo fmt):"$'\n'"    docs/a.md"$'\n'"    Commit them"
+rm $tmp/fmtfail; g checkout -q docs/a.md
+: > $tmp/guardsfail
+stop "guards failing" guards 'guards: a stub failure'
+: > $tmp/fmtfail
+stop "fmt and guards failing" "fmt, guards" "Commit them"
+rm $tmp/fmtfail $tmp/guardsfail; g checkout -q docs/a.md
+run "the tests' run after" recorded
+[[ $(<$tmp/key) == main-checkout.check ]] && ok "the main checkout's key: main-checkout.check" || bad "the main checkout's key: $(<$tmp/key)"
+
+# The tests' key (#1524): <worktree>.check, its own; an agent's runs take the worktree's name, and
+# a check whose key that run held queued behind it (#1076: 490 s). Its agent's run holding the
+# worktree's key, the check doesn't wait.
+mkdir -p $tmp/x/.claude/worktrees; g worktree add -q $tmp/x/.claude/worktrees/wt -b wtb
+mkdir -p $tmp/locks/wt
+cd $tmp/x/.claude/worktrees/wt; w docs/d.md 1; g add -A; g commit -m wt
+run "a worktree's check while its agent's run holds the worktree's key" recorded
+[[ $(<$tmp/key) == wt.check ]] && ok "a worktree's key: wt.check" || bad "a worktree's key: $(<$tmp/key)"
 exit $fail
