@@ -98,8 +98,8 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   changed name a macro's definition or call names (the items a macro makes aren't named in the
   file). A change of comments alone traces no user. A user left out says so in the `# why:` lines
   ("names …, but none of what changed in it"). Over main's last 40 commits (20 Nov), one at a time:
-  pipeline's `agent::build::` tests ran for 16 of them, not 24; the tests selected went from 28,374
-  to 21,409, their time (each test's median in publish's runs) from 38,218 s to 24,271 s. Missed,
+  pipeline's `agent::build::` tests ran for 17 of them, not 24; the tests selected went from 28,750
+  to 23,476, their time (each test's median in publish's runs) from 35,356 s to 27,301 s. Missed,
   and caught by publish's whole run: a field read through a value whose type the user never names,
   a type reached through an alias of it, a trait method reached without naming the trait, the type
   or the method (formatting with `{}`).
