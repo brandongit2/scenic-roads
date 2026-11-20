@@ -76,7 +76,9 @@ them.
   with a `step` each, `tests` (a remote-tests.sh run) with its `wait`s (the test Mac's key, a slot),
   `copy`, `run` on the test Mac, `compile`s, `suite`s and `test`s; `cargo` with its `wait` for the
   shared build folder, `reset` (the units tied to another checkout), `build` and each `crate` compiled
-  (cargo's `--timings` report), each test binary run as a `suite`, a `program` run.
+  (cargo's `--timings` report), each test binary run as a `suite`, a `program` run; and in any of
+  them, each `phase` the job said in its `progress:` lines (#1538: a long test's own stages, under
+  its suite; guards.sh's checks and the web part's steps in check.sh).
 - **Each Mac's load** (1-minute load average), memory free (`kern.memorystatus_level`, %) and swap
   used, every 10 s while any recorded job runs on it (`samples`), and its chip, memory and cores
   (`macs`). The test Mac is sampled during its runs too (remote-tests.sh starts its sampler there).
@@ -85,7 +87,8 @@ them.
   measurement or backtest its own), each Mac's load and memory as heat strips under them; a run
   pointed at shows its card and lights its checkout's other runs, a click opens it. A run opened:
   its facts, its spans on a timeline of their own (a lane a kind at each depth, deepest last), where
-  its time went, its longest and failed spans, the time by kind; its Macs' load and memory over it.
+  its time went (its parts, and inside them, four deep, each span taking 2 % of the run or more),
+  its longest and failed spans, the time by kind; its Macs' load and memory over it.
   By name: one kind of span over the timeline's range (6 h to all time), each name's runs, failures, median, p90, longest, total
   and recent times. Both timelines are the build page's (`web/buildpage/timeline.js`, served at
   `/lib/buildpage/`, as are the page's elements and words, `dom.js` and `words.js`, and a run's spans laid out as lanes, `runlanes.js`, a job page's too): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.

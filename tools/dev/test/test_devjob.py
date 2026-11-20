@@ -103,6 +103,31 @@ remote-tests: exit 0 on the test Mac (load 12.00)
         self.assertEqual(run["attrs"]["ran_on"], "Mac-mini-M4")
         self.assertEqual(attrs, {"exit_on_test_mac": "0", "load_after": "12.00"})
 
+    def test_progress_lines_are_phases_a_long_tests_under_its_suite_on_the_test_mac(self):
+        # (#1538: a 19-min test was one bar; its own progress lines say where the time went.)
+        out, _ = devjob.parse(lines("""
+remote-tests: on the test Mac Mac-mini-M4 (load 13.09, slot 1, /x)
+     Running unittests src/lib.rs (/x/target/debug/deps/agentcore-0123456789abcdef)
+progress: 0/3 frozen plans (the coverage)
+frozen: the coverage: 2.0 s
+progress: 1/3 frozen plans (plan 1, 10 of 40 jobs)
+progress: 1.5/3 frozen plans (plan 1, 30 of 40 jobs)
+progress: 2/3 frozen plans (plan 2; its waits)
+test agent::plan::tests::frozen ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 6.50s
+remote-tests: the run took 9.00s on the test Mac, cpu 9.00s user + 1.00s sys
+progress: 3/3 frozen plans (after the run)
+"""), {"tests", "remote", "progress"}, T, T + 12)
+        run = [s for s in out if s["kind"] == "run"][0]
+        suite = [k for k in run["kids"] if k["kind"] == "suite"][0]
+        got = [(k["name"], k["t0"] - T, k["t1"] - T) for k in suite["kids"] if k["kind"] == "phase"]
+        self.assertEqual(got, [("frozen plans (the coverage)", 2, 4), ("frozen plans (plan 1)", 4, 6), ("frozen plans (plan 2)", 6, 8)],
+                         "a phase lasts until the next is said, counts moving on within it; the last ends with its suite")
+        # (A phase said after the test Mac's run: the job's, ending with it.)
+        self.assertEqual([(k["name"], k["t0"] - T, k["t1"] - T) for k in out if k["kind"] == "phase"], [("frozen plans (after the run)", 10, 12)])
+        self.assertEqual(devjob.phase_name("regions-check (the resolve: the land, 3 of 30 regions; alberta, 4 of 9)"), "regions-check (the resolve: the land)")
+        self.assertEqual(devjob.phase_name("z6 tiles"), "z6 tiles")
+
 
 class Timings(unittest.TestCase):
     def test_a_reports_compiled_crates_on_the_clock(self):

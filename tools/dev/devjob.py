@@ -10,7 +10,9 @@ network, and nothing is lost while the app is away: what wasn't sent is sent by 
       runs the command as a span (its exit status is the command's), its output passed on as it
       comes, each line's time noted; its children record under it (SCENIC_DEVJOB_PARENT). After,
       what --parse names is read from the output: cargo's compiles, the test suites and each test
-      (cargo test's and nextest's), remote-tests.sh's phases. A span's Mac is the one it ran on: the
+      (cargo test's and nextest's), remote-tests.sh's phases; and, whatever --parse says, the
+      phases the job says in `progress:` lines (`phase`; a test's, with --nocapture, under its
+      suite: a long test read by its own stages). A span's Mac is the one it ran on: the
       run on the test Mac and its compiles, suites and tests are that Mac's (its `ran_on`); the job
       itself is this Mac's, which says the test Mac's name (ran_on) as soon as the run starts there.
   devjob.py sampler      (started by the first live span; one a Mac) every TICK_S: sends the spool,
@@ -188,7 +190,39 @@ RT_TOOK = re.compile(r"^remote-tests: the run took ([\d.]+)s on the test Mac, cp
 RT_EXIT = re.compile(r"^remote-tests: exit (\d+) on the test Mac \(load ([\d.]+)\)")
 RT_HERE = re.compile(r"^remote-tests: running here \((.*)\)$")
 RT_RERUN = "--- remote result discarded, local rerun ---"
-WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: )")
+# A job's own word on how far it is (docs/building.md §2, jobrt::jobs::report): `progress: <done>/<total> <unit>`.
+PROGRESS = re.compile(r"^progress: [\d.]+/\d+ (.+?)\s*$")
+WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: |progress: )")
+
+
+def phase_name(unit):
+    """A progress line's phase: its unit up to the first count said in it (`regions-check (the resolve:
+    the land, 3 of 30 regions; alberta, 4 of 9)` → `regions-check (the resolve: the land)`), so the
+    items' counts move on within one phase and a new stage or step begins the next."""
+    name = re.split(r"[,;]", unit, maxsplit=1)[0].strip()
+    if name.count("(") > name.count(")"):
+        name += ")"
+    return name
+
+
+def phases(lines, t_end):
+    """The phases a job said (`progress:` lines): one each time its phase changes, until the next or
+    the end."""
+    out, cur = [], None
+    for t, l in lines:
+        if not (m := PROGRESS.match(l)):
+            continue
+        name = phase_name(m.group(1))
+        if cur is not None and cur["name"] == name:
+            continue
+        if cur is not None:
+            cur["t1"] = t
+            out.append(cur)
+        cur = span("phase", name, t, t)
+    if cur is not None:
+        cur["t1"] = t_end
+        out.append(cur)
+    return out
 
 
 def span(kind, name, t0, t1, status="ok", **attrs):
@@ -287,6 +321,17 @@ def parse(lines, kinds, t_start, t_end):
             out.append(nx_run)
         else:
             out.extend(nx.values())
+    if "progress" in kinds:
+        # (A phase said inside a test program's run, cargo test's with --nocapture, is that suite's,
+        # ending with it.)
+        suites = [s for s in out if s["kind"] == "suite"]
+        for p in phases(lines, t_end):
+            home = next((s for s in suites if s["t0"] <= p["t0"] <= s["t1"]), None)
+            if home is not None:
+                p["t1"] = min(p["t1"], home["t1"])
+                home["kids"].append(p)
+            else:
+                out.append(p)
     attrs = {}
     if "remote" in kinds:
         key_wait = slot_wait = on = None
@@ -320,8 +365,10 @@ def parse(lines, kinds, t_start, t_end):
         # The compiles and tests on the test Mac go under its run.
         runs = [s for s in out if s["kind"] == "run"]
         for r in runs:
-            inside = [s for s in out if s is not r and s["kind"] in ("compile", "suite", "tests", "wait") and s["name"] != "the test Mac's key" and s["name"] != "a test-Mac slot"
-                      and r["t0"] - 1 <= s["t0"] and s["t1"] <= r["t1"] + 1]
+            inside = [s for s in out if s is not r and s["kind"] in ("compile", "suite", "tests", "wait", "phase") and s["name"] != "the test Mac's key" and s["name"] != "a test-Mac slot"
+                      and r["t0"] - 1 <= s["t0"] and (s["t1"] <= r["t1"] + 1 or s["kind"] == "phase" and s["t0"] <= r["t1"])]
+            for s in inside:  # (a phase said last runs to the run's end, not the job's)
+                s["t1"] = min(s["t1"], r["t1"])
             r["kids"] += inside
             out = [s for s in out if s not in inside]
     return out, attrs
@@ -350,7 +397,7 @@ def emit_spans(spans, parent, m):
 
 def wrap(argv):
     kind = name = None
-    kinds, attrs = set(), {}
+    kinds, attrs = {"progress"}, {}  # (a job's own progress lines, always: its phases)
     i = 0
     while i < len(argv) and argv[i] != "--":
         a = argv[i]

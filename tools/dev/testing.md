@@ -480,7 +480,11 @@ check's hold of it (a `cargo` span of its own, its wait and its `held` time), th
 tied to another checkout, the build with each crate compiled from cargo's `--timings` report, which
 the shim adds and moves out of the shared folder, each program run: a test binary a suite; a
 measurement run, an example or a release run, and a backtest, `--replay` or a backtest test, so
-named; in the main checkout: the build and its crates). A span started inside another's (a cargo in a check's part) is part of it: each job exports
+named; in the main checkout: the build and its crates), and in any of them the phases a job says in
+`progress:` lines (#1538, `devjob.py`'s `phases`: a new one each time the line's unit up to its first
+count changes; a test's, run with `--nocapture`, under its suite, so a 19-min test reads by its own
+stages once it says them; tools/app/guards.sh says each of its checks, and check.sh's web part
+each step). A span started inside another's (a cargo in a check's part) is part of it: each job exports
 its id as `SCENIC_DEVJOB_PARENT`. A run of its own says who ran it: its checkout, branch, commit,
 task (`SCENIC_TASK`, else the latest `#<n>` in the branch's commits since main) and whether an agent
 did (Claude Code's `CLAUDECODE`). A span is on the Mac it ran on (#1086): remote-tests.sh's run on

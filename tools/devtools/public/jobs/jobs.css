@@ -6,7 +6,7 @@
   --mark: #e6e6e6; --tip: #20262d; --shadow: #0008; --rule: #3a434d; --row-line: #1d2228; --arrow: #ff4a3d; --hover: #1c2127;
   /* A colour a kind of job or span. */
   --k-check: #4fb3c6; --k-publish: #d9667a; --k-tests: #5fae6b; --k-cargo: #d98a3d; --k-measurement: #9b7be0; --k-backtest: #d9c35a;
-  --k-part: #4fb3c6; --k-step: #d9667a; --k-suite: #5fae6b; --k-test: #8fcf96; --k-compile: #d98a3d; --k-crate: #c47a3d; --k-build: #d98a3d;
+  --k-part: #4fb3c6; --k-step: #d9667a; --k-phase: #b98fd9; --k-suite: #5fae6b; --k-test: #8fcf96; --k-compile: #d98a3d; --k-crate: #c47a3d; --k-build: #d98a3d;
   --k-wait: #6b7480; --k-copy: #5b8fd8; --k-run: #3b6bb8; --k-program: #9b7be0; --k-reset: #7b8590; --k-other: #8fa2b5;
   color-scheme: dark;
 }
@@ -15,7 +15,7 @@
     --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --ok: #2c8a51; --warn: #9a6a12; --bad: #c0433a; --accent: #2d6bb4;
     --mark: #6a7480; --tip: #ffffff; --shadow: #0003; --rule: #c8d0d9; --row-line: #e6e9ee; --arrow: #d81e12; --hover: #eef1f4;
     --k-check: #2a95a9; --k-publish: #c2445c; --k-tests: #3f8f4c; --k-cargo: #c9731f; --k-measurement: #7a55cc; --k-backtest: #b29a1e;
-    --k-part: #2a95a9; --k-step: #c2445c; --k-suite: #3f8f4c; --k-test: #6aae73; --k-compile: #c9731f; --k-crate: #a65e1f; --k-build: #c9731f;
+    --k-part: #2a95a9; --k-step: #c2445c; --k-phase: #8f5fc0; --k-suite: #3f8f4c; --k-test: #6aae73; --k-compile: #c9731f; --k-crate: #a65e1f; --k-build: #c9731f;
     --k-wait: #8a939c; --k-copy: #3c72c0; --k-run: #1f4a8a; --k-program: #7a55cc; --k-reset: #6a7480; --k-other: #6f8499;
     color-scheme: light;
   }

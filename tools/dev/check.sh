@@ -196,7 +196,8 @@ part fmt zsh -c '
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
-  part web zsh -c "tools/dev/web-deps.sh && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir; exit \$?"
+  # (Each step said as it begins, `progress:` lines: the part's phases on the dev job dashboard.)
+  part web zsh -c "print 'progress: 0/4 web (the dependencies)' && tools/dev/web-deps.sh && print 'progress: 1/4 web (the tests)' && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && print 'progress: 2/4 web (the typecheck)' && cd web && pnpm run typecheck && print 'progress: 3/4 web (the build)' && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir; exit \$?"
 else skip web "web/ unchanged"; fi
 if has 'tools/devtools/*' || has 'web/buildpage/(timeline|sums|chartmath).js'; then part devtools zsh -c "cd tools/devtools && node --test test/*.test.mjs; exit \$?"
 else skip devtools "tools/devtools unchanged"; fi

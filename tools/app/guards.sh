@@ -15,22 +15,30 @@ esac
 cd ${0:A:h}/../..
 mkdir -p ~/Library/Logs/scenic
 log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log
+# Each check said as it begins (`progress:` lines, out of this file's own count of steps): check.sh's
+# guards part on the dev job dashboard by step (tools/dev/devjob.py's phases).
+nsteps=$(grep -c '^step ' ${0:A}) k=0
+step() { print -r -- "progress: $k/$nsteps guards ($1)"; (( ++k )) }
 # With SCENIC_GUARDS_IN_CHECK=1 (tools/dev/check.sh, #887) the fmt check and the two tests below are
 # left to check.sh's own parts: its fmt, and its tests, where tools/dev/affected-tests.sh runs both
 # (scan tests of crates/) whenever a file they read changed.
 in_check=${SCENIC_GUARDS_IN_CHECK:-}
+step "fmt"
 [[ -n $in_check ]] || (cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml) > $log 2>&1 || {
   head -40 $log
   echo "the Rust isn't formatted; run cargo fmt (rustfmt.toml)"
   exit 1
 }
+step "no test measures the machine"
 # No test measures the machine (#441): no short elapsed() bound asserted, no fixed sleep then an
 # assert (tools/app/test_timing.py says why and what instead).
 python3 tools/app/test_timing.py || exit 1
+step "Canadian spelling"
 # Canadian spelling (#1374, tools/dev/agent-rules.md): no -ise/-yse spelling from tools/check/spelling.py's
 # word list in anything tracked (a deliberate use says `spelling: kept`); its own test first.
 python3 tools/check/test_spelling.py > $log 2>&1 || { cat $log; exit 1; }
 python3 tools/check/spelling.py || exit 1
+step "one strict mode"
 # One strict mode for tools/dev's programs (consistency T13): each runs under `set -uo pipefail`
 # (unset names and failed pipelines are errors; no errexit: each says itself why it stops), set
 # before its first command or, one its test sources, after its source guard. A file only sourced
@@ -39,11 +47,13 @@ for f in tools/dev/*.sh; do
   [[ $(head -c2 $f) == '#!' ]] || continue
   grep -qx 'set -uo pipefail' $f || { echo "$f: a tools/dev program sets 'set -uo pipefail' (tools/app/guards.sh says where)"; exit 1; }
 done
+step "the rollback floor"
 # The rollback floor names a commit this tree contains (tools/app/rollback-floor, #1342): a branch's
 # commit rebased away as it merged, or a mistyped one, would refuse every rollback after it.
 floor=$(head -1 tools/app/rollback-floor)
 [[ $floor =~ '^[0-9a-f]{40}$' ]] && git merge-base --is-ancestor "$floor" HEAD 2>/dev/null \
   || { echo "tools/app/rollback-floor's first line, $floor, isn't the full id of a commit this tree contains (the file says what it names)"; exit 1; }
+step "the scan lines"
 # A test reading the repo's own files says which (#662): `//! scans: <path prefix> …`, so
 # tools/dev/affected-tests.sh runs it when any of them changes (write_sets missed #660's room.rs).
 python3 - <<'PY' || exit 1
@@ -62,6 +72,7 @@ for t in sorted(glob.glob("crates/*/tests/*.rs")):
             print(t + ": reads " + p + ", under no prefix of its `//! scans:` line (tools/dev/testing.md)"); bad.append(t)
 sys.exit(1 if bad else 0)
 PY
+step "the tests' programs and ports"
 # A test finds a program it runs by the CARGO_BIN_EXE_* cargo and nextest set as it runs, never by
 # env!'s compiled-in path (#1108): in an agent worktree that path is the shared build folder's,
 # which another worktree's build may replace mid-run; the clones the shim runs are named only at
@@ -119,11 +130,13 @@ for b in bad: print(b + "  <- a test naming a live program's port on this Mac (s
 for b in fixed_at: print(b + "  <- a test listening on a fixed port (#914): another test running beside may hold it; listen on port 0, or on coord::test_port's")
 sys.exit(1 if bad or fixed_at else 0)
 PY
+step "the accessor's and source names' tests"
 [[ -n $in_check ]] || cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"
   exit 1
 }
+step "the Python steps loaded with the inputs unreadable"
 # The stand-in root: the app's dem/ as it's published (the tracked files alone), beside inputs folders
 # with a file each, none readable. A kept folder, not removed here (tools/dev/ran.zsh, #1131): its
 # .venv's libraries are loaded below, and Gatekeeper scans them after.
@@ -143,6 +156,7 @@ chmod 000 $sr/inputs/sources $sr/inputs/elevation $sr/inputs $sr/translations $s
 # several since task #916).
 steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/*/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
 (cd $sr/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/ in a NAS root whose inputs folders can't be read"; exit 1; }
+step "pyflakes on the Python steps"
 # (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes, a version
 # kept, reads them and the modules of dem/ they import.)
 read_too=(${(f)"$(cd $sr/dem && python3 -c '

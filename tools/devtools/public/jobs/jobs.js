@@ -22,9 +22,11 @@ const RANGES = [["6h", 6 * 3600], ["24h", 86400], ["7d", 7 * 86400], ["30d", 30 
 const CLASSES = ["check", "publish", "tests", "cargo", "measurement", "backtest"];
 const CLASS_LABEL = { check: "check.sh", publish: "publish.sh", tests: "test runs", cargo: "cargo", measurement: "measurements", backtest: "backtests" };
 // A span's kinds in a run, in the order their lanes come at one depth.
-const KIND_ORDER = ["step", "part", "wait", "reset", "copy", "build", "compile", "run", "tests", "suite", "program", "crate", "test", "cargo"];
+const KIND_ORDER = ["step", "part", "phase", "wait", "reset", "copy", "build", "compile", "run", "tests", "suite", "program", "crate", "test", "cargo"];
 const MIN_SPAN = 20; // the timelines' least width, s (the axis ticks every 10 s at the finest)
 const ROWS_SHOWN = 150; // a table's rows before "show all"
+// "Where its time went": a run's parts, and inside them, to this depth, each span taking this share of the run.
+const WENT_DEPTH = 4, WENT_SHARE = 0.02;
 
 // ---- small things ---------------------------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -366,9 +368,18 @@ function renderRun() {
   const whole = Math.max(1e-3, t1 - t0);
   // (A test named with its suite.)
   const label = (s) => (s.kind === "test" && byId.get(s.parent) ? `${byId.get(s.parent).name} › ${s.name}` : s.name);
-  const row = (s, d, scale) => h("tr", { class: "pick", onpointerenter: () => runTl.hover(`s ${s.id}`), onpointerleave: () => runTl.hover(null), onclick: () => { runTl.select(`s ${s.id}`); } },
-    h("td", { class: "nm", title: label(s) }, h("span", statusClass(s), bad(s) ? "✗ " : ""), label(s)), h("td", "dim", s.kind), h("td", "num", s.attrs?.untimed ? "–" : dur(d)),
+  const row = (s, d, scale, depth = 0) => h("tr", { class: "pick", onpointerenter: () => runTl.hover(`s ${s.id}`), onpointerleave: () => runTl.hover(null), onclick: () => { runTl.select(`s ${s.id}`); } },
+    h("td", { class: "nm", title: label(s) }, "· ".repeat(depth), h("span", statusClass(s), bad(s) ? "✗ " : ""), label(s)), h("td", "dim", s.kind), h("td", "num", s.attrs?.untimed ? "–" : dur(d)),
     scale ? h("td", "barcell", h("div", { class: "bar", style: { width: `${Math.max(0.5, (100 * d) / scale)}%`, background: colourOf(s.kind) } })) : null);
+  // (And inside each, what took a share of the run worth a row: a long part read down to its
+  // suites, a long test to the phases it said.)
+  const went = [];
+  const down = (s, depth) => {
+    went.push([s, depth]);
+    if (depth >= WENT_DEPTH) return;
+    for (const k of (kids.get(s.id) || []).filter((k) => k.t0 != null && !k.attrs?.untimed && took(k, now) >= whole * WENT_SHARE).sort((a, b) => a.t0 - b.t0)) down(k, depth + 1);
+  };
+  for (const s of first) down(s, 0);
   const byKind = new Map();
   for (const s of timed) byKind.set(s.kind, (byKind.get(s.kind) || 0) + took(s, now));
   const longest = [...timed].filter((s) => s.parent !== run.id || first.length < 2).sort((a, b) => took(b, now) - took(a, now)).slice(0, 25);
@@ -376,7 +387,7 @@ function renderRun() {
   const table = (head, rows) => h("table", null, h("thead", null, h("tr", null, head.map(([t, c]) => h("th", c, t)))), h("tbody", null, rows));
   const cols = h("div", "cols",
     h("div", null, h("h3", null, "Where its time went"),
-      first.length ? table([["", null], ["kind", null], ["took", "num"], ["", null]], first.map((s) => row(s, took(s, now), whole))) : h("div", "empty", "No parts recorded."),
+      first.length ? table([["", null], ["kind", null], ["took", "num"], ["", null]], went.slice(0, ROWS_SHOWN).map(([s, depth]) => row(s, took(s, now), whole, depth))) : h("div", "empty", "No parts recorded."),
       byKind.size ? [h("h3", { style: { marginTop: "10px" } }, "Time by kind (summed; parallel spans count each)"), table([["kind", null], ["total", "num"]], [...byKind].sort((a, b) => b[1] - a[1]).map(([k, v]) => h("tr", null, h("td", "nm", h("i", { class: "sw", style: { background: colourOf(k), marginRight: "5px" } }), k), h("td", "num", dur(v)))))] : null),
     h("div", null, h("h3", null, "Longest"), longest.length ? table([["", null], ["kind", null], ["took", "num"]], longest.map((s) => row(s, took(s, now)))) : h("div", "empty", "–")),
     h("div", null, h("h3", null, `Failed (${fails.length})`), fails.length ? table([["", null], ["kind", null], ["took", "num"]], fails.slice(0, ROWS_SHOWN).map((s) => row(s, took(s, now)))) : h("div", "empty", "Nothing failed.")));
