@@ -751,7 +751,11 @@ fails, and is never given more. `cargo test` runs have no such bound.
   them all (`SCENIC_PUBLISH`, set by publish.sh's run; #1539: pipeline's plan tests over each
   manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
   six), and its own threads stay few (at most 4: nextest already runs a test a thread), but every
-  core in publish's run, which has every core and waits on its slowest tests.
+  core in publish's run, which has every core and waits on its slowest tests. Where every change
+  alone is still past the budget, the test is cut in parts, a test each (#1560: the plan tests'
+  `agent::build::tests::Part`, `an_incremental_plan_…_1_of_2` and `_2_of_2`), each taking every
+  `of`th case, so the parts together check every change; its threads take the next case left as
+  they finish one, the costliest first (`on_case_threads`), and its fixtures are built once.
   **The budget measured (#1553):** the bound alone let a test of 9-16 s alone (the plan tests, 20
   Nov) pass every run until the M4's load reached 108-229 and they timed out. So publish.sh, after
   a suite that passed and once a measure is due, runs `tools/dev/test-budget.py`: the slowest tests

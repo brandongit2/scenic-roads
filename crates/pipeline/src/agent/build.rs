@@ -7090,6 +7090,47 @@ mod tests {
         }
     }
 
+    /// `f` of each of `cases` on `case_threads` threads, each taking the next case left as it
+    /// finishes one (#1560: cut into a run of cases a thread, the threads given the costlier cases,
+    /// an entry removed and added back, ran twice as long as the rest: 7 s and 13.6 s of one test),
+    /// so a caller orders them costliest first; what each gave, in no order.
+    fn on_case_threads<C: Sync, R: Send>(cases: &[C], f: impl Fn(&C) -> R + Sync) -> Vec<R> {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (next, f) = (&next, &f);
+        std::thread::scope(|s| {
+            let hs: Vec<_> = (0..case_threads().min(cases.len()))
+                .map(|_| {
+                    s.spawn(move || {
+                        let mut out = Vec::new();
+                        while let Some(c) = cases.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                            out.push(f(c));
+                        }
+                        out
+                    })
+                })
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        })
+    }
+
+    /// A test's part of its cases (#1560): of `of` parts, those whose place in the cases is `k`
+    /// more than a multiple of `of`, so each part holds some of each kind; `of` tests, one a part,
+    /// take every case. A test over every change of a big fixture is cut in parts so each runs
+    /// within the budget alone (tools/dev/testing.md, "Every test bounded") with every entry.
+    #[derive(Clone, Copy)]
+    struct Part {
+        k: usize,
+        of: usize,
+    }
+
+    const WHOLE: Part = Part { k: 0, of: 1 };
+
+    impl Part {
+        fn take<C>(self, cases: Vec<C>) -> Vec<C> {
+            cases.into_iter().enumerate().filter(|(i, _)| i % self.of == self.k).map(|(_, c)| c).collect()
+        }
+    }
+
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
     /// (with the pass's files the steps' keys read, the spacing and the 3D buildings' release); with
     /// a water source; with a pyramid read tile by tile; at a pole; with depth sources.
@@ -7101,7 +7142,7 @@ mod tests {
         for l in ["work/trailends/d", "work/summits/d"] {
             m.insert(l.into(), format!("{l}.6161616161616161.bin"));
         }
-        run_all(&c, &reach(), &mut m, &mut Keys::default());
+        run_plans(&c, &reach(), &mut m, &mut Keys::default(), false);
         for kind in ["outlines", "coastline", "hikes", "summits", "named", "whs", "labels", "ferries"] {
             let l = inputs::osmpass::set_name("d", kind);
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7a7a7a7a7a7a7a7a.osm.pbf"));
@@ -7396,42 +7437,31 @@ mod tests {
             // (Each change's keys worked out on threads of their own, #1112: a whole context's keys
             // a change, some 190 changes, were most of the test's time.)
             let changes: Vec<_> = f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")).collect();
-            let n = case_threads();
-            std::thread::scope(|s| {
-                for some in changes.chunks(changes.len().div_ceil(n).max(1)) {
-                    let (all, steps) = (&all, &steps);
-                    s.spawn(move || {
-                        for (l, m2, _) in some {
-                            let moved = f.keys(steps, m2, &f.inputs);
-                            let (own, content) = (format!("{l}="), f.m[l].as_str());
-                            for (step, base) in all {
-                                let after = &moved[step];
-                                for (t, lines) in base {
-                                    let lines = lines.as_ref().unwrap();
-                                    let named = lines.iter().any(|s| s.contains(&own) || s.contains(content));
-                                    // (A key that can't be worked out after the change, its input
-                                    // unread: no key to compare.)
-                                    let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
-                                    let changed = a != lines;
-                                    // (What changed besides the entry's own line: the tiles read
-                                    // inside it. Its lines looked up in a set, #1112: a slope
-                                    // target's thousands of tile lines searched one by one were half
-                                    // the test's 21 s.)
-                                    let tiles_only = changed && {
-                                        let was: std::collections::HashSet<&String> = lines.iter().collect();
-                                        a.iter()
-                                            .filter(|s| !was.contains(s))
-                                            .all(|s| s.contains(" tile ") || s.contains(&own))
-                                    };
-                                    assert!(
-                                        changed == named || (changed && tiles_only),
-                                        "{} {step} {t}: {l} changed (named in its lines: {named}, key changed: {changed}) {lines:#?}",
-                                        f.name
-                                    );
-                                }
-                            }
-                        }
-                    });
+            on_case_threads(&changes, |(l, m2, _)| {
+                let moved = f.keys(&steps, m2, &f.inputs);
+                let (own, content) = (format!("{l}="), f.m[l].as_str());
+                for (step, base) in &all {
+                    let after = &moved[step];
+                    for (t, lines) in base {
+                        let lines = lines.as_ref().unwrap();
+                        let named = lines.iter().any(|s| s.contains(&own) || s.contains(content));
+                        // (A key that can't be worked out after the change, its input unread: no
+                        // key to compare.)
+                        let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
+                        let changed = a != lines;
+                        // (What changed besides the entry's own line: the tiles read inside it. Its
+                        // lines looked up in a set, #1112: a slope target's thousands of tile lines
+                        // searched one by one were half the test's 21 s.)
+                        let tiles_only = changed && {
+                            let was: std::collections::HashSet<&String> = lines.iter().collect();
+                            a.iter().filter(|s| !was.contains(s)).all(|s| s.contains(" tile ") || s.contains(&own))
+                        };
+                        assert!(
+                            changed == named || (changed && tiles_only),
+                            "{} {step} {t}: {l} changed (named in its lines: {named}, key changed: {changed}) {lines:#?}",
+                            f.name
+                        );
+                    }
                 }
             });
         }
@@ -7454,17 +7484,17 @@ mod tests {
     /// fixtures, 3.6 s of building a plan to the end; the two together were 15-21 s alone).
     #[test]
     fn the_recorded_reads_see_every_change_that_moves_a_key() {
-        recorded_reads_see_every_change(fixtures(), if every_entry() { 30_000 } else { 3_000 });
+        recorded_reads_see_every_change(fixtures(), WHOLE, if every_entry() { 30_000 } else { 3_000 });
     }
 
     #[test]
     fn the_recorded_reads_see_every_change_in_the_held_build() {
-        recorded_reads_see_every_change(vec![held_fixture()], if every_entry() { 10_000 } else { 1_000 });
+        recorded_reads_see_every_change(vec![held_fixture()], WHOLE, if every_entry() { 10_000 } else { 1_000 });
     }
 
-    /// `the_recorded_reads_see_every_change_that_moves_a_key` in fixtures `all`: at least `least`
-    /// keys checked.
-    fn recorded_reads_see_every_change(all: Vec<Fixture>, least: usize) {
+    /// `the_recorded_reads_see_every_change_that_moves_a_key` in fixtures `all`, of the cases
+    /// `part` takes: at least `least` keys checked.
+    fn recorded_reads_see_every_change(all: Vec<Fixture>, part: Part, least: usize) {
         use buildstore::reads::{Changes, Diff};
         // (A build's manifest, inputs, and whether the keys read its reaches.)
         type State = (BTreeMap<String, String>, BTreeMap<String, String>, bool);
@@ -7504,59 +7534,70 @@ mod tests {
                     .collect();
                 cases.extend(warmed);
             }
-            // (On threads of their own, as `a_key_names_exactly_its_reads`.)
-            let n = case_threads();
-            let counts = std::thread::scope(|s| {
-                let hs: Vec<_> = cases
-                    .chunks(cases.len().div_ceil(n).max(1))
-                    .map(|some| {
-                        let steps = &steps;
-                        s.spawn(move || {
-                            let (mut checked, mut imprecise) = (0usize, 0usize);
-                            let reaches = |on: bool| f.reach.as_ref().filter(|_| on);
-                            // (The reaches by their entry, as the plan's by what they're read from.)
-                            let rest = |m: &BTreeMap<String, String>, on: bool| {
-                                let r =
-                                    reaches(on).map(|_| m.get(&roads::reach::logical("d")).map_or("", String::as_str));
-                                context_rest(&f.c, "d", r)
-                            };
-                            for Case { what, before: (m1, i1, r1), after: (m2, i2, r2), warmed } in some {
-                                let tiles = (f.tiles)(m1);
-                                if *warmed {
-                                    f.derived(steps, m1, i1, reaches(*r1), &tiles, false);
-                                }
-                                let (before, sets, load1) = f.derived(steps, m1, i1, reaches(*r1), &tiles, true);
-                                let (after, _, load2) = f.derived(steps, m2, i2, reaches(*r2), &(f.tiles)(m2), false);
-                                let sets = sets.unwrap();
-                                let d = Diff {
-                                    manifest: Changes::of(m1, m2),
-                                    inputs: Changes::of(i1, i2),
-                                    load: load1 != load2,
-                                };
-                                let every = rest(m1, *r1) != rest(m2, *r2);
-                                let moved = sets.graph.moved(&d, &[]);
-                                for (id, k) in &before {
-                                    // (A key unknown after: changed too, as the plan's diff has
-                                    // it; a target no longer listed: none to compare.)
-                                    let (Some(k), Some(a)) = (k, after.get(id)) else { continue };
-                                    let (same, mv) = (a.as_ref() == Some(k), every || moved[sets.keys[id].1 as usize]);
-                                    assert!(
-                                        same || mv,
-                                        "{} {} {}: {what} changed its key, not what it read: {k} became {a:?}",
-                                        f.name,
-                                        id.0,
-                                        id.1,
-                                    );
-                                    checked += 1;
-                                    imprecise += usize::from(same && mv);
-                                }
-                            }
-                            (checked, imprecise)
-                        })
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
-            });
+            let mut cases = part.take(cases);
+            let reaches = |on: bool| f.reach.as_ref().filter(|_| on);
+            // (The reaches by their entry, as the plan's by what they're read from.)
+            let rest = |m: &BTreeMap<String, String>, on: bool| {
+                let r = reaches(on).map(|_| m.get(&roads::reach::logical("d")).map_or("", String::as_str));
+                context_rest(&f.c, "d", r)
+            };
+            // (A state's keys, recording what they read or not, on terrain of its own, warmed first
+            // by a derivation of the same state or not.)
+            let derive = |(m, i, r): &State, recording: bool, warmed: bool| {
+                let tiles = (f.tiles)(m);
+                if warmed {
+                    f.derived(&steps, m, i, reaches(*r), &tiles, false);
+                }
+                f.derived(&steps, m, i, reaches(*r), &tiles, recording)
+            };
+            // (The base build's derived once, #1560: every case is from it but an entry's adding,
+            // which is to it; each case had derived it again, the same keys and reads.)
+            let from_base = derive(&base, true, false);
+            let from_warmed = (f.name == "held").then(|| derive(&base, true, true));
+            let to_base = derive(&base, false, false);
+            // (The costliest first: those deriving two states, an adding's before warmed.)
+            cases.sort_by_key(|c| !(c.warmed && c.before != base));
+            let counts = on_case_threads(&cases, |Case { what, before, after, warmed }| {
+                let (own_before, own_after);
+                let (keys, sets, load1) = match (before == &base, *warmed) {
+                    (true, false) => &from_base,
+                    (true, true) => from_warmed.as_ref().unwrap(),
+                    (false, w) => {
+                        own_before = derive(before, true, w);
+                        &own_before
+                    }
+                };
+                let (keyed_after, _, load2) = if after == &base {
+                    &to_base
+                } else {
+                    own_after = derive(after, false, false);
+                    &own_after
+                };
+                let ((m1, i1, r1), (m2, i2, r2)) = (before, after);
+                let sets = sets.as_ref().unwrap();
+                let d = Diff { manifest: Changes::of(m1, m2), inputs: Changes::of(i1, i2), load: load1 != load2 };
+                let every = rest(m1, *r1) != rest(m2, *r2);
+                let moved = sets.graph.moved(&d, &[]);
+                let (mut checked, mut imprecise) = (0usize, 0usize);
+                for (id, k) in keys {
+                    // (A key unknown after: changed too, as the plan's diff has it; a target no
+                    // longer listed: none to compare.)
+                    let (Some(k), Some(a)) = (k, keyed_after.get(id)) else { continue };
+                    let (same, mv) = (a.as_ref() == Some(k), every || moved[sets.keys[id].1 as usize]);
+                    assert!(
+                        same || mv,
+                        "{} {} {}: {what} changed its key, not what it read: {k} became {a:?}",
+                        f.name,
+                        id.0,
+                        id.1,
+                    );
+                    checked += 1;
+                    imprecise += usize::from(same && mv);
+                }
+                (checked, imprecise)
+            })
+            .into_iter()
+            .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
             checked += counts.0;
             imprecise += counts.1;
             by_fixture.push(format!("{} {}", f.name, counts.0));
@@ -7576,9 +7617,9 @@ mod tests {
     /// another's found: the incremental plan works out the terrain's targets from its keys); or
     /// `as_on_the_lead`, the incremental plan after the full one on the same terrain (the warm
     /// passes' memos and the terrain's targets found: the terrain's and slope's keys they serve
-    /// aren't derived, so not compared). How many changes, and how many keys the incremental plans
-    /// kept in all.
-    fn incremental_is_full(f: &Fixture, as_on_the_lead: bool) -> (usize, usize) {
+    /// aren't derived, so not compared). Of the cases `part` takes: how many, and how many keys the
+    /// incremental plans kept in all.
+    fn incremental_is_full(f: &Fixture, as_on_the_lead: bool, part: Part) -> (usize, usize) {
         use buildstore::reads::{Changes, Diff};
         type State = (BTreeMap<String, String>, BTreeMap<String, String>, bool);
         let c = &f.c;
@@ -7644,116 +7685,139 @@ mod tests {
         if reached {
             cases.push(("the reaches gone".into(), base.clone(), (f.m.clone(), f.inputs.clone(), false), false));
         }
-        // (On threads of their own, as `a_key_names_exactly_its_reads`.)
-        let n = case_threads();
-        let kept = std::thread::scope(|s| {
-            let hs: Vec<_> = cases
-                .chunks(cases.len().div_ceil(n).max(1))
-                .map(|some| {
-                    let (base, base_sets, base_full) = (&base, &base_sets, &base_full);
-                    let (shadow, full) = (&shadow, &full);
-                    s.spawn(move || {
-                        let mut kept = 0;
-                        for (what, before, after, less) in some {
-                            // (Each change, and for an entry removed its adding back after.)
-                            let less_first = less.then(|| shadow(None, after, &(f.tiles)(&after.0)));
-                            let mut steps = vec![(before, after, base_sets.clone())];
-                            if let Some((_, _, sets, _)) = &less_first {
-                                steps.push((after, base, sets.clone()));
-                            }
-                            for (before, after, sets) in steps {
-                                let ((ours, our_keys, _, held), (theirs, their_keys)) = if as_on_the_lead {
-                                    let tiles = (f.tiles)(&after.0);
-                                    let theirs = full(after, &tiles);
-                                    (shadow(Some((sets, before)), after, &tiles), theirs)
-                                } else {
-                                    let theirs = match &less_first {
-                                        _ if after == base => base_full.clone(),
-                                        Some((p, keys, _, _)) => (p.clone(), keys.clone()),
-                                        None => full(after, &(f.tiles)(&after.0)),
-                                    };
-                                    (shadow(Some((sets, before)), after, &(f.tiles)(&after.0)), theirs)
-                                };
-                                for (id, k) in &their_keys {
-                                    let ok = match our_keys.get(id) {
-                                        Some(ours) => ours == k,
-                                        None => as_on_the_lead,
-                                    };
-                                    assert!(
-                                        ok,
-                                        "{} {} {}: {what}: the incremental plan's key {:?} isn't the full plan's {k:?}",
-                                        f.name,
-                                        id.0,
-                                        id.1,
-                                        our_keys.get(id)
-                                    );
-                                }
-                                if ours != theirs {
-                                    let (a, b) = (format!("{ours:#?}"), format!("{theirs:#?}"));
-                                    let at = a.lines().zip(b.lines()).position(|(x, y)| x != y);
-                                    let line = |s: &str| at.and_then(|i| s.lines().nth(i)).unwrap_or("").to_string();
-                                    panic!(
-                                        "{}: {what}: the incremental plan isn't the full plan, from {:?} against {:?}",
-                                        f.name,
-                                        line(&a),
-                                        line(&b)
-                                    );
-                                }
-                                kept += held;
-                            }
-                        }
-                        kept
-                    })
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).sum()
-        });
+        let mut cases = part.take(cases);
+        // (An entry removed and added back first: its three plans, or five on the lead, a change's two.)
+        cases.sort_by_key(|c| !c.3);
+        let kept: usize = on_case_threads(&cases, |(what, before, after, less)| {
+            let base = &base;
+            let mut kept = 0;
+            // (Each change, and for an entry removed its adding back after.)
+            let less_first = less.then(|| shadow(None, after, &(f.tiles)(&after.0)));
+            let mut steps = vec![(before, after, base_sets.clone())];
+            if let Some((_, _, sets, _)) = &less_first {
+                steps.push((after, base, sets.clone()));
+            }
+            for (before, after, sets) in steps {
+                let ((ours, our_keys, _, held), (theirs, their_keys)) = if as_on_the_lead {
+                    let tiles = (f.tiles)(&after.0);
+                    let theirs = full(after, &tiles);
+                    (shadow(Some((sets, before)), after, &tiles), theirs)
+                } else {
+                    let theirs = match &less_first {
+                        _ if after == base => base_full.clone(),
+                        Some((p, keys, _, _)) => (p.clone(), keys.clone()),
+                        None => full(after, &(f.tiles)(&after.0)),
+                    };
+                    (shadow(Some((sets, before)), after, &(f.tiles)(&after.0)), theirs)
+                };
+                for (id, k) in &their_keys {
+                    let ok = match our_keys.get(id) {
+                        Some(ours) => ours == k,
+                        None => as_on_the_lead,
+                    };
+                    assert!(
+                        ok,
+                        "{} {} {}: {what}: the incremental plan's key {:?} isn't the full plan's {k:?}",
+                        f.name,
+                        id.0,
+                        id.1,
+                        our_keys.get(id)
+                    );
+                }
+                if ours != theirs {
+                    let (a, b) = (format!("{ours:#?}"), format!("{theirs:#?}"));
+                    let at = a.lines().zip(b.lines()).position(|(x, y)| x != y);
+                    let line = |s: &str| at.and_then(|i| s.lines().nth(i)).unwrap_or("").to_string();
+                    panic!(
+                        "{}: {what}: the incremental plan isn't the full plan, from {:?} against {:?}",
+                        f.name,
+                        line(&a),
+                        line(&b)
+                    );
+                }
+                kept += held;
+            }
+            kept
+        })
+        .into_iter()
+        .sum();
         (cases.len(), kept)
     }
 
-    /// `incremental_is_full` in the fixtures named `names` (`as_on_the_lead` or not): at least
-    /// `least` keys kept in all (a tenth of it of a sample of the entries, `Fixture::entries`), so
-    /// the plans were made incrementally.
-    fn incremental_is_full_in(names: &[&str], as_on_the_lead: bool, least: usize) {
-        let least = if every_entry() { least } else { least / 10 };
+    /// `incremental_is_full` in the fixtures named `names` (`as_on_the_lead` or not), of the cases
+    /// `part` takes: at least `least` keys kept in all (a tenth of it of a sample of the entries,
+    /// `Fixture::entries`; its share of it of a part), so the plans were made incrementally.
+    fn incremental_is_full_in(names: &[&str], as_on_the_lead: bool, part: Part, least: usize) {
+        let least = if every_entry() { least } else { least / 10 } / part.of;
         let all = if names == ["held"] { vec![held_fixture()] } else { fixtures() };
         let mut kept = 0;
         for f in all.iter().filter(|f| names.contains(&f.name)) {
             let t = std::time::Instant::now();
-            let (n, k) = incremental_is_full(f, as_on_the_lead);
+            let (n, k) = incremental_is_full(f, as_on_the_lead, part);
             eprintln!("{}: {n} changes, {k} keys kept, in {:.1} s", f.name, t.elapsed().as_secs_f64());
             kept += k;
         }
         assert!(kept >= least, "{kept} keys kept: the plans were made incrementally");
     }
 
-    /// `incremental_is_full`, a test per fixture or two (each fixture's two hundred changes are
-    /// seconds of plans).
+    /// `incremental_is_full`, a test per fixture or two, each in parts (`Part`, #1560: a fixture's
+    /// 140-150 changes with every entry are 120-140 s of plans on one thread, 11-17 s of a test
+    /// alone on the M4's cores; a part of two, 6-8 s, of three on the lead).
     #[test]
-    fn an_incremental_plan_is_the_full_plan() {
-        incremental_is_full_in(&["deep"], false, 10_000);
+    fn an_incremental_plan_is_the_full_plan_1_of_2() {
+        incremental_is_full_in(&["deep"], false, Part { k: 0, of: 2 }, 10_000);
     }
 
     #[test]
-    fn an_incremental_plan_is_the_full_plan_built() {
-        incremental_is_full_in(&["built", "pole"], false, 5_000);
+    fn an_incremental_plan_is_the_full_plan_2_of_2() {
+        incremental_is_full_in(&["deep"], false, Part { k: 1, of: 2 }, 10_000);
     }
 
     #[test]
-    fn an_incremental_plan_is_the_full_plan_on_water() {
-        incremental_is_full_in(&["water", "pyramids", "depth"], false, 5_000);
+    fn an_incremental_plan_is_the_full_plan_built_1_of_2() {
+        incremental_is_full_in(&["built", "pole"], false, Part { k: 0, of: 2 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_is_the_full_plan_built_2_of_2() {
+        incremental_is_full_in(&["built", "pole"], false, Part { k: 1, of: 2 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_is_the_full_plan_on_water_1_of_2() {
+        incremental_is_full_in(&["water", "pyramids", "depth"], false, Part { k: 0, of: 2 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_is_the_full_plan_on_water_2_of_2() {
+        incremental_is_full_in(&["water", "pyramids", "depth"], false, Part { k: 1, of: 2 }, 5_000);
     }
 
     /// In the build holding its declarations and coverage records as a load does
     /// (`held_fixture`): each plan on terrain of its own, then as on the lead.
     #[test]
-    fn an_incremental_plan_on_held_terrain_is_the_full_plan() {
-        incremental_is_full_in(&["held"], false, 5_000);
+    fn an_incremental_plan_on_held_terrain_is_the_full_plan_1_of_2() {
+        incremental_is_full_in(&["held"], false, Part { k: 0, of: 2 }, 5_000);
     }
 
     #[test]
-    fn an_incremental_plan_on_the_lead_is_the_full_plan() {
-        incremental_is_full_in(&["held"], true, 5_000);
+    fn an_incremental_plan_on_held_terrain_is_the_full_plan_2_of_2() {
+        incremental_is_full_in(&["held"], false, Part { k: 1, of: 2 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_on_the_lead_is_the_full_plan_1_of_3() {
+        incremental_is_full_in(&["held"], true, Part { k: 0, of: 3 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_on_the_lead_is_the_full_plan_2_of_3() {
+        incremental_is_full_in(&["held"], true, Part { k: 1, of: 3 }, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_on_the_lead_is_the_full_plan_3_of_3() {
+        incremental_is_full_in(&["held"], true, Part { k: 2, of: 3 }, 5_000);
     }
 
     /// Keys kept twice (task #1077 review): shadow plans chained over two changes in a row, each
@@ -7956,7 +8020,23 @@ mod tests {
         static KEYS_SEEN: std::cell::RefCell<BTreeSet<String>> = Default::default();
     }
 
+    /// The plans run to the end from `m` and `done`, each plan's first work done (its targets, in
+    /// order), each plan's waits its reads (`waits_are_reads`) and its offered keys derived
+    /// (`keys_are_derived`, into `KEYS_SEEN`).
     fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
+        run_plans(c, reach, m, done, true)
+    }
+
+    /// `run_all`, its plans checked or not (`check`): a fixture's build (`fixtures`) only wants
+    /// where they end, and the checks were half of its 2.5-3 s (#1560), which every test of the
+    /// fixtures paid before its own work; the tests of the plans' runs (`run_all`'s users) check them.
+    fn run_plans(
+        c: &Coverage,
+        reach: &Reaches,
+        m: &mut BTreeMap<String, String>,
+        done: &mut Keys,
+        check: bool,
+    ) -> Vec<String> {
         let mut ran = Vec::new();
         for _ in 0..60 {
             let p = super::plan(
@@ -7977,11 +8057,13 @@ mod tests {
                     way: Default::default(),
                 },
             );
-            waits_are_reads(&p);
-            let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(m));
-            let x = KeyCtx::new(c, "d", m, &inputs, Some(reach), &tiles);
-            let seen = keys_are_derived(&p, &x);
-            KEYS_SEEN.with(|s| s.borrow_mut().extend(seen));
+            if check {
+                waits_are_reads(&p);
+                let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(m));
+                let x = KeyCtx::new(c, "d", m, &inputs, Some(reach), &tiles);
+                let seen = keys_are_derived(&p, &x);
+                KEYS_SEEN.with(|s| s.borrow_mut().extend(seen));
+            }
             let Some(w) = p.work.into_iter().next() else { return ran };
             ran.extend(w.targets.iter().map(|t| format!("{} {}", w.step, t.0)));
             match w.step.as_str() {
@@ -10267,16 +10349,21 @@ mod tests {
         };
         let (mut states, mut most) = (0, 0);
         for _ in 0..12 {
-            let one = planned(&first, &m, &done);
             // (The other coverages' plans at every third state but before a publish, #1539: at
-            // each, three plans a state were the test's 8.7 s alone on the M4.)
-            if every_entry() || states % 3 == 0 {
-                assert!(one == planned(&made(), &m, &done), "a coverage made again, state {states}");
-                assert!(
-                    one == planned(&kept_back(&made()), &m, &done),
-                    "a coverage read back in place, state {states}"
-                );
-            }
+            // each, three plans a state were the test's 8.7 s alone on the M4; each on a thread
+            // of its own beside the first's, #1560: 9.7 s alone with every state.)
+            let others = every_entry() || states % 3 == 0;
+            let one = std::thread::scope(|s| {
+                let (m, done) = (&m, &done);
+                let again = others.then(|| s.spawn(move || planned(&made(), m, done)));
+                let back = others.then(|| s.spawn(move || planned(&kept_back(&made()), m, done)));
+                let one = planned(&first, m, done);
+                if let (Some(again), Some(back)) = (again, back) {
+                    assert!(one == again.join().unwrap(), "a coverage made again, state {states}");
+                    assert!(one == back.join().unwrap(), "a coverage read back in place, state {states}");
+                }
+                one
+            });
             if states == 0 {
                 // (From the next state on, `one` is the first coverage with its memos filled.)
                 assert!(one == planned(&first, &m, &done), "the first coverage again, its memos filled");
