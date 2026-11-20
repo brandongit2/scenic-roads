@@ -20,7 +20,7 @@ import { n, plural } from "./words.js";
 import { lineage, pack, spanLanes, spanTree } from "./runlanes.js";
 import { versionWatch } from "./version.js";
 import { remote } from "./live.js";
-import { MARK_LANES, dur, linesIn, markers, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, clockText } from "./jobview.js";
+import { MARK_LANES, dur, linesIn, markers, nasWeightText, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, clockText } from "./jobview.js";
 
 const $ = (id) => document.getElementById(id);
 // (The build page's folder: "" at the coordinator's root, "/build" through tools/caddy.)
@@ -145,7 +145,7 @@ function side(f, out) {
       ["NAS asked", fig?.asked != null ? `${bytes(fig.asked)} read, ${bytes(fig.served)} of it served by the NAS${v.record.nas.wrote_b ? `; ${bytes(v.record.nas.wrote_b)} written` : ""}` : null, "The NAS files' bytes it read, whichever answered, and those read through the share (the rest this Mac's page cache held)"],
       ["work done", fig?.done ? `${fig.done.of ? `${n(fig.done.targets)} of ${n(fig.done.of)} targets` : "no targets"}${fig.done.end && fig.done.end !== "done" ? `, ${fig.done.end}: a part's figures` : ""}${fig.done.resumed ? `; ${n(fig.done.resumed)} blocks resumed, ${n(fig.done.made || 0)} made` : ""}` : null, "The targets it finished, how it ended, and the blocks a resumed run took from an earlier one"],
       ["its Mac gave", supplyText(v.record?.supply), "What its Mac supplied over the run, the means of its agent's live readings then (task #1418): the cores free of load outside the build, those kept for the owner while they used the Mac, the memory available, the NAS's answer time, the jobs' NAS throughput, and the pool's with the NAS's busiest disk as the lead kept the record"],
-      ["NAS weight", "not recorded", "The lead weighs a running job's NAS share from its beats (coord::sched job_weight); nothing keeps the weight it was granted under"],
+      ["NAS weight", nasWeightText(predicted(v)), "The share of the NAS budget the lead granted it under (coord::sched lease_nas): its targets' NAS moves over their times, as their runs measured them; once it runs past their time, the lead weighs it by its beats instead (job_weight)"],
     ]), fig?.implausible.length ? h("div", null, h("div", "bad small", "Its record failed the plausibility checks: kept, not learned from"), h("ul", "why", fig.implausible.map((w) => h("li", null, w)))) : null, fig?.unchecked.length ? h("div", "small dim", `Not checked: ${fig.unchecked.join("; ")}`) : null),
     placedSec(predicted(v), fig, f, end),
     sec("When and how", kv([

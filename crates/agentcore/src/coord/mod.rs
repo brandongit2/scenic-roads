@@ -388,13 +388,19 @@ fn sized_words(p: &sched::Pick, worker: &str) -> String {
 /// What a job's "lease" event keeps of its grant (docs/formats.md, The history; the job's page,
 /// "Predicted and placed"): the time it was sized to and whether by its Mac's own runs (`sized_s`,
 /// `own`: its needs over its Mac's supply, `sched::Sched::batch_secs`), the threads and memory it
-/// was granted (`threads`, `mem_mb`, MB, on its threads) and its disk (`disk_mb`), and why it went
-/// to its Mac (`why`, placement's words: `sched::Sched::placed_start`).
+/// was granted (`threads`, `mem_mb`, MB, on its threads) and its disk (`disk_mb`), why it went
+/// to its Mac (`why`, placement's words: `sched::Sched::placed_start`), and the NAS weight it was
+/// granted under (`nas_w`, thousandths of the NAS, and `nas_measured`, whether by its targets'
+/// measured rates: `sched::Pick::nas`; neither with the NAS budget off).
 fn granted_data(p: &sched::Pick) -> serde_json::Value {
     let mut v = serde_json::json!({ "threads": p.threads, "mem_mb": p.mem_mb, "disk_mb": p.disk_mb });
     if let Some((s, own)) = p.sized {
         v["sized_s"] = s.into();
         v["own"] = own.into();
+    }
+    if let Some((w, measured)) = p.nas {
+        v["nas_w"] = w.into();
+        v["nas_measured"] = measured.into();
     }
     if let Some(w) = &p.why {
         v["why"] = w.clone().into();
@@ -9435,6 +9441,31 @@ mod tests {
                 Granted::Task { .. } => Vec::new(),
             })
             .collect()
+    }
+
+    /// Task #1178: a job's "lease" event keeps the NAS weight it was granted under (in the file, as
+    /// its job's page reads it): a slope-hi target measured at 50 MB/s of a 100 MB/s NAS, half;
+    /// with the NAS budget off, none.
+    #[test]
+    fn a_lease_event_keeps_the_nas_weight_its_job_was_granted_under() {
+        let granted = |c: &Coordinator| {
+            let history = c.history();
+            let lease = history.iter().rev().find(|e| e.kind == "lease").unwrap();
+            let file = c.shared.lock().unwrap().history.path().map(Path::to_path_buf).unwrap();
+            history::data_in_file(&file, lease.seq).unwrap()
+        };
+        let a = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_nas(Some(jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, ..Default::default() }));
+        heavy_slope(&c);
+        assert!(w.ask(&a).unwrap().is_some());
+        let data = granted(&c);
+        assert_eq!((data["nas_w"].as_u64(), data["nas_measured"].as_bool()), (Some(500), Some(true)), "{data}");
+        let (_d, c, w, _clock) = every((0, 0));
+        heavy_slope(&c);
+        assert!(w.ask(&a).unwrap().is_some());
+        let data = granted(&c);
+        assert!(data.get("nas_w").is_none() && data.get("nas_measured").is_none(), "{data}");
     }
 
     /// The NAS budget (jobrt::budget::nas): with packing, an ask is granted only the jobs whose NAS

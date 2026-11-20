@@ -1136,7 +1136,10 @@ runs on (its own lapsed, or lost to a lead's restart), carries the run's id (`le
 The lead's coordinator's file, on its disk: a line an event (`history::Event` as JSON: `{seq, t,
 kind, worker?, job?, step?, targets?, secs?, ok?, what?, note?, n?, data?, after?, v?, still_s?,
 rates?, gap_s?, threads?, progress?, left?, noted?}`, each absent when empty; `left: [[said, actual], …]` on the "end" or "done" of a leased job whose beats said its time left by its progress (`Leases::take_left`: s, what a beat said against what was left in fact less the time its job was stopped since, from its last beat back one each time that doubled, none within its beats' median gap of its end; docs/pool.md §7.2, Room held for a big job); `progress: {target?, done, total, since?, unit, secs}` on the "end", "done" or "fail" of a job that stopped short (not ok, or a member's "done" well of only some of its lease's targets), its last part's progress line as it stood: `target` a cost key, `since` what its first beat said already, `secs` the time from there (docs/building.md, The forecast); `v` on "fail" too; `noted: {member, process, n}` on an
-event a member noted, the note it was), appended as it happens (no `fsync`), rewritten
+event a member noted, the note it was; a "lease"'s `data` its grant, `coord::granted_data`:
+`{threads, mem_mb, disk_mb, sized_s?, own?, why?, nas_w?, nas_measured?}`, `nas_w` the NAS weight
+it was granted under, thousandths of the NAS, and `nas_measured` whether by its targets' measured
+rates, both absent with the NAS budget off and before task #1178), appended as it happens (no `fsync`), rewritten
 whole (a temporary name, renamed over it) with its lines of the last 7 days once it holds twice the
 events kept and a thousand more; `seq` rises by one an event, across the coordinator's restarts
 (read back as it starts). Its coordinator holds the same week in memory, each event without its

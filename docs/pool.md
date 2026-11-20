@@ -969,7 +969,9 @@ past its targets' runs) plus each target's time on that Mac at the threads it wo
 own run (on its Mac as it ran; another Mac's by the two Macs' speeds, twice its time where a speed
 isn't measured), else its step's model. A target's own run is read by one rule everywhere it's read
 (`needs::own`). The grant's log line and the history's lease event say what it was sized to and how
-("sized to 14.8 min at its Mac's speed"), and placement's why; the job's page shows them. The
+("sized to 14.8 min at its Mac's speed"), and placement's why, and with the NAS budget on the NAS
+weight it was granted under (`nas_w`, `nas_measured`: `sched::Pick::nas`); the job's page shows
+them. The
 forecast offers an ask at most the first 64 ready targets of a step (`forecast::OFFER_MAX`) where
 the live coordinator grants up to 256 (`JOB_MAX`): a longer run of tiny targets is one job live and
 several in the forecast. 64 keeps the forecast's CPU in its budget (256 took 463 s of CPU on the

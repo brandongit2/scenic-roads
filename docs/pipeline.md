@@ -406,8 +406,9 @@ The Jobs tab's stages are the one exception.
   outside the build, those kept for the owner and the build's, the memory available and its least
   over the floor, the NAS's answer time, the jobs' NAS throughput and the pool's with the NAS's
   busiest disk; `jobview.js` `supplyText`),
-  its NAS weight ("not recorded": the lead weighs a running job's NAS share from its beats and keeps
-  no grant's weight); its start, how long it took, its outcome and why (its error, its agent's exit,
+  the NAS weight it was granted under (its lease event's `nas_w`, a share of the NAS, and whether
+  its targets' rates were measured, `jobview.js` `nasWeightText`; "not recorded" for a grant with
+  the NAS budget off, or an older lead's); its start, how long it took, its outcome and why (its error, its agent's exit,
   the history's notes, a pause, spans cut); its figures (wall, CPU, cores busy, peak memory,
   threads, NAS and network waits) beside its step's medians over the lead's last 20 records of its
   kind (`/api/timings`, itself left out); the history's other runs of its targets (links) and the

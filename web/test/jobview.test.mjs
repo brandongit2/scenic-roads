@@ -1,7 +1,7 @@
 // A job's page's sums (web/buildpage/jobview.js) and a run's lanes (runlanes.js), task #1105.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clockText, crossesMidnight, markers, median, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
+import { clockText, crossesMidnight, markers, median, nasWeightText, outcome, predicted, recordFigures, spanLook, stepMedians, supplyText, timeWords, tplus, linesIn } from "../buildpage/jobview.js";
 import { lineage, pack, spanLanes, spanTree } from "../buildpage/runlanes.js";
 import { jobHref, pastRuns, packRuns, segHref } from "../buildpage/sums.js";
 
@@ -76,15 +76,27 @@ test("what its Mac supplied: each part it says, none without", () => {
 test("what its grant predicted and why it ran there: its first lease event's data", () => {
   const lease = (data) => ({ history: [{ kind: "lease", data }, { kind: "lease", data: { sized_s: 1 } }, { kind: "done" }] });
   assert.deepEqual(predicted(lease({ sized_s: 720, own: true, threads: 4, mem_mb: 3500, disk_mb: 20, why: "soonest done here of the Macs asking that would take it now: 12.0 min here, mini 30.0 min" })),
-    { secs: 720, own: true, threads: 4, memMb: 3500, diskMb: 20, why: "soonest done here of the Macs asking that would take it now: 12.0 min here, mini 30.0 min", kept: true });
+    { secs: 720, own: true, threads: 4, memMb: 3500, diskMb: 20, why: "soonest done here of the Macs asking that would take it now: 12.0 min here, mini 30.0 min", nasW: null, nasMeasured: null, kept: true });
   // (Placement off, or a cold start: its grant kept, no why.)
   assert.deepEqual(predicted(lease({ sized_s: 720, own: true, threads: 4, mem_mb: 3500, disk_mb: 20 })).kept, true);
   // (A grant before task #1413: its sized time alone.)
-  assert.deepEqual(predicted(lease({ sized_s: 60, own: false })), { secs: 60, own: false, threads: null, memMb: null, diskMb: null, why: null, kept: false });
+  assert.deepEqual(predicted(lease({ sized_s: 60, own: false })), { secs: 60, own: false, threads: null, memMb: null, diskMb: null, why: null, nasW: null, nasMeasured: null, kept: false });
   assert.equal(predicted(lease(null)), null);
   assert.equal(predicted(lease({})), null);
   assert.equal(predicted({ history: [{ kind: "done" }] }), null);
   assert.equal(predicted({}), null);
+});
+
+test("the NAS weight it was granted under: its lease event's, else not recorded (task #1178)", () => {
+  const lease = (data) => ({ history: [{ kind: "lease", data }] });
+  const p = predicted(lease({ threads: 1, mem_mb: 2000, nas_w: 500, nas_measured: true }));
+  assert.deepEqual([p.nasW, p.nasMeasured], [500, true]);
+  assert.equal(nasWeightText(p), "50% of the NAS, by its targets' measured rates");
+  assert.equal(nasWeightText(predicted(lease({ threads: 1, nas_w: 1000, nas_measured: false }))), "100% of the NAS (none of its targets measured: its step's default)");
+  assert.equal(nasWeightText(predicted(lease({ threads: 1, nas_w: 25, nas_measured: true }))), "2.5% of the NAS, by its targets' measured rates");
+  // (An older lead's grant, or the NAS budget off: as before.)
+  assert.equal(nasWeightText(predicted(lease({ threads: 1, mem_mb: 2000 }))), "not recorded");
+  assert.equal(nasWeightText(null), "not recorded");
 });
 
 test("how it ended: running, its run's word, else the history's; why from its error, exit and notes", () => {

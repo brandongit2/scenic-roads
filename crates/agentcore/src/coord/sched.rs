@@ -56,6 +56,11 @@ pub struct Pick {
     /// Why it went to this Mac (`placed_start`'s words, placement on); None: placement off or a
     /// job it didn't place (a cold start, the lead's own).
     pub why: Option<String>,
+    /// The NAS weight it was granted under (thousandths of the NAS: `lease_nas`, by its targets'
+    /// rates, until its beats outweigh them, `job_weight`), and whether any of them was measured
+    /// (none: its step's default, the whole for a NAS step, else nothing); None: the NAS budget off
+    /// for its asker.
+    pub nas: Option<(u32, bool)>,
 }
 
 /// Why `Sched::pack` granted an ask fewer jobs than it wanted: the rule that held the rest back,
@@ -2398,6 +2403,12 @@ impl Sched {
                 t.clone(),
             ))
         });
+        let nas = self.nas_room(clock.now, a.worker == self.lead_name).and_then(|(nw, ..)| {
+            let l = self.leases.get(lease, &a.worker, clock.now)?;
+            let (w, _) = self.lease_nas(&nw, l, &o.step, &pick);
+            let names: Vec<&str> = if ts.is_empty() { vec![""] } else { ts.iter().map(String::as_str).collect() };
+            Some((w, names.iter().any(|t| nw.book.nas_for(&o.step, t, &a.worker).is_some())))
+        });
         Pick {
             lease,
             step: o.step.clone(),
@@ -2410,6 +2421,7 @@ impl Sched {
             job: o.job.clone(),
             sized,
             why,
+            nas,
         }
     }
 
