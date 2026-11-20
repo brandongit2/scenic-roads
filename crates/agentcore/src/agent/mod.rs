@@ -6207,7 +6207,8 @@ impl Agent {
     /// the stop relieves it (memguard::worth_stopping); the
     /// largest, past the room alone with the brake off, stops at its next safe point; a job
     /// drained that reached no safe point in the time a pause gives one stops at once. One it stops is given back, not failed, kept from this Mac
-    /// for an hour (a member's lease ended as failed, so its lead keeps it from this Mac as long),
+    /// for the pool's `backoff-start-hours` (a member's lease ended as failed, so its lead keeps it from
+    /// this Mac as long),
     /// what it held its target's floor. With this Mac's memory unknown, nothing, and a job the
     /// sampler froze goes on. True when it stopped a job.
     fn guard(&mut self) -> bool {
