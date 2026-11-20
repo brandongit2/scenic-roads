@@ -4447,7 +4447,9 @@ mod tests {
     /// of the blocks of that size or more alone). With `SCENIC_FROZEN_SIZES`, each
     /// plan's blocks by size after its line (`allocs::sizes`); with `SCENIC_FROZEN_PEAKS=<n>`, by
     /// size, the `n` sites whose blocks took that size's live bytes to their most in the plan
-    /// (`allocs::peaks`: who holds what the allocator keeps of that size).
+    /// (`allocs::peaks`: who holds what the allocator keeps of that size). Each phase says itself as
+    /// it begins (`progress: <k>/<n> frozen plans (<phase>)`: the coverage, naming it, each plan), so
+    /// a run's record on the dev jobs page splits by phase (tools/dev/devjob.py).
     #[test]
     #[ignore]
     fn frozen_plans_memory() {
@@ -4514,6 +4516,9 @@ mod tests {
             let b = allocs::asked();
             (b.0 - a.0, b.1 - a.1)
         };
+        let rounds = num("SCENIC_FROZEN_ROUNDS").unwrap_or(7);
+        let phase = |k: u64, what: &str| crate::agent::jobs::report(k, rounds + 2, &format!("frozen plans ({what})"));
+        phase(0, "the coverage");
         let (t, a) = (Instant::now(), allocs::asked());
         let (manifest, _) = p.planning_records(&root).unwrap();
         let covs = loop {
@@ -4527,6 +4532,7 @@ mod tests {
         say(memory("the coverage", t.elapsed(), since(a)));
         // (What naming the coverage costs a call, twice each: its digest reads every ring's points,
         // its identity their fingerprints, kept a shape. Task #1077.)
+        phase(1, "naming the coverage");
         for _ in 0..2 {
             let t = Instant::now();
             covs.all.digest();
@@ -4540,11 +4546,11 @@ mod tests {
             ));
         }
         drop(covs);
-        let rounds = num("SCENIC_FROZEN_ROUNDS").unwrap_or(7);
         let sites = num("SCENIC_FROZEN_SITES");
         let sizes = num("SCENIC_FROZEN_SIZES").is_some();
         let peaks = num("SCENIC_FROZEN_PEAKS");
         for round in 1..=rounds {
+            phase(round + 1, &format!("plan {round}"));
             allocs::on(sites.is_some(), num("SCENIC_FROZEN_SITES_LEAST").unwrap_or(0));
             allocs::peaks_on(peaks.is_some());
             let (t, a) = (Instant::now(), allocs::asked());
