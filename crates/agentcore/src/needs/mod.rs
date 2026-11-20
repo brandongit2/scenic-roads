@@ -994,10 +994,11 @@ impl<'a> Book<'a> {
     }
 
     /// The cores a job of `step` for `target` takes, as measured (buildstore::costin's `sizes`): its own
-    /// run's, else its step's parallelism (`model::Par`): as many threads as it can use, counted
-    /// for the cores its runs keep busy; None when none of them says (what packs jobs beside each
-    /// other, crate::coord's packing, then packs none beside it). Its agent's live control grows
-    /// or shrinks the threads from there (task #1420).
+    /// run's, else its step's parallelism (`model::Par`): the cores its runs keep busy and a thread
+    /// more, within as many threads as it can use (`Par::grant`), counted for the cores its runs
+    /// keep busy; None when none of them says (what packs jobs beside each other, crate::coord's
+    /// packing, then packs none beside it). Its agent's live control grows or shrinks the threads
+    /// from there (task #1420).
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
         let v = self.the_plan.cost_version(step);
         if let Some(c) = self.costs.get(&cost_key(step, target)).filter(|c| c.v >= v) {
@@ -1007,7 +1008,7 @@ impl<'a> Book<'a> {
         }
         let par = self.model(step).needs.par;
         (par.runs > 0).then(|| {
-            let grant = par.cores().ceil() as u32;
+            let grant = par.grant();
             let busy = par.kept.map(|k| ((k * 10.0).round() as u32).clamp(1, grant * 10));
             Cores { grant, busy_tenths: busy }
         })
@@ -1181,13 +1182,15 @@ pub fn model_table(book: &Book) -> String {
         }
         let since = n.since.as_deref().map_or(String::new(), |k| format!(", relearned from {k}"));
         let busy = n.par.busy.map_or("-".to_string(), |b| format!("{b:.1}"));
+        let kept = n.par.kept_median.map_or("-".to_string(), |k| format!("{k:.1}"));
         out += &format!(
-            "{s:<14} {} runs, its times from {}{since}; parallelism {:.1} (floor {}, busy {busy}, of {} runs)\n",
+            "{s:<14} {} runs, its times from {}{since}; parallelism {:.1} (floor {}, busy {busy}, of {} runs), {kept} kept busy over a run's whole time, a target of no run of its own granted {}\n",
             n.runs,
             n.learned,
             n.par.cores(),
             n.par.floor,
-            n.par.runs
+            n.par.runs,
+            n.par.grant()
         );
         for p in n.by.iter().take(3) {
             let f = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x:.4}"));
@@ -1437,6 +1440,32 @@ mod tests {
             Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000)]) },
         );
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
+    }
+
+    /// Task #1509: a target of no run of its own starts on its step's measured busy cores and a
+    /// thread more (`model::Par::grant`), not on all it can use. slope-deep as its runs went on 20
+    /// Nov: 4 threads, every one busy while not waiting (a floor of 4), but waiting 65 of each
+    /// 100 s, 1.4 cores busy over the whole: granted 2, counted for 1.4, not granted 4. A step
+    /// whose runs keep their threads busy throughout (pois' 8 of 8) is still granted what it can
+    /// use, never more.
+    #[test]
+    fn a_target_never_run_starts_on_its_steps_measured_busy_cores() {
+        let v = cost_version("slope-deep");
+        let mut costs = BTreeMap::new();
+        for i in 0..12 {
+            let sizes = [("threads", 4), ("cpu_ms", 140_000), ("nas_net_ms", 65_000)];
+            costs.insert(cost_key("slope-deep", &format!("10/1/{i}")), Cost { v, ..cost(500, 100, &sizes) });
+        }
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(b.model("slope-deep").needs.par.floor, 4, "its threads busy while not waiting");
+        assert_eq!(b.cores("slope-deep", "10/9/9"), Some(Cores { grant: 2, busy_tenths: Some(14) }));
+        let v = cost_version("pois");
+        for i in 0..12 {
+            let sizes = [("threads", 8), ("cpu_ms", 80_000)];
+            costs.insert(cost_key("pois", &format!("6/1/{i}")), Cost { v, ..cost(100, 10, &sizes) });
+        }
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(b.cores("pois", "6/9/9"), Some(Cores { grant: 8, busy_tenths: Some(80) }));
     }
 
     /// A target's NAS rate: its own run's bytes (read, written and read back) and creates over its

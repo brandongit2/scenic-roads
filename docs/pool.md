@@ -327,7 +327,11 @@ store::waits by the wall clock).
   nearest whole, plus one thread to overlap its waits or to climb by. A job waiting on the NAS
   settles where a run measures the same and never climbs; one its threads held climbs a thread a
   run, capped at the Mac's cores. A target not run the way it runs now takes its
-  **step's parallelism** (`needs::model::Par`, §7.7, What a step needs).
+  **step's** (`needs::model::Par::grant`, §7.7, What a step needs): the median of the cores its
+  runs kept busy over their whole time, to the nearest whole, plus one, within the step's
+  parallelism, the most it can use; its parallelism where no run said its CPU (task #1509:
+  slope-deep, whose runs used 4 threads while not waiting but kept about 1.4 busy, starts on 2,
+  and its agent's live control grows it where a thread more pays).
 - its **busy** cores, that CPU time over the time it ran, to a tenth of a core.
   **A job counts for its busy cores** in packing (`Sched::need_cores`), not its threads, so jobs
   waiting on reads go side by side until memory, disk or the NAS budget is full.

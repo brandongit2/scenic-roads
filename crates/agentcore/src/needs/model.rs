@@ -131,8 +131,10 @@ pub struct Par {
     pub floor: u32,
     pub busy: Option<f64>,
     /// The `high_pct` percentile of the cores its runs kept busy over their whole time, waits and
-    /// all: what a job counts for in its Mac's packing.
+    /// all: what a job counts for in its Mac's packing; and their median, what a typical job of it
+    /// keeps busy (`grant`).
     pub kept: Option<f64>,
+    pub kept_median: Option<f64>,
     pub runs: usize,
 }
 
@@ -141,6 +143,18 @@ impl Par {
     /// busy, the more; one at least.
     pub fn cores(&self) -> f64 {
         self.busy.unwrap_or(0.0).max(f64::from(self.floor)).max(1.0)
+    }
+
+    /// The threads a job of the step starts on where its target has no run of its own: what its
+    /// runs kept busy over their whole time, waits and all (`kept_median`), and a thread more to
+    /// overlap its waits or climb by, as a target's own run is granted (crate::needs's `own_cores`),
+    /// within what it can use (`cores`); its agent's live control grows it from there when a
+    /// thread more pays (crate::agent::threads). Where no run said its CPU, what it can use. (Task
+    /// #1509: slope-deep, its threads kept busy while not waiting, so a floor of 4, kept 1.4 busy
+    /// over its runs' whole time, ending in about 78 s, before live control acted.)
+    pub fn grant(&self) -> u32 {
+        let most = self.cores().ceil() as u32;
+        self.kept_median.map_or(most, |k| ((k.min(self.cores()) + 0.5) as u32 + 1).min(most))
     }
 }
 
@@ -911,7 +925,8 @@ fn par(runs: &[&Obs], t: &Tuning) -> Par {
         }
     }
     out.busy = pct(&sorted(under), 50.0);
-    out.kept = pct(&sorted(kept), t.high_pct);
+    let kept = sorted(kept);
+    (out.kept, out.kept_median) = (pct(&kept, t.high_pct), pct(&kept, 50.0));
     out
 }
 
