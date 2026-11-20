@@ -3154,15 +3154,19 @@ asks passed on are one-shot: the lead's store keeps them (below).
   "Older history" card says so); `scenic timings publish` and the forecast check read it.
   The swarm's forecast is the lead's agent's own, the one its status carries (task #1487: never
   run again for the page): as the planner takes in each forecast (`take_forecast`) it hands its
-  coordinator the tiles to come (with the waits) and then the forecast itself, shared
-  (`PageFiles::forecast`, `hold_forecast`); a forecast of another plan's shape is dropped whole
+  coordinator the forecast itself, shared (`PageFiles::forecast`), with its tiles to come and its
+  waits, all three under one lock (`Coordinator::hand_forecast`: no page reads a forecast whose
+  tiles aren't in yet); a forecast of another plan's shape is dropped whole
   before any of that, and when the plan's shape changes (the regions' work, or a stop short of it)
   or a forecast fails, the held one is cleared from the status and the page alike, so a stop's
-  forecast shows its reason and no finish on both. The lead makes one at most each
-  `forecast::EVERY` (a minute), so the page's forecast is up to a minute old (as the status's is),
-  its lanes as the lead's slots were when it was made. Times are given the page as ages
-  (`coord::ages`). The answer carries the app serving it (`app`). With a lead on an app from before
-  these records (no `view.json`), the answer has no leases, workers nor tasks. A member with
+  forecast shows its reason and no finish on both. A forecast's `at` is taken as its run starts, a
+  run starts once the last forecast's `at` is `forecast::EVERY` (a minute) old, takes its run's
+  time (5-12 s of CPU at live scale, each of its three runs at most `forecast::BUDGET`, 15 s of
+  CPU; longer in wall time on a starved Mac, up to two minutes) and is taken in at the planner's
+  next call; so the page's forecast is about a minute old, plus the next run's time (as the
+  status's is), its lanes as the lead's slots were at its `at`. Times are given the page as ages
+  (`coord::ages`). The answer carries the app serving it (`app`). With a lead on an app from
+  before these records (no `view.json`), the answer has no leases, workers nor tasks. A member with
   neither a coordinator nor a broker answers its port from a viewer (`Coordinator::viewer`): the
   page sent to the lead as a broker sends it (docs/roles.md §3.3), its live store, settings and
   hold, every other call refused (its key's too); no state folder of the agent's (its token alone,
@@ -3353,11 +3357,11 @@ asks passed on are one-shot: the lead's store keeps them (below).
   lane's runs in order); `jobs`, how many jobs each run is (its `Stretch::cuts` and one), the jobs
   numbered in turn in the runs' order; and `deps`, [a, b] when an item of job b waits on one of
   job a (task #879: its declared reads, `steps::read_targets`, a release's; a set it reads whole by
-  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's history's (`coordinator <lead>`, the swarm's), in and out of the pool. The history's waits are its memory alone: the first forecast after the lead's agent starts has none to look up, so its `after` names no job (the next one's does). Measured on the 26 Oct 20:15
+  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's history's (`coordinator <lead>`, the swarm's), in and out of the pool. The history's waits are kept beside its file on the lead's disk (`coord/history-waits.json`, `history::WAITS_FILE`: written whole with each forecast's waits, every `history::WAITS_KEEP_S`, 5 minutes, at most; the graph compacted, `Graph::compact`, each number the history's own, which go on across its restarts) and read back as its coordinator starts (task #863, #1487), so a job that finished before a lead's restart is still named by the targets still to come that waited on it, for as long as they're queued; none read back when none were kept, they were kept over a day before (`history::WAITS_KEPT_FOR_S`), or they name numbers past the file's (a file lost), and then a finish before the restart is passed over. Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
   ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). The answer is the coordinator's, from
   the tiles to come its agent handed it with each forecast taken in (§10, the page's data: handed
-  before the forecast itself, task #1487), so its `at` is the one `/api/swarm`'s forecast has
+  with the forecast under one lock, task #1487), so its `at` is the one `/api/swarm`'s forecast has
   (task #836: the page's forecast and its tiles had been made apart, one forecast off, seen 29 Oct,
   so every page dropped its own Mac's answer); the coordinator keeps the last and the one before,
   and the page sends the `at` it read (`{"at"}`) and gets that one's (a forecast taken in between

@@ -69,7 +69,7 @@ thread spent ~10 % serializing mail (`Side::save_mail`).
 | Regions' states (`region-states` thread, `build::region_states`) | yes | the busy core on the M1; 0.7–131 s a run | **drop** on members (#871 steps 6–7 take its output out of the status; this stops computing it) |
 | Terrain pack indexes (`tiles::TerrainTiles`, `agent/pack-idx/`) | yes, for the regions' states | 555 MB each; 358 s of SMB reads on the M1 | **drop** with the regions' states, if no job path reads it (verified in step 2) |
 | Regions loaded for the status (`load_regions` in the member's branch) | yes, each `plan_due` | 24 KB in `helper.json` | **drop** (#871 6–7) |
-| Build page on the member's port: `pageview` (lead's files every 12 s, history, the forecast run locally), `cataloguesview`, `builtview`, region steps | yes, kept warm by the menu bar's `/api/swarm` ask every 50 s | 1.6 MB `pageview-waits.json` written each read; forecast 5–6 s a run | **move**: the lead serves the page; the member's port redirects (§3.3) |
+| Build page on the member's port: `pageview`, `cataloguesview`, `builtview`, region steps | no: the lead's alone since step 4 | — | **moved**: the lead serves the page, a member's port redirects (§3.3); the lead's `pageview` asks its own coordinator in process, and the page's forecast is the lead's own (#1487) |
 | `scenic menu` (every 5 s: the lead's `state/status.json` from the NAS when the member's own isn't fresh) | yes | one NAS read each 5 s | **move**: the lead's summary over HTTP (§3.4) |
 | Inputs watch, gate's listing, redo, answers seeding, GC, backup, catalogues, publishing, forecast, coordinator, map log | no (lead only: `!o.helper`, `LEAD_ONLY`, `keeps_publishing`) | — | already lead only; the per-service checks become the role (§1) |
 | Map server | no (retired by #874) | — | done |
@@ -172,7 +172,8 @@ nothing a process of the Mac still writes goes (`room::member_leftovers`,
   note theirs in their lease's folder), and in `coord/` the coordinator's files (`costs.json`,
   `disks.json`, `floors.json`, `cache-fills.json`, `job-disks-v6.json`, `leases.json`, `pause.json`,
   `timings.jsonl`, `store/`), which only a lead's coordinator reads, as its store's first fill (a
-  broker read them at its start, and wrote the jobs' disks and fills back, until step 6);
+  broker read them at its start, and wrote the jobs' disks and fills back, until step 6), and its
+  history's kept waits (`history-waits.json`, read back as a lead's coordinator starts);
 - written by nothing since the code that wrote them went: `loop-stall-sample-*.txt` (the loop
   watchdog, cut by #871 step 6), `round.json` (the map update's old name, #209),
   `battery-floor.moved` and `pageview-waits.json` (the page view's kept waits, cut by #1487).

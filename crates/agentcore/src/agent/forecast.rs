@@ -2236,15 +2236,17 @@ fn offers(the_plan: &dyn crate::agent::seam::Plan, items: &[Item], order: &[Vec<
 const KEY: &str = "forecast";
 
 /// How often a forecast is made again at most: the lead's, for its status and its build page
-/// (crate::agent::plan's `refresh_forecast`): the page's forecast is up to this old.
+/// (crate::agent::plan's `refresh_forecast`). Its `at` is taken as its run starts, which is once the
+/// last one's `at` is this old, and it's taken in at the planner's next call after its run: the
+/// page's forecast is about this old, plus the next run's time.
 pub const EVERY: Duration = Duration::from_secs(60);
 
 /// How long each of a forecast's three runs may compute (its own thread's CPU time, not wall
 /// time): past it, the run stops where it is (`Sim::cut`) and the forecast is partial
 /// (`Forecast::partial`). It runs off the agent's loop (crate::agent's `start_forecast`); this bounds
 /// a run at a scale it was never measured at (task #544). A quarter of `EVERY`: the three runs side
-/// by side, a forecast takes a quarter of the cadence's CPU at most on each of three cores, on every
-/// Mac (the pages' views run it too). CPU time, task #584: at the utility QoS a loaded Mac starves
+/// by side, a forecast takes a quarter of the cadence's CPU at most on each of three cores, on the
+/// lead alone (the build page shows the lead's own, task #1487). CPU time, task #584: at the utility QoS a loaded Mac starves
 /// the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time cut then hid the
 /// finish of an input no bigger than usual. A run at live scale (7 Nov's queue with every region on,
 /// 19,000-20,300 items on 30 lanes) computes 5-12 s on the M4 under load (task #995; docs/pool.md

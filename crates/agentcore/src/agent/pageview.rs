@@ -9,7 +9,7 @@
 //! view of the lead's coordinator, in process, every `LEAD_EVERY` (`tick_lead`, `Lead`): its
 //! status, its coordinator's view, the pause, the Macs' addresses (each member's broker: where a
 //! page reads its `/api/live`); and the page's regions as its coordinator holds them, shared
-//! (`Lead::page`). A view that can't be had leaves the last one, said with its age. It keeps one
+//! (`Lead::regions`). A view that can't be had leaves the last one, said with its age. It keeps one
 //! snapshot, which the swarm's answer is made from with the forecast the coordinator holds.
 
 use super::forecast::Forecast;
@@ -31,9 +31,10 @@ pub trait Lead: Send + Sync {
     /// The view's answer to `ask`.
     fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value>;
 
-    /// The regions its agent handed it (crate::coord::PageFiles), shared; none (a test's lead).
-    fn page(&self) -> crate::coord::PageFiles {
-        Default::default()
+    /// The page's regions its agent handed it (crate::coord::PageFiles), shared, with when (unix
+    /// ms); none (a test's lead).
+    fn regions(&self) -> Option<(u64, Arc<Value>)> {
+        None
     }
 }
 
@@ -42,8 +43,8 @@ impl Lead for crate::coord::Coordinator {
         Ok(self.pool_view(ask))
     }
 
-    fn page(&self) -> crate::coord::PageFiles {
-        crate::coord::Coordinator::page(self)
+    fn regions(&self) -> Option<(u64, Arc<Value>)> {
+        self.page().regions
     }
 }
 
@@ -177,7 +178,7 @@ impl PageView {
     }
 
     /// Asks the lead for its view (`Lead::view`) with what it has, and takes it in: its status,
-    /// view, pause, Macs; and the regions as the lead holds them, shared (`Lead::page`). One that
+    /// view, pause, Macs; and the regions as the lead holds them, shared (`Lead::regions`). One that
     /// can't be asked: the last view kept, said with its age (`lead_failed`).
     fn ask_lead(&self, lead: &dyn Lead, now: u64) {
         let ask = {
@@ -200,7 +201,7 @@ impl PageView {
         st.lead_failed = None;
         // (The regions as the lead holds them: shared, never copied.)
         let at = |ms: u64| SystemTime::UNIX_EPOCH + Duration::from_millis(ms);
-        st.regions = lead.page().regions.map(|(ms, r)| (at(ms), r));
+        st.regions = lead.regions().map(|(ms, r)| (at(ms), r));
         // (Its status only when it changed since the last answer: the one kept otherwise.)
         let old = st.snap.take();
         let status = match v.get("status") {
@@ -343,16 +344,11 @@ pub(crate) mod tests {
             }))
         }
 
-        fn page(&self) -> crate::coord::PageFiles {
-            let at = |p: &str| std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok().map(ms_of);
-            let raw = |p: &str| std::fs::read(self.0.join(p)).ok();
-            let rpath = "state/build/term/7/regions.json";
-            crate::coord::PageFiles {
-                forecast: None,
-                regions: at(rpath)
-                    .zip(raw(rpath).and_then(|b| serde_json::from_slice::<Value>(&b).ok()))
-                    .map(|(t, r)| (t, Arc::new(r))),
-            }
+        fn regions(&self) -> Option<(u64, Arc<Value>)> {
+            let p = self.0.join("state/build/term/7/regions.json");
+            let at = std::fs::metadata(&p).and_then(|m| m.modified()).ok().map(ms_of);
+            let v = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            at.zip(v).map(|(t, r)| (t, Arc::new(r)))
         }
     }
 

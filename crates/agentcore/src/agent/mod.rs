@@ -16130,7 +16130,7 @@ mod tests {
         *p.forecast_shape.borrow_mut() = Some(old.clone());
         let seeded = std::sync::Arc::new(forecast::Forecast { at: now_s(), ..Default::default() });
         *p.forecast.borrow_mut() = Some(seeded.clone());
-        co.set_page_forecast(Some(seeded));
+        co.hand_forecast(seeded, Default::default(), None);
         let (mut w, mut held) = (Vec::new(), Holds::default());
         p.region_jobs(&nas, None, None, &mut w, &mut held);
         assert!(p.forecast.borrow().is_none(), "the held forecast of another shape is cleared");
@@ -16155,6 +16155,36 @@ mod tests {
         assert!(same(p), "the page's forecast is the status's own");
         let f = co.page().forecast.unwrap();
         assert!(f.why.is_some() && f.done_at.is_none(), "{f:?}");
+        // (Its tiles to come came with it, in the same hand-over: a page never reads a forecast
+        // whose tiles aren't in.)
+        assert_eq!(co.shared.lock().unwrap().tocome.as_ref().map(|t| t.at), Some(f.at));
+    }
+
+    /// Task #1487: a forecast whose run failed (its thread panicked) costs the status its forecast,
+    /// and the build page the same: the coordinator's copy goes with it, never left behind.
+    #[test]
+    fn a_failed_forecast_clears_the_pages_copy_too() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let mut a = agent(&nas, &home);
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        let p = a.planner();
+        p.coord = Some(co.clone());
+        let shape = plan::Shape::Stopped("why".into());
+        *p.forecast_shape.borrow_mut() = Some(shape.clone());
+        let held = std::sync::Arc::new(forecast::Forecast { at: now_s(), ..Default::default() });
+        *p.forecast.borrow_mut() = Some(held.clone());
+        co.hand_forecast(held, Default::default(), None);
+        let run = std::thread::spawn(|| -> Forecasted { panic!("a forecast's run failing") });
+        while !run.is_finished() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        *p.forecasting.borrow_mut() = Some((shape, run));
+        p.take_forecast();
+        assert!(p.forecasting.borrow().is_none(), "taken in");
+        assert!(p.forecast.borrow().is_none(), "the status goes without it");
+        assert!(co.page().forecast.is_none(), "the page's with it");
     }
 
     #[test]

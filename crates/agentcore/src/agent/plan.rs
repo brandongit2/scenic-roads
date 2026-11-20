@@ -574,7 +574,7 @@ pub(super) struct Planner {
     /// The regions the last plan would publish as built (seam::Planned::ready), for the checklist.
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status; its coordinator holds the
-    /// same for the build page (`hold_forecast`).
+    /// same for the build page (`take_forecast`, `drop_forecast`).
     pub(super) forecast: std::cell::RefCell<Option<std::sync::Arc<forecast::Forecast>>>,
     /// What the forecast's plan was (`forecast_of`): the regions' work, or where the plan stopped
     /// short of it and its jobs (`Stopped`).
@@ -1673,7 +1673,7 @@ impl Planner {
     /// last is `forecast::EVERY` old or none is held.
     fn refresh_forecast(&self, shape: Shape, make: impl FnOnce() -> forecast::Record<'static>) {
         if self.forecast_shape.replace(Some(shape.clone())).as_ref() != Some(&shape) {
-            self.hold_forecast(None);
+            self.drop_forecast();
         }
         self.take_forecast();
         let stale =
@@ -2934,9 +2934,9 @@ impl Planner {
     }
 
     /// The forecast run off the loop (`start_forecast`), taken in once it's done: the status's and
-    /// the build page's from then (its tiles to come and waits to its coordinator first, then the
-    /// forecast itself: `hold_forecast`), its record's bytes for the NAS. A fault in it costs the
-    /// status and the page their forecast, never the agent.
+    /// the build page's from then (to its coordinator with its tiles to come and waits, under one
+    /// lock: crate::coord::Coordinator::hand_forecast), its record's bytes for the NAS. A fault in
+    /// it costs the status and the page their forecast (`drop_forecast`), never the agent.
     pub(super) fn take_forecast(&self) {
         if !self.forecasting.borrow().as_ref().is_some_and(|(_, h)| h.is_finished()) {
             return;
@@ -2958,35 +2958,33 @@ impl Planner {
                 let bytes = done.bytes.map_err(|e| eprintln!("agent: the forecast's input as data: {e:#}")).ok();
                 self.out.send(Out::Forecast(bytes, done.entry)).ok();
                 *self.upcoming.borrow_mut() = done.upcoming.map(|(at, h)| (at, std::sync::Arc::new(h)));
-                if let Some(c) = &self.coord {
-                    c.set_tocome(std::sync::Arc::new(done.tocome));
-                    if let Some(w) = done.waits {
-                        c.set_waits(w);
-                    }
-                }
-                let f = &done.forecast;
+                let f = std::sync::Arc::new(done.forecast);
                 let mut curves = self.curves.borrow_mut();
                 curves.retain(|c| c.0 + forecast::PACE_MAX_S > f.at);
                 if !f.curve.is_empty() && curves.last().is_none_or(|c| c.0 + forecast::CURVE_S <= f.at) {
                     curves.push((f.at, f.curve.clone()));
                 }
                 drop(curves);
-                self.hold_forecast(Some(std::sync::Arc::new(done.forecast)));
+                // (The page's the status's own, shared: crate::coord::PageFiles.)
+                if let Some(c) = &self.coord {
+                    c.hand_forecast(f.clone(), std::sync::Arc::new(done.tocome), done.waits);
+                }
+                *self.forecast.borrow_mut() = Some(f);
             }
             Err(_) => {
-                eprintln!("agent: the forecast failed; the status goes without it");
-                self.hold_forecast(None);
+                eprintln!("agent: the forecast failed; the status and the page go without it");
+                self.drop_forecast();
             }
         }
     }
 
-    /// The forecast held for the status, and the same handed to its coordinator for the build page
-    /// (crate::coord::PageFiles: one forecast, the page's never another than the status's).
-    fn hold_forecast(&self, f: Option<std::sync::Arc<forecast::Forecast>>) {
+    /// The forecast held for the status let go, and the build page's with it (its coordinator's:
+    /// the page's is never another than the status's).
+    fn drop_forecast(&self) {
         if let Some(c) = &self.coord {
-            c.set_page_forecast(f.clone());
+            c.drop_page_forecast();
         }
-        *self.forecast.borrow_mut() = f;
+        *self.forecast.borrow_mut() = None;
     }
 
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
@@ -4057,7 +4055,11 @@ mod tests {
                 fcarchive::compress(&serde_json::to_vec(&entry).unwrap()).unwrap();
             });
             let f = p.forecast.borrow().clone();
-            op("the forecast handed to the coordinator for the page", &mut || c.set_page_forecast(f.clone()));
+            op("the forecast handed to the coordinator for the page", &mut || {
+                if let Some(f) = &f {
+                    c.hand_forecast(f.clone(), Default::default(), None);
+                }
+            });
             op("the forecast in the swarm's answer (pageview)", &mut || {
                 drop(serde_json::to_value(f.as_deref()).unwrap());
             });

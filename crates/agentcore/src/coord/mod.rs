@@ -3563,11 +3563,24 @@ impl Coordinator {
         self.shared.lock().unwrap().region_steps_asked.is_some_and(|t| t.elapsed() < REGION_STEPS_ASKING)
     }
 
-    /// Each Mac's tiles to come in this Mac's last forecast (`Shared::tocome`), the last one kept as
-    /// the one before.
-    pub fn set_tocome(&self, t: Arc<crate::agent::forecast::ToCome>) {
+    /// A forecast its agent took in (crate::agent::plan's `take_forecast`), handed over whole under
+    /// one lock: each Mac's tiles to come in it (`Shared::tocome`, the last kept as the one before),
+    /// its dependencies as the waits the history's starts and leases name from now on
+    /// (`history::Event::after`; none: no history's numbering made them), and the forecast itself
+    /// for the page (`PageFiles::forecast`, the status's own). No page reads a forecast whose tiles
+    /// and waits aren't in yet.
+    pub fn hand_forecast(
+        &self,
+        f: Arc<crate::agent::forecast::Forecast>,
+        tocome: Arc<crate::agent::forecast::ToCome>,
+        waits: Option<history::Waits>,
+    ) {
         let mut s = self.shared.lock().unwrap();
-        s.tocome_before = s.tocome.replace(t);
+        s.tocome_before = s.tocome.replace(tocome);
+        if let Some(w) = waits {
+            s.history.set_waits(w);
+        }
+        s.page.forecast = Some(f);
     }
 
     /// The forecast's dependencies as the history's waits (history::WaitsBasis::next), worked out
@@ -3575,12 +3588,6 @@ impl Coordinator {
     pub fn waits_of(&self, g: history::Graph) -> history::Waits {
         let basis = self.shared.lock().unwrap().history.waits_basis();
         basis.next(g)
-    }
-
-    /// The waits (`waits_of`) the history's starts and leases name as waited on from now on
-    /// (history::Event::after).
-    pub fn set_waits(&self, w: history::Waits) {
-        self.shared.lock().unwrap().history.set_waits(w);
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
@@ -3637,10 +3644,10 @@ impl Coordinator {
         pool_view(&self.shared.lock().unwrap(), status)
     }
 
-    /// Its agent's forecast as its status has it (crate::agent::plan's `hold_forecast`), for its
-    /// page (`page`): handed as it's taken in, none once the plan's shape changed or it failed.
-    pub fn set_page_forecast(&self, f: Option<Arc<crate::agent::forecast::Forecast>>) {
-        self.shared.lock().unwrap().page.forecast = f;
+    /// Its agent's forecast for its page let go (crate::agent::plan's `drop_forecast`): the plan's
+    /// shape changed, or its forecast failed; the status's goes with it.
+    pub fn drop_page_forecast(&self) {
+        self.shared.lock().unwrap().page.forecast = None;
     }
 
     /// The forecast and the regions its agent handed it for its page, shared.
@@ -5709,8 +5716,8 @@ fn route(
             // history's parts from this coordinator's memory, in and out of the pool.)
             // (The pause, from the lead's memory: its NAS mirror waits for the agent's next loop,
             // many seconds on a busy lead.)
-            // (Its forecast, the lead's agent's as it handed it (`PageFiles`): the status's, up to a
-            // forecast's `EVERY` old, the same `at` as `/api/tocome`'s.)
+            // (Its forecast, the lead's agent's as it handed it (`PageFiles`): the status's, about a
+            // forecast's `EVERY` old plus the next run's time, the same `at` as `/api/tocome`'s.)
             let (pv, own, forecast) = {
                 let s = shared.lock().unwrap();
                 (s.pageview.clone().filter(|p| p.active()), s.paused.clone(), s.page.forecast.clone())
@@ -15371,7 +15378,8 @@ mod tests {
             from: 160,
             until: 200,
         }];
-        c.set_tocome(Arc::new(crate::agent::forecast::ToCome::of(&placed, &["m4".to_string()], 100)));
+        let f = Arc::new(crate::agent::forecast::Forecast { at: 100, ..Default::default() });
+        c.hand_forecast(f, Arc::new(crate::agent::forecast::ToCome::of(&placed, &["m4".to_string()], 100)), None);
         let r = post();
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
@@ -15414,11 +15422,15 @@ mod tests {
             from: now + 60,
             until: now + 120,
         };
-        // (As the planner hands them over: the tiles to come, then the forecast.)
+        // (As the planner hands them over: the forecast with its tiles to come, under one lock.)
         let hand = |at: u64, target: &str| {
-            c.set_tocome(Arc::new(crate::agent::forecast::ToCome::of(&[placed(target)], &["m4".to_string()], at)));
-            c.set_page_forecast(Some(Arc::new(crate::agent::forecast::Forecast { at, ..Default::default() })));
+            c.hand_forecast(
+                Arc::new(crate::agent::forecast::Forecast { at, ..Default::default() }),
+                Arc::new(crate::agent::forecast::ToCome::of(&[placed(target)], &["m4".to_string()], at)),
+                None,
+            );
         };
+        let tiles = |a: &serde_json::Value| a["macs"]["m4"]["unit"][0][0].clone();
         hand(now, "6/1/1");
         let sw = post("/api/swarm", serde_json::json!({}));
         assert_eq!(sw["agent"]["forecast"]["at"].as_u64(), Some(now), "{sw}");
@@ -15430,11 +15442,22 @@ mod tests {
         // (A forecast 60 s on: the swarm's the new one; the one read before still answered.)
         hand(now + 60, "6/1/2");
         assert_eq!(post("/api/swarm", serde_json::json!({}))["agent"]["forecast"]["at"].as_u64(), Some(now + 60));
-        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now }))["at"].as_u64(), Some(now));
-        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now + 60 }))["at"].as_u64(), Some(now + 60));
+        let before = post("/api/tocome", serde_json::json!({ "at": now }));
+        assert_eq!((before["at"].as_u64(), tiles(&before)), (Some(now), "6/1/1".into()), "the one before's own tiles");
+        let last = post("/api/tocome", serde_json::json!({ "at": now + 60 }));
+        assert_eq!((last["at"].as_u64(), tiles(&last)), (Some(now + 60), "6/1/2".into()));
         assert_eq!(post("/api/tocome", serde_json::json!({}))["at"].as_u64(), Some(now + 60));
+        // (An `at` of neither, an older forecast's or one not taken in yet: the last.)
+        for at in [now - 60, now + 120] {
+            let a = post("/api/tocome", serde_json::json!({ "at": at }));
+            assert_eq!((a["at"].as_u64(), tiles(&a)), (Some(now + 60), "6/1/2".into()), "{at}");
+        }
+        // (A third: the first no longer kept.)
+        hand(now + 120, "6/1/3");
+        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now }))["at"].as_u64(), Some(now + 120));
+        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now + 60 }))["at"].as_u64(), Some(now + 60));
         // (The plan's shape changed: none held, none shown, not the status file's.)
-        c.set_page_forecast(None);
+        c.drop_page_forecast();
         assert!(post("/api/swarm", serde_json::json!({}))["agent"]["forecast"].is_null());
     }
 

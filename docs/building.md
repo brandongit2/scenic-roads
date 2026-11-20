@@ -362,8 +362,10 @@ from the first (`edit_held`).
   cleared, a run under way for the old shape ends first (one at a time) and its answer is dropped whole, no
   effect of it applied (`Planner::refresh_forecast`, `take_forecast`). The build page's forecast is this
   one, the status's (task #1487): each one taken in is handed to the lead's coordinator with its tiles to
-  come, the held one cleared there with the status's (`hold_forecast`), never run again for the page; so
-  the page's forecast is up to a minute old, as the status's is (docs/pool.md §10, the page's data).
+  come, the three under one lock (`Coordinator::hand_forecast`), the held one cleared there with the
+  status's (`drop_forecast`), never run again for the page; so
+  the page's forecast is about a minute old, plus the next run's time, as the status's is (its `at` taken
+  as its run starts; docs/pool.md §10, the page's data).
 - **The history** (`coord::history`): the last week's events on the lead's disk
   (`coord/history.jsonl`) and in its coordinator's memory: jobs, leases, tasks, map tiles planned,
   map updates, pauses, workers, agents, conditions, cache clears and freeings (a member's noted to

@@ -337,8 +337,9 @@ fn leftover_age(rel: &str) -> std::time::Duration {
 
 /// The coordinator's files in its folder (`coord/`) that only the lead's reads, as a first fill of
 /// its store (crate::coord::kept), and that a member's broker neither reads nor writes.
-const LEAD_COORD_FILES: [&str; 9] = [
+const LEAD_COORD_FILES: [&str; 10] = [
     "costs.json",
+    crate::coord::history::WAITS_FILE,
     "disks.json",
     "floors.json",
     "cache-fills.json",
