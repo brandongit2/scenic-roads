@@ -1041,7 +1041,8 @@ the regions it borders) and each region's stray water (its area, a point in it, 
 round it). Its stages (the datasets read, the regions chosen, the files checked, the resolve, the
 report) go out as `progress:` lines, the resolve's steps within its stage as above, and are its
 timings' phases; the report adds each step's wall time and items (`steps`) and the 25 slowest
-regions or folders of the steps taking one at a time (`slowest`).
+regions or folders of the steps taking them by name (`slowest`; each item's own time from its start
+to its end, several at once in the land's).
 
 `--only <id or path,…>` (task #1523), for an edit's loop: those regions (a region's id, or a file
 or folder of the scratch folder) checked, with what their findings need: the regions they name
