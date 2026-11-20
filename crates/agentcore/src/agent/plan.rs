@@ -4055,9 +4055,12 @@ mod tests {
                 fcarchive::compress(&serde_json::to_vec(&entry).unwrap()).unwrap();
             });
             let f = p.forecast.borrow().clone();
-            op("the forecast handed to the coordinator for the page", &mut || {
+            // (With the history's waits as the round's forecast left them, their keeping due: what a
+            // hand-over every `history::WAITS_KEEP_S` costs, written off the coordinator's lock.)
+            let mut waits = Some(c.waits_for_test());
+            op("the forecast handed to the coordinator for the page, its waits kept", &mut || {
                 if let Some(f) = &f {
-                    c.hand_forecast(f.clone(), Default::default(), None);
+                    c.hand_forecast(f.clone(), Default::default(), waits.take());
                 }
             });
             op("the forecast in the swarm's answer (pageview)", &mut || {

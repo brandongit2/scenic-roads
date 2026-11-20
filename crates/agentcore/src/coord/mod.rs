@@ -3575,12 +3575,25 @@ impl Coordinator {
         tocome: Arc<crate::agent::forecast::ToCome>,
         waits: Option<history::Waits>,
     ) {
-        let mut s = self.shared.lock().unwrap();
-        s.tocome_before = s.tocome.replace(tocome);
-        if let Some(w) = waits {
-            s.history.set_waits(w);
+        let keep = {
+            let mut s = self.shared.lock().unwrap();
+            s.tocome_before = s.tocome.replace(tocome);
+            s.page.forecast = Some(f);
+            waits.and_then(|w| s.history.set_waits(w))
+        };
+        // (The waits kept beside the history's file when due, off the lock (the caller's thread,
+        // the planner's: compacted, serialized and written whole, hundreds of ms), then told back.)
+        if let Some(k) = keep {
+            let ok = k.write();
+            self.shared.lock().unwrap().history.waits_kept(ok.then_some(k.at));
         }
-        s.page.forecast = Some(f);
+    }
+
+    /// The history's waits as now, as a forecast's would hand them, their keeping due at once (the
+    /// frozen harness's measure of `hand_forecast` with real waits).
+    #[cfg(test)]
+    pub fn waits_for_test(&self) -> history::Waits {
+        self.shared.lock().unwrap().history.waits_due_for_test()
     }
 
     /// The forecast's dependencies as the history's waits (history::WaitsBasis::next), worked out

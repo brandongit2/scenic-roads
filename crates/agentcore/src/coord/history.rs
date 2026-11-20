@@ -245,8 +245,10 @@ pub struct History {
     /// The event number when the last `Graph` came (or the history was loaded): the next graph's
     /// items were made after it, so a job of theirs that finished by it is an older one (`Waits::from`).
     set_at: u64,
-    /// When the waits were last kept beside the file (unix s; `WAITS_KEEP_S`).
+    /// When the waits were last kept beside the file (unix s; `WAITS_KEEP_S`), and whether a keeping
+    /// is under way (`KeepWaits`, written off the coordinator's lock): one at a time.
     waits_kept: u64,
+    waits_keeping: bool,
     /// The last note taken of each member (`Event::noted`, crate::coord::notes): from the file's
     /// lines as it loads, then as notes are taken.
     noted: HashMap<String, super::notes::Noted>,
@@ -443,13 +445,40 @@ fn last_per_step(
 /// kept (unix s), the history's number when they came (`History::set_at`) and their own `from`,
 /// the graph (`Graph::compact`) and what its items waited on that had finished. The numbers are
 /// the history's own, which go on across its restarts.
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct KeptWaits {
     made_t: u64,
     set_at: u64,
     from: u64,
     graph: Graph,
     resolved: Vec<((String, String), Vec<(String, u64)>)>,
+}
+
+/// The waits to keep beside the history's file, handed out under the coordinator's lock
+/// (`History::set_waits`) and written once it's let go (`write`): where, the waits (shared), the
+/// history's number when they came and the time.
+pub struct KeepWaits {
+    path: PathBuf,
+    waits: std::sync::Arc<Waits>,
+    set_at: u64,
+    pub at: u64,
+}
+
+impl KeepWaits {
+    /// Compacted, serialized and written whole (`store::whole::write`); whether it was (a failure
+    /// said).
+    pub fn write(&self) -> bool {
+        let kept = serde_json::to_vec(&self.waits.keep(self.at, self.set_at))
+            .map_err(anyhow::Error::from)
+            .and_then(|b| store::whole::write(&self.path, &b));
+        match kept {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("coordinator: the history's waits not kept at {}: {e:#}", self.path.display());
+                false
+            }
+        }
+    }
 }
 
 /// The kept waits' file, beside the history's (`History::path`).
@@ -577,6 +606,7 @@ impl History {
             waits: Default::default(),
             set_at: 0,
             waits_kept: 0,
+            waits_keeping: false,
             noted: HashMap::new(),
             rewrite_at: 0,
             rewrites: 0,
@@ -636,22 +666,35 @@ impl History {
     }
 
     /// The forecast's dependencies (`WaitsBasis::next`), what each start and lease from now on
-    /// waited on is read from.
-    /// Kept beside the file each `WAITS_KEEP_S` at most (written whole, as the file's rewrite is,
-    /// on this Mac's disk; a failure said, tried again at the next).
-    pub fn set_waits(&mut self, mut w: Waits) {
+    /// waited on is read from. Their keeping beside the file, when it's due (each `WAITS_KEEP_S` at
+    /// most, a file kept and none under way): only decided here, under the coordinator's lock, and
+    /// done by the caller once it has let go of it (`KeepWaits::write`, then `waits_kept`), as the
+    /// compacting, serializing and the whole write (an fsync and a rename) take far longer than the
+    /// lock may be held (task #1112). One at a time: none is handed out while another is under way.
+    #[must_use = "the waits handed out are written off the lock, then told back (`waits_kept`)"]
+    pub fn set_waits(&mut self, mut w: Waits) -> Option<KeepWaits> {
         w.from = self.set_at;
         self.waits = std::sync::Arc::new(w);
         self.set_at = self.seq;
         let now = now_s();
-        let Some(p) = self.path.as_ref().filter(|_| now >= self.waits_kept + WAITS_KEEP_S) else { return };
-        let p = p.with_file_name(WAITS_FILE);
-        let kept = serde_json::to_vec(&self.waits.keep(now, self.set_at))
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&p, &b));
-        match kept {
-            Ok(()) => self.waits_kept = now,
-            Err(e) => eprintln!("coordinator: the history's waits not kept at {}: {e:#}", p.display()),
+        let p = self.path.as_ref().filter(|_| !self.waits_keeping && now >= self.waits_kept + WAITS_KEEP_S)?;
+        self.waits_keeping = true;
+        Some(KeepWaits { path: p.with_file_name(WAITS_FILE), waits: self.waits.clone(), set_at: self.set_at, at: now })
+    }
+
+    /// The waits as now (as kept, read back), their keeping due at once: a test's real waits to set
+    /// again (the frozen harness's).
+    #[cfg(test)]
+    pub fn waits_due_for_test(&mut self) -> Waits {
+        self.waits_kept = 0;
+        Waits::from_kept(self.waits.keep(0, self.set_at))
+    }
+
+    /// A keeping handed out (`set_waits`) done: kept at `at` (unix s), or not (tried again once due).
+    pub fn waits_kept(&mut self, at: Option<u64>) {
+        self.waits_keeping = false;
+        if let Some(t) = at {
+            self.waits_kept = t;
         }
     }
 
@@ -1194,9 +1237,13 @@ mod tests {
         assert_eq!(r.rows[1].paused_s, 400);
     }
 
+    /// The waits of `g` set, and kept when due, as the coordinator does (off its lock).
     fn set(h: &mut History, g: Graph) {
         let w = h.waits_basis().next(g);
-        h.set_waits(w);
+        if let Some(k) = h.set_waits(w) {
+            let ok = k.write();
+            h.waits_kept(ok.then_some(k.at));
+        }
     }
 
     #[test]
@@ -1359,6 +1406,57 @@ mod tests {
         std::fs::remove_file(d.path().join(WAITS_FILE)).unwrap();
         let h = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!(after_restart(&h), vec![Vec::<u64>::new()], "none kept: none named");
+    }
+
+    /// Kept waits are read back only when they're of this history and lately kept: a file kept over
+    /// `WAITS_KEPT_FOR_S` ago, or one naming a number past the history's last (its file lost), is
+    /// passed over (none read, the finishes before the load not named).
+    #[test]
+    fn kept_waits_too_old_or_past_the_history_are_not_read_back() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let graph = Graph {
+            keys: vec![k("depth", "6/1/0"), k("depth-lo", "3/0/0")],
+            deps: vec![vec![], vec![0]],
+            sets: vec![vec![], vec![]],
+            groups: vec![],
+        };
+        set(&mut h, graph);
+        let done = h.add(Event { step: Some("depth".into()), targets: vec!["6/1/0".into()], ..ev("done", 0, "m4") });
+        let wp = d.path().join(WAITS_FILE);
+        let good: KeptWaits = serde_json::from_slice(&std::fs::read(&wp).unwrap()).unwrap();
+        let named = || {
+            let h = History::load(crate::agent::seam::for_tests(), Some(&p));
+            let g =
+                Graph { keys: vec![k("depth-lo", "3/0/0")], deps: vec![vec![]], sets: vec![vec![]], groups: vec![] };
+            h.waits_basis().next(g).by_job(&[Some(0)], 1).remove(0)
+        };
+        assert_eq!(named(), [done], "as kept: read back");
+        let put = |kw: &KeptWaits| std::fs::write(&wp, serde_json::to_vec(kw).unwrap()).unwrap();
+        put(&KeptWaits { made_t: now_s() - WAITS_KEPT_FOR_S - 1, ..good.clone() });
+        assert!(named().is_empty(), "kept over a day ago: passed over");
+        put(&KeptWaits { set_at: done + 1, ..good.clone() });
+        assert!(named().is_empty(), "a number past the history's: passed over");
+    }
+
+    /// Task #1487 review: a keeping under way (written off the coordinator's lock) holds back
+    /// another, due or not, until it's told done; one not kept is tried again at the next.
+    #[test]
+    fn one_keeping_of_the_waits_at_a_time() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let w = || Waits::default();
+        let first = h.set_waits(w()).expect("due at the first");
+        h.waits_kept = 0;
+        assert!(h.set_waits(w()).is_none(), "none while one is under way");
+        h.waits_kept(None);
+        let again = h.set_waits(w()).expect("not kept: due again");
+        h.waits_kept(Some(again.at));
+        assert!(h.set_waits(w()).is_none(), "kept: not due before `WAITS_KEEP_S`");
+        drop(first);
     }
 
     #[test]
