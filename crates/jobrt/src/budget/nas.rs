@@ -135,8 +135,9 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   takes the pool to nothing);
 /// - **spare** (a Mac's answers read and not rising; under `Tuning::slow`, the knee (this reading's,
 ///   and the last `span_s`'s lower quartile), or past it, judged not the pool's, the disks read;
-///   and the disks with room for the next job: their busy share and the room it needs, a share of
-///   the NAS as probed, within the target; the disks not read, the answers alone say): it grows,
+///   and the disks with room for the next job: their busy share smoothed and the room it needs, a
+///   share of the NAS as probed, within the target, and this reading's under it; the disks not
+///   read, the answers alone say): it grows,
 ///   only while it's what limits (the weight in use and the least a job waiting for the budget weighs past it;
 ///   none waiting, the weight in use within a step of it: a window no job asks for isn't credit
 ///   for a later burst, nor is room left by a job just ended), only on readings every Mac holding
@@ -163,8 +164,9 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// coordinator starting knows nothing of the NAS's load but what runs on it), unless the lead kept
 /// its state (`State`) younger than `Tuning::restore_s`: a
 /// restart then takes the window, its threshold and its cut up again (task #603's pattern: a
-/// publish mid-burst must not undo a cut). It has no ceiling: the weights are estimates, and the
-/// latency, not they, says when the NAS is full.
+/// publish mid-burst must not undo a cut). It is never more than the whole (`WHOLE`): the
+/// weights are estimates, so the answers may say the NAS is full before them, but past the whole
+/// they'd admit more than the probe measured it could take.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pace {
     st: State,
@@ -356,7 +358,8 @@ pub enum Hold {
     /// This reading's answers past the knee, or the last span's (their lower quartile), and not
     /// judged the pool's or not (undecidable among them).
     Slow,
-    /// The disks' busy share and the room the next job needs past the target.
+    /// The disks' busy share (smoothed) and the room the next job needs past the target, or this
+    /// reading's busiest disk at it or over.
     Busy,
     /// A Mac holding leased jobs gave no fresh answers, or an answer read isn't fresh.
     NotFresh,
@@ -821,7 +824,8 @@ impl Pace {
 
     /// A reading (`Sample`) by the bounds `k`: what it did.
     pub fn read(&mut self, s: &Sample, k: &Tuning) -> Verdict {
-        match s.busy.and_then(|b| b.iter().copied().filter(|b| b.is_finite()).reduce(f64::max)) {
+        let busiest = s.busy.and_then(|b| b.iter().copied().filter(|b| b.is_finite()).reduce(f64::max));
+        match busiest {
             Some(now) => self.load = Some(self.load.map_or(now, |l| l + SMOOTH * (now - l))),
             None => self.load = None,
         }
@@ -876,11 +880,12 @@ impl Pace {
         let outside = j.outside && j.done && self.load.is_some();
         let span = seen.iter().filter(|x| x.t + k.span_s > t).map(|x| x.ratio);
         let knee = !outside && (ratio.is_some_and(|r| r > k.slow) || quartile(span, 1).is_some_and(|q| q > k.slow));
-        // (Room for a job of weight `w`: the disks' busy share and its weight, a share of the NAS as
-        // probed, within the target; the disks not read, the answers alone say. Spare: a step's
-        // room, the answers read, not rising, not held at the knee.)
-        let load = self.load;
-        let room_for = |w: u32| load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
+        // (Room for a job of weight `w`: the disks' busy share smoothed and its weight, a share of
+        // the NAS as probed, within the target, and this reading's busiest disk under it (the
+        // smoothing's half minute lags a burst); the disks not read, the answers alone say. Spare: a
+        // step's room, the answers read, not rising, not held at the knee.)
+        let (load, under) = (self.load, busiest.is_none_or(|b| b < f64::from(s.pct)));
+        let room_for = |w: u32| under && load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
         let room = room_for(s.wants.unwrap_or(k.step));
         let spare = ratio.is_some() && !rising && !j.swelling && !knee && room_for(k.step);
         // (The lone way's hold: begun at a congested reading; once it has lasted its time
@@ -901,6 +906,7 @@ impl Pace {
         if self.last.is_none() && !self.restored {
             self.st.window = self.st.window.max(in_use);
         }
+        self.st.window = self.st.window.min(f64::from(WHOLE));
         let st = &mut self.st;
         if st.cut_at.is_some() && st.settled_at.is_none() && in_use <= st.window {
             st.settled_at = Some(t);
@@ -952,7 +958,7 @@ impl Pace {
                     Some(_) if additive => st.window + step * dt,
                     th => (st.window * det::Det::dexp2(dt)).min(th.unwrap_or(f64::INFINITY)).max(st.window),
                 };
-                st.window = grown.min(ceiling);
+                st.window = grown.min(ceiling).min(f64::from(WHOLE));
                 Verdict::Grew
             }
         };
@@ -1910,6 +1916,43 @@ mod tests {
         assert!(!r.rising && !r.outside && !r.undecided, "{r:?}");
         assert!(!v.contains(&Verdict::Cut) && !v.contains(&Verdict::Grew), "{v:?}");
         assert_eq!(r.verdict, Verdict::Held(Hold::Slow));
+    }
+
+    /// Task #1506's review: the window is never more than the whole. Grown with room for long, the
+    /// weight in use near the whole and a heavy job waiting, it stops at the whole; a kept state
+    /// past it (an older rule's) is taken up at the whole.
+    #[test]
+    fn the_window_is_never_more_than_the_whole() {
+        let (mut p, mut t) = (Pace::default(), 0);
+        let v = run(&mut p, &mut t, 120, 5.0, 900, Some(400));
+        assert!(v.contains(&Verdict::Grew), "{v:?}");
+        assert_eq!(p.window(), WHOLE);
+        let kept = State { at: t, window: 1500.0, ..State::default() };
+        let mut q = Pace::default();
+        assert!(q.restore(&kept, t, RESTORE_S));
+        read(&mut q, t + 10, &[ans("m1", 5.0, 5.0)], 900, Some(400));
+        assert_eq!(q.window(), WHOLE);
+    }
+
+    /// Task #1506's review: no growth while this reading's busiest disk is at the target or over
+    /// it, whatever the answers and the smoothed share say. Quiet for a minute, the window grows;
+    /// one reading at 85 % (the smoothed share still under half of it) holds it, `Busy`; under the
+    /// target again, with the smoothed share's room, it grows.
+    #[test]
+    fn a_reading_with_the_disks_at_the_target_never_grows_the_window() {
+        let (mut p, mut t) = (Pace::default(), 0);
+        let best = [ans("m1", 5.0, 5.0)];
+        for _ in 0..6 {
+            t += READ_EVERY_S;
+            assert_eq!(disks(&mut p, t, &best, &[10.0], 0, Some(150)), Verdict::Grew);
+        }
+        let w = p.window();
+        t += READ_EVERY_S;
+        assert_eq!(disks(&mut p, t, &best, &[85.0], 0, Some(150)), Verdict::Held(Hold::Busy));
+        assert!(p.load.is_some_and(|l| l + 15.0 <= 85.0), "the smoothed share alone had room: {:?}", p.load);
+        assert_eq!(p.window(), w);
+        t += READ_EVERY_S;
+        assert_eq!(disks(&mut p, t, &best, &[10.0], 0, Some(150)), Verdict::Grew);
     }
 
     /// Task #1506's two readings of 19 Nov as cases, the jobs moving what they weigh. 18:51: the
