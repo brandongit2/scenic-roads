@@ -472,8 +472,8 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
   reason all the same (`fail_why`). Paused, every lease is held. The lead's own jobs hold leases too, so a
-  target is never built twice at once. A worker's failed z6 tile isn't offered to it for an hour,
-  doubling.
+  target is never built twice at once. A worker's failed z6 tile isn't offered to it for the
+  backoff (an hour by default, doubling to 32 h: docs/pool.md §7.5).
 - **The coordinator's state** (leases, costs, the pause) is in the store on the lead's disk
   (`agent/coord/store/`, docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is the lead's coordinator's file on its disk (`agent/coord/history.jsonl`, the week's), each finished day packed into one tar in `state/coord/history-archive/` by GC (docs/pool.md §7.5).

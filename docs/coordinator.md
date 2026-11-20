@@ -148,7 +148,7 @@ Common rules:
 - **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
   `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.
-- **Failures:** a worker's failed z6 tile, or one whose hand-off the merge refused, isn't offered to it for an hour, doubling; a task out of
+- **Failures:** a worker's failed z6 tile, or one whose hand-off the merge refused, isn't offered to it for the backoff (an hour by default, doubling to 32 h: pool settings, docs/pool.md §7.5, kept across a lead's restart); a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.
 - **Planned:** NAS outages extending leases; idle workers racing slow ones when the queue runs dry.
 

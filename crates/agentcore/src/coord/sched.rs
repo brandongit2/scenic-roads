@@ -192,8 +192,11 @@ pub struct Sched {
     /// record never to be read (Coordinator::merged).
     pub done: BTreeMap<(String, String), String>,
     /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
-    /// it again for an hour, doubling each time.
+    /// it again for a while (`backoff`, as `fail_hold` says: an hour by default, doubling each time).
     pub failed: BTreeMap<(String, String), (Instant, u32)>,
+    /// The failures' backoff as the pool's settings say (jobrt::backoff: `backoff-start-hours`,
+    /// `backoff-ceiling-hours`), set by the lead as it packs.
+    pub fail_hold: jobrt::backoff::Backoff,
     pub workers: BTreeMap<String, Worker>,
     pub costs: BTreeMap<String, Cost>,
     /// What a target takes at least (by cost key: crate::agent::memguard::Floor), as a run that
@@ -1086,12 +1089,13 @@ impl Sched {
             .collect()
     }
 
-    /// Whether target `t` of `step` is kept from `worker` after it failed it there (`failed`): an
-    /// hour after its first failure, twice as long after each more, at most 32 hours.
+    /// Whether target `t` of `step` is kept from `worker` after it failed it there (`failed`): the
+    /// backoff's start after its first failure, twice as long after each more, at most its ceiling
+    /// (`fail_hold`).
     pub(super) fn backoff(&self, worker: &str, step: &str, t: &str, now: Instant) -> bool {
-        self.failed.get(&(worker.to_string(), cost_key(step, t))).is_some_and(|(at, n)| {
-            now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
-        })
+        self.failed
+            .get(&(worker.to_string(), cost_key(step, t)))
+            .is_some_and(|(at, n)| now.saturating_duration_since(*at) < self.fail_hold.hold(*n))
     }
 
     /// Whether `worker` failed any target (`failed`): its first in the map's order, by worker.
@@ -3233,6 +3237,9 @@ pub struct State {
     pub paces: crate::paces::Paces,
     pub records: crate::needs::Records,
     pub tuning: jobrt::needs::Tuning,
+    /// The failures' backoff (`Sched::fail_hold`, task #1447: a record before it has none, and the
+    /// defaults).
+    pub fail_hold: jobrt::backoff::Backoff,
     /// The batch length set (`Sched::batch_s`, task #927: 0, not set or a record before it).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub batch_s: u64,
@@ -3381,6 +3388,7 @@ impl Sched {
             paces: self.paces.clone(),
             records: self.records.clone(),
             tuning: self.tuning,
+            fail_hold: self.fail_hold,
             batch_s: self.batch_s,
             lefts: self.lefts_taken(),
         }
@@ -3442,6 +3450,7 @@ impl Sched {
             drops: Default::default(),
             done: s.done.iter().map(|(st, t, k)| ((st.clone(), t.clone()), k.clone())).collect(),
             failed: s.failed.iter().map(|(w, k, a, n)| ((w.clone(), k.clone()), (ago(now, *a), *n))).collect(),
+            fail_hold: s.fail_hold,
             workers,
             costs: s.costs.clone(),
             floors: s.floors.clone(),

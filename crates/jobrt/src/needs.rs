@@ -132,11 +132,6 @@ pub const KNOBS: [Knob<Tuning>; 7] = [
     },
 ];
 
-/// The knob named `name`.
-pub fn knob(name: &str) -> Option<&'static Knob<Tuning>> {
-    KNOBS.iter().find(|k| k.name == name)
-}
-
 impl Tuning {
     /// The tuning with each knob's value as `get` says it (None, or out of its range: its default).
     pub fn of(get: impl Fn(&str) -> Option<f64>) -> Tuning {

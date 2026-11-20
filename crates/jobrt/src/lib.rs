@@ -5,6 +5,7 @@
 //! every Mac's agent and the map server run it, step 7a). Pipeline re-exports these modules at their old paths.
 
 pub mod appupdate;
+pub mod backoff;
 pub mod budget;
 pub mod control;
 pub mod jobid;

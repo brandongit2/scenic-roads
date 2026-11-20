@@ -559,6 +559,15 @@ enum Outcome {
     Failed,
 }
 
+impl Outcome {
+    /// Whether a job ending so has its targets not done held against the Mac it ran on (the lead's
+    /// backoff, jobrt::backoff): it failed, or the memory guard stopped it (`guard_stopped`). Its
+    /// lead's `finish_failed`, a member's hand-off `failed`, and its "end" event's `held`.
+    fn holds(self, guard_stopped: bool) -> bool {
+        self == Outcome::Failed || guard_stopped
+    }
+}
+
 /// How a pooled job's end is told to a lead over HTTP (`end_lease`): done (its hand-off with the
 /// pool), given back, or failed, with what its targets took at least.
 #[derive(Clone, Debug)]
@@ -3155,8 +3164,8 @@ impl Agent {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
                     // (Failed, or stopped by the memory guard: its targets not done kept from this
-                    // Mac as a member's are, an hour and doubling, `finish_failed`.)
-                    if outcome == Outcome::Failed || guard_stopped {
+                    // Mac as a member's are, the lead's backoff, `finish_failed`.)
+                    if outcome.holds(guard_stopped) {
                         c.finish_failed(id, done);
                     } else {
                         c.finish(id, done);
@@ -3204,7 +3213,7 @@ impl Agent {
                 let local = self.coord.is_some() && !self.lost_lead();
                 if local {
                     if let Some(c) = &self.coord {
-                        if outcome == Outcome::Failed || guard_stopped {
+                        if outcome.holds(guard_stopped) {
                             c.finish_failed(id, done);
                         } else {
                             c.finish(id, done);
@@ -3223,8 +3232,8 @@ impl Agent {
                     // Best effort: unanswered, the lease lapses, and the merged records say they're
                     // built.)
                     // (One the memory guard stopped ends as failed: its lead keeps its targets from this
-                    // Mac for an hour, doubling.)
-                    let failed = outcome == Outcome::Failed || guard_stopped;
+                    // Mac, its backoff.)
+                    let failed = outcome.holds(guard_stopped);
                     let floors = floors_of(&costs);
                     let timings = if own { own_timings } else { read_timings(&dir) };
                     // (A job with targets is done by its done record; one of no targets of its own,
@@ -5315,7 +5324,16 @@ impl Agent {
             } else {
                 format!("failed ({st})")
             };
-            self.note_end(k, &step, &done, secs, ok, &how);
+            let outcome = if ok {
+                Outcome::Done
+            } else if paused {
+                Outcome::Paused
+            } else if vanished {
+                Outcome::Interrupted
+            } else {
+                Outcome::Failed
+            };
+            self.note_end(k, &step, &done, secs, outcome, &how);
             // (What a target of its step takes here, for the forecast: the first slot's job's, whose
             // pace the jobs beside it change least.)
             // (Not a PER_WORK step's: its targets' times differ by the work each found, crate::needs.)
@@ -5343,15 +5361,6 @@ impl Agent {
                     ..crate::coord::history::Event::new("catalog")
                 });
             }
-            let outcome = if ok {
-                Outcome::Done
-            } else if paused {
-                Outcome::Paused
-            } else if vanished {
-                Outcome::Interrupted
-            } else {
-                Outcome::Failed
-            };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
             // (A catalogue made: the gate's count of one held back starts again.)
@@ -5602,8 +5611,8 @@ impl Agent {
         if let Some((until, why)) = self.guard_backoff.get(&spec.id).filter(|(u, _)| now_s() < *u && self.leads()) {
             return Some(format!("{why}; tried here again in {} min", (until - now_s()).div_ceil(60)));
         }
-        // (A member's job came from the coordinator, which keeps a target it failed from it for an
-        // hour, doubling: no wait of its own on top.)
+        // (A member's job came from the coordinator, which keeps a target it failed from it for its
+        // backoff, jobrt::backoff: no wait of its own on top.)
         match self.mem.retry.get(&spec.id).filter(|_| self.leads()) {
             Some(&(n, until)) if now_s() < until => Some(format!(
                 "failed {n} time{} in a row; trying again in {} min",
@@ -7750,8 +7759,10 @@ impl Agent {
     }
 
     /// Notes slot `k`'s job's end: its step, the targets it finished, its time, and how it ended
-    /// (`how`: empty when it succeeded).
-    fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
+    /// (`outcome`, and `how`: empty when it succeeded), its targets not done held against this Mac
+    /// or not (`Outcome::holds`).
+    fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, outcome: Outcome, how: &str) {
+        let ok = outcome == Outcome::Done;
         // (Its end in its spans, for the lead: crate::agent::spans.)
         if let Some(j) = self.slots[k].job {
             self.spans.end(j, ok, how);
@@ -7769,6 +7780,7 @@ impl Agent {
             targets: done.iter().map(|t| t.0.clone()).collect(),
             secs: Some(secs as f64),
             ok: Some(ok),
+            held: outcome.holds(self.slots[k].guard_stopped),
             what,
             note: how.to_string(),
             ..crate::coord::history::Event::new("end")
@@ -8215,7 +8227,7 @@ impl Agent {
             self.worked(&id);
             self.save();
         }
-        self.note_end(k, &step, &done, secs, false, why);
+        self.note_end(k, &step, &done, secs, Outcome::Interrupted, why);
         self.end_lease(k, Outcome::Interrupted, &done, why);
     }
 

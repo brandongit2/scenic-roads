@@ -361,11 +361,14 @@ pub enum PoolCmd {
     /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`, `nas-lone-minutes`,
     /// `nas-lone-most-minutes`, `nas-young-spans`), and the needs model's percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
-    /// `needs-mem-pct`, `needs-thread-share`, `needs-runs`, `needs-off`, `needs-relearn`); the lead
-    /// takes each at its next reading
+    /// `needs-mem-pct`, `needs-thread-share`, `needs-runs`, `needs-off`, `needs-relearn`), and the
+    /// failures' backoff, each `<hours>|off` (jobrt::backoff::KNOBS: `backoff-start-hours`,
+    /// `backoff-ceiling-hours`: a target that failed on a Mac kept from it that long, doubling with
+    /// each failure up to the ceiling); the lead takes each at its next reading
     Set {
         /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,
-        /// hold-catalog, near-slope, one of the NAS pacing's bounds or one of the needs model's knobs
+        /// hold-catalog, near-slope, one of the NAS pacing's bounds, of the needs model's knobs or
+        /// of the backoff's
         name: Option<String>,
         /// Its value; off: its default (placement, hold-catalog and near-slope off)
         value: Option<String>,

@@ -673,11 +673,6 @@ pub const KNOBS: [Knob; 13] = [
     },
 ];
 
-/// The knob named `name`.
-pub fn knob(name: &str) -> Option<&'static Knob> {
-    KNOBS.iter().find(|k| k.name == name)
-}
-
 impl Tuning {
     /// The tuning with each knob's value as `get` says it (None, or out of its range: its default);
     /// the longest hold never under one.

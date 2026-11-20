@@ -1096,10 +1096,9 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     if let Some(name) = name {
         anyhow::ensure!(
             asks::known(name),
-            "the pool's settings: {}, {}, {}, not {name}",
+            "the pool's settings: {}, {}, not {name}",
             asks::NAMES.join(", "),
-            jobrt::budget::nas::KNOBS.map(|k| k.name).join(", "),
-            jobrt::needs::KNOBS.map(|k| k.name).join(", ")
+            jobrt::settings::bounds().map(|k| k.name).collect::<Vec<_>>().join(", ")
         );
         if let (Some(_), Some(v)) = (jobrt::settings::bound(name), value) {
             let by = format!("scenic pool set on {}", store::sys::host_name());
@@ -1159,6 +1158,7 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     }
     knobs(&s, name, &jobrt::budget::nas::KNOBS, &s.nas_pace());
     knobs(&s, name, &jobrt::needs::KNOBS, &s.needs());
+    knobs(&s, name, &jobrt::backoff::KNOBS, &s.backoff());
 
     println!(
         "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",

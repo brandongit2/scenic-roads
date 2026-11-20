@@ -212,8 +212,9 @@ In `agent/pool/` on its own disk:
 
 A hand-off the lead's merge refuses (a write outside its step's write-set, a bad content name:
 pool.md §7.3) lets its targets go to be done again; refused twice in a row, they are held from the worker its
-job ran on for an hour, doubling with each refusal after, and flagged in `scenic status
---flags` ("refused"), so the hourly health check sees it (task #1384).
+job ran on as a failure is (the backoff, pool.md §7.5: an hour by default, doubling with each
+refusal after), and flagged in `scenic status --flags` ("refused"), so the hourly health check sees
+it (task #1384); a lead's restart counts them again from its history.
 
 A repeat changes nothing (principle 4). A hand-off is lost only to a double fault: its member's
 saved state lost after its job ended and before a saved snapshot named it, while no store of the

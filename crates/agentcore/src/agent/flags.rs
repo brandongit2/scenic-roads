@@ -70,9 +70,11 @@
 //!   crate::coord::Coordinator::merged): work done again and again that never reaches the records
 //!   (a write outside its step's write-set, a bad content name), a flag per step, with the latest
 //!   refusal's Mac and why. Each refusal from the second in a row holds its targets from the
-//!   worker its job ran on, an hour doubling with each after, so the loop slows but doesn't stop
-//!   by itself (a first alone may be a one-off, and holds nothing). Flagged
-//!   until a hand-off of the target is merged, or the plan offers it no more.
+//!   worker its job ran on as a failure does (the backoff, jobrt::backoff: an hour by default,
+//!   doubling with each after up to its ceiling), so the loop slows but doesn't stop by itself (a
+//!   first alone may be a one-off, and holds nothing). Flagged until a hand-off of the target is
+//!   merged, or the plan offers it no more, a lead's restart included (the history's refusals
+//!   counted again: crate::coord's `seed_backoff`).
 //! - **Too big** (`too-big`): an offered step's targets whose measure fits no Mac that runs it
 //!   even at its best (its memory less its floor; its disk for jobs with what its jobs reserve and
 //!   its caches can free; a Mac whose ask bounds no disk, on its memory alone: `Status::too_big`,
@@ -293,7 +295,7 @@ pub fn refused(st: &Status, now: u64) -> Vec<Flag> {
                 kind: "refused".into(),
                 mac: last.mac.clone(),
                 said: format!(
-                    "{step}: {} {} refused {REFUSED_AGAIN} times in a row or more ({}), the last {} ago, from {}: {}; each held from the Mac it ran on, an hour from the second refusal, doubling with each after (32 h at most)",
+                    "{step}: {} {} refused {REFUSED_AGAIN} times in a row or more ({}), the last {} ago, from {}: {}; each held from the Mac it ran on from the second refusal, as a failure is (the pool's backoff-start-hours, doubling with each after up to backoff-ceiling-hours)",
                     rs.len(),
                     if rs.len() == 1 { "target's hand-off" } else { "targets' hand-offs" },
                     shown.join(", "),

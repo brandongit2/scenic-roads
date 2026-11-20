@@ -15,9 +15,10 @@ use std::collections::BTreeMap;
 /// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
 /// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`); and two of publishing's
 /// switches, booleans read by the lead's plan (agentcore's agent::plan): `HOLD_CATALOG` and
-/// `NEAR_SLOPE`; and two families of numbers within their ranges (`Knob`): the NAS pacing's bounds
-/// (crate::budget::nas::KNOBS, `Settings::nas_pace`) and the needs model's percentiles and windows
-/// (crate::needs::KNOBS, `Settings::needs`).
+/// `NEAR_SLOPE`; and three families of numbers within their ranges (`Knob`, `bounds`): the NAS
+/// pacing's bounds (crate::budget::nas::KNOBS, `Settings::nas_pace`), the needs model's percentiles
+/// and windows (crate::needs::KNOBS, `Settings::needs`) and the failures' backoff
+/// (crate::backoff::KNOBS, `Settings::backoff`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
@@ -41,8 +42,8 @@ pub fn known(name: &str) -> bool {
 }
 
 /// One of a family's numbers as a pool setting (the NAS pacing's, crate::budget::nas::KNOBS; the
-/// needs model's, crate::needs::KNOBS): its name, what it is, its unit, the least and the most the
-/// lead takes, and its value in its family's `T` (in its unit).
+/// needs model's, crate::needs::KNOBS; the backoff's, crate::backoff::KNOBS): its name, what it is,
+/// its unit, the least and the most the lead takes, and its value in its family's `T` (in its unit).
 pub struct Knob<T: 'static> {
     pub name: &'static str,
     pub what: &'static str,
@@ -69,9 +70,17 @@ impl<T> Knob<T> {
     }
 }
 
-/// The knob named `name`, of either family.
+/// Every family's knobs, a family after another (the NAS pacing's, the needs model's, the
+/// backoff's): what `scenic pool set` and the build page's POST take.
+pub fn bounds() -> impl Iterator<Item = Bound> {
+    let nas = crate::budget::nas::KNOBS.iter().map(Knob::bound);
+    let needs = crate::needs::KNOBS.iter().map(Knob::bound);
+    nas.chain(needs).chain(crate::backoff::KNOBS.iter().map(Knob::bound))
+}
+
+/// The knob named `name`, of any family.
 pub fn bound(name: &str) -> Option<Bound> {
-    crate::budget::nas::knob(name).map(Knob::bound).or_else(|| crate::needs::knob(name).map(Knob::bound))
+    bounds().find(|b| b.name == name)
 }
 
 /// The settings that are on or off (a boolean; not set: off).
@@ -144,6 +153,12 @@ impl Settings {
     /// range).
     pub fn needs(&self) -> crate::needs::Tuning {
         crate::needs::Tuning::of(|n| self.get(n).and_then(Value::as_f64))
+    }
+
+    /// The failures' backoff, its start and ceiling each as set (its default where not, or out of
+    /// its range).
+    pub fn backoff(&self) -> crate::backoff::Backoff {
+        crate::backoff::Backoff::of(|n| self.get(n).and_then(Value::as_f64))
     }
 
     /// The batch length, as set (s).

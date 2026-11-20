@@ -506,8 +506,8 @@ cores ×1; the last: cores: 0.5 of 8 left, a job of unit takes 1.0
   lead's jobs holds the lead's asks until they end, then goes first (`own_cold_waits`). A planned
   job of no targets of its own (GC, the backup, the planet's fetch, the OSM pass) that ended after
   the plan's inputs were taken isn't asked for again until the next plan says there's more, so a
-  job of moments isn't granted every round. A failed one keeps its targets from the lead an hour,
-  doubling each time.
+  job of moments isn't granted every round. A failed one keeps its targets from the lead for the
+  backoff (§7.5, Failures back off).
 - **Packing** (`Sched::pack`): a Mac may hold several leases. An ask says how many jobs it would
   start (`want`); the coordinator grants up to that many in one answer, each its own lease, packed
   in plan order into the ask's room: each must fit by its measures (memory, disk, busy cores) or a
@@ -645,7 +645,7 @@ cores again and the Mac is granted nothing more until they fit.
   coordinator lets go of exactly those, so the next ask grants them again. Each refusal is in the
   history and the log.
 - **A hand-off refused every time backs off**: from the second refusal of a target in a row, it is
-  held from the worker as a failure is (an hour, doubling, 32 h at most), and flagged (§10, Flags:
+  held from the worker as a failure is (§7.5, Failures back off), and flagged (§10, Flags:
   *refused*). A first refusal holds nothing (it may be a one-off). A page's retry lifts it.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the lead's
   whose entry carries only a done record, merged only by the lead whose member it is.
@@ -686,6 +686,18 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   run and its environment (`SCENIC_JOB`).
 - Workers are a member id and an agent instance; a take-up drops only instances that no longer
   exist.
+- **Failures back off** (`Sched::failed`, jobrt::backoff): a target that failed on a worker (a
+  member's job failed, not stopped; the lead's own failed or stopped by the memory guard), or whose
+  hand-off from it the merge refused a second time in a row on (§7.3), isn't offered to it for
+  `backoff-start-hours` (1) after the first, twice as long after each more, at most
+  `backoff-ceiling-hours` (32); a failure is forgotten that long after its last, and the worker's
+  hand-off of the target lets its hold go. Both are pool settings (`scenic pool set
+  backoff-start-hours|backoff-ceiling-hours <hours>|off`, the build page's Settings, "Backoff"; the
+  start 0.1 to 24 h, the ceiling 1 to 168 h, the history's week), taken as set. A lead's start
+  counts the holds and the refusals in a row again from its history (`seed_backoff`): its "fail",
+  "done" (failed: its "lease"'s targets less those done), own "end" (`held`), "refused" and
+  "merged" events, in order, each hold from its event's time; a page's retry, which the history
+  doesn't hold, isn't replayed.
 - **What a job waited on**: the coordinator writes on each "start" and "lease" event `after`: the
   numbers of the "end"/"done" events of the jobs it waited on (per step its targets wait on in the
   forecast's dependencies, the one that finished last). The build page's schedule draws its arrows
@@ -1418,7 +1430,7 @@ election, handover or takeover, and no pool switch.
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, the NAS pacing's bounds
 (`nas-step` … `nas-young-spans`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
-§7.7), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
+§7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
 and `near-slope` (docs/building.md §2; off while not set). A new setting is made only once every
 member's heartbeat shows the app that has it. A role is read as the agent starts (docs/agent-parts.md §9.1);
 `state/pool/slots` is read by no current app but stays `on` on the NAS for older apps, and

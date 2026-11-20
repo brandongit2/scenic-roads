@@ -3,8 +3,8 @@
 //! NAS reserve (buildstore::room::NAS_RESERVE), batch length and overdue factor (the lead's
 //! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), the dev sweep's margin
 //! (`SWEEP_MARGIN`), and the NAS calls a process of this Mac holds past their deadline
-//! (store::deadline's cap, `set_nas_held`), and the pool's knobs (`set_knob`: the NAS pacing's
-//! bounds, jobrt::budget::nas::KNOBS, and the needs model's, jobrt::needs::KNOBS). Each is set
+//! (store::deadline's cap, `set_nas_held`), and the pool's knobs (`set_knob`, jobrt::settings::bounds:
+//! the NAS pacing's bounds, the needs model's and the failures' backoff). Each is set
 //! through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic room`,
 //! `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor|<a knob>`, and the build page's
 //! POST /api/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
@@ -245,8 +245,8 @@ fn overdue_view(home: &Path) -> serde_json::Value {
     })
 }
 
-/// Asks one of the pool's knobs (`name`, jobrt::settings::bound: the NAS pacing's bounds,
-/// jobrt::budget::nas::KNOBS, or the needs model's, jobrt::needs::KNOBS) of this Mac's agent in
+/// Asks one of the pool's knobs (`name`, jobrt::settings::bound: the NAS pacing's bounds, the needs
+/// model's or the backoff's) of this Mac's agent in
 /// `home`, which sends it to the lead with its next beat (as `scenic pool set <name>`): `what` a
 /// number within the knob's range, or "off" (its default again). The lead takes it at its next
 /// reading.
@@ -392,6 +392,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         "near_slope": switch_view(home, crate::coord::asks::NEAR_SLOPE),
         "nas_pace": knob_view(&jobrt::budget::nas::KNOBS, &pool.as_ref().map(|s| s.nas_pace()).unwrap_or_default(), pool.as_ref()),
         "needs": knob_view(&jobrt::needs::KNOBS, &pool.as_ref().map(|s| s.needs()).unwrap_or_default(), pool.as_ref()),
+        "backoff": knob_view(&jobrt::backoff::KNOBS, &pool.as_ref().map(|s| s.backoff()).unwrap_or_default(), pool.as_ref()),
     })
 }
 

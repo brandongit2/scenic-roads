@@ -217,10 +217,12 @@ export function poolRows(s) {
     switchRow(s, "near_slope", "Slope near regions", "a done region's slope and tree cover are the z6 tiles near it, their assemblies made with the low zooms"),
     ...(s.nas_pace || []).map(knobRow(s, "NAS pacing")),
     ...(s.needs || []).map(knobRow(s, "Needs model")),
+    ...(s.backoff || []).map(knobRow(s, "Backoff")),
   ];
 }
 
-// One of the pool's knobs (`nas_pace`'s, jobrt::budget::nas::KNOBS; `needs`', jobrt::needs::KNOBS):
+// One of the pool's knobs (`nas_pace`'s, jobrt::budget::nas::KNOBS; `needs`', jobrt::needs::KNOBS;
+// `backoff`'s, jobrt::backoff::KNOBS):
 // a number in its range, its default until set; the lead takes it at its next reading.
 const knobRow = (s, family) => (p) => guarded(p.key, `${family}: ${p.name}`, () => ({
   now: `${p.value} ${p.unit}`,

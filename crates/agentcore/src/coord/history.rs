@@ -68,6 +68,12 @@ pub struct Event {
     pub secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// On a lead's own job's "end": its targets not done are held against its Mac (it failed, or
+    /// the memory guard stopped it: crate::coord::Coordinator::finish_failed), what the lead's
+    /// restart recalls the hold from (crate::coord's `seed_backoff`). A member's job says so by
+    /// its "done" (`ok` false) or "fail" (not "stopped: "). Events before task #1447 have none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
     /// What the job does (its description), for a start and an end.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub what: String,

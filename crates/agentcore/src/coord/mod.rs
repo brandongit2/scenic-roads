@@ -588,7 +588,8 @@ pub struct Shared {
     /// The targets whose hand-offs the lead's merge refused, one after another with none taken
     /// between (step, target) → `HandoffRefusal`: the status's `handoffs_refused`, flagged 2+ times
     /// (crate::agent::flags, refused). Gone once a hand-off of it is merged, or the plan offers it
-    /// no more; not kept across a restart (the history's "refused" rows are).
+    /// no more. Counted again from the history at the lead's start (`seed_backoff`), as the
+    /// failures' holds are.
     pub handoffs_refused: BTreeMap<(String, String), HandoffRefusal>,
     /// Each worker's asks answered over the last `ANSWERS_S`, oldest first (`answered`): what the
     /// lead's departure lines name (crate::agent::forecast::departures, `Coordinator::answers`).
@@ -927,13 +928,21 @@ impl Shared {
         }
     }
 
+    /// The pool's settings the scheduler reads, as the lead's asks hold them: the batch length, the
+    /// needs model's tuning and the failures' backoff. Taken as it packs, as a setting is asked and
+    /// as its store opens.
+    fn take_settings(&mut self) {
+        self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
+        self.sched.set_tuning(self.asks.settings.needs());
+        self.sched.fail_hold = self.asks.settings.backoff();
+    }
+
     /// The jobs `a`'s worker is granted: the scheduler's decision (`sched::Sched::pack`, on this
     /// coordinator's clock), then what a grant does outside it: the leases saved, each grant logged
     /// and in the history, the refusal kept for the status (`refused`), the answer kept
     /// (`answered`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
-        self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
-        self.sched.set_tuning(self.asks.settings.needs());
+        self.take_settings();
         let unix = self.wall_s();
         let (picks, mut why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
         // (Nothing granted for a rule that doesn't weigh the disk (memory held back, the load, …:
@@ -2106,6 +2115,7 @@ impl Coordinator {
                 drops: Default::default(),
                 done: BTreeMap::new(),
                 failed: BTreeMap::new(),
+                fail_hold: Default::default(),
                 workers: BTreeMap::new(),
                 costs,
                 floors,
@@ -2429,7 +2439,7 @@ impl Coordinator {
     }
 
     /// `finish`, its job failed: its targets not `done` are kept from this Mac as a member's failed
-    /// ones are from it (an hour, doubling each time).
+    /// ones are from it (the backoff, `Sched::fail_hold`), as its "end" event says (`held`).
     pub fn finish_failed(&self, id: u64, done: &[(String, String)]) {
         self.end_own(id, done, true);
     }
@@ -2461,9 +2471,10 @@ impl Coordinator {
     /// made at the same key is that job's, its own hand-off still to merge), so they're granted
     /// again at the next ask. A refused one's targets are counted in `Shared::handoffs_refused`
     /// (the status's), and from crate::agent::flags::REFUSED_AGAIN refusals in a row on flagged
-    /// and held in backoff against the worker its job ran on (as a failure's: an hour, doubling
-    /// with each refusal after), and in the history ("refused":
-    /// its member's Mac, its job, targets and why). A merged job's targets' refusals end there.
+    /// and held in backoff against the worker its job ran on (as a failure's, `Sched::fail_hold`,
+    /// doubling with each refusal after), and in the history ("refused": its member's Mac, its
+    /// job, targets and why: what the lead's restart counts them again from, `seed_backoff`). A
+    /// merged job's targets' refusals end there.
     pub fn merged(&self, done: &[crate::pool::records::MergedJob], again: &[crate::pool::records::Again]) {
         if done.is_empty() && again.is_empty() {
             return;
@@ -2599,6 +2610,7 @@ impl Coordinator {
         let mut st = s.sched.state(sched::Clock { now, unix: unix_of(now) });
         st.batch_s = s.asks.settings.batch_s().unwrap_or(0);
         st.tuning = s.asks.settings.needs();
+        st.fail_hold = s.asks.settings.backoff();
         for w in st.workers.iter_mut().filter(|w| w.ask.worker == self.me) {
             w.ask.cap = s.own_cap.clone();
         }
@@ -3014,8 +3026,9 @@ impl Coordinator {
         if gone.iter().any(|l| matches!(l.work, Work::Job { .. })) {
             s.save_leases();
         }
-        // (Failures past their longest wait forgotten.)
-        s.failed.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(3600 * 32));
+        // (Failures past their longest wait forgotten: the backoff's ceiling.)
+        let most = s.fail_hold.ceiling();
+        s.failed.retain(|_, (at, _)| now.saturating_duration_since(*at) < most);
         gone
     }
 
@@ -3782,6 +3795,8 @@ impl Coordinator {
         load_beats(&s);
         let docs = keep.store().map(|st| st.snapshot().docs).unwrap_or_default();
         s.asks = asks::Lead::of(&docs);
+        s.take_settings();
+        seed_backoff(&mut s, &self.me);
         s.small = budgets::Small::of(&docs);
         if let (Some(i), Some(st)) = (s.inbox.clone(), keep.store()) {
             i.attach(st);
@@ -4651,10 +4666,131 @@ fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
         asks::Ask::Hold(h) => s.asks.hold(h)?.1,
         asks::Ask::Setting(t) => s.asks.set(t)?,
     };
+    s.take_settings();
     if let Some((k, v)) = doc {
         s.keep.put(&k, v);
     }
     Ok(())
+}
+
+/// The failures' holds (`Sched::failed`) and the hand-offs' refusals in a row
+/// (`Shared::handoffs_refused`) as the lead before its restart had them (task #1447): the history's
+/// events replayed in order, counted as the live code counts them (`Coordinator::merged`,
+/// `finish_failed`, "/work/done", "/work/fail"). A failure: a member's "fail" not interrupted (its
+/// note not "stopped: "), its "done" that failed (`ok` false: its lease's targets less those done),
+/// or the lead's own "end" that `held` (the same, a job of this lead, `me`, that no "done" or
+/// "fail" ended); a target done by a "done" lets go of its worker's hold. A "merged" job's
+/// targets' refusals end (its jobs read from the history's file, as memory keeps no `data`); a
+/// "refused" counts each of its targets, and from crate::agent::flags::REFUSED_AGAIN in a row on
+/// holds it against its job's worker (its "lease"'s, else the Mac of its "done" or "end", as
+/// `refused_worker`). Each hold dates from its event; a failure past the backoff's ceiling counts
+/// afresh, and those past it now are forgotten. Not replayed: a page's retry (`clear_failed`),
+/// which the history doesn't hold.
+fn seed_backoff(s: &mut Shared, me: &str) {
+    use crate::pool::records::MergedJob;
+    use std::collections::{HashMap, HashSet};
+    type Failed = BTreeMap<(String, String), (u64, u32)>;
+    let events = s.history.all();
+    let (now, unix) = (s.now(), s.wall_s());
+    let ceiling = s.fail_hold.ceiling().as_secs();
+    let mut leases: HashMap<jobrt::jobid::JobId, (&str, &[String])> = HashMap::new();
+    let mut ended: HashMap<jobrt::jobid::JobId, &str> = HashMap::new();
+    let mut by_lead: HashSet<jobrt::jobid::JobId> = HashSet::new();
+    for e in events.iter() {
+        let (Some(j), Some(w)) = (e.job, e.worker.as_deref()) else { continue };
+        if matches!(e.kind.as_str(), "done" | "fail") {
+            by_lead.insert(j);
+        }
+        if matches!(e.kind.as_str(), "done" | "end") {
+            ended.insert(j, w);
+        }
+    }
+    // (The merges after the first refusal, with their jobs: only they end a refusal.)
+    let merges: HashMap<u64, Vec<MergedJob>> = events
+        .iter()
+        .find(|e| e.kind == "refused")
+        .zip(s.history.path())
+        .map(|(first, p)| {
+            history::since_in_file(p, first.seq, usize::MAX)
+                .into_iter()
+                .filter(|e| e.kind == "merged")
+                .filter_map(|e| Some((e.seq, serde_json::from_value(e.data?.get("done")?.clone()).ok()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut failed = Failed::new();
+    let fail = |failed: &mut Failed, w: &str, step: &str, t: &str, at: u64, n: Option<u32>| {
+        let e = failed.entry((w.to_string(), cost_key(step, t))).or_insert((at, 0));
+        if at.saturating_sub(e.0) >= ceiling {
+            e.1 = 0;
+        }
+        *e = (at, n.map_or(e.1 + 1, |n| e.1.max(n)));
+    };
+    let mut refused: BTreeMap<(String, String), HandoffRefusal> = BTreeMap::new();
+    for e in events.iter() {
+        let (step, w) = (e.step.as_deref().unwrap_or(""), e.worker.as_deref().unwrap_or(""));
+        let lease = e.job.and_then(|j| leases.get(&j).copied());
+        let rest = || lease.into_iter().flat_map(|l| l.1.iter()).filter(|t| !e.targets.contains(t));
+        match e.kind.as_str() {
+            "lease" => {
+                if let Some(j) = e.job {
+                    leases.insert(j, (w, &e.targets));
+                }
+            }
+            "fail" if !e.note.starts_with("stopped: ") => {
+                for t in &e.targets {
+                    fail(&mut failed, w, step, t, e.t, None);
+                }
+            }
+            "done" => {
+                for t in &e.targets {
+                    failed.remove(&(w.to_string(), cost_key(step, t)));
+                }
+                if e.ok == Some(false) {
+                    for t in rest() {
+                        fail(&mut failed, w, step, t, e.t, None);
+                    }
+                }
+            }
+            "end" if e.held && e.job.is_some_and(|j| !by_lead.contains(&j)) && lease.is_some_and(|l| l.0 == me) => {
+                for t in rest() {
+                    fail(&mut failed, me, step, t, e.t, None);
+                }
+            }
+            "merged" => {
+                for (_, _, st, ts) in merges.get(&e.seq).into_iter().flatten() {
+                    for t in ts {
+                        refused.remove(&(st.clone(), t.clone()));
+                    }
+                }
+            }
+            "refused" => {
+                let worker =
+                    lease.map(|l| l.0).or_else(|| e.job.and_then(|j| ended.get(&j)).map(|w| crate::paces::mac_of(w)));
+                for t in &e.targets {
+                    let r = refused.entry((step.to_string(), t.clone())).or_default();
+                    *r = HandoffRefusal {
+                        step: step.to_string(),
+                        target: t.clone(),
+                        times: r.times + 1,
+                        at: e.t,
+                        mac: w.to_string(),
+                        why: e.note.clone(),
+                    };
+                    let n = r.times.saturating_sub(crate::agent::flags::REFUSED_AGAIN - 1);
+                    if let (Some(by), true) = (worker, n > 0) {
+                        fail(&mut failed, by, step, t, e.t, Some(n));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let ago = |t: u64| now.checked_sub(Duration::from_secs(unix.saturating_sub(t))).unwrap_or(now);
+    s.failed.extend(
+        failed.into_iter().filter(|(_, (t, _))| unix.saturating_sub(*t) < ceiling).map(|(k, (t, n))| (k, (ago(t), n))),
+    );
+    s.handoffs_refused.extend(refused);
 }
 
 /// The members' beats its store kept (`kept::Beat`) heard again into its registry, once it has
@@ -5148,8 +5284,8 @@ fn route(
             // `{"nas_room": <GB> | "off"}`,
             // `{"batch_minutes": <minutes> | "off"}`, `{"overdue_factor": <times> | "off"}`,
             // `{"hold_catalog": "on" | "off"}`, `{"near_slope": "on" | "off"}` and the pool's knobs
-            // (`{"nas_step": <number> | "off"}`, … jobrt::budget::nas::KNOBS; `{"needs_work_pct":
-            // <number> | "off"}`, … jobrt::needs::KNOBS) the pool's (all but
+            // (`{"nas_step": <number> | "off"}`, `{"needs_work_pct": <number> | "off"}`, … every
+            // family's, jobrt::settings::bounds) the pool's (all but
             // the reserve asked of the lead with this Mac's agent's next beat), each through
             // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
             // the NAS calls held have none). Answered with them as they stand.
@@ -5206,9 +5342,7 @@ fn route(
                 }
             }
             // (The knobs, by their names with `_`: `nas_step`, `needs_work_pct`, …)
-            let names =
-                jobrt::budget::nas::KNOBS.iter().map(|k| k.name).chain(jobrt::needs::KNOBS.iter().map(|k| k.name));
-            for name in names {
+            for name in jobrt::settings::bounds().map(|k| k.name) {
                 if let Some(v) = said(&name.replace('-', "_"))? {
                     settings::set_knob(&home, name, &v, &by)?;
                 }
@@ -12943,6 +13077,140 @@ mod tests {
         let held: Vec<&String> = s.failed.keys().map(|(w, _)| w).collect();
         assert_eq!(held, ["old-lead"], "the Mac its end names, not this one ({})", c.me);
         assert_eq!(s.handoffs_refused[&("pack".to_string(), "6/1/1".to_string())].mac, "old-lead");
+    }
+
+    /// Task #1447: the failures' backoff is the pool's settings (jobrt::backoff), taken as asked:
+    /// by default an hour, doubling to 32 h; set, from its start doubling to its ceiling, which the
+    /// failures are forgotten at too, and the forecast's state carries it.
+    #[test]
+    fn the_backoff_holds_as_its_settings_say() {
+        let (_d, c, _w, clock) = every((0, 0));
+        let key = ("m1".to_string(), cost_key("pack", "6/1/1"));
+        let mut s = c.shared.lock().unwrap();
+        let t0 = s.now();
+        // (Whether pack 6/1/1 is kept from m1 `h` hours after its `n`th failure in a row.)
+        let holds = |s: &mut Shared, n: u32, h: f64| {
+            s.failed.insert(key.clone(), (t0, n));
+            s.backoff("m1", "pack", "6/1/1", t0 + Duration::from_secs_f64(h * 3600.0))
+        };
+        assert!(holds(&mut s, 1, 0.9) && !holds(&mut s, 1, 1.1), "an hour");
+        assert!(holds(&mut s, 2, 1.9) && !holds(&mut s, 2, 2.1), "two");
+        assert!(holds(&mut s, 6, 31.9) && !holds(&mut s, 6, 32.1), "32 h");
+        assert!(holds(&mut s, 40, 31.9) && !holds(&mut s, 40, 32.1), "32 h at most");
+        let set = |s: &mut Shared, name: &str, v: f64| {
+            let a = asks::SettingAsk { name: name.into(), value: v.into(), by: "t".into(), at: unix_now() };
+            take_ask(s, &asks::Ask::Setting(a)).unwrap();
+        };
+        set(&mut s, "backoff-start-hours", 0.5);
+        assert!(holds(&mut s, 1, 0.4) && !holds(&mut s, 1, 0.6), "half an hour, as set");
+        assert!(holds(&mut s, 7, 31.9) && !holds(&mut s, 7, 32.1), "doubling to the default ceiling");
+        set(&mut s, "backoff-ceiling-hours", 3.0);
+        assert!(holds(&mut s, 2, 0.9) && !holds(&mut s, 2, 1.1));
+        assert!(holds(&mut s, 4, 2.9) && !holds(&mut s, 4, 3.1), "3 h at most, as set");
+        // (Out of its range: refused, the setting as it was.)
+        let a = asks::SettingAsk { name: "backoff-ceiling-hours".into(), value: 500.into(), by: "t".into(), at: 0 };
+        assert!(take_ask(&mut s, &asks::Ask::Setting(a)).is_err());
+        assert_eq!(s.fail_hold.ceiling_h, 3.0);
+        // Forgotten at the ceiling, not at 32 h.
+        s.failed.insert(key.clone(), (t0, 1));
+        drop(s);
+        assert_eq!(c.sched_state().fail_hold, jobrt::backoff::Backoff { start_h: 0.5, ceiling_h: 3.0 });
+        clock.advance(Duration::from_secs(3 * 3600 + 60));
+        c.expire();
+        assert!(c.shared.lock().unwrap().failed.is_empty(), "forgotten past the ceiling");
+    }
+
+    /// Task #1447: a lead's restart over the same history holds the same targets against the same
+    /// workers and keeps the hand-offs' refusals in a row (so the refused flag stays): failures
+    /// and refusals counted again from its "fail", "done", "end", "refused" and "merged" events.
+    #[test]
+    fn a_lead_restart_keeps_the_holds_and_refusals_its_history_says() {
+        let (d, c, w, _clock) = every((0, 0));
+        c.set_epoch(1);
+        let offer =
+            |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 0)], job: None };
+        c.offer("p", vec![offer("available", "terrain"), offer("pack", "6/1/1")]);
+        let member = "m-000000000000000b";
+        let refused = |job: jobrt::jobid::JobId, t: &str| crate::pool::records::Again {
+            member: member.into(),
+            job,
+            step: "available".into(),
+            targets: vec![(t.into(), "k".into())],
+            refused: Some("writes outside its step's names".into()),
+        };
+        let job = |g: &Grant| jobrt::jobid::JobId { epoch: 1, n: g.lease };
+        let hand_off = |g: &Grant| {
+            let done = Some(("available".to_string(), vec![("terrain".to_string(), "k".to_string())]));
+            let h = Handoff { done, ..Default::default() };
+            w.done(&Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() }).unwrap();
+        };
+        // Refused twice in a row from m1: counted, and m1 held an hour.
+        let a1 = every_ask("m1", "available", 24_000, 50_000);
+        for _ in 0..2 {
+            let g = w.ask(&a1).unwrap().expect("granted");
+            hand_off(&g);
+            c.merged(&[], &[refused(job(&g), "terrain")]);
+        }
+        // m2 fails pack 6/1/1: held from it.
+        let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        let g = w2.ask(&every_ask("m2", "pack", 24_000, 50_000)).unwrap().expect("granted");
+        w2.fail(g.lease, "boom", None).unwrap();
+        // A refusal a merged hand-off of its target ended (the merge's jobs in the file alone).
+        let gone = jobrt::jobid::JobId { epoch: 1, n: 900 };
+        c.merged(&[], &[refused(gone, "gone")]);
+        let done = [("e".to_string(), member.to_string(), "available".to_string(), vec!["gone".to_string()])];
+        c.note(crate::pubtimes::merged_event(&done));
+        c.merged(&done, &[]);
+        // This lead's own job that failed after one of its two targets: the other held from it, as
+        // `finish_failed` holds it; one a "done" ended (its lead moved) is that one's.
+        let own = |n: u64, ended: bool| {
+            let job = jobrt::jobid::JobId { epoch: 1, n };
+            let ev = |kind: &str, targets: &[&str]| history::Event {
+                worker: Some("m4".into()),
+                job: Some(job),
+                step: Some("pack".into()),
+                targets: targets.iter().map(|t| t.to_string()).collect(),
+                ..history::Event::new(kind)
+            };
+            c.note(ev("lease", &["6/2/1", &format!("6/2/{n}")]));
+            c.note(history::Event { ok: Some(false), held: true, ..ev("end", &["6/2/1"]) });
+            if ended {
+                c.note(history::Event { ok: Some(true), ..ev("done", &["6/2/1"]) });
+            }
+        };
+        own(7, false);
+        own(8, true);
+        let kept = |c: &Coordinator| {
+            let s = c.shared.lock().unwrap();
+            let failed: Vec<(String, String, u32)> =
+                s.failed.iter().map(|((w, k), (_, n))| (w.clone(), k.clone(), *n)).collect();
+            let refused: Vec<(String, String, u32, String, String)> = s
+                .handoffs_refused
+                .values()
+                .map(|r| (r.step.clone(), r.target.clone(), r.times, r.mac.clone(), r.why.clone()))
+                .collect();
+            (failed, refused)
+        };
+        let (failed, refused) = kept(&c);
+        assert_eq!(
+            failed,
+            [("m1".to_string(), cost_key("available", "terrain"), 1), ("m2".to_string(), cost_key("pack", "6/1/1"), 1)]
+        );
+        assert_eq!(refused.len(), 1);
+        c.stop();
+        let (b, _) = start_for_test(&d.path().join("coord"), "m4", "");
+        let (failed_after, refused_after) = kept(&b);
+        let own_hold = ("m4".to_string(), cost_key("pack", "6/2/7"), 1);
+        assert_eq!(failed_after, [failed.clone(), vec![own_hold]].concat(), "the same holds, and the own job's");
+        assert_eq!(refused_after, refused, "the refusals in a row kept, the merged one's ended");
+        let s = b.shared.lock().unwrap();
+        let now = s.now();
+        assert!(s.backoff("m1", "available", "terrain", now) && s.backoff("m2", "pack", "6/1/1", now));
+        assert!(s.backoff("m4", "pack", "6/2/7", now) && !s.backoff("m4", "pack", "6/2/8", now));
+        drop(s);
+        let st = crate::agent::Status { handoffs_refused: b.handoffs_refused(), ..Default::default() };
+        let f = crate::agent::flags::refused(&st, unix_now());
+        assert!(f.len() == 1 && f[0].kind == "refused", "still flagged after the restart: {f:?}");
     }
 
     /// Task #1170: room held for the first offer refused for its room is the hold the status says
