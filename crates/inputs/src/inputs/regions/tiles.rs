@@ -1900,27 +1900,6 @@ fn median(
                 coasts.push(a);
             }
         }
-        // (Each region's split against all the others': splits among coasts given separately
-        // neither overlap nor leave a gap, geom::nearest.)
-        let mut v = Vec::new();
-        let mut short = false;
-        for k in 0..coasts.len() {
-            coasts.swap(0, k);
-            let got = if whole {
-                Some(geom::nearest(left, &coasts[..1], &coasts[1..], step))
-            } else {
-                geom::nearest_within(left, &coasts[..1], &coasts[1..], step, m)
-            };
-            coasts.swap(0, k);
-            match got {
-                Some(a) if !a.is_empty() => v.push((ids[k].clone(), a)),
-                Some(_) => {}
-                None => {
-                    short = true;
-                    break;
-                }
-            }
-        }
         if whole && coasts.is_empty() {
             return Err(remainder_problem(
                 dir,
@@ -1933,8 +1912,12 @@ fn median(
                 ),
             ));
         }
-        if !short && !coasts.is_empty() {
-            return Ok(v);
+        // (Each region's split against all the others', in one pass: splits among coasts given
+        // separately neither overlap nor leave a gap, geom::nearest.)
+        if !coasts.is_empty() {
+            if let Some(v) = geom::nearest_split(left, &coasts, step, (!whole).then_some(m)) {
+                return Ok(ids.into_iter().cloned().zip(v).filter(|(_, a)| !a.is_empty()).collect());
+            }
         }
         m *= 2.0;
     }

@@ -870,6 +870,20 @@ pub fn nearest_within(within: &Area, to: &[Area], than: &[Area], step: f64, reac
     nearest_in(within, to, than, step, Some(reach_m))
 }
 
+/// `within` split among `coasts` at once: each coast's share, as `nearest` (`reach_m` None) or
+/// `nearest_within` (Some) of it against all the others gives it, in their order: one pass over the
+/// grid for every coast, not one a coast (None as `nearest_within` is: a point's nearest coast past
+/// the reach).
+pub fn nearest_split(within: &Area, coasts: &[Area], step: f64, reach_m: Option<f64>) -> Option<Vec<Area>> {
+    let labelled: Vec<(&Area, usize)> = coasts.iter().enumerate().map(|(k, a)| (a, k)).collect();
+    split_in(within, &labelled, &(0..coasts.len()).collect::<Vec<_>>(), step, reach_m, true)
+}
+
+fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Option<f64>) -> Option<Area> {
+    let coasts: Vec<(&Area, usize)> = to.iter().map(|a| (a, 0)).chain(than.iter().map(|a| (a, 1))).collect();
+    split_in(within, &coasts, &[0], step, reach, true).map(|mut v| v.remove(0))
+}
+
 /// What decides a point two coasts share: the coast's box, its points' count and their sum.
 type Fp = (Option<[i64; 4]>, usize, (i128, i128));
 
@@ -882,19 +896,37 @@ fn fingerprint(a: &Area) -> Fp {
 /// every point's nearest coast lies within it (`nearest_within`).
 pub const NEAREST_REACH_M: f64 = 450_000.0;
 
-fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Option<f64>) -> Option<Area> {
+/// The nearest-coast split (`nearest`, `nearest_within`, `nearest_split`): `within`'s share of each
+/// label of `wanted` (a coast's label: 0 for `to` and 1 for `than`, or each its own), each point of
+/// the grid going to its nearest coast's label. `skip` (always, but in the tests that check it):
+/// along a row, the cells the triangle inequality decides from the cell before are given its label
+/// without a search (the same labels: `split_skips_nothing_it_decides`).
+fn split_in(
+    within: &Area,
+    coasts: &[(&Area, usize)],
+    wanted: &[usize],
+    step: f64,
+    reach: Option<f64>,
+    skip: bool,
+) -> Option<Vec<Area>> {
     if within.is_empty() {
-        return Some(Area::default());
+        return Some(vec![Area::default(); wanted.len()]);
     }
+    // (Each label's share where it's told before the grid: None while it isn't.)
+    let mut got: Vec<Option<Area>> = vec![None; wanted.len()];
     if reach.is_none() {
-        if to.iter().all(Area::is_empty) {
-            return Some(Area::default());
+        for (g, &l) in got.iter_mut().zip(wanted) {
+            if coasts.iter().filter(|c| c.1 == l).all(|c| c.0.is_empty()) {
+                *g = Some(Area::default());
+            } else if coasts.iter().filter(|c| c.1 != l).all(|c| c.0.is_empty()) {
+                *g = Some(within.clone());
+            }
         }
-        if than.iter().all(Area::is_empty) {
-            return Some(within.clone());
+        if got.iter().all(Option::is_some) {
+            return Some(got.into_iter().flatten().collect());
         }
     }
-    let Some(bb) = within.bbox() else { return Some(Area::default()) };
+    let Some(bb) = within.bbox() else { return Some(vec![Area::default(); wanted.len()]) };
     // With a reach, the samples within it of the area's box, in degrees of latitude, and of
     // longitude at the box's latitude farthest from the equator (all of them near a pole); a point
     // is decided only by a sample within 99 % of it (the box's degrees are roadcore::geo::M_PER_DEG, the
@@ -912,51 +944,60 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
         reach.is_none() || (q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry)
     };
     let decides = r_m * 0.99;
-    let mut samples: Vec<(Pt, bool, usize)> = Vec::new();
+    // (Each sample: its point, its coast's label, its coast.)
+    let mut samples: Vec<(Pt, usize, usize)> = Vec::new();
     let mut fps: Vec<Fp> = Vec::new();
-    let mut coasts: Vec<&Area> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let deg = step / roadcore::geo::M_PER_DEG * 1e7;
-    for (a, mine) in to.iter().map(|a| (a, true)).chain(than.iter().map(|a| (a, false))) {
-        let k = fps.len();
+    for (k, &(a, label)) in coasts.iter().enumerate() {
         fps.push(fingerprint(a));
-        coasts.push(a);
         for ring in a.polys.iter().flatten() {
             if !ring.iter().any(near) {
                 continue;
             }
             for q in densify_to(ring, step) {
                 if near(&q) && seen.insert(((q[0] as f64 / deg) as i64, (q[1] as f64 / deg) as i64, k)) {
-                    samples.push((q, mine, k));
+                    samples.push((q, label, k));
                 }
             }
         }
     }
     if samples.is_empty() {
-        return if reach.is_none() { Some(Area::default()) } else { None };
+        return if reach.is_none() { Some(got.into_iter().map(Option::unwrap_or_default).collect()) } else { None };
     }
     if reach.is_none() {
-        if !samples.iter().any(|s| !s.1) {
-            return Some(within.clone());
+        for (g, &l) in got.iter_mut().zip(wanted) {
+            if g.is_none() {
+                if !samples.iter().any(|s| s.1 != l) {
+                    *g = Some(within.clone());
+                } else if !samples.iter().any(|s| s.1 == l) {
+                    *g = Some(Area::default());
+                }
+            }
         }
-        if !samples.iter().any(|s| s.1) {
-            return Some(Area::default());
+        if got.iter().all(Option::is_some) {
+            return Some(got.into_iter().flatten().collect());
         }
     }
+    let labels = coasts.iter().map(|c| c.1).max().map_or(0, |m| m + 1);
     // A bucket grid of the samples, half-degree cells.
     let cell = 5_000_000i64;
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
     for (k, (q, _, _)) in samples.iter().enumerate() {
         grid.entry((q[0].div_euclid(cell), q[1].div_euclid(cell))).or_default().push(k);
     }
-    let dist = |a: Pt, b: Pt| -> f64 { length_m(a, b) };
-    let nearest_is_mine = |p: Pt| -> Option<bool> {
+    // (The least cosine of the band searched: a degree of longitude is shortest there.)
+    let cos_at = |lat_e7: i64| ((lat_e7.clamp(-900_000_000, 900_000_000) as f64) * 1e-7).to_radians().dcos().max(0.02);
+    // The nearest sample to `p` (ties to the smaller sample point, so the split and its complement
+    // agree): its distance, point, label and coast; None past the reach. With `beyond`, also a
+    // bound under every sample of another label than its: the search goes on, past where it found
+    // the nearest, until it finds the nearest of another label, or the samples left are at least
+    // `beyond` farther than the nearest, or it has looked twice as far (and 8 rings more).
+    let query = |p: Pt, beyond: Option<f64>| -> Option<((f64, Pt, usize, usize), f64)> {
         let (cx, cy) = (p[0].div_euclid(cell), p[1].div_euclid(cell));
-        // (Ties to the smaller sample point, so the split and its complement agree.)
-        let mut best = (f64::MAX, [i64::MAX, i64::MAX], true, usize::MAX);
-        // (The least cosine of the band searched: a degree of longitude is shortest there.)
-        let cos_at =
-            |lat_e7: i64| ((lat_e7.clamp(-900_000_000, 900_000_000) as f64) * 1e-7).to_radians().dcos().max(0.02);
+        let mut best = (f64::MAX, [i64::MAX, i64::MAX], 0usize, usize::MAX);
+        let mut found: Option<((f64, Pt, usize, usize), i64)> = None;
+        let mut least = vec![f64::INFINITY; if beyond.is_some() { labels } else { 0 }];
         let mut r = 0i64;
         loop {
             for gx in cx - r..=cx + r {
@@ -966,18 +1007,23 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
                     }
                     if let Some(v) = grid.get(&(gx, gy)) {
                         for &k in v {
-                            let d = dist(p, samples[k].0);
-                            let q = samples[k].0;
-                            let (_, mine, part) = samples[k];
+                            let (q, label, part) = samples[k];
+                            let d = length_m(p, q);
+                            if let Some(l) = least.get_mut(label) {
+                                *l = l.min(d);
+                            }
+                            if found.is_some() {
+                                continue;
+                            }
                             // (A point two coasts share: the coast with the least fingerprint,
                             // equal fingerprints by their rings compared in order: a total order,
                             // so the split and its complement decide alike.)
                             let lesser = || {
                                 best.3 == usize::MAX
-                                    || (&fps[part], &coasts[part].polys) < (&fps[best.3], &coasts[best.3].polys)
+                                    || (&fps[part], &coasts[part].0.polys) < (&fps[best.3], &coasts[best.3].0.polys)
                             };
                             if d < best.0 || (d == best.0 && (q < best.1 || (q == best.1 && lesser()))) {
-                                best = (d, q, mine, part);
+                                best = (d, q, label, part);
                             }
                         }
                     }
@@ -987,44 +1033,96 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
             // cell, less of longitude by the latitude's cosine.)
             let reach = (r + 1) * cell;
             let coslat = cos_at(p[1] - reach).min(cos_at(p[1] + reach));
-            if best.0 < (r as f64) * 55_000.0 * coslat * 0.95 || r > 400 {
-                return (best.0 <= decides).then_some(best.2);
+            let past = (r as f64) * 55_000.0 * coslat * 0.95;
+            if found.is_none() && (best.0 < past || r > 400) {
+                if best.0 > decides {
+                    return None;
+                }
+                found = Some((best, r));
+                if beyond.is_none() {
+                    return Some((best, 0.0));
+                }
+            }
+            if let (Some((b, at)), Some(beyond)) = (found, beyond) {
+                let other = least.iter().enumerate().filter(|(l, _)| *l != b.2).map(|(_, d)| *d).fold(f64::INFINITY, f64::min);
+                if r > 400 {
+                    return Some((b, other));
+                }
+                if other <= past || past >= b.0 + beyond || r >= (2 * at).max(at + 8) {
+                    return Some((b, other.min(past)));
+                }
             }
             r += 1;
         }
     };
-    // Rows of `step`, each split into runs of cells whose middles are nearer `to`. The grid is
-    // anchored at 0°, 0° (rows and, in each row, cells in whole steps from it), so splits of
-    // neighbouring areas fall on the same cells and meet without gaps or overlaps.
+    // Rows of `step`, each split into runs of cells whose middles are nearest one label's coasts.
+    // The grid is anchored at 0°, 0° (rows and, in each row, cells in whole steps from it), so
+    // splits of neighbouring areas fall on the same cells and meet without gaps or overlaps.
+    // (A cell after one decided at distance d1, its nearest of another label at least d2 off, `j`
+    // cells on: its nearest of the first is at most d1 + n1·j·dx off (n1 the parallel's radius at
+    // the middle of the cell's and its nearest's latitudes, the same along the row), and every one
+    // of another label at least d2 − n·j·dx, n at most the parallel's radius at the latitude of a
+    // sample nearer than d2: so `j` cells take the first's label while those two stay apart.)
+    let (e2, m_least) = (F * (2.0 - F), A * (1.0 - F * (2.0 - F)));
+    let n_most = |lat: f64| A / (1.0 - e2).sqrt() * lat.max(0.0).dcos() * (1.0 + 1e-9);
     let dy = (step / roadcore::geo::M_PER_DEG * 1e7).max(1.0) as i64;
-    let mut rects: Vec<Ring> = Vec::new();
+    let mut rects: Vec<Vec<Ring>> = vec![Vec::new(); labels];
     let mut y = bb[1].div_euclid(dy) * dy;
     while y < bb[3] {
         let y1 = y + dy;
         let mid = (y + y1) / 2;
         let coslat = ((mid as f64) * 1e-7).to_radians().dcos().max(0.01);
         let dx = ((step / (roadcore::geo::M_PER_DEG * coslat)) * 1e7).max(1.0) as i64;
+        let dx_rad = (dx as f64 * 1e-7).to_radians();
+        let lat = ((mid as f64) * 1e-7).to_radians().abs();
         let mut x = bb[0].div_euclid(dx) * dx;
-        let mut run: Option<i64> = None;
-        while x < bb[2] {
-            let x1 = x + dx;
-            let mine = nearest_is_mine([(x + x1) / 2, mid])?;
-            match (mine, run) {
-                (true, None) => run = Some(x),
-                (false, Some(x0)) => {
-                    rects.push(vec![[x0, y], [x, y], [x, y1], [x0, y1]]);
-                    run = None;
+        let mut run: Option<(i64, usize)> = None;
+        let mut close = |run: &mut Option<(i64, usize)>, x: i64, label: Option<usize>| {
+            if let Some((x0, l)) = *run {
+                if Some(l) != label {
+                    rects[l].push(vec![[x0, y], [x, y], [x, y1], [x0, y1]]);
+                    *run = None;
                 }
-                _ => {}
             }
-            x = x1;
+            if run.is_none() {
+                *run = label.map(|l| (x, l));
+            }
+        };
+        while x < bb[2] {
+            let left = (bb[2] - x + dx - 1) / dx;
+            let p = [x + dx / 2, mid];
+            let mut j = 1;
+            let b = if skip && left > 1 {
+                // (Searched on as far as the rest of the row needs, both radii at their most.)
+                let (b, other) = query(p, Some(1e-3 + 2.0 * n_most(0.0) * dx_rad * (left - 1) as f64))?;
+                let n1 = radii(((p[1] + b.1[1]) as f64 * 0.5e-7).to_radians()).1;
+                let gap = other - b.0 - (1e-6 * (b.0 + other.min(1e9)) + 1e-3);
+                if gap > 0.0 {
+                    let n = n_most(lat - other.min(1e9) / (2.0 * m_least)) + n1;
+                    let mut most = (gap / (n * dx_rad)).floor();
+                    if reach.is_some() && n1 > 0.0 {
+                        most = most.min(((decides - b.0) / (n1 * dx_rad)).floor());
+                    }
+                    if most >= 1.0 {
+                        j += (most as i64).min(left - 1);
+                    }
+                }
+                b
+            } else {
+                query(p, None)?.0
+            };
+            close(&mut run, x, Some(b.2));
+            x += j * dx;
         }
-        if let Some(x0) = run {
-            rects.push(vec![[x0, y], [x, y], [x, y1], [x0, y1]]);
-        }
+        close(&mut run, x, None);
         y = y1;
     }
-    Some(within.intersect(&union_contours(rects)))
+    Some(
+        got.into_iter()
+            .zip(wanted)
+            .map(|(g, &l)| g.unwrap_or_else(|| within.intersect(&union_contours(std::mem::take(&mut rects[l])))))
+            .collect(),
+    )
 }
 
 /// A ring's points with none more than `step` metres apart.
@@ -1338,5 +1436,75 @@ mod tests {
         assert_eq!(kept.polys.len(), 2, "the square north of the line's extension kept");
         let other = cut(&two, &line, false).unwrap();
         assert_eq!(other.polys.len(), 1);
+    }
+
+    /// Islands round (x, y) (E7), jagged by a fixed sequence: coasts for the splits' tests.
+    fn islands(seed: u64, x: i64, y: i64, n: usize, size: i64) -> Area {
+        let mut s = seed;
+        let mut next = move || {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as i64
+        };
+        let rings: Vec<Ring> = (0..n)
+            .map(|_| {
+                let (cx, cy) = (x + next() % (4 * size) - 2 * size, y + next() % (4 * size) - 2 * size);
+                (0..12)
+                    .map(|k| {
+                        let a = k as f64 / 12.0 * std::f64::consts::TAU;
+                        let r = (size / 2 + next() % (size / 2)) as f64;
+                        [cx + (r * a.cos()) as i64, cy + (r * a.sin()) as i64]
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut out = Area::default();
+        for r in rings {
+            out = out.union(&Area::from_rings(&[r]));
+        }
+        out
+    }
+
+    /// The splits' skip along a row (the cells the triangle inequality decides given their label
+    /// without a search) changes no label: every split equal with it and without, at the equator,
+    /// mid and high latitudes, north and south, with and without a reach (one too short for some
+    /// points: None both ways), two labels and four.
+    #[test]
+    fn split_skips_nothing_it_decides() {
+        let deg = 10_000_000i64;
+        for (k, &(lat, step)) in [(0i64, 1000.0), (45, 1000.0), (64, 300.0), (-70, 1000.0)].iter().enumerate() {
+            let (x, y) = (10 * deg, lat * deg);
+            let within = Area::from_rings(&[sq(x - deg / 2, y - deg / 4, deg / 2)]);
+            let coasts: Vec<Area> =
+                (0..4).map(|j| islands(k as u64 * 10 + j as u64, x - deg / 4, y, 3, deg / 12)).collect();
+            for labels in [vec![0, 1, 0, 1], vec![0, 1, 2, 3]] {
+                let labelled: Vec<(&Area, usize)> = coasts.iter().zip(labels.iter().copied()).collect();
+                let wanted: Vec<usize> = (0..=*labels.iter().max().unwrap()).collect();
+                for reach in [None, Some(450_000.0), Some(20_000.0)] {
+                    let skipped = split_in(&within, &labelled, &wanted, step, reach, true);
+                    let each = split_in(&within, &labelled, &wanted, step, reach, false);
+                    assert_eq!(skipped, each, "at {lat}°, labels {labels:?}, reach {reach:?}");
+                    if reach != Some(20_000.0) {
+                        let v = each.expect("decided within the reach");
+                        assert!(v.iter().filter(|a| !a.is_empty()).count() > 1, "a split, not one label's all");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `nearest_split` is each coast's `nearest` (or `nearest_within`) against all the others.
+    #[test]
+    fn a_split_at_once_is_each_coasts_nearest() {
+        let deg = 10_000_000i64;
+        let within = Area::from_rings(&[sq(0, 45 * deg, deg / 2)]);
+        let coasts: Vec<Area> = (0..3).map(|j| islands(j, deg / 4, 45 * deg + deg / 4, 2, deg / 10)).collect();
+        for reach in [None, Some(450_000.0)] {
+            let all = nearest_split(&within, &coasts, 1000.0, reach).unwrap();
+            for k in 0..coasts.len() {
+                let others: Vec<Area> = coasts.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, a)| a.clone()).collect();
+                let one = nearest_in(&within, &coasts[k..=k], &others, 1000.0, reach).unwrap();
+                assert_eq!(all[k], one, "coast {k}, reach {reach:?}");
+            }
+        }
     }
 }
