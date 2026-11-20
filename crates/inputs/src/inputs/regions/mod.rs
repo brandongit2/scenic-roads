@@ -255,9 +255,10 @@ impl Regions {
     }
 
     /// Its resolutions kept as pieces in the lasting folder `dir` too (a scratch check's `--keep`,
-    /// kept::Lasting), held to `cap_mb` once done (`kept_lasting`).
-    /// `files`: what the check reads besides the records that their names don't tell (a scratch
-    /// check's declarations and the files they name, its land file: `read::check_folder`).
+    /// the pool's check's in its Mac's cache: kept::Lasting), held to `cap_mb` once done
+    /// (`finish_lasting`). `files`: what the check reads besides the records that their names
+    /// don't tell (a scratch check's declarations and the files they name, its land file:
+    /// `read::check_folder`; none for the pool's, which reads the records alone).
     pub fn keep_lasting(&self, dir: &std::path::Path, cap_mb: u64, files: &str) -> Result<()> {
         // (What the pieces' keys don't name: the other passes' outline sets, which a region
         // pinned to one is compared with, and those files.)
@@ -265,10 +266,21 @@ impl Regions {
         self.kept.open_lasting(kept::Lasting::open(dir, &format!("others {others}\n{files}"), cap_mb)?)
     }
 
-    /// By stage (kept::stage_name), the pieces this check took (kept before) and made; and the
-    /// lasting folder held to its cap, when it keeps one (kept::Lasting::sweep).
-    pub fn kept_lasting(&self) -> (BTreeMap<u8, (usize, usize)>, Option<Result<kept::Swept>>) {
-        (self.kept.counts(), self.kept.sweep_lasting())
+    /// The pool's check's pieces kept in its Mac's lasting folder `pool` too (kept::pool_lasting,
+    /// task #1566): a check after an edit takes every piece whose reads are as they were. None
+    /// given, or one that can't be made: the job's scratch alone, said.
+    fn keep_pool(&self, pool: Option<(std::path::PathBuf, u64)>) {
+        if let Some((dir, mb)) = pool {
+            if let Err(e) = self.keep_lasting(&dir, mb, "") {
+                eprintln!("regions: no lasting folder of pieces ({e:#}): kept in the job's scratch alone");
+            }
+        }
+    }
+
+    /// The check done with a lasting folder: what it took of it and made, and the folder held to
+    /// its cap, said after `who` (kept::Kept::finish_lasting).
+    pub fn finish_lasting(&self, who: &str) {
+        self.kept.finish_lasting(who)
     }
 
     /// The steps of the last resolve made, each with its time, and its slowest named items (a
@@ -754,10 +766,12 @@ impl Checks for Regions {
         let id =
             jobrt::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION} pieces {}", kept::FORMAT), UNIT, &[]);
         self.kept.open(scratch, &id, jobrt::resume_log::on());
+        self.keep_pool(kept::pool_lasting());
     }
 
     fn kept_done(&self) {
         self.kept.finish();
+        self.finish_lasting("regions");
     }
 
     fn seed(&self, accepted: &super::Index) {

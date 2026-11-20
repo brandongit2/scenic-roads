@@ -603,29 +603,7 @@ pub fn check_folder(
     for s in &steps.0 {
         eprintln!("regions-check: {}: {:.1} s, {} of {}", s.step.what(), s.secs, s.done, s.total);
     }
-    let (counts, swept) = checks.kept_lasting();
-    if keep.is_some() {
-        for (stage, (taken, made)) in &counts {
-            eprintln!(
-                "regions-check: pieces of {}: {taken} taken as kept, {made} made",
-                super::kept::stage_name(*stage)
-            );
-        }
-    }
-    // (A folder not held to its cap is said, and the check goes on: its report is as good.)
-    if let (Some(Err(e)), Some((d, _))) = (&swept, keep) {
-        eprintln!("regions-check: {} not held to its cap: {e:#}", d.display());
-    }
-    if let (Some(Ok(s)), Some((d, mb))) = (swept, keep) {
-        eprintln!(
-            "regions-check: {} holds {} pieces, {:.0} MB (its cap {mb} MB); {} deleted, {:.0} MB, the least recently used",
-            d.display(),
-            s.files,
-            s.bytes as f64 / 1e6,
-            s.deleted,
-            s.deleted_bytes as f64 / 1e6
-        );
-    }
+    checks.finish_lasting("regions-check");
     stage(4, STAGES, "regions-check (the report)");
     let _ph = phase("the report");
     findings.extend(out.problems.iter().map(super::problem_finding));

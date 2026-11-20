@@ -1,9 +1,10 @@
 // The owner's settings on the build page (the Machines tab; docs/coordinator.md §7): this page's Mac's
-// in-use share, memory floor, disk room target, dev sweep margin and NAS calls held, a block per Mac, each set on
+// in-use share, memory floor, disk room target, dev sweep margin, NAS calls held and the regions check's pieces' cap
+// (with what they hold now), a block per Mac, each set on
 // that Mac, and the pool's NAS reserve, batch length, overdue factor, publishing's switches
 // (holding publishing for review, slope near regions), the NAS pacing's bounds and the needs model's knobs. Read and set
 // through `/api/settings`, which sets each through the same function as its `scenic` command (`scenic in-use`, `memory`, `room`,
-// `nas-room`, `pool set batch-minutes|overdue-factor|hold-catalog|near-slope|<a knob>`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// `nas-room`, `pool set batch-minutes|overdue-factor|hold-catalog|near-slope|<a knob>`; the sweep's margin, the NAS calls held and the regions check's pieces have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 import { h } from "./dom.js";
 
@@ -187,6 +188,11 @@ export function macRows(s) {
       now: `${s.nas_held.n} calls`,
       note: `the most NAS calls one process on ${s.mac || "this Mac"} (a job, the agent, the CLI, the map server) leaves in the kernel past their deadline; at it, its next call fails at once${s.nas_held.set ? by(s.nas_held) : ` (the default, ${s.nas_held.default})`}; a job takes it as it starts`,
       input: { min: 1, max: s.nas_held.max, step: 1, placeholder: "calls", offTitle: `Back to the default (${s.nas_held.default})` },
+    })),
+    guarded("regions_pieces", "Regions check's pieces", () => ({
+      now: `${gb(s.regions_pieces.held)} of ${gb(s.regions_pieces.bytes)}`,
+      note: `the regions inputs check's pieces kept on ${s.mac || "this Mac"}'s disk, so a check after an edit remakes only what reads it; held to this once a check is done, the least recently used deleted first, and freed by room-making as the other caches${s.regions_pieces.set ? by(s.regions_pieces) : ` (the default, ${gb(s.regions_pieces.default)})`}; a job takes it as it starts`,
+      input: { min: 1, max: s.room?.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: `Back to the default (${gb(s.regions_pieces.default)})` },
     })),
   ];
 }

@@ -896,6 +896,9 @@ clear-request.json      the owner's ask to clear build caches ({by, at, level: c
 room-target.json        the owner's free-disk target {bytes, by, at} (buildstore::room::Target; none: off)
 sweep-margin.json       the dev sweep's margin past it {bytes, by, at} (agent::settings::SWEEP_MARGIN;
                         none: SWEEP_MARGIN_DEFAULT_GB; read by tools/dev/sweep-targets.sh)
+regions-pieces-cap.json the cap on the regions check's pieces in cache/regions-pieces/ {bytes, by, at}
+                        (agent::settings::REGIONS_PIECES; none: inputs' regions::kept::KEEP_MB MB;
+                        given to each job in MB, SCENIC_REGIONS_PIECES_MB)
 member                  this Mac's pool member id `m-<16 hex>`, then its hardware UUID
 pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::tiles); never
                         trimmed; one unnamed and untouched for a fortnight goes; the lead's

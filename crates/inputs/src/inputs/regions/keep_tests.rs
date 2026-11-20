@@ -275,3 +275,47 @@ fn the_folder_is_held_to_its_cap_the_least_recently_used_deleted() {
     assert_eq!(l.read(kept::LAND, "b"), None, "deleted");
     assert_eq!(l.read(kept::LAND, "d").as_deref(), Some(&piece[..]));
 }
+
+/// Task #1566: the pool's check keeps its pieces in its Mac's lasting folder, in the cache and to
+/// the cap its job is given (`kept::pool_lasting_of`; neither given, none kept), takes them in the
+/// next check, and holds the folder to its cap once its outcome is saved (`kept_done`).
+#[test]
+fn the_pools_check_keeps_its_pieces_in_its_macs_folder() {
+    use std::path::PathBuf;
+    let c = |s: &str| Some(std::ffi::OsString::from(s));
+    assert_eq!(kept::pool_lasting_of(None, Some("5".into())), None, "no cache");
+    assert_eq!(kept::pool_lasting_of(c(""), Some("5".into())), None, "no cache");
+    assert_eq!(kept::pool_lasting_of(c("/c"), None), None, "no cap: a job run by hand");
+    assert_eq!(kept::pool_lasting_of(c("/c"), Some("x".into())), None);
+    assert_eq!(kept::pool_lasting_of(c("/c"), Some(" 7 ".into())), Some((PathBuf::from("/c").join(kept::POOL_DIR), 7)));
+    let d = tempfile::tempdir().unwrap();
+    let cache = || Some(d.path().as_os_str().to_os_string());
+    let dir = d.path().join(kept::POOL_DIR);
+    let (w, f) = (the_world(), files());
+    let fresh = resolve_with(&w, &f, None);
+    let count = || std::fs::read_dir(&dir).map_or(0, |r| r.count());
+    // None given: nothing kept there.
+    let none = Regions::new(None);
+    none.keep_pool(None);
+    resolve_with(&w, &f, Some(&none.kept));
+    none.kept_done();
+    assert_eq!(count(), 0);
+    // The first check makes every piece and keeps it there; the next takes them all.
+    let first = Regions::new(None);
+    first.keep_pool(kept::pool_lasting_of(cache(), Some("1000".into())));
+    assert_eq!(resolve_with(&w, &f, Some(&first.kept)).resolved, fresh.resolved);
+    assert_eq!(first.kept.made_keys().len(), all_pieces().len());
+    first.kept_done();
+    assert_eq!(count(), all_pieces().len(), "held: under the cap");
+    let next = Regions::new(None);
+    next.keep_pool(kept::pool_lasting_of(cache(), Some("1000".into())));
+    assert_eq!(resolve_with(&w, &f, Some(&next.kept)).resolved, fresh.resolved);
+    assert!(next.kept.made_keys().is_empty(), "every piece taken");
+    // A cap of nothing: the folder emptied once the check is done.
+    next.kept_done();
+    let last = Regions::new(None);
+    last.keep_pool(kept::pool_lasting_of(cache(), Some("0".into())));
+    resolve_with(&w, &f, Some(&last.kept));
+    last.kept_done();
+    assert_eq!(count(), 0);
+}

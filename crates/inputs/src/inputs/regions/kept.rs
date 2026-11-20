@@ -5,8 +5,8 @@
 //! resumed after a pause takes what its last kept, by the same keys (a digest of everything a
 //! resolution reads), so it resolves to the same geometry and holds the same files.
 //!
-//! A scratch check (`scenic-build regions-check --keep <dir>`, task #1548) keeps them in a lasting
-//! folder too (`Lasting`), a file each, by the same keys and the code that made them (`RESOLUTION`
+//! A scratch check (`scenic-build regions-check --keep <dir>`, task #1548) and the pool's (its Mac's
+//! cache, `POOL_DIR`, task #1566) keep them in a lasting folder too (`Lasting`), a file each, by the same keys and the code that made them (`RESOLUTION`
 //! and the regions' code digest, `inputs::code_of`): a check after an edit takes every piece whose
 //! reads are as they were and makes only those that read the edit. The folder's size is held to
 //! its cap (`--keep-mb`) once the check is done, the least recently used pieces deleted first
@@ -213,10 +213,26 @@ impl Kept {
         self.counts.lock().unwrap().clone()
     }
 
-    /// The lasting folder held to its cap (`Lasting::sweep`): its size then and what it deleted,
-    /// None without one.
-    pub fn sweep_lasting(&self) -> Option<Result<Swept>> {
-        self.lasting.get().map(Lasting::sweep)
+    /// The check done with a lasting folder: what this run took of it and made, by stage, and the
+    /// folder held to its cap (`Lasting::sweep`), each said on stderr after `who`; nothing without
+    /// one. A folder not held to its cap is said, and the check goes on: its outcome is as good.
+    pub fn finish_lasting(&self, who: &str) {
+        let Some(l) = self.lasting.get() else { return };
+        for (stage, (taken, made)) in self.counts() {
+            eprintln!("{who}: pieces of {}: {taken} taken as kept, {made} made", stage_name(stage));
+        }
+        match l.sweep() {
+            Err(e) => eprintln!("{who}: {} not held to its cap: {e:#}", l.dir.display()),
+            Ok(s) => eprintln!(
+                "{who}: {} holds {} pieces, {:.0} MB (its cap {} MB); {} deleted, {:.0} MB, the least recently used",
+                l.dir.display(),
+                s.files,
+                s.bytes as f64 / 1e6,
+                l.cap_mb,
+                s.deleted,
+                s.deleted_bytes as f64 / 1e6
+            ),
+        }
     }
 
     /// The pause a piece kept met, if one did: the check stops with it.
@@ -257,8 +273,30 @@ pub fn code_key(resolution: u32, code: &str) -> String {
     format!("resolution {resolution} code {code}")
 }
 
-/// A lasting folder's cap (MB) when `--keep-mb` names none.
+/// A lasting folder's cap (MB) when `--keep-mb` names none, and the pool's when its Mac's
+/// setting does (agentcore's agent::settings, the build page's "Regions check's pieces").
 pub const KEEP_MB: u64 = 10_000;
+
+/// The pool's check's lasting folder (task #1566), in this Mac's cache (the job's
+/// `buildstore::coverage::CACHE_ENV`): on its local disk, never the NAS (a whole check writes
+/// about 4,900 small files). Room-making frees it as it frees the other cheap caches (agentcore's
+/// agent::room), the least recently used pieces first.
+pub const POOL_DIR: &str = "regions-pieces";
+
+/// The pool's check's lasting folder's cap (MB), as its agent gives it to the job from its Mac's
+/// setting. Not set (a job run by hand), or no cache: no lasting folder.
+pub const POOL_MB_ENV: &str = "SCENIC_REGIONS_PIECES_MB";
+
+/// The pool's check's lasting folder and cap, as its job is given them (`POOL_DIR`, `POOL_MB_ENV`).
+pub fn pool_lasting() -> Option<(PathBuf, u64)> {
+    pool_lasting_of(std::env::var_os(buildstore::coverage::CACHE_ENV), std::env::var(POOL_MB_ENV).ok())
+}
+
+/// `pool_lasting` of the cache and the cap as given.
+pub fn pool_lasting_of(cache: Option<std::ffi::OsString>, mb: Option<String>) -> Option<(PathBuf, u64)> {
+    let cache = cache.filter(|v| !v.is_empty())?;
+    Some((Path::new(&cache).join(POOL_DIR), mb?.trim().parse().ok()?))
+}
 
 /// A lasting piece's first bytes.
 const MAGIC: &[u8; 16] = b"regions-piece 1\n";

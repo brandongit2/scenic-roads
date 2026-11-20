@@ -118,6 +118,59 @@ pub fn set_sweep_margin(home: &Path, what: &str, by: &str) -> Result<Option<room
     Ok(Some(t))
 }
 
+/// The cap on the regions check's lasting folder of pieces in this Mac's cache (task #1566:
+/// inputs::inputs::regions::kept::POOL_DIR), in the agent's folder as the room target
+/// ({bytes, by, at}, room::Target); none: inputs::inputs::regions::kept::KEEP_MB. Given to each job
+/// as it starts (`kept::POOL_MB_ENV`): the check holds the folder to it once done.
+pub const REGIONS_PIECES: &str = "regions-pieces-cap.json";
+
+/// The regions check's pieces' cap as set in `home` (none: not set, or unreadable).
+pub fn regions_pieces(home: &Path) -> Option<room::Target> {
+    serde_json::from_slice(&std::fs::read(home.join(REGIONS_PIECES)).ok()?).ok()
+}
+
+/// The regions check's pieces' cap in `home` (MB): as set, else the default.
+pub fn regions_pieces_mb(home: &Path) -> u64 {
+    regions_pieces(home).map_or(inputs::inputs::regions::kept::KEEP_MB, |t| t.bytes / 1_000_000)
+}
+
+/// Sets the regions check's pieces' cap in `home`: `what` in GB (less than its disk holds), or
+/// "off": the default again.
+pub fn set_regions_pieces(home: &Path, what: &str, by: &str) -> Result<Option<room::Target>> {
+    let p = home.join(REGIONS_PIECES);
+    if what == "off" {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    }
+    let bytes = (gb(what, "the regions check's pieces")? * (1u64 << 30) as f64) as u64;
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    if let Ok(n) = store::sys::disk_size(home) {
+        anyhow::ensure!(
+            bytes < n,
+            "a cap of {} is more than this disk holds ({})",
+            room::size(bytes),
+            room::size(n)
+        );
+    }
+    let t = room::Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
+    store::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    Ok(Some(t))
+}
+
+/// The bytes the regions check's pieces take in the cache at `cache` (its `kept::POOL_DIR`).
+fn regions_pieces_held(cache: &Path) -> u64 {
+    std::fs::read_dir(cache.join(inputs::inputs::regions::kept::POOL_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
+}
+
 /// The most NAS calls a process may hold past their deadline (`set_nas_held`).
 pub const NAS_HELD_MAX: usize = 1000;
 
@@ -344,6 +397,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
     let sh = share::read(home);
     let cores = cores();
     let margin = sweep_margin(home);
+    let pieces = regions_pieces(home);
     let held: Option<serde_json::Value> = std::fs::read(home.join(store::deadline::CAP_FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -376,6 +430,14 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "set": margin.is_some(),
             "by": margin.as_ref().map(|m| m.by.clone()),
             "at": margin.as_ref().map(|m| m.at),
+        },
+        "regions_pieces": {
+            "bytes": pieces.as_ref().map_or(inputs::inputs::regions::kept::KEEP_MB * 1_000_000, |m| m.bytes),
+            "default": inputs::inputs::regions::kept::KEEP_MB * 1_000_000,
+            "held": regions_pieces_held(&home.join("cache")),
+            "set": pieces.is_some(),
+            "by": pieces.as_ref().map(|m| m.by.clone()),
+            "at": pieces.as_ref().map(|m| m.at),
         },
         "nas_held": {
             "n": store::deadline::cap_in(home).unwrap_or(store::deadline::CAP_DEFAULT),
@@ -452,6 +514,38 @@ mod tests {
         let gone = h.join("nope");
         assert!(set_room(&gone, "2", "t").is_err() && set_memory(&gone, "2", "t").is_err());
         assert!(set_sweep_margin(&gone, "2", "t").is_err());
+    }
+
+    /// Task #1566: the regions check's pieces' cap, set from the build page: GB (1 or more, under
+    /// the disk) or off, given to the jobs in MB (`regions_pieces_mb`), and in the view with what
+    /// the folder holds now.
+    #[test]
+    fn the_regions_pieces_cap_is_set_and_read_back() {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        let default = inputs::inputs::regions::kept::KEEP_MB;
+        assert_eq!(regions_pieces_mb(h), default, "none set: the default");
+        let v = view(h, None);
+        assert_eq!((v["regions_pieces"]["bytes"].as_u64(), v["regions_pieces"]["held"].as_u64()), (Some(default * 1_000_000), Some(0)));
+        for bad in ["0.5", "x", "NaN", "-3", "1000000000"] {
+            assert!(set_regions_pieces(h, bad, "t").is_err(), "{bad}");
+        }
+        assert!(set_regions_pieces(&h.join("nope"), "2", "t").is_err(), "no agent");
+        assert_eq!(set_regions_pieces(h, "2", "the build page").unwrap().unwrap().bytes, 2 << 30);
+        assert_eq!(regions_pieces_mb(h), (2u64 << 30) / 1_000_000);
+        let pieces = h.join("cache").join(inputs::inputs::regions::kept::POOL_DIR);
+        std::fs::create_dir_all(&pieces).unwrap();
+        std::fs::write(pieces.join("a.piece"), [0u8; 300]).unwrap();
+        std::fs::write(pieces.join("b.piece"), [0u8; 200]).unwrap();
+        let v = view(h, None);
+        assert_eq!(
+            (v["regions_pieces"]["bytes"].as_u64(), v["regions_pieces"]["held"].as_u64(), v["regions_pieces"]["set"].as_bool()),
+            (Some(2 << 30), Some(500), Some(true))
+        );
+        assert_eq!(v["regions_pieces"]["by"], "the build page");
+        assert!(set_regions_pieces(h, "off", "t").unwrap().is_none() && regions_pieces(h).is_none());
+        assert!(set_regions_pieces(h, "off", "t").unwrap().is_none(), "off twice");
+        assert_eq!(regions_pieces_mb(h), default);
     }
 
     /// Task #1141: the NAS calls held, set from the build page: 1 to `NAS_HELD_MAX` or off, read

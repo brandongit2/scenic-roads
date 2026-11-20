@@ -11,7 +11,9 @@
 //! reads (`blobs/`, store::blobs; with the ranges the fetcher keeps, `blobs/net/`,
 //! buildstore::fetch::kept), and the pageview months' indexes (`items/months/`, ~600 MB each,
 //! read once per items or heritage run: landmarks::pageviews's copies, which it marks used as it reads
-//! them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
+//! them), and the regions check's lasting pieces (`regions-pieces/`, inputs::inputs::regions::kept:
+//! each marked used as the check takes it; made again by the next check, never asked of the NAS,
+//! which hasn't them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
 //! `sources/pageviews/`), never from the internet; the fetched ranges by the fetch a job makes
 //! anyway, as it reads one that's gone.
 //! - Canopy squares, copies of the records' files and pageview months not read in the last hour go
@@ -151,9 +153,16 @@ fn ns(t: SystemTime) -> u128 {
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
 /// (store::blobs), which the NAS has by construction, and of ranges fetched (`blobs/net/`,
-/// buildstore::fetch::kept), fetched again as they're read: they go without asking it.
-const CHEAP: [(&str, &str); 4] =
-    [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
+/// buildstore::fetch::kept), fetched again as they're read: they go without asking it; and the
+/// regions check's lasting pieces (`PIECES`), which the NAS never has: made again by the next check
+/// that reads them, they go without asking it too.
+const CHEAP: [(&str, &str); 5] =
+    [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews"), (PIECES, "")];
+
+/// The regions check's lasting folder of pieces here (inputs::inputs::regions::kept::POOL_DIR, task
+/// #1566), each piece by its own use (the check marks one used as it takes it). One a check reads
+/// as it goes is made again, which is only slower: the check holds none.
+const PIECES: &str = inputs::inputs::regions::kept::POOL_DIR;
 
 /// The pageview months' indexes here (landmarks::pageviews's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
@@ -221,6 +230,7 @@ fn kind(name: &str) -> Option<&'static str> {
         "chm10" => "canopy",
         "aws-terrarium" => "terrain",
         "blobs" => "blobs",
+        PIECES => "pieces",
         // (Of it, the pageview months' copies: the items job's answers beside them stay.)
         "items" => "months",
         // (pack(T)'s and lo's base packs, copied from the NAS where the mirror lacks them.)
@@ -421,7 +431,7 @@ pub fn drop_member_leftovers(home: &Path) -> u64 {
 
 /// Whether cache `kind` is one of the cheap ones, which room-making empties too.
 fn cheap(kind: &str) -> bool {
-    matches!(kind, "canopy" | "terrain" | "blobs" | "months")
+    matches!(kind, "canopy" | "terrain" | "blobs" | "months" | "pieces")
 }
 
 /// A cache (`kind`) in words.
@@ -431,6 +441,7 @@ pub fn words(kind: &str) -> &str {
         "terrain" => "raw terrain tiles",
         "blobs" => "copies of the records' files and fetched ranges",
         "months" => "pageview months",
+        "pieces" => "the regions check's kept pieces",
         "base" => "base packs",
         "retired" => "caches no code reads any more (room::RETIRED)",
         "copies" => "copies of the NAS's files",
@@ -600,6 +611,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "terrain" => format!("copied back from the NAS's archives as the terrain reads them ({} in all)", time(b)),
                 "blobs" => format!("copied back from the NAS as the z3 tiles are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
+                "pieces" => "made again by the next inputs check of the regions, which then resolves every region anew".to_string(),
                 "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
                 "retired" => "never: nothing reads it".to_string(),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
@@ -1235,7 +1247,7 @@ pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
     let mut free = Freeable::default();
     let tiles = if member { "aws-terrarium/packs" } else { "aws-terrarium" };
-    for (d, k) in [("chm10", "canopy"), (tiles, "terrain"), ("blobs", "blobs")] {
+    for (d, k) in [("chm10", "canopy"), (tiles, "terrain"), ("blobs", "blobs"), (PIECES, "pieces")] {
         let mut files = Vec::new();
         walk_cheap(cache, d, root, &mut files);
         clear.insert(k.to_string(), files.iter().map(|f| f.1).sum());
@@ -1477,8 +1489,12 @@ fn list(folder: &NasPath) -> Option<HashMap<String, u64>> {
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
 fn fate(cache: &Path, sources: &NasPath, p: &Path, listed: &mut Listed) -> Fate {
-    // (Copies of files the NAS has by construction: the records', and the raw tiles' archives.)
-    if p.starts_with(cache.join("blobs")) || p.starts_with(cache.join("aws-terrarium/packs")) {
+    // (Copies of files the NAS has by construction: the records', and the raw tiles' archives; and
+    // the regions check's pieces, which the next check makes again.)
+    if p.starts_with(cache.join("blobs"))
+        || p.starts_with(cache.join("aws-terrarium/packs"))
+        || p.starts_with(cache.join(PIECES))
+    {
         return Fate::Go;
     }
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
@@ -2130,6 +2146,26 @@ mod tests {
         m.merge(&q);
         assert_eq!((m.when(c, &later), order(m.when(c, &later)) > order(m.when(c, &soon))), (Some(0), true));
         assert_eq!(n_soon, std::fs::metadata(&soon).unwrap().len());
+    }
+
+    /// Task #1566: the regions check's lasting pieces are a cheap cache: counted as one (what
+    /// room-making can free, what a clear would), and freed without asking the NAS (which has no
+    /// folder of them), by their own use as the other cheap caches are.
+    #[test]
+    fn the_regions_checks_pieces_go_as_a_cheap_cache() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        let (old, new) = (c.join(PIECES).join("old.piece"), c.join(PIECES).join("new.piece"));
+        file(&old, 700, 9000);
+        file(&new, 300, 60);
+        let s = sizes(c, false, None);
+        assert_eq!((s.clear.get("pieces"), s.cheap, cheap_bytes(c, None)), (Some(&1000), 1000, 1000));
+        assert_eq!(gone(&s.clear, 60.0)[0].what, "the regions check's kept pieces");
+        let t = trim(c, nas).unwrap();
+        assert_eq!((t.freed, t.left), (BTreeMap::from([("pieces".to_string(), 1000)]), 0));
+        assert!(!old.exists() && !new.exists());
     }
 
     #[test]

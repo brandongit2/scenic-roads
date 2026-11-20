@@ -5390,15 +5390,17 @@ fn route(
         "/api/settings" => {
             // The owner's settings from the build page (docs/coordinator.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
-            // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}` set this Mac's,
+            // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}`,
+            // `{"regions_pieces": <GB> | "off"}` set this Mac's,
             // `{"nas_room": <GB> | "off"}`,
             // `{"batch_minutes": <minutes> | "off"}`, `{"overdue_factor": <times> | "off"}`,
             // `{"hold_catalog": "on" | "off"}`, `{"near_slope": "on" | "off"}` and the pool's knobs
             // (`{"nas_step": <number> | "off"}`, `{"needs_work_pct": <number> | "off"}`, … every
             // family's, jobrt::settings::bounds) the pool's (all but
             // the reserve asked of the lead with this Mac's agent's next beat), each through
-            // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
-            // the NAS calls held have none). Answered with them as they stand.
+            // the same function as its `scenic` command (crate::agent::settings; the sweep's margin,
+            // the NAS calls held and the regions check's pieces have none). Answered with them as
+            // they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let Some((home, root)) = shared.lock().unwrap().settings.clone() else {
@@ -5434,6 +5436,9 @@ fn route(
             }
             if let Some(v) = said("nas_held")? {
                 settings::set_nas_held(&home, &v, &by)?;
+            }
+            if let Some(v) = said("regions_pieces")? {
+                settings::set_regions_pieces(&home, &v, &by)?;
             }
             if let Some(v) = said("nas_room")? {
                 let root =

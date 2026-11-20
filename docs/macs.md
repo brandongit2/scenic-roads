@@ -81,7 +81,9 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     fetcher fetched of remote files, `blobs/net/<host>/<path>/<length>.<hash of URL and version>/<start>-<end>.<hash of bytes>`,
     by the file's version as its server names it (none named: not kept), kept only while the disk has them free past the room
     target, not counted as a job's disk, checked against their hash as they're read, and read by the jobs after on this Mac rather than fetched again: buildstore::fetch::kept,
-    task #1099), pageview month indexes (`items/months/`).
+    task #1099), pageview month indexes (`items/months/`), and the regions inputs check's lasting
+    pieces (`regions-pieces/`, task #1566: docs/inputs.md §6.1.7; made again by the next check, never
+    asked of the NAS; held to the build page's "Regions check's pieces" cap once a check is done).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     retired caches, local copies the summits and peaks jobs

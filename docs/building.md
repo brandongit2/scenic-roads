@@ -168,8 +168,9 @@ from the first (`edit_held`).
     confirmation naming each cache, how it comes back and what stays, writes `clear-request.json`
     (`{by, at, level}`; one without `level` is `caches`).
     - `caches`: everything a later job copies back cheaply from the NAS: canopy squares, raw terrain
-      tiles and pack copies, records' file copies, pageview months, base packs, copies of NAS files,
-      retired caches, those the queued jobs will read included.
+      tiles and pack copies, records' file copies, pageview months, the regions check's pieces
+      (made again by its next check), base packs, copies of NAS files, retired caches, those the
+      queued jobs will read included.
     - `deep`: those and what's costly to make again: the heritage clip (an hour of osmium; only while
       the NAS's manifest names its filtered planet and it's there, else kept, saying why), and the
       Wikidata and Wikipedia answers (`crate::answers`: copied back from the NAS's archives at the

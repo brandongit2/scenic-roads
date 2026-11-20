@@ -910,8 +910,11 @@ Mac's server (§6.1.9).
   (none should) is said and not kept. A region pinned to another pass has no piece (its problem
   reads the other passes). No setting changes what a piece makes (the threads, the memory guard and
   the operations' budget only stop or pace a check), so none is in a key. In the pool the pieces go
-  in the job's resume log (docs/pool.md, safe points). A scratch check's `--keep <dir>` keeps them
-  in a lasting folder too (§6.1.7).
+  in the job's resume log (docs/pool.md, safe points) and in its Mac's lasting folder (task #1566:
+  `regions-pieces/` in the agent's cache, on its local disk, its cap the build page's "Regions
+  check's pieces", `kept::POOL_DIR`, `kept::POOL_MB_ENV`), so the pool's check after one region's
+  edit makes only the pieces that read it; a scratch check's `--keep <dir>` keeps them in a lasting
+  folder of its own (§6.1.7).
 
 **Stored per region** (beside the region files in the accepted version):
 - `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: uncompressed,
@@ -1109,6 +1112,16 @@ MB (`kept::KEEP_MB`, 10,000, by default; a whole check's pieces came to about 2 
 first, are kept while they fit, the rest deleted; the check says what the folder holds and what
 it deleted (a file it can't delete, or a folder it can't list, is said, and the check goes on). With a lasting folder the check holds no copy of a piece in memory (it reads it back
 from there).
+
+The pool's inputs check of the regions keeps the same lasting folder in its Mac's cache
+(`regions-pieces/`, task #1566), its pieces' keys those of the records it reads (all named by their
+content, so nothing besides). Its cap is that Mac's build-page setting, "Regions check's pieces"
+(GB; `kept::KEEP_MB` MB until set; agentcore's agent::settings, given to each job as it starts),
+shown with what the folder holds now; the job holds the folder to it once its outcome is saved,
+and says what it took, made and deleted. Room-making frees it as it frees the other cheap caches,
+the least recently used pieces first, and a clear empties it: a piece gone is made again by the
+next check that reads it, which is only slower. A job run by hand (no agent's cache and cap)
+keeps none.
 
 #### 6.1.8 Checks
 

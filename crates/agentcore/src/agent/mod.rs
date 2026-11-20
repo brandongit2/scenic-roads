@@ -7609,6 +7609,12 @@ impl Agent {
         // This Mac's cache, where a job keeps what it reads again and again (the coverage, read in
         // place: inputs::inputs::regions::read::accepted_coverage).
         env.push((buildstore::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
+        // The cap on the regions check's lasting folder of pieces there, as the owner set it for
+        // this Mac (crate::agent::settings::regions_pieces_mb; task #1566).
+        env.push((
+            inputs::inputs::regions::kept::POOL_MB_ENV.into(),
+            settings::regions_pieces_mb(&self.o.home).to_string(),
+        ));
         // Resuming on (crate::agent::resume): a pass complete by the records; a resumable job given
         // this member's hand-offs of its step its lead hasn't merged (laid over the snapshot as it
         // opens: buildstore::out::Out), and its progress noted as this Mac's.
