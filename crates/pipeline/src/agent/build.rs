@@ -11331,7 +11331,7 @@ mod tests {
             &m,
             &std::collections::BTreeMap::new(),
             None,
-            &crate::agent::tiles::TerrainTiles::default(),
+            &tiles_for(&m),
         ));
         assert_eq!(now.len(), 1);
         // A hi pack within 30 km changing changes it (its z12).
@@ -11342,10 +11342,11 @@ mod tests {
             &m,
             &std::collections::BTreeMap::new(),
             None,
-            &crate::agent::tiles::TerrainTiles::default(),
+            &tiles_for(&m),
         ));
         assert_ne!(hi[0].1, now[0].1);
-        // So does any lo pack, however far (its z8: the coarse stage reaches 5,000 km).
+        // So does any lo pack, however far, while it has no record of the z8 tiles it read
+        // (idents::peaks_lo; a_peaks_key_moves_only_with_the_z8_tiles_its_run_read).
         m.insert("layers/terrain/lo/3-0-0".into(), "layers/terrain/lo/3-0-0.2222222222222222.pack".into());
         assert_ne!(
             peaks_keys(&crate::agent::build::KeyCtx::new(
@@ -11354,7 +11355,7 @@ mod tests {
                 &m,
                 &std::collections::BTreeMap::new(),
                 None,
-                &crate::agent::tiles::TerrainTiles::default()
+                &tiles_for(&m)
             ))[0]
                 .1,
             hi[0].1
@@ -11366,7 +11367,7 @@ mod tests {
             &m,
             &std::collections::BTreeMap::new(),
             None,
-            &crate::agent::tiles::TerrainTiles::default(),
+            &tiles_for(&m),
         ));
         m.insert("layers/terrain/hi/6-0-0".into(), "layers/terrain/hi/6-0-0.3333333333333333.pack".into());
         m.insert("layers/terrain/deep/10-0-0".into(), "layers/terrain/deep/10-0-0.3333333333333333.pack".into());
@@ -11377,7 +11378,7 @@ mod tests {
                 &m,
                 &std::collections::BTreeMap::new(),
                 None,
-                &crate::agent::tiles::TerrainTiles::default()
+                &tiles_for(&m)
             )),
             lo
         );
