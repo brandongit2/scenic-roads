@@ -834,10 +834,15 @@ thousandths:
   jobs' SMB session) whatever the NAS's load, so they're judged against the others'. Each ratio is
   kept with the uses it was read beside for `nas-track-minutes`; a growth cadence's (a minute) are
   judged against those a step lighter and a step heavier.
-  - While the counted Mac's own jobs move a step or more, its answers can't tell the NAS from its
-    link: **undecidable**. They never cut the window and never let it grow past the knee, and
-    while they rise against those a step lighter in all the pool moves (its own too) it doesn't
-    grow at all. (On 19 and 20 Nov, 30 % of the readings, nearly all the mini's.)
+  - While the counted Mac's own jobs move a step or more in the cadence, its answers can't tell
+    the NAS from its link: **undecidable** (on 19 and 20 Nov 57.5 % of the readings by the
+    cadence, 34.5 % reading by reading; nearly all the mini's). They never halve the window and
+    never let it grow past the knee. While they rise against those a step lighter in all the pool
+    moves (its own too) it doesn't grow at all (the hold the burst's H5 needs, and what keeps
+    jobs of 250 on the mini within the replay's cliff bound: without it, 18 readings at the cliff,
+    7 in a row). Risen past 3 times their best, the window goes back to **the knee**: the heaviest
+    weight in use read in the last `nas-track-minutes`, before the cadence, with answers under 3
+    times their best; never under it.
   - Otherwise they are **rising** while their lower quartile is past the upper quartile of those a
     step lighter, and **not the pool's** while all the pool's jobs move under a step, or their
     median is within the upper quartile of those a step lighter, or those a step heavier were no
@@ -903,23 +908,28 @@ thousandths:
   12:22Z to 20 Nov 08:29Z (`the_readings_of_19_and_20_nov_let_work_go_and_cut_at_the_pools_load`,
   `nas_readings.csv`; the windows recorded were #1417's rule's to 19 Nov 23:06Z, then
   20261119-2306's), closed on the jobs it lets go, beside the rule judging against the weight (main
-  at 6e92eb8bf) on the same readings and model:
+  at 6e92eb8bf, in brackets: `tools/dev/nas-replay-against.py 6e92eb8bf` runs this replay on it) on
+  the same readings and model. The replay's cliff is the modelled disks at 100 %: it models
+  neither the slowing the answers would show nor a Mac's own link's stalls, and it admits jobs
+  more strictly than production (the window's sum alone, no aged or lone way past it).
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 190 (146) | 216 (215) | 26, 4 (26, 4) | 0 (0) |
-  | jobs of 100, on a Mac not answering | 819 (685) | 364 (315) | 21 (63) | 66, 9 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on a Mac not answering | 354 (342) | 427 (416) | 75 (81) | 95, 9 (76, 7) | 9, 1 (6, 1) |
-  | jobs of 100, on the mini | 898 (685) | 405 (315) | 38 (63) | 60, 4 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on the mini | 372 (342) | 467 (416) | 134 (81) | 65, 4 (76, 7) | 8, 1 (6, 1) |
+  | the readings as they were | – | 181 (146) | 222 (215) | 26, 4 (26, 4) | 0 (0) |
+  | jobs of 100, on a Mac not answering | 848 (685) | 382 (315) | 21 (63) | 70, 9 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 340 (342) | 400 (416) | 75 (81) | 82, 9 (76, 7) | 6, 1 (6, 1) |
+  | jobs of 100, on the mini | 930 (685) | 413 (315) | 18 (63) | 82, 9 (41, 4) | 5, 1 (6, 1) |
+  | jobs of 250, on the mini | 380 (342) | 464 (416) | 83 (81) | 80, 5 (76, 7) | 7, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
-  It starts 4 to 31 % more jobs than the rule judging against the weight, at the model's cliff
-  about as often (5 to 9 readings against 6, never two in a row), at the disks' target up to 1.6
-  times as often. As the readings were, its time at the floor is the same (216 readings against
-  215), most of it after cuts on deadlines missed (145 against 140), held there while the counted
-  Mac's own jobs moved (149). On 20 Nov 08:15-08:29 it held the window at 44 %, never cut, where
-  the weight's rule cut it to 5 % and regrew it to 9 %. **Assumed:** a job adds to the disks' busy
+  It starts about as many jobs as the rule judging against the weight, or up to 36 % more, at the
+  model's cliff about as often (5 to 7 readings against 6, never two in a row), at the disks'
+  target up to twice as often. As the readings were it is at its floor a little more (222
+  readings against 215); by the last cut's cause, 111 of them after cuts on deadlines missed (140),
+  57 on the answers (45), 31 on a disk reading at the target (the rule has no such cut; 7 of its
+  cuts fell on one) and 20 on the smoothed share (20). In 155 of the 222 the answers were
+  undecidable too: a coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 32 to 35 %, cut once (back
+  to the knee), where the weight's rule cut it to 5 %. **Assumed:** a job adds to the disks' busy
   share what a thousandth of measured use added over those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
