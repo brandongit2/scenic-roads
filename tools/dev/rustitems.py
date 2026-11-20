@@ -1,37 +1,39 @@
 """What a change to a Rust file changed, by the names of its items (#1539), for
 tools/dev/affected-tests.sh: a module's users are traced by these names, not by the module's path
 alone (agentcore::agent, 21,000 lines, changed anywhere ran every test of pipeline's agent::build,
-which names one of its items).
+which names one of its items). When in doubt it names more: a test left out is a miss, one run
+more isn't.
 
-  changed(old, new, hunks) -> Names, or None when a changed line is outside every item (a file's
-  inner attribute, a macro called at the top level): every user then, as by the module's path.
+  changed(old, new, hunks) -> Names, or None for every user of the file, as by the module's path:
+  a changed line outside every item (a file's inner attribute, a macro called at the top level), a
+  changed macro, or a changed name a macro's definition or call names (the items a macro makes
+  aren't named in the file: pipeline's agent/idents.rs).
 
 The items: each `fn`, `struct`, `enum`, `union`, `trait`, `type`, `const`, `static`, `mod`,
 `macro_rules!`, `use` and `impl`, and those inside an `impl`, `trait` or inline `mod` block, found
 by their braces, brackets and semicolons in the source with its comments, strings and char literals
-blanked (check-reuse.py's `blank`); an item's attributes and doc comments are its own. A changed
-line names:
+blanked (check-reuse.py's `blank`); an item's attributes and doc comments are its own, and the
+names in an attribute's strings count (`#[serde(default = "f")]` names f). A changed line names:
   - nothing when only comments or blank space changed on it;
-  - the innermost item holding it, by its name; a method of an inherent `impl X` block as a method
-    of X (below); a trait's item, or a trait `impl`'s (`impl T for X`), by the trait and the type
-    (what calls it has the trait in scope, or names the type); an inherent `impl`'s other item (an
-    associated const or type), and an `impl` block's own lines, by its type (and trait); an
-    `enum`'s line, also its variant (the line's first word); a `use` line, also what it brings in
-    (each path's last names), which this file's items then name.
+  - the innermost item holding it, by its name; a method (an `impl` block's `fn`) as a method
+    (below); a trait's item, or a trait `impl`'s (`impl T for X`), also by the trait and the type;
+    an inherent `impl`'s other item (an associated const or type), and an `impl` block's own lines,
+    by its type (and trait); an `enum`'s line, also its variant (the line's first word); a `use`
+    line, also what it brings in (each path's last names), which this file's items then name.
 Then, within the file, every item naming a changed one is changed too, until none more is (a
 private helper changed changes the public items calling it).
 
-A method `m` of type X (an inherent `impl X` block's) is named by `X::m`, by `Self::m` inside X's
-block, or by `.m(` (`.m::<`) where X is named too: `new` changed in one type isn't every type's.
-Every other name is named by the word, but for a lower-case word before `::` (a module on a path:
-`agentcore::agent::jobs` names no function `agent`).
-Another crate sees only what is `pub` (not `pub(crate)` nor `pub(super)`) and not in a
-`#[cfg(test)]` module: a user in another crate is matched against those names alone.
+A method `m` is named by `.m(`, `.m::<` or `::m`, whatever type the file names (its value's type
+may never be named). Every other name is named by the word, but for a lower-case word before `::`
+(a module on a path: `agentcore::agent::jobs` names no function `agent`).
+Another crate sees only what is `pub` (not `pub(crate)` nor `pub(super)`) and not under
+`#[cfg(test)]` (that alone: `cfg(any(test, feature = …))` is another crate's too): a user in
+another crate is matched against those names alone.
 
-A user names the change when its source (comments and strings blanked) names one of the names.
-What this misses, publish's whole run catches: a type's method or field reached through a value
-whose type the user never names; a method called through an alias of its type; a trait method
-reached without the trait in scope (formatting with `{}`).
+A user names the change when its source (comments and strings blanked, attributes' strings kept)
+names one of the names. What this misses, publish's whole run catches: a field read through a
+value whose type the user never names; a trait method reached without naming the trait, the type
+or the method (formatting with `{}`); a type reached through an alias of it.
 """
 import importlib.util
 import os
@@ -48,7 +50,7 @@ NAMED = re.compile(r"\b(?:[A-Z]\w*|[a-z_]\w*(?!\s*::\s*[A-Za-z_{*]))")
 HEAD = re.compile(r"\b(fn|struct|enum|union|trait|type|const|static|mod)\s+(?:mut\s+)?(?!(?:fn|unsafe|async|extern|mut)\b)(?:r#)?([A-Za-z_]\w*)"
                   r"|\bmacro_rules!\s*([A-Za-z_]\w*)|\b(impl|use)\b")
 PUB = re.compile(r"\bpub\b(?!\s*\()")
-TESTCFG = re.compile(r"#\[cfg\((?![^\]]*not\(test)[^\]]*\btest\b[^\]]*\)\]")
+TESTCFG = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 KEYWORDS = set("""as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod
 move mut pub ref return self Self static struct super trait true type union unsafe use where while macro_rules""".split())
 
@@ -57,11 +59,35 @@ def words_of(b):
     return set(NAMED.findall(b))
 
 
-class Item:
-    __slots__ = ("kind", "name", "a", "b", "body", "kids", "owner", "trait", "pub", "test", "words")
+def with_attrs(src, b):
+    """Blanked source b with its attributes (`#[…]`, `#![…]`) as src has them, their strings' quotes
+    as spaces: the names an attribute's strings hold (`default = "f"`) read as words. (Offsets
+    kept; for words only: an attribute's string may hold a brace.)"""
+    out = list(b)
+    for m in re.finditer(r"#!?\[", b):
+        depth, j = 0, m.end() - 1
+        while j < len(b):
+            if b[j] == "[": depth += 1
+            elif b[j] == "]":
+                depth -= 1
+                if depth == 0: break
+            j += 1
+        for k in range(m.start(), min(j + 1, len(b))):
+            c = src[k]
+            out[k] = " " if c in "\"'" else c
+    return "".join(out)
 
-    def __init__(self, kind, name, a, b, body, owner, trait, pub, test):
-        self.kind, self.name, self.a, self.b, self.body = kind, name, a, b, body
+
+def user_text(src):
+    """A user's source as names are matched in it."""
+    return with_attrs(src, blank(src))
+
+
+class Item:
+    __slots__ = ("kind", "name", "a", "b", "kids", "owner", "trait", "pub", "test", "words")
+
+    def __init__(self, kind, name, a, b, owner, trait, pub, test):
+        self.kind, self.name, self.a, self.b = kind, name, a, b
         self.kids, self.owner, self.trait, self.pub, self.test, self.words = [], owner, trait, pub, test, None
 
 
@@ -117,7 +143,7 @@ def items(b, a=0, z=None, owner=None, test=False):
             name, trait = impl_names(head[m.start():])
         pre = head[:m.start()] if m else head
         t = test or bool(TESTCFG.search(pre))
-        it = Item(kind, name, i, j, b[i:j], owner, trait, bool(PUB.search(pre)), t)
+        it = Item(kind, name, i, j, owner, trait, bool(PUB.search(pre)), t)
         if kind in ("impl", "trait", "mod") and block is not None:
             it.kids = items(b, block + 1, j - 1, it if kind in ("impl", "trait") else None, t)
         out.append(it)
@@ -139,8 +165,7 @@ def innermost(its, at):
 
 
 class Names:
-    """What a change changed: words and methods ((type, name)), each with whether another crate
-    sees it."""
+    """What a change changed: words and methods, each with whether another crate sees it."""
 
     def __init__(self):
         self.words, self.methods = {}, {}
@@ -149,18 +174,20 @@ class Names:
         d[k] = d.get(k, False) or seen
 
     def add(self, it, line=None):
-        """Item it changed (line: the blanked text of its changed line, when one of its own)."""
+        """Item it changed (line: the text of its changed line, when one of its own)."""
         o = it.owner
-        if it.kind == "fn" and o is not None and o.kind == "impl" and o.trait is None and o.name:
-            self._put(self.methods, (o.name, it.name), it.pub and not it.test)
-        elif o is not None:
+        if it.kind == "fn" and o is not None and o.kind == "impl":
+            self._put(self.methods, it.name, (it.pub or o.trait is not None) and not it.test)
+        if o is not None and (it.kind != "fn" or o.trait is not None or o.kind == "trait"):
             seen = not it.test and (o.trait is not None or (o.pub if o.kind == "trait" else it.pub))
             for w in (o.name, o.trait):
                 if w: self._put(self.words, w, seen)
+        if o is not None and o.kind == "trait" and it.name:
+            self._put(self.methods, it.name, o.pub and not it.test)
         elif it.kind == "impl":
             for w in (it.name, it.trait):
                 if w: self._put(self.words, w, not it.test)
-        elif it.name:
+        elif o is None and it.name:
             self._put(self.words, it.name, it.pub and not it.test)
         if line is None: return
         if it.kind == "enum" and not line.lstrip().startswith("#"):
@@ -171,23 +198,21 @@ class Names:
                 if m.group(0) not in KEYWORDS and not re.match(r"\s*::", line[m.end():]):
                     self._put(self.words, m.group(0), it.pub and not it.test)
 
-    def named_in(self, b, ws=None, self_type=None, cross=False):
-        """Whether blanked source b (its words ws, when known; inside an `impl self_type` block;
-        in another crate: `cross`) names one of these."""
+    def named_in(self, b, ws=None, cross=False):
+        """Whether text b (its words ws, when known; in another crate: `cross`) names one of these."""
         ws = words_of(b) if ws is None else ws
         if any(w in ws and (seen or not cross) for w, seen in self.words.items()): return True
-        for (t, m), seen in self.methods.items():
-            if m not in ws or (cross and not seen): continue
-            if re.search(r"\b%s\s*::\s*%s\b" % (re.escape(t), re.escape(m)), b): return True
-            if t == self_type and re.search(r"\bSelf\s*::\s*%s\b" % re.escape(m), b): return True
-            if (t in ws or t == self_type) and re.search(r"\.\s*%s\s*(?:\(|::\s*<)" % re.escape(m), b): return True
+        for m, seen in self.methods.items():
+            if (cross and not seen) or m not in ws:
+                continue
+            if re.search(r"\.\s*%s\s*(?:\(|::\s*<)|::\s*%s\b" % (re.escape(m), re.escape(m)), b): return True
         return False
 
     def __bool__(self):
         return bool(self.words or self.methods)
 
     def __str__(self):
-        return ", ".join(sorted(self.words) + ["%s::%s" % x for x in sorted(self.methods)])
+        return ", ".join(sorted(self.words) + [".%s()" % x for x in sorted(self.methods)])
 
 
 def line_spans(src, lines):
@@ -199,31 +224,36 @@ def line_spans(src, lines):
 def changed(old, new, hunks):
     """The names a change of a file changed (old, new: its source before and after, "" for a file
     new or gone; hunks: [(old start, old count, new start, new count)], a unified diff's
-    `@@ -a,b +c,d @@` lines), or None when a changed line is outside every item."""
+    `@@ -a,b +c,d @@` lines), or None: every user (above)."""
     names = Names()
-    every = []
+    every, macros = [], []
     for src, side in ((old, 0), (new, 1)):
         if not src: continue
         b, bc = blank(src), blank(src, strings=False)
+        bw = with_attrs(src, b)
         its = items(b)
         lines = [n for h in hunks for n in range(h[2 * side], h[2 * side] + h[2 * side + 1])]
         for a, z in line_spans(src, lines):
             if not bc[a:z].strip():
                 continue   # (comments and blank space alone)
             it = innermost(its, a + len(bc[a:z]) - len(bc[a:z].lstrip()))
-            if it is None or (it.kind == "other" and it.owner is None):
-                return None
-            names.add(it, b[a:z] if not it.kids else None)
-        every += [it for it in flat(its) if not it.kids]
+            if it is None or it.kind in ("other", "macro"):
+                return None   # (outside every item, a macro's definition or call)
+            names.add(it, bw[a:z] if not it.kids else None)
+        for it in flat(its):
+            if it.kids: continue
+            # (Its own name left out: a test helper `used` changed isn't the module's `fn used`.)
+            it.words = words_of(bw[it.a:it.b]) - {it.name}
+            (macros if it.kind in ("other", "macro") else every).append((it, bw[it.a:it.b]))
     # Within the file: an item naming a changed one is changed, until none more is.
-    # (Its own name left out: a test helper `used` changed isn't the module's `fn used`.)
-    for it in every: it.words = words_of(it.body) - {it.name}
     hit = set()
     while True:
         n = (len(names.words), len(names.methods), sum(names.words.values()), sum(names.methods.values()))
-        for it in every:
-            st = it.owner.name if it.owner is not None and it.owner.kind == "impl" else None
-            if id(it) not in hit and names.named_in(it.body, it.words, st):
+        for it, text in every:
+            if id(it) not in hit and names.named_in(text, it.words):
                 hit.add(id(it)); names.add(it)
         if (len(names.words), len(names.methods), sum(names.words.values()), sum(names.methods.values())) == n: break
+    # A macro naming what changed may make items of it no line of the file names: every user.
+    if any(names.named_in(text, it.words) for it, text in macros):
+        return None
     return names

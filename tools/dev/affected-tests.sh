@@ -350,7 +350,7 @@ _blanked = {}
 def names_it(u, names):
     """Whether file u names what changed (names None: the whole module, which it names)."""
     if names is None: return True
-    if u not in _blanked: _blanked[u] = rustitems.blank(read(u))
+    if u not in _blanked: _blanked[u] = rustitems.user_text(read(u))
     # (Another crate's file sees only what is pub and not test code.)
     return names.named_in(_blanked[u], cross=crate_of(u) != names.crate)
 

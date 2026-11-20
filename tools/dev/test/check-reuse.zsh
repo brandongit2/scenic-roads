@@ -442,6 +442,17 @@ impl S {
     pub fn new() -> S { S }
     pub fn run(&self) -> u8 { 5 }
 }
+pub fn make() -> S { S }
+#[cfg(any(test, feature = "testkit"))]
+pub fn kit() -> u8 { 7 }
+fn eight() -> u8 { 8 }
+pub struct C {
+    #[serde(default = "eight")]
+    pub n: u8,
+}
+fn base() -> u8 { 9 }
+macro_rules! made { ($n:ident) => { pub fn $n() -> u8 { base() } } }
+made!(gen);
 #[cfg(test)]
 mod tests {
     pub fn used() -> u8 { 6 }
@@ -453,7 +464,7 @@ name = "b"
 [dependencies]
 a = { path = "../a" }'; w crates/b/src/lib.rs 'pub mod u;'
     w crates/b/src/u.rs 'use a::m::used;
-pub fn x() -> u8 { used() + a::m::wrapper() + a::m::S::new().run() }
+pub fn x() -> u8 { used() + a::m::wrapper() + a::m::make().run() + a::m::kit() + a::m::C { n: 0 }.n + a::m::gen() }
 #[cfg(test)]
 mod tests {
     #[test]
@@ -478,7 +489,13 @@ traced "a comment alone: the module's own tests" m $own
 m() { sed -i '' 's/{ 6 }/{ 66 }/' crates/a/src/m.rs }
 traced "a test helper of the same name, which another crate never sees" m $own
 m() { sed -i '' 's/{ 5 }/{ 55 }/' crates/a/src/m.rs }
-traced "a method of a type the user names" m $both
+traced "a method called on a value whose type the user never names" m $both
+m() { sed -i '' 's/{ 7 }/{ 77 }/' crates/a/src/m.rs }
+traced "an item under cfg(any(test, …)), which another crate sees" m $both
+m() { sed -i '' 's/{ 8 }/{ 88 }/' crates/a/src/m.rs }
+traced "a function an attribute's string names (serde's default)" m $both
+m() { sed -i '' 's/{ 9 }/{ 99 }/' crates/a/src/m.rs }
+traced "a function a macro's items call: every user" m $both
 m() { print 'thread_local! { static X: u8 = 0; }' >> crates/a/src/m.rs }
 traced "a line outside every item: every user" m $both
 
