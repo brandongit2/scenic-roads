@@ -661,7 +661,7 @@ it must have land for the rest to be nearest; and its `of` may not meet the piec
 before it, in a folder that neither holds it nor is held by it, on more than `HAIR_KM2` of land and
 lakes (two places' remainders overlapping: which is first says nothing of whose it is; the `of`s must
 be cut apart). Else each is held, the file named (`rg-ref`; an overlap names both files). A paused
-check keeps each remainder as a piece (task #897, docs/pool.md), by the folder's whole key. Without
+check keeps each remainder as a piece (task #897, docs/pool.md), by what it reads (§6.1.4, "Pieces"). Without
 `by` the whole remainder is split at the median line: the file's comment says why (no official source
 draws the lines there).
 
@@ -890,6 +890,26 @@ Mac's server (§6.1.9).
   (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
   Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
   check, and reports the most points one operation held.
+- **Pieces** (crate::inputs::regions::kept, tasks #897 and #1548): the check's work is kept as
+  pieces, each by a key of what it reads (`tiles::Reads`): each region without water resolved
+  (`resolve::key`); each region with water's land (its outline, `minus` and `intersect` as
+  parsed, its lines, the shapes they name, the regions they name as made or stored, the cells its
+  outline is kept in for a remainder), each folder's remainder (its file, its members as made, the
+  regions it names, the held regions that may reach it, and in each of its cells every region's
+  outline, every region without water and the pieces of the remainders taken before it), each
+  region's water (its `water` as parsed, its lines and shapes, the regions it names, every region
+  without water in each of its cells), each hand-out's moves (the handing region's area and its
+  units' members') and each region's stored shapes (its outline as written, its country, its area);
+  all of them against what the folder is resolved against (the pass, the outline set's, extract's,
+  land's and datasets' names) and the pins. A key is told before the piece's parts are read (their
+  rings cut into cells costs as much as most pieces): its cells are those its parts' boxes reach
+  (`tiles::key_cells`: an OSM relation's box in the outline set, a zone's, a shape's, a region's
+  cells as made), never fewer than it reads; a piece made that read a cell its key doesn't name
+  (none should) is said and not kept. A region pinned to another pass has no piece (its problem
+  reads the other passes). No setting changes what a piece makes (the threads, the memory guard and
+  the operations' budget only stop or pace a check), so none is in a key. In the pool the pieces go
+  in the job's resume log (docs/pool.md, safe points). A scratch check's `--keep <dir>` keeps them
+  in a lasting folder too (§6.1.7).
 
 **Stored per region** (beside the region files in the accepted version):
 - `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: uncompressed,
@@ -1035,7 +1055,7 @@ it too (docs/steps.md §14, the cut: `Land::rings`, each cell's rings as stored,
 area, and `Land::bytes`, a cell's digest in their keys). `scenic-build regions-land --set <pbf>
 --to <file>` makes it from a local coastline set into a local file.
 
-`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--only <id,…>] [--geometry <dir>]` runs the check on a scratch folder in memory with the datasets those declarations name
+`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--only <id,…>] [--geometry <dir>] [--keep <dir> [--keep-mb <n>]]` runs the check on a scratch folder in memory with the datasets those declarations name
 (`--geometry`: each region's stored geometry written there as `<id>.rgeo`, to look at),
 and reports each region's size (a region with water's land and water each read cell by cell and
 summed, never one overlay of the whole: the high seas' would be ~200,000 points), and, with
@@ -1063,6 +1083,23 @@ says how many were left out): past the window the neighbours' own neighbours are
 named that resolves outside the window, moved since its accepted version, stops the check ("outside
 its accepted cells: check the whole folder"). So it can't stand for the whole check; the input
 check always runs whole.
+
+`--keep <dir> [--keep-mb <n>]` (task #1548), for an edit's loop too: the resolution's pieces
+(§6.1.4, "Pieces") kept in a lasting folder, a file each (`kept::Lasting`), so a check after an
+edit takes every piece whose reads are as they were and makes only those reading the edit: the
+edited region's own, and those reading its area where they're made (its remainder, the waters
+naming it, a hand-out of it, the regions whose area changed with it, stored again). Its output is
+a full check's, byte for byte. A piece's file is named by its whole key: the pieces' format
+(`kept::FORMAT`), `RESOLUTION`, the regions' code digest as compiled (`inputs::code_of`), the other
+passes' outline sets, the files the check reads besides the regions' (the declarations' bytes,
+each dataset's and the land file's size and modified time), and its own key. So a folder is safe across versions: a piece of other code
+or other reads is another file and is never read; nothing is invalidated by hand. A file holds its
+key and the blake3 of its bytes: one cut short or changed is said, made again and written over; a
+write a stopped check left isn't read. Once the check is done the folder is held to `--keep-mb`
+MB (`kept::KEEP_MB`, 10,000, by default; a whole check's pieces came to about 2 GB when measured): its files, the most recently used (written, or read)
+first, are kept while they fit, the rest deleted; the check says what the folder holds and what
+it deleted. With a lasting folder the check holds no copy of a piece in memory (it reads it back
+from there).
 
 #### 6.1.8 Checks
 
