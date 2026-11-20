@@ -5198,7 +5198,11 @@ mod tests {
     /// (SCENIC_FORECAST_LIMIT_S another), the items placed of all. With SCENIC_FORECAST_HASH, its
     /// whole forecast made at that budget instead, a hash of its JSON and its wall time: two builds'
     /// forecasts of the same inputs compared. For profiling at live scale (unset: nothing).
+    /// `#[ignore]`d, as it reads a real root (docs/nas-access.md §3, task #1446): `cargo nextest run
+    /// -p agentcore --run-ignored only agent::forecast::tests::archived_timing`, its variables before
+    /// it, through tools/app/remote-tests.sh.
     #[test]
+    #[ignore]
     fn archived_timing() {
         let Ok(root) = std::env::var("SCENIC_FORECAST_INPUTS") else { return };
         let budget = std::env::var("SCENIC_FORECAST_LIMIT_S")

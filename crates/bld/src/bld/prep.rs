@@ -1324,7 +1324,10 @@ mod tests {
     /// and downloads; nothing written there) into a local folder, each normalized file's content
     /// hash printed beside the one the records name: equal, `bldtiles` (keyed on them) runs nothing
     /// again for a new `BLDPREP_V`. Nothing without the variables; on the Mac mini, near the NAS.
+    /// `#[ignore]`d, as it reads a real root (docs/nas-access.md §3, task #1446): `cargo nextest run
+    /// -p bld --run-ignored only bld::prep::tests::remakes_the_real_files`, its variables before it.
     #[test]
+    #[ignore]
     fn remakes_the_real_files() {
         let (Some(nas), Some(tiles)) = (std::env::var_os("SCENIC_PREP_ROOT"), std::env::var("SCENIC_PREP_TILES").ok())
         else {

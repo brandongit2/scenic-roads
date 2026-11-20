@@ -91,11 +91,21 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
 
 ## 3. The guard (`crates/pipeline/tests/nas_access.rs`, task #530)
 
-The scan covers every item outside `#[cfg(test)]` code and outside store::nasfs. It fails when:
+The scan covers every item outside `#[cfg(test)]` code and outside store::nasfs, and one check
+test code alone. It fails when:
 
 - an item calls `unchecked_path()` and is not in `EXEMPT`, or makes another number of calls than its
   entry says (50 items, 62 calls when it was built);
-- an item makes a root with `NasRoot::from_arg` and is not in `FROM_ARG` (8 items);
+- an item makes a root with `NasRoot::from_arg` and is not in `FROM_ARG`;
+- test code (`#[cfg(test)]` items, and files under a `tests` folder or named `tests.rs` or
+  `*_tests.rs`) makes a root with `NasRoot::from_arg` outside an `#[ignore]` test: a test's root
+  is `local_for_test`'s, which refuses the real NAS, and only a test run by hand names a real one
+  (task #1446). Such a test runs on the test Mac with its variables set before nextest's
+  `--run-ignored only` and its full path: `tools/app/remote-tests.sh <key> <worktree>
+  'SCENIC_X=… cargo nextest run -p <crate> --run-ignored only <module::tests::name>'` (the cargo
+  command one quoted argument, which tools/dev/test-guard.py doesn't read; a `--run-ignored` run
+  of its own is refused in a worktree, as widening the affected set). Each one's comment names its
+  command;
 - an item names a NAS location literally (`/Volumes/`, the NAS's name, the project folder on the
   share, `smb://`) outside store::nas and `LITERALS` (none);
 - a script in tools/, dem/ or producers/ names the NAS and is not in `TOOLS` (decision D4: listed,

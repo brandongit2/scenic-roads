@@ -16197,8 +16197,11 @@ mod tests {
     /// with its measure taken, a recorded lease ended (a beat leaving it out), a minute on, the batch
     /// length and the NAS budget's limits set, the steps' uses cleared, the offers changed. Every grant
     /// and refusal printed, a line each (unset: nothing): two builds' lines compared say whether a
-    /// change to the scheduler moved a live grant (task #995's caches).
+    /// change to the scheduler moved a live grant (task #995's caches). `#[ignore]`d, as it reads a
+    /// real root (docs/nas-access.md §3, task #1446): `cargo nextest run -p agentcore --run-ignored
+    /// only coord::tests::archived_grants`, its variables before it, through tools/app/remote-tests.sh.
     #[test]
+    #[ignore]
     fn archived_grants() {
         let Ok(root) = std::env::var("SCENIC_GRANTS_INPUTS") else { return };
         let the_plan = crate::agent::seam::for_tests();

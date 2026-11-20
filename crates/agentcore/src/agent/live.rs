@@ -1597,7 +1597,7 @@ mod tests {
         let t0 = 1_700_000_000;
         s.set_link(true, t0);
         assert!(s.root.lock().unwrap().links.is_empty(), "the NAS away: no link said");
-        let root = store::nasfs::NasRoot::from_arg("/Volumes/p/scenic");
+        let root = store::nasfs::NasRoot::local_for_test("/p/scenic");
         s.set_root(Some(&root));
         s.set_link(true, t0);
         for t in (t0..t0 + 3 * 3600).step_by(5) {
@@ -1802,7 +1802,7 @@ mod tests {
     #[test]
     fn the_file_stream_keeps_the_newest_files_below_the_root() {
         let s = Store::new(None, "m4");
-        s.set_nas(Some(&store::nasfs::NasRoot::from_arg("/Volumes/p/scenic")));
+        s.set_nas(Some(&store::nasfs::NasRoot::local_for_test("/p/scenic")));
         let note = |t: u64, path: &str| FileNote {
             t,
             kind: store::nasio::Kind::Wrote,
@@ -1811,7 +1811,7 @@ mod tests {
             ms: 2,
             slot: 1,
         };
-        s.add_files((0..FILES as u64 + 5).rev().map(|t| note(t, "/Volumes/p/scenic/terrain/6-1-2.z")).collect());
+        s.add_files((0..FILES as u64 + 5).rev().map(|t| note(t, "/p/scenic/terrain/6-1-2.z")).collect());
         s.add_files(vec![note(9999, "/elsewhere/x")]);
         let a = s.answer(&Ask::default(), 10);
         let f = a["files"].as_array().unwrap();

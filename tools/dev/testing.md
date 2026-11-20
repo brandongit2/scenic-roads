@@ -690,7 +690,8 @@ fails, and is never given more. `cargo test` runs have no such bound.
   whole job per safe point stops at a few (the first, the last, midway, a seeded sample); one on a
   full-size fixture takes a small or mostly empty one reaching the same code; one at live scale
   asserts the same properties on a small synthetic input, and its live-scale run is a benchmark,
-  `#[ignore]`d, run by hand (`-- --ignored`); one waiting on a timer it doesn't claim (a beat's
+  `#[ignore]`d, run by hand through tools/app/remote-tests.sh (`cargo nextest run -p <crate>
+  --run-ignored only <its full path>`, docs/nas-access.md §3); one waiting on a timer it doesn't claim (a beat's
   period, a deadline, a poll) is given a test's own short one (`beat::Handle::tick_every`,
   `nasread::fake::Hung::deadline`, a coordinator's `Shared::headers_max_ms`, `SCENIC_TEST_PROBE_S`),
   every timer scaled together, so the margin between what is measured and what would show a

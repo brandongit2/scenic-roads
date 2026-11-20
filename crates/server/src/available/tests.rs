@@ -613,7 +613,11 @@ async fn the_built_set_draws_the_first_dataset_in_order() {
 /// prints what the step made: its time, its peak resident set, its packs' bytes and its tiles' sets
 /// (over 256, the most), each zoom's tiles and bytes, and the 15 sources whose pieces' outlines
 /// cross the most tiles (with those no other source's outline crosses: what each costs).
+/// `#[ignore]`d, as it reads a real root (docs/nas-access.md §3, task #1446): `cargo nextest run -p
+/// server --bin server --run-ignored only available::tests::renders_the_real_pieces`, its
+/// variables before it.
 #[test]
+#[ignore]
 fn renders_the_real_pieces() {
     let Some(dir) = std::env::var_os("SCENIC_RENDER_DIR").map(std::path::PathBuf::from) else { return };
     let theme = std::env::var("SCENIC_RENDER_THEME").unwrap_or_else(|_| "terrain".into());

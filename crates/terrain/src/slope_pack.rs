@@ -2650,8 +2650,11 @@ mod tests {
     /// deep mids are copied first. Each target's time and its outputs' content names (the same
     /// bytes either way), then the batch's wall, CPU, the share of its threads kept busy and its
     /// peak footprint (sampled every 50 ms; past 4 GB it stops).
-    /// SCENIC_SLOPE_MEASURE="<root> <into> deep|hi <x/y,…> [alone]"; unset, nothing.
+    /// SCENIC_SLOPE_MEASURE="<root> <into> deep|hi <x/y,…> [alone]"; unset, nothing. `#[ignore]`d,
+    /// as it reads a real root (docs/nas-access.md §3, task #1446): `cargo nextest run -p terrain
+    /// --run-ignored only slope_pack::tests::measure_a_slope_batch`, the variable before it.
     #[test]
+    #[ignore]
     fn measure_a_slope_batch() {
         let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();

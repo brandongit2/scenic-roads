@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn a_filled_store_serves_its_tiles_and_fetches_the_rest() {
         let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::from_arg(d.path().join("root").to_str().unwrap());
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("root"));
         let dir = root.join(DIR);
         let url = |x: u32| T.replace("{z}", "15").replace("{x}", &x.to_string()).replace("{y}", "9");
         let mut net = buildstore::fetch::MapFetch::default();
@@ -604,7 +604,7 @@ mod tests {
             (0..n).map(|x| s.get(&url(x)).unwrap()).collect()
         };
         let d = tempfile::tempdir().unwrap();
-        let fresh_root = store::nasfs::NasRoot::from_arg(d.path().join("fresh").to_str().unwrap());
+        let fresh_root = store::nasfs::NasRoot::local_for_test(d.path().join("fresh"));
         let f = fill(
             &net,
             &want,
@@ -620,7 +620,7 @@ mod tests {
         assert!(!f.cut);
         let fresh = served(&fresh_root.join(DIR));
         for at in 0..n as u64 {
-            let root = store::nasfs::NasRoot::from_arg(d.path().join(format!("at-{at}")).to_str().unwrap());
+            let root = store::nasfs::NasRoot::local_for_test(d.path().join(format!("at-{at}")));
             let dir = root.join(DIR);
             // (Pausing once `at` tiles were asked: which those are, the fetches' threads choose.)
             let asked = AtomicU64::new(0);
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn a_jobs_fill_is_handed_off_and_named_in_its_stores_index() {
         let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::from_arg(d.path().join("root").to_str().unwrap());
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("root"));
         let dir = root.join(DIR);
         let outbox = d.path().join("outbox");
         let url = T.replace("{z}", "15").replace("{x}", "1").replace("{y}", "9");

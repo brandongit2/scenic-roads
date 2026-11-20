@@ -216,6 +216,105 @@ fn roots_are_made_from_arguments_only_where_listed() {
     );
 }
 
+/// The lines of `code` (a file's, `code_of`'s) making a root with `NasRoot::from_arg` in test code
+/// (`tests`: which lines are) outside an `#[ignore]` item: a test's root is `local_for_test`'s,
+/// which refuses the real NAS; `from_arg` checks nothing, so only a test run by hand
+/// (nextest's `--run-ignored only`) may name a real root with it (task #1446).
+fn unignored_from_arg(code: &[String], tests: &[bool]) -> Vec<usize> {
+    // (An item starting at line `k` ignored: an `#[ignore…]` among the attributes above it, the
+    // comments between them blank in `code`.)
+    let ignored = |k: usize| {
+        code[..k]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.is_empty() || l.starts_with("#["))
+            .any(|l| l.starts_with("#[ignore"))
+    };
+    (0..code.len())
+        .filter(|&i| tests[i] && code[i].contains("NasRoot::from_arg"))
+        .filter(|&i| {
+            !(0..=i).any(|k| item_name(&code[k]).is_some_and(|(_, f)| item_end(code, k, f) >= i && ignored(k)))
+        })
+        .collect()
+}
+
+/// Every Rust file of the workspace's crates (tests' folders too), with its lines' code and which
+/// lines are test code: a file under a `tests` folder or named `tests.rs` or `*_tests.rs` whole.
+fn all_rust_files() -> Vec<(String, Vec<String>, Vec<bool>)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if !matches!(p.file_name().and_then(|n| n.to_str()), Some("target" | ".venv" | "node_modules")) {
+                    walk(&p, out);
+                }
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = root();
+    let mut rs = Vec::new();
+    walk(&root.join("crates"), &mut rs);
+    rs.into_iter()
+        .map(|f| {
+            let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let code: Vec<String> = std::fs::read_to_string(&f).unwrap().lines().map(code_of).collect();
+            let whole = rel.contains("/tests/") || rel.ends_with("/tests.rs") || rel.ends_with("_tests.rs");
+            let tests = if whole { vec![true; code.len()] } else { test_lines(&code) };
+            (rel, code, tests)
+        })
+        .collect()
+}
+
+#[test]
+fn tests_make_roots_from_arguments_only_when_ignored() {
+    let mut bad = Vec::new();
+    for (rel, code, tests) in all_rust_files() {
+        for i in unignored_from_arg(&code, &tests) {
+            let (name, _) = enclosing_rs(&code, i).unwrap_or_else(|| ("<top level>".into(), String::new()));
+            bad.push(format!("{rel}:{}: {name}", i + 1));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "NasRoot::from_arg in test code outside an #[ignore] test (a test's root is NasRoot::local_for_test's, \
+         which refuses the real NAS; a by-hand test naming a real root is #[ignore]):\n{}",
+        bad.join("\n")
+    );
+}
+
+/// The guard's own reading: a test, a test's helper and a test module's top level are caught; an
+/// `#[ignore]` test (its attributes in either order, a comment between them), and a function
+/// nested in one, are not; code outside test code isn't its (`roots_are_made_from_arguments_only_where_listed`'s).
+#[test]
+fn the_test_root_guard_catches_all_but_ignored_tests() {
+    let text = [
+        "fn live() { NasRoot::from_arg(a); }",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    #[test]",
+        "    fn plain() { let r = NasRoot::from_arg(a); }",
+        "    fn helper() -> NasRoot { NasRoot::from_arg(a) }",
+        "    #[test]",
+        "    #[ignore]",
+        "    fn by_hand() {",
+        "        let r = NasRoot::from_arg(a);",
+        "        fn inner() { NasRoot::from_arg(b); }",
+        "    }",
+        "    #[ignore = \"by hand\"]",
+        "    // (A comment.)",
+        "    #[test]",
+        "    fn by_hand_too() { NasRoot::from_arg(a); }",
+        "    const R: () = NasRoot::from_arg(a);",
+        "}",
+    ];
+    let code: Vec<String> = text.iter().map(|l| code_of(l)).collect();
+    let tests = test_lines(&code);
+    assert_eq!(unignored_from_arg(&code, &tests), vec![4, 5, 16]);
+}
+
 #[test]
 fn nas_locations_are_named_only_where_listed() {
     let mut found = std::collections::BTreeSet::new();
