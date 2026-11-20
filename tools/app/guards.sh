@@ -38,6 +38,11 @@ step "Canadian spelling"
 # word list in anything tracked (a deliberate use says `spelling: kept`); its own test first.
 python3 tools/check/test_spelling.py > $log 2>&1 || { cat $log; exit 1; }
 python3 tools/check/spelling.py || exit 1
+step "no testkit in production"
+# A testkit feature is turned on only by a dev-dependency or another testkit feature (#1135,
+# tools/check/testkit_deps.py says why); its own test first.
+python3 tools/check/test_testkit_deps.py > $log 2>&1 || { cat $log; exit 1; }
+python3 tools/check/testkit_deps.py || exit 1
 step "one strict mode"
 # One strict mode for tools/dev's programs (consistency T13): each runs under `set -uo pipefail`
 # (unset names and failed pipelines are errors; no errexit: each says itself why it stops), set

@@ -196,6 +196,11 @@ inputs are clippy's, so clippy's reuse stands for it (`REUSE prod`). Its test,
 and a program's production code using an item only the testkit has pass clippy (the change's other
 crate turning the testkit on, as #1097's users did) and fail prod; gated, they pass; no crate
 changed skips it; clippy's reuse reuses it.
+prod builds the whole workspace and publish only `-p server -p pipeline`, so a member publish doesn't
+build turning a crate's testkit on through a normal dependency would hide a testkit-only item from prod
+alone: `tools/app/guards.sh` refuses a testkit feature turned on anywhere but a `[dev-dependencies]`
+table and the testkit features' own lists (`tools/check/testkit_deps.py`, #1135; its test,
+`tools/check/test_testkit_deps.py`, runs first: a planted case of each table refused, the real tree passing).
 
 What the release build ships: publish.sh's `cargo build --release -p server -p pipeline` builds all
 three programs installed (`app_programs`: server, and pipeline's scenic and scenic-build), and
