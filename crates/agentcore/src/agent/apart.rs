@@ -20,7 +20,7 @@
 //! agent waiting for an approval, as 1Password's does while locked), that ended, or whose answer
 //! passed its deadline is closed and **down**: no connection is opened again for `RETRY`, doubled
 //! with each such end in a row to `RETRY_MOST`, so a locked key agent is asked once a step, never
-//! in a stream; an answer in time ends the run. Meanwhile its figures are missing (with
+//! in a stream, the wait kept across idle spells (`Probe::idle`); an answer in time ends the run. Meanwhile its figures are missing (with
 //! `nas-apart-judges` on, the Mac's answers its jobs' session's), and the lead flags it (crate::agent::flags, `nas-apart`). Its
 //! connections opened and answers past their deadline are counted (`connects`, `timeouts`) for the
 //! status line.
@@ -115,10 +115,19 @@ impl Probe {
         &self.cmd
     }
 
-    /// Closes its connection (the probe turned off, the build stopped), down no more.
-    pub fn close(&mut self) {
+    /// Closes its connection (the probe turned off, the build stopped), its backoff kept: a
+    /// build starting again within its wait tries no sooner, so a locked key's agent is asked
+    /// once a wait however often builds start and stop.
+    pub fn idle(&mut self) {
         self.open = None;
-        (self.down, self.retry_at, self.ends) = (None, None, 0);
+    }
+
+    /// Runs `cmd` from its next connection on (the project folder moved), its connection closed
+    /// and its backoff and counts kept.
+    pub fn retarget(&mut self, cmd: Vec<String>) {
+        if cmd != self.cmd {
+            (self.open, self.cmd) = (None, cmd);
+        }
     }
 
     /// One answer within `deadline` (the module's doc): its time, the deadline when it took
@@ -203,10 +212,26 @@ impl Probe {
                 "no first answer within {} s: its key's agent not answering (1Password locked, waiting for an approval?), or the NAS not",
                 self.start.as_secs()
             )),
-            _ => Err(match c.child.try_wait() {
-                Ok(Some(st)) => format!("it ended at once ({st})"),
-                _ => "it ended at once".into(),
+            // (Its output closed: its exit waited for, a bounded while, so its status is said.)
+            _ => Err(match exited(&mut c.child, EXIT_WAIT) {
+                Some(st) => format!("it ended at once ({st})"),
+                None => "it ended at once".into(),
             }),
+        }
+    }
+}
+
+/// How long a child whose output closed is waited for to exit, for its status.
+const EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// `child`'s exit status, waited for up to `most` (None: still running, or unreadable).
+fn exited(child: &mut Child, most: Duration) -> Option<std::process::ExitStatus> {
+    let until = Instant::now() + most;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Some(st),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+            _ => return None,
         }
     }
 }
@@ -303,13 +328,37 @@ mod tests {
         assert!(why.ends_with("tried again in 60 s"), "{why}");
         assert_eq!(p.down(), Some(why.as_str()));
         // (Within `RETRY`: no new connection, the same why, though one would open now.)
-        p.cmd = echoing().cmd;
+        p.retarget(echoing().cmd);
         assert_eq!(p.ask(Duration::from_secs(5)).unwrap_err(), why);
         assert!(p.open.is_none());
         assert_eq!(p.connects, 0);
-        p.close();
-        assert_eq!(p.down(), None);
-        assert!(p.ask(Duration::from_secs(5)).is_ok(), "closed, tried again");
+        // (Past its wait: tried again.)
+        p.retry_at = None;
+        assert!(p.ask(Duration::from_secs(5)).is_ok(), "tried again");
+        assert_eq!((p.down(), p.connects), (None, 1));
+    }
+
+    /// Task #1552's re-review: a probe idle between builds keeps its backoff, so a key's agent
+    /// that doesn't answer (1Password locked) is asked once a wait, never once a build.
+    #[test]
+    fn its_backoff_holds_across_idle_spells() {
+        let (d, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut p = local(d.path(), bin.path(), 4096);
+        let why = p.ask(Duration::from_secs(5)).unwrap_err();
+        p.retarget(echoing().cmd);
+        for _ in 0..3 {
+            // (The build stopped, and started again.)
+            p.idle();
+            assert_eq!(p.ask(Duration::from_secs(5)).unwrap_err(), why, "not tried within its wait");
+        }
+        assert_eq!((p.connects, p.ends), (0, 1));
+        // (Open, then idle: its connection closed, its counts kept, a new one at the next ask.)
+        p.retry_at = None;
+        p.ask(Duration::from_secs(5)).unwrap();
+        p.idle();
+        assert!(p.open.is_none());
+        p.ask(Duration::from_secs(5)).unwrap();
+        assert_eq!(p.connects, 2);
     }
 
     #[test]

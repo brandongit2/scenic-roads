@@ -1100,42 +1100,36 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
     std::thread::Builder::new()
         .name("live-nas-apart".into())
         .spawn(move || {
+            // (One probe for the agent's whole run: its backoff and counts kept across builds and
+            // folders, its connection closed while idle.)
             let mut probe: Option<super::apart::Probe> = None;
-            // (The counts of the probes dropped: the status's are the agent's whole run's.)
-            let mut ended = (0u64, 0u64);
-            let fold_in = |p: Option<super::apart::Probe>, ended: &mut (u64, u64)| {
-                if let Some(p) = p {
-                    *ended = (ended.0 + p.connects, ended.1 + p.timeouts);
-                }
-            };
             loop {
                 let every = apart.apart_s.load(Ordering::Relaxed);
                 let root = apart.nas.lock().ok().and_then(|n| n.clone()).filter(|_| every > 0);
                 let down = match root.map(|r| store::nas::on_nas(&r.unchecked_path())) {
                     None => {
-                        fold_in(probe.take(), &mut ended);
+                        if let Some(p) = probe.as_mut() {
+                            p.idle();
+                        }
                         None
                     }
                     Some(None) => Some("the share isn't mounted".to_string()),
                     Some(Some(dir)) => {
                         let cmd = super::apart::ssh_command(&dir);
-                        let p = match probe.take() {
-                            Some(p) if p.cmd() == cmd => probe.insert(p),
-                            other => {
-                                fold_in(other, &mut ended);
-                                probe.insert(super::apart::Probe::new(cmd, buildstore::nasssh::SSH_START))
-                            }
-                        };
+                        let p = probe.get_or_insert_with(|| {
+                            super::apart::Probe::new(cmd.clone(), buildstore::nasssh::SSH_START)
+                        });
+                        p.retarget(cmd);
                         if let Ok(d) = p.ask(super::nasread::DEADLINE) {
                             apart.record(NAS_APART_MS, now_s(), d.as_secs_f64() * 1000.0);
                         }
                         p.down().map(str::to_string)
                     }
                 };
-                let now = probe.as_ref().map_or((0, 0), |p| (p.connects, p.timeouts));
+                let counts = probe.as_ref().map_or((0, 0), |p| (p.connects, p.timeouts));
                 if let Ok(mut r) = apart.root.lock() {
                     r.apart_down = down;
-                    (r.apart_connects, r.apart_timeouts) = (ended.0 + now.0, ended.1 + now.1);
+                    (r.apart_connects, r.apart_timeouts) = counts;
                 }
                 std::thread::sleep(if every == 0 { NAS_EVERY } else { Duration::from_secs(every) });
             }

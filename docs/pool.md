@@ -924,7 +924,8 @@ thousandths:
   missing and the lead flags it (`nas-apart`, §10); with `nas-apart-judges` on, that Mac answers
   with its listings on its jobs' session. Its ssh is tried again a minute on, each end in a row
   waiting twice as long, to 16 minutes; an answer in time ends the run. One try a wait at most,
-  so a locked key's agent never sees a stream of asks. A probe past its deadline counts as the
+  the wait kept while no build runs (the connection closed, the probe kept for the agent's run),
+  so a locked key's agent never sees a stream of asks, however often builds start and stop. A probe past its deadline counts as the
   deadline, as a listing does.
 - **The target** is the owner's: the disks' busy share the pool holds to, `nas-target` (30–95 %),
   set by `scenic nas-target [<percent> | off]` on any Mac; not set, 85 % (`DEFAULT_TARGET_PCT`),

@@ -2177,6 +2177,23 @@ mod tests {
         assert!(v[48..].contains(&Verdict::Cut), "{v:?}");
     }
 
+    /// Task #1552's re-review: the knee's span holds the readings of the latest one's source
+    /// alone. The mini's listings stalled (20 times their best) for a span, then its probe at 1.2
+    /// times: under the knee, never held there by the listings' lower quartile.
+    #[test]
+    fn the_knees_span_is_of_the_answers_own_source() {
+        let (mut p, mut t) = (Pace::default(), 0);
+        for _ in 0..4 {
+            t += 2;
+            sample(&mut p, t, &[ans("m6", 40.0, 2.0)], &QUIET, 30, &jobs(30), Some(10));
+        }
+        t += 2;
+        let v = sample(&mut p, t, &[Answer { apart_s: 5, ..ans("m6", 7.2, 6.0) }], &QUIET, 30, &jobs(30), Some(10));
+        let r = p.last.as_ref().unwrap();
+        assert!((r.ratio.unwrap() - 1.2).abs() < 1e-9, "{r:?}");
+        assert_ne!(v, Verdict::Held(Hold::Slow), "{r:?}");
+    }
+
     /// Task #1552: in shadow (`nas-apart-judges` off, the answers on the jobs' session, the probe's
     /// figures beside them), the window does as it does without a probe: the same verdicts and
     /// windows, reading by reading; the probe's ratio said.
