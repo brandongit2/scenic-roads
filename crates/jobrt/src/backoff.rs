@@ -91,7 +91,7 @@ mod tests {
             "backoff-ceiling-hours" => Some(3.0),
             _ => None,
         });
-        assert_eq!((1..=4).map(|n| h(&b, n)).collect::<Vec<_>>(), [1800, 3600, 3 * 3600, 3 * 3600]);
+        assert_eq!((1..=4).map(|n| h(&b, n)).collect::<Vec<_>>(), [1800, 3600, 2 * 3600, 3 * 3600]);
         assert_eq!(b.ceiling().as_secs(), 3 * 3600);
         // (Out of its range: its default.)
         let b = Backoff::of(|n| (n == "backoff-ceiling-hours").then_some(500.0));
