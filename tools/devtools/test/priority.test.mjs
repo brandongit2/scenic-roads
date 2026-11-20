@@ -48,7 +48,7 @@ test("placePriority: a whole number as it is; a fraction rounded up, running int
 
 test("PATCH with a fraction: the task takes it rounded up, the open tasks it runs into move down one, one event for the cascade", async (t) => {
   const b = await board(t);
-  const [p5, p6, p7, p9, w8] = [await b.add({ priority: 5 }), await b.add({ priority: 6 }), await b.add({ priority: 7, status: "working" }), await b.add({ priority: 9 }), await b.add({ priority: 12 })];
+  const [p5, p6, p7, p9, w8] = [await b.add({ priority: 5 }), await b.add({ priority: 6 }), await b.add({ priority: 7, status: "working", small: false }), await b.add({ priority: 9 }), await b.add({ priority: 12 })];
   const r = await b.patch(w8, { priority: 5.5, note: "moved up" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const num = (id) => b.store.get("items", id).num;

@@ -29,7 +29,9 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     archivedAt TEXT,
     added TEXT, started TEXT, finished TEXT,   -- ISO times
     photos TEXT,               -- JSON array of blob ids
-    small INTEGER              -- 0/1 (last: form 2's file gets it by ALTER TABLE, below)
+    small INTEGER,             -- 0/1, null unset (these three last: form 2's file gets them by ALTER TABLE, below)
+    smallAt TEXT,              -- ISO time
+    batch TEXT
   )`;
 const eventsTable = (name) => `CREATE TABLE ${name} (id TEXT PRIMARY KEY, item TEXT, kind TEXT, t TEXT, text TEXT)`;
 // An open task in SQL (priority.mjs isOpen: neither done nor abandoned, not archived; no item that
@@ -48,7 +50,7 @@ const INDEXES = `
   CREATE INDEX events_item ON events(item, t, id);`;
 
 export const COLS = {
-  items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos", "small"],
+  items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos", "small", "smallAt", "batch"],
   events: ["item", "kind", "t", "text"],
 };
 // A list's order when it asks for none: the items by number, the events by time (oldest first). A
@@ -114,8 +116,9 @@ export function openStore(file) {
     if (!cur) {
       inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
     } else if (form === 2) {
-      // (Form 3 is form 2 with the items' `small` column, added last, as itemsTable has it.)
-      inTx(db, () => db.exec(`ALTER TABLE items ADD COLUMN small INTEGER; PRAGMA user_version = ${FORM};`));
+      // (Form 3 is form 2 with the items' `small`, `smallAt` and `batch` columns, added last, as
+      // itemsTable has them.)
+      inTx(db, () => db.exec(`ALTER TABLE items ADD COLUMN small INTEGER; ALTER TABLE items ADD COLUMN smallAt TEXT; ALTER TABLE items ADD COLUMN batch TEXT; PRAGMA user_version = ${FORM};`));
     } else if (form !== FORM) {
       throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
     } else if (!cur.sql.includes(STATUS_CHECK)) {

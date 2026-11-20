@@ -68,6 +68,22 @@ export function makeBoard(store, changed) {
     logEvent(id, "status", before ? `Status ${STATUS_LABEL[from] ?? from} → ${STATUS_LABEL[to] ?? to} (by ${by})` : `Status ${STATUS_LABEL[to] ?? to} (by ${by})`);
   }
 
+  // ---- a task's size and its start (#1534) -------------------------------------------------------
+  // `doc`, about to be written (`cur`, what it was, none for a new one; `sent`, the request's
+  // fields). `smallAt` is when `small` was last set; a task queued again leaves its batch. Moving a
+  // task to working needs its size classified, and a small task's a batch id in the same request:
+  // small tasks start five at a time, as one piece of work, through tools/dev/board.py batch, which
+  // sends it. (A batched task back from review sends its own batch again.)
+  function sizeAndStart(doc, cur, sent) {
+    if (doc.small === undefined || doc.kind !== "task") delete doc.smallAt;
+    else if (cur?.small !== doc.small || cur?.kind !== "task") doc.smallAt = nowIso();
+    if (doc.kind !== "task") return;
+    if (doc.status === "" && cur && cur.status !== "") delete doc.batch;
+    if (doc.status !== "working" || cur?.status === "working") return;
+    if (doc.small === undefined) invalid([{ field: "small", message: `#${doc.num} isn't classified: set "small": true or false before it starts, or with its start (a small task starts through tools/dev/board.py batch)` }]);
+    if (doc.small && typeof sent.batch !== "string") invalid([{ field: "batch", message: `#${doc.num} is a small task: start it through tools/dev/board.py batch, with the four next small tasks (it sends their batch id, "batch", with the start)` }]);
+  }
+
   // ---- archived ----------------------------------------------------------------------------------
   // The folders around an item whose folder is `parent`, nearest first: [{id, doc}]. (A loop, which
   // checkParent never lets be made, ends the walk.)
@@ -142,7 +158,7 @@ export function makeBoard(store, changed) {
     if (a) invalid([{ field: "parent", message: `${a.id === parent ? `folder ${named(p)} is archived` : `folder ${named(p)} is inside archived folder ${named(a.doc)}`}: nothing goes into an archived folder` }]);
   }
   function createItem(body, req) {
-    refuseIf(sentErrors(body, ITEM_CREATE, ["id", "num", "order", "added"], RENAMED.itemFields));
+    refuseIf(sentErrors(body, ITEM_CREATE, ["id", "num", "order", "added", "smallAt"], RENAMED.itemFields));
     const given = dropNulls(body);
     const task = (given.kind ?? "task") === "task";
     const doc = { kind: "task", parent: "", ...(task ? { status: "", assigned: DEFAULT_ASSIGNED } : {}), ...given };
@@ -151,6 +167,7 @@ export function makeBoard(store, changed) {
       doc.added = nowIso();
       doc.order = (store.maxOrder() ?? 0) + 1;
       doc.num = takeNum();
+      sizeAndStart(doc, null, given);
       refuseIf(itemErrors(doc));
       checkParent("", doc.parent, true);
       let id = `i${doc.num}`;
@@ -179,7 +196,7 @@ export function makeBoard(store, changed) {
   function updateItem(id, body, replace, req) {
     const cur = store.get("items", id);
     if (!cur) refuse(404, "not_found", `no item ${JSON.stringify(id)}`);
-    refuseIf(sentErrors(body, [...ITEM_EDIT, ...(replace ? [] : ["cascade"])], ["id", "num", "added"], RENAMED.itemFields));
+    refuseIf(sentErrors(body, [...ITEM_EDIT, ...(replace ? [] : ["cascade"])], ["id", "num", "added", "smallAt"], RENAMED.itemFields));
     const { cascade = false, ...fields } = body;
     if (typeof cascade !== "boolean") invalid([{ field: "cascade", message: "must be true or false" }]);
     if (cascade && !("archived" in fields)) invalid([{ field: "cascade", message: "goes with archived: it archives what is inside too, or unarchives the folders around" }]);
@@ -197,6 +214,7 @@ export function makeBoard(store, changed) {
       const archiving = doc.archived === true && !cur.archived, unarchiving = !!cur.archived && doc.archived !== true;
       if (archiving && doc.archivedAt === undefined) doc.archivedAt = nowIso();
       if (unarchiving) delete doc.archivedAt;
+      sizeAndStart(doc, cur, sent);
       refuseIf(itemErrors(doc));
       checkParent(id, doc.parent, doc.parent !== cur.parent);
       if (doc.kind !== "folder" && store.childrenOf(id).length) invalid([{ field: "kind", message: `${id} holds ${store.childrenOf(id).length} item(s); only folders hold items, so it stays a folder` }]);

@@ -66,7 +66,12 @@ export const ITEM_FIELDS = {
   assigned: { ...F.string(200), task: true }, // who or what it's assigned to: free text ("" nobody)
   priority: { type: "number", min: 0, task: true },
   discuss: { type: "bool", task: true },
-  small: { type: "bool", task: true }, // SMALL_MEANS
+  // A task's size: true small (SMALL_MEANS), false not, unset not yet classified; `smallAt`, when it
+  // was last set (the server's). `batch`: the id of the batch of small tasks it started in (board.mjs
+  // sizeAndStart: a small task starts only with one; tools/dev/board.py batch sends it).
+  small: { type: "bool", task: true },
+  smallAt: { type: "time", server: true, task: true },
+  batch: { ...F.string(64), task: true },
   started: { type: "time", task: true },
   finished: { type: "time", task: true },
   reply: { ...F.string(100000), task: true },
@@ -83,7 +88,7 @@ export const META_FIELDS = {
 };
 // What a client may send when it creates one (the server fills the rest: ids, num, order, added, t,
 // and the defaults).
-export const ITEM_CREATE = ["kind", "text", "parent", "note", "assigned", "priority", "status", "discuss", "small"];
+export const ITEM_CREATE = ["kind", "text", "parent", "note", "assigned", "priority", "status", "discuss", "small", "batch"];
 export const EVENT_CREATE = ["item", "kind", "text"];
 // What a client may change in one that exists (null removes an optional field).
 export const ITEM_EDIT = Object.keys(ITEM_FIELDS).filter((k) => !ITEM_FIELDS[k].server);
@@ -128,6 +133,8 @@ export function itemErrors(doc) {
   if (typeof doc.assigned === "string" && /[\u0000-\u001f\u007f]/.test(doc.assigned)) bad("assigned", "must be one line (no line breaks or control characters)");
   else if (typeof doc.assigned === "string" && doc.assigned && !doc.assigned.trim()) bad("assigned", 'is only spaces; "" is nobody');
   if (doc.archivedAt !== undefined && doc.archived !== true) bad("archivedAt", "is only for an archived item (archived: true)");
+  if (doc.smallAt !== undefined && doc.small === undefined) bad("smallAt", "is only for a task whose small is set");
+  if (typeof doc.batch === "string" && !/^[A-Za-z0-9_.:-]+$/.test(doc.batch)) bad("batch", "must be an id: letters, digits and _ . : - (no spaces)");
   return errs;
 }
 // Every way `doc` (a whole event) breaks the event schema.

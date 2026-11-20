@@ -70,7 +70,7 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.equal(f.body.order, 1);
   assert.match(f.body.added, ISO);
   const a = await post("items", { text: "First", parent: folder, note: "n", priority: 2 });
-  const b = await post("items", { text: "Second", parent: folder, status: "working", assigned: "You" });
+  const b = await post("items", { text: "Second", parent: folder, status: "working", assigned: "You", small: false });
   const g = await post("items", { kind: "folder", text: "Another folder" });
   const c = await post("items", { text: "Third" });
   t1 = a.body.id;
@@ -399,28 +399,72 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   await refused(() => call("GET", "/api/c/events?item=a%20b"), { says: /item: isn't an item's id/ });
 });
 
-test("small (#1534): a task's flag, set by POST and PATCH, cleared by null; no folder's; one definition, the page's and /api/schema's", async () => {
+test("small (#1534): a task's size, three states (unset, true, false), set by POST and PATCH, null unsets; when set is the server's; no folder's", async () => {
   const s = await post("items", { text: "A small one", small: true });
   assert.equal(s.status, 200, JSON.stringify(s.body));
-  assert.equal((await get("items", s.body.id)).small, true);
+  const d0 = await get("items", s.body.id);
+  assert.equal(d0.small, true);
+  assert.equal(d0.smallAt, d0.added, "set at birth: smallAt is its time");
+  await new Promise((r) => setTimeout(r, 5));
   assert.equal((await patch("items", s.body.id, { small: false })).status, 200);
-  assert.equal((await get("items", s.body.id)).small, false);
-  assert.equal((await patch("items", s.body.id, { small: true })).status, 200);
+  const d1 = await get("items", s.body.id);
+  assert.equal(d1.small, false);
+  assert.ok(d1.smallAt > d0.smallAt, "a change of size moves smallAt");
+  assert.equal((await patch("items", s.body.id, { small: false, note: "same size" })).status, 200);
+  assert.equal((await get("items", s.body.id)).smallAt, d1.smallAt, "the same size sent again keeps it");
   assert.equal((await patch("items", s.body.id, { small: null })).status, 200);
-  assert.equal((await get("items", s.body.id)).small, undefined);
+  const d2 = await get("items", s.body.id);
+  assert.equal(d2.small, undefined);
+  assert.equal(d2.smallAt, undefined, "unset: no time");
   await refused(() => post("items", { text: "x", small: "yes" }), { says: /small: must be true or false/ });
   await refused(() => post("items", { text: "x", kind: "folder", small: true }), { says: /small: is only for tasks/ });
-  // (A task made a folder drops it with its other task fields, as the page sends.)
+  await refused(() => post("items", { text: "x", smallAt: "2026-11-20T00:00:00Z" }), { says: /smallAt: is set by the server/ });
+  await refused(() => patch("items", s.body.id, { smallAt: "2026-11-20T00:00:00Z" }), { says: /smallAt: is set by the server/ });
+  await refused(() => patch("items", s.body.id, { batch: "two words" }), { says: /batch: must be an id/ });
+  // (A task made a folder drops them with its other task fields, as the page sends.)
   const m = await post("items", { text: "Becomes a folder", small: true });
   assert.equal((await patch("items", m.body.id, { kind: "folder", status: null, assigned: null, small: null })).status, 200);
-  assert.equal((await get("items", m.body.id)).small, undefined);
+  const f = await get("items", m.body.id);
+  assert.deepEqual([f.small, f.smallAt], [undefined, undefined]);
+});
+
+test("a task starts (to working) only classified, and a small one only with a batch id (#1534)", async () => {
+  const u = (await post("items", { text: "Unclassified" })).body.id;
+  await refused(() => patch("items", u, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false/ });
+  await refused(() => post("items", { text: "x", status: "working" }), { says: /small: #\d+ isn't classified/ });
+  // (Other statuses take an unclassified task, as before.)
+  for (const st of ["review", "backgrounded", "integrating", "waiting", "done", ""]) assert.equal((await patch("items", u, { status: st })).status, 200, st);
+  // Not small: started as ever, its size set before or in the same request.
+  assert.equal((await patch("items", u, { status: "working", small: false })).status, 200);
+  const n = (await post("items", { text: "Not small", small: false })).body.id;
+  assert.equal((await patch("items", n, { status: "working" })).status, 200);
+  // Small: never alone.
+  const sm = (await post("items", { text: "Small", small: true })).body.id;
+  await refused(() => patch("items", sm, { status: "working" }), { says: /batch: #\d+ is a small task: start it through tools\/dev\/board\.py batch/ });
+  await refused(() => post("items", { text: "x", small: true, status: "working" }), { says: /is a small task: start it through tools\/dev\/board\.py batch/ });
+  assert.equal((await patch("items", sm, { status: "working", batch: "b1-20261120T0300" })).status, 200);
+  assert.equal((await get("items", sm)).batch, "b1-20261120T0300", "kept on the item");
+  // (Its batch stays through review; back to working, the request carries it again. Queued again,
+  // it leaves it; a batch id stored on a queued task doesn't start it either.)
+  assert.equal((await patch("items", sm, { status: "review" })).status, 200);
+  await refused(() => patch("items", sm, { status: "working" }), { says: /is a small task/ });
+  assert.equal((await patch("items", sm, { status: "working", batch: "b1-20261120T0300" })).status, 200);
+  assert.equal((await patch("items", sm, { status: "" })).status, 200);
+  assert.equal((await get("items", sm)).batch, undefined);
+  assert.equal((await patch("items", sm, { batch: "b9" })).status, 200);
+  await refused(() => patch("items", sm, { status: "working" }), { says: /is a small task/ });
+  await refused(() => post("items", { text: "x", kind: "folder", batch: "b1" }), { says: /batch: is only for tasks/ });
+});
+
+test("small: one definition, the page's and /api/schema's; the page sets the three states", async () => {
   const sch = (await call("GET", "/api/schema")).body;
   assert.equal(sch.smallMeans, SMALL_MEANS);
-  assert.ok(sch.items.create.includes("small") && sch.items.edit.includes("small"));
+  assert.ok(["small", "batch"].every((k) => sch.items.create.includes(k) && sch.items.edit.includes(k)));
+  assert.equal(sch.items.fields.smallAt.server, true);
   const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
   assert.doesNotMatch(page, /few hundred lines/, "the definition isn't spelled out in the page");
-  assert.match(page, /patch\(t\.id, \{ small: !t\.small \}\)/, "the details' toggle sets it");
-  assert.match(page, /TASK_FIELDS = \[[^\]]*"small"/, "a task made a folder drops it");
+  assert.match(page, /patch\(t\.id, \{ small: t\.small === v \? null : v \}\)/, "the details' size buttons set true, false, or unset again");
+  assert.match(page, /TASK_FIELDS = \[[^\]]*"small"[^\]]*"batch"/, "a task made a folder drops them");
 });
 
 test("a task's default assignee is one constant, the server's and the page's, and the first suggestion", () => {

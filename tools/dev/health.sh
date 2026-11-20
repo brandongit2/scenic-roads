@@ -99,12 +99,12 @@ tools/dev/sweep-targets.sh
 tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
 # The board (tools/dev/board.py health): the parked tasks (backgrounded or integrating), each with its
 # last event, so every check looks again at what it waits on and affirms or corrects its status; and
-# the small tasks under way by batch, a batch of fewer than five flagged while other small tasks were
-# queued at its start without being named as left out (small tasks start five at a time,
-# tools/dev/agent-rules.md, "Starting tasks").
+# the small tasks under way by batch, a batch of fewer than five flagged when a task queued now was
+# already small when it was recorded and is neither in it nor named as left out, and a batch no start
+# event records (small tasks start five at a time, tools/dev/agent-rules.md, "Starting tasks").
 python3 tools/dev/board.py health 2>&1
 print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
-print "== fill free slots by priority; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out naming why each other small one waits; agent-rules.md, \"Starting tasks\")"
+print "== fill free slots by priority, classifying each task's size (small true or false) as you pick it; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out '#N (why); …' for each other small one waiting; agent-rules.md, \"Starting tasks\")"
 # (The PM's marker, #1398: while it is there, every agent's tests on this Mac run here, not on the test Mac.)
 [[ -e .claude/tests-local ]] && print -r -- "tests-local: agents' tests run on this Mac, not the test Mac, since $(stat -f %Sm .claude/tests-local) ($(head -1 .claude/tests-local)): delete .claude/tests-local once the test Mac is back"
 print "gates (.claude/gates.txt):"

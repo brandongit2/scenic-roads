@@ -29,14 +29,14 @@ test("a new file is made at this form, with its indexes", (t) => {
   db.close();
 });
 
-test("a form-2 file is moved to form 3 at open: its items gain `small`, last, and keep the rest", (t) => {
+test("a form-2 file is moved to form 3 at open: its items gain `small`, `smallAt` and `batch`, last, and keep the rest", (t) => {
   const file = tmp(t);
   // (Form 2: this form's file without the column.)
   const s = openStore(file);
   s.put("items", "i1", { kind: "task", text: "Kept", parent: "", order: 1, num: 1, status: "", assigned: "You", discuss: true, added: "2026-11-01T00:00:00.000Z" });
   s.close();
   const db = new DatabaseSync(file);
-  db.exec("ALTER TABLE items DROP COLUMN small; PRAGMA user_version = 2");
+  db.exec("ALTER TABLE items DROP COLUMN small; ALTER TABLE items DROP COLUMN smallAt; ALTER TABLE items DROP COLUMN batch; PRAGMA user_version = 2");
   db.close();
   const s3 = openStore(file);
   assert.deepEqual(s3.get("items", "i1"), { kind: "task", text: "Kept", parent: "", order: 1, num: 1, status: "", assigned: "You", discuss: true, added: "2026-11-01T00:00:00.000Z" });
@@ -45,7 +45,7 @@ test("a form-2 file is moved to form 3 at open: its items gain `small`, last, an
   s3.close();
   const after = new DatabaseSync(file);
   assert.equal(after.prepare("PRAGMA user_version").get().user_version, FORM);
-  assert.equal(after.prepare("SELECT name FROM pragma_table_info('items')").all().at(-1).name, "small");
+  assert.deepEqual(after.prepare("SELECT name FROM pragma_table_info('items')").all().slice(-3).map((r) => r.name), ["small", "smallAt", "batch"]);
   assert.deepEqual(indexes(after), NOW);
   after.close();
 });

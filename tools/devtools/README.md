@@ -22,8 +22,8 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
   shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
   (`PRAGMA user_version`) is 3 (the indexes every frequent read is answered from, `store.mjs`
-  INDEXES, and the items' `small` column); a form-2 file is given the column at open (form 3), any
-  other form is refused. `public/task-board/index.html` is the page, its list built
+  INDEXES, and the items' `small`, `smallAt` and `batch` columns); a form-2 file is given the
+  columns at open (form 3), any other form is refused. `public/task-board/index.html` is the page, its list built
   again on every change and put in place of the one shown node by node (`public/task-board/patch.mjs`):
   a row that didn't change stays the same node and a changed one keeps its node, so the list stays
   where it is unless you move it (the browser's scroll anchoring holds the row in view; a row out of
@@ -110,7 +110,7 @@ runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kind
 
 Everything is under `/api/c/<collection>`, JSON in and out, `B=http://mac-mini-de-brandon:8077`. **You send content; the server assigns the rest.** A new item's `num`, `id`, `order` and `added`, a new event's `id` and `t`, `meta/counter` and `meta/now`'s `updated` are the server's: sending one is a 400. Every write is checked against the schema (below) in one transaction: a request that doesn't fit gets a **400** with every reason (`error.message`, and `error.errors` as `[{field, message}]`), and nothing is written. Errors are `{"error": {"code", "message"}}`: `invalid_argument` 400, `not_found` 404, `forbidden` 403, `conflict` 409. **Names from before #1229 are refused** (400) with the name to use: an item's `stage` is `status`, `where` is `assigned`; an event's kind `stage` is `status`; `meta/status` is `meta/now`, its `now` is `text` (`GET /api/schema`'s `renamed` lists them).
 
-**Add a task** (`POST /api/c/items`). Only `text` is required; `kind` defaults to `task`, `parent` to `""` (top level; else an item's id), `status` to `""` (queued), `assigned` to `Opus subagent` (`DEFAULT_ASSIGNED` in `schema.mjs`; the page gives a task it makes, or a folder it turns into a task, the same). Also allowed: `note`, `priority`, `discuss`, `small`. `parent` must be a folder (only folders hold items), and not an archived one nor inside one (below).
+**Add a task** (`POST /api/c/items`). Only `text` is required; `kind` defaults to `task`, `parent` to `""` (top level; else an item's id), `status` to `""` (queued), `assigned` to `Opus subagent` (`DEFAULT_ASSIGNED` in `schema.mjs`; the page gives a task it makes, or a folder it turns into a task, the same). Also allowed: `note`, `priority`, `discuss`, `small`, `batch`. `parent` must be a folder (only folders hold items), and not an archived one nor inside one (below).
 
 ```bash
 curl -s -X POST $B/api/c/items -H 'content-type: application/json' \
@@ -131,9 +131,11 @@ curl -s -X POST $B/api/c/events -H 'content-type: application/json' \
 **Change a task**: `PATCH /api/c/items/<id>` with only the fields that change (`null` removes an optional field). A missing id is a 404: a PATCH can't create. `num`, `id` and `added` can't be changed; `order` can (a reorder); a folder made a task (`"kind": "task"` with `status` and `assigned`) or a task made a folder (null its task fields in the same PATCH) keeps its number; a folder holding items can't become a task. A change of `status` leaves a history event (`kind: "status"`, "Status Queued → Under way (by curl)", by the client's User-Agent) whoever makes it.
 
 ```bash
-curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"status": "working", "assigned": "Subagent (Opus)"}'
+curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"status": "working", "assigned": "Subagent (Opus)", "small": false}'
 # → {"id":"i674","num":674,"order":52,"added":"…"}
 ```
+
+**Starting a task** (#1534, `board.mjs` sizeAndStart): a change of a task's `status` to `working` (a POST born working too) is refused (400) while its `small` is unset, saying to classify it, true or false, before or with the start; and, for a small task, unless the same request carries `batch`, saying to start it through `tools/dev/board.py batch`, which starts it with the four next small tasks under one batch id (tools/dev/agent-rules.md, "Starting tasks"). Other statuses, and a task already working, are as before.
 
 **A priority with a fraction** (#1100) slots in between, in the same transaction as the rest of the
 write, by `priority.mjs` (the page places a drag or a typed number by the same module): a POST, PATCH
@@ -193,7 +195,7 @@ curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"tex
 ### The schema (`schema.mjs`)
 
 - **Times** are one format everywhere: ISO 8601, UTC, to the millisecond (`2026-10-26T08:35:48.000Z`, `new Date().toISOString()`). A time you send may leave the fraction out (`…08:35:48Z`) and is stored in full. Epoch numbers or digit strings (`"1792000000000.0"`, what broke #634–#673 on 26 Oct), offsets and bare dates are refused.
-- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it; read-only while true, above), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `status`, `assigned` (who or what it is assigned to: free text, one line, ≤ 200; `""` nobody, not spaces), `priority` (number ≥ 0), `discuss` (bool), `small` (bool: a small task, by `SMALL_MEANS` in `schema.mjs`, the one definition, which the page shows beside its toggle in the details and `GET /api/schema` gives as `smallMeans`; small tasks are started five at a time, tools/dev/agent-rules.md, "Starting tasks"), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
+- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it; read-only while true, above), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `status`, `assigned` (who or what it is assigned to: free text, one line, ≤ 200; `""` nobody, not spaces), `priority` (number ≥ 0), `discuss` (bool), `small` (its size: true small, by `SMALL_MEANS` in `schema.mjs`, the one definition, which the page shows under its Small / Not small buttons in the details and `GET /api/schema` gives as `smallMeans`; false not; unset, not yet classified), `smallAt` (when `small` was last set: the server's, gone with it), `batch` (the id of the batch of small tasks it started in, letters, digits and `_ . : -`, ≤ 64; dropped when the task is queued again), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
 - **Events**: `item` (an existing item's id, or `""`), `kind`, `text` (non-empty), `t`. Only `kind` and `text` can be changed afterwards.
 - **Meta**: only `now` (`text`: string, `updated`: time) and `counter` (`next`).
 - **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): status `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `status`, `archive` and `priority` (the server's, above), `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `assigned` is free text: the page's editor suggests `ASSIGNED_SUGGESTIONS` (`Opus subagent`, `Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …).

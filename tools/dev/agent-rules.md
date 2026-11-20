@@ -126,18 +126,28 @@ rely on the agent.
 
 ## Starting tasks (the PM)
 
-- **Small tasks start five at a time** (owner, 20 Nov). A task marked small on the board (its
-  `small` flag; the one definition is `SMALL_MEANS` in `tools/devtools/schema.mjs`, read generously)
-  is never started alone: when the next task picked is small, it starts with the four next
-  highest-priority small tasks, as one piece of work: one slot, one builder, one branch, one review,
-  one merge and publish. A small task blocked by, or conflicting with, work under way is left out.
-  Each task keeps its own board item, events and close.
-- **Record the batch as it starts:** `tools/dev/board.py batch <the five numbers> [--note '…']`
-  sets each queued one under way and gives each the same `start` event ("Batch of small tasks: #a
-  #b …"). Fewer than five is refused while another small task is queued, unless `--left-out` names
-  each with why (`--left-out '#1610 (blocked by #1600)'`). A batch grown later is recorded by running
-  it again with all of it. `tools/dev/health.sh` flags a small task under way whose batch has fewer
-  than five while a small task queued at its start, and still queued, was neither taken nor named.
+- **Small tasks start five at a time** (owner, 20 Nov). Every task's size is classified on the
+  board before it starts (its `small`: true, false, or unset until classified; the one definition is
+  `SMALL_MEANS` in `tools/devtools/schema.mjs`, read generously). A small task is never started
+  alone: when the next task picked is small, it starts with the four next highest-priority small
+  tasks, as one piece of work: one slot, one builder, one branch, one review, one merge and publish.
+  A small task blocked by, or conflicting with, work under way is left out. Each task keeps its own
+  board item, events and close.
+- **The board enforces it:** moving a task to working is refused while its `small` is unset, and,
+  for a small task, unless the same request carries a batch id (`batch`), which only
+  `tools/dev/board.py batch` sends. A batched task back from review to working sends its `batch`
+  again; one queued again loses it.
+- **Start a batch with** `tools/dev/board.py batch <the five numbers> [--note '…']`: it sets each
+  queued one working with the batch's id and gives each the same `start` event ("Batch <id> of
+  small tasks: #a #b …"). Fewer than five is refused while another small task is queued, unless
+  `--left-out` names each with why: entries separated by commas or semicolons, each the task's
+  number then its reason (`--left-out '#1610 (blocked by #1600); #1611 (conflicts with #1534)'`),
+  only an entry's leading number counting; given twice, the lists are merged. Run again with the
+  same arguments, it finishes a batch cut short without a second event; a batch grown later is
+  recorded by running it with all of it.
+- **`tools/dev/health.sh` flags** a batch under way with fewer than five members when a task queued
+  now was already small when the batch was last recorded (its `smallAt`, set by the board) and is
+  neither in it nor named as left out; and a batch with no start event recording it.
 
 ## Your report
 
