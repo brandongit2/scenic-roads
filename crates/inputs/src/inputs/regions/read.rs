@@ -4,12 +4,14 @@
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
+use super::tiles::Cell;
 use crate::inputs::Accepted;
 use anyhow::{Context, Result};
 use buildstore::coverage::{Coverage, DrawnRegion, Shape};
 use buildstore::recipes::Recipe;
+use det::Det;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The regions' accepted version the records `manifest` name: what every reader reads; an error
@@ -457,6 +459,10 @@ pub fn coverage_of_folder(
 /// region resolved, with its size, and how they fit (`fit`); `geometry`, a folder each region's
 /// stored geometry is written to. Against the records' current pass, the datasets those that
 /// `declarations` (a folder of source declarations) names when given; reads, stores nothing.
+/// `only` (region ids, or folders and files of the folder): only those checked, with the regions
+/// their findings need (`Only`), and only their findings kept. How far it is goes out as
+/// `progress:` lines (its stages; within the resolve its steps, `regions::progress`), and each
+/// stage is a timings phase; the report says each step's time and the slowest regions.
 pub fn check_folder(
     root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
@@ -464,7 +470,11 @@ pub fn check_folder(
     declarations: Option<&Path>,
     land: Option<&Path>,
     geometry: Option<&Path>,
+    only: &[String],
 ) -> Result<serde_json::Value> {
+    use jobrt::jobs::stage;
+    use jobrt::timings::phase;
+    const STAGES: u64 = 5;
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
     while let Some((d, rel)) = stack.pop() {
@@ -484,6 +494,8 @@ pub fn check_folder(
     }
     paths.sort();
     let t = std::time::Instant::now();
+    stage(0, STAGES, "regions-check (the datasets read)");
+    let ph = phase("the datasets read");
     // (With declarations, the land: the file given, else the records' for the current pass.)
     let data = match declarations {
         Some(d) => {
@@ -504,28 +516,53 @@ pub fn check_folder(
         }
         None => None,
     };
+    let mut checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
+    drop(ph);
     eprintln!(
         "regions-check: datasets read in {:.0} s, footprint {} MB, peak resident {} MB",
         t.elapsed().as_secs_f64(),
         jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
         jobrt::sys::peak_rss() / 1_000_000
     );
-    let checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
     let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> {
         Ok(std::sync::Arc::new(std::fs::read(dir.join(p)).with_context(|| format!("read {p}"))?))
+    };
+    // (`only`: the files of the regions checked, and the cells the passes over the Earth take.)
+    stage(1, STAGES, "regions-check (the regions chosen)");
+    let chosen = if only.is_empty() {
+        None
+    } else {
+        let _ph = phase("the regions chosen");
+        let all = super::resolve::Folder::read(paths.iter().cloned(), &|p| Ok(read(p)?.to_vec()))?;
+        let o = Only::choose(&all, only, &accepted_cells(root, manifest)?)?;
+        eprintln!(
+            "regions-check: {} regions named, {} checked with the regions they need, {} cells looked at",
+            o.named.len(),
+            o.checked.len(),
+            o.window.len()
+        );
+        paths.retain(|p| o.takes(p, &all));
+        checks.window = Some(o.window.clone());
+        Some(o)
     };
     let v = crate::inputs::Version { paths: paths.into_iter().collect(), read: &read };
     use crate::inputs::Checks;
     if let Some(why) = checks.not_ready() {
         anyhow::bail!("the regions can't be checked now: {why}");
     }
+    stage(2, STAGES, "regions-check (the files checked)");
+    let ph = phase("the files checked");
     let mut findings = Vec::new();
     for p in &v.paths {
         findings.extend(checks.file(p, &(v.read)(p)?).findings);
     }
+    drop(ph);
     let t = std::time::Instant::now();
     super::geom::reset_peak();
+    stage(3, STAGES, "regions-check (the resolve)");
+    let ph = phase("the resolve");
     let (folder, out) = checks.resolve(&v)?;
+    drop(ph);
     let peak = super::geom::reset_peak();
     eprintln!(
         "regions-check: resolved in {:.0} s, footprint {} MB, peak resident {} MB",
@@ -533,6 +570,12 @@ pub fn check_folder(
         jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
         jobrt::sys::peak_rss() / 1_000_000
     );
+    let steps = checks.last_steps();
+    for s in &steps.0 {
+        eprintln!("regions-check: {}: {:.1} s, {} of {}", s.step.what(), s.secs, s.done, s.total);
+    }
+    stage(4, STAGES, "regions-check (the report)");
+    let _ph = phase("the report");
     findings.extend(out.problems.iter().map(super::problem_finding));
     findings.extend(super::symbol_findings(&v, &folder)?);
     let mut regions = serde_json::Map::new();
@@ -544,6 +587,9 @@ pub fn check_folder(
         }
     }
     for (id, res) in &out.resolved {
+        if chosen.as_ref().is_some_and(|o| !o.named.contains(id)) {
+            continue;
+        }
         super::geom::set_label(format!("the report's size of {id}"));
         let km2 = km2_of(&res.geometry.shapes, folder.regions[id].1.has_water());
         total += km2;
@@ -560,6 +606,16 @@ pub fn check_folder(
     if let Some(d) = checks.ctx.as_ref().and_then(|c| c.data.as_ref()) {
         d.land_failed()?;
     }
+    // (`only`: the findings about a region named; the others' are those of regions checked only
+    // for what they share with them, cut off at the window's edge.)
+    let left_out = match &chosen {
+        Some(o) => {
+            let n = findings.len();
+            findings.retain(|f| f.files.iter().any(|p| o.named_files.contains(p)));
+            n - findings.len()
+        }
+        None => 0,
+    };
     Ok(serde_json::json!({
         "files": v.paths.len(),
         "regions": folder.regions.len(),
@@ -572,7 +628,189 @@ pub fn check_folder(
         "fit": fit_report(&out.fit),
         "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),
         "by_region": regions,
+        "only": chosen.as_ref().map(|o| serde_json::json!({"named": o.named, "checked": o.checked.len(), "cells": o.window.len(), "findings_left_out": left_out})),
+        "steps": steps.0.iter().map(|s| serde_json::json!({"step": s.step.what(), "s": (s.secs * 10.0).round() / 10.0, "done": s.done, "total": s.total})).collect::<Vec<_>>(),
+        "slowest": steps.1.iter().map(|(s, id, secs)| serde_json::json!({"step": s.what(), "region": id, "s": (secs * 10.0).round() / 10.0})).collect::<Vec<_>>(),
     }))
+}
+
+/// Each accepted region's cells (`tiles::cells_of` each ring's box), by id: from its drawn
+/// outline (small: the catalogue's), read off the NAS. Empty when nothing is accepted yet.
+fn accepted_cells(
+    root: &store::nasfs::NasRoot,
+    manifest: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, BTreeSet<Cell>>> {
+    let Ok(a) = source(root, manifest) else { return Ok(BTreeMap::new()) };
+    let l = listed(&a)?;
+    let have: Vec<&Listed> = l.iter().filter(|x| x.stored.is_some()).collect();
+    let names: Vec<String> = have.iter().filter_map(|x| Some(x.stored.as_ref()?.drawn.clone())).collect();
+    let mut out = BTreeMap::new();
+    for ((x, b), n) in have.iter().zip(read_all(root, &names)?).zip(&names) {
+        let d: Drawn = serde_json::from_slice(&b).with_context(|| format!("parse {n}"))?;
+        let mut cells = BTreeSet::new();
+        for ring in d.shapes.values().flatten().flatten() {
+            let e7 = |v: f64| (v * 1e7).round() as i64;
+            let xs = ring.iter().map(|p| e7(p[0]));
+            let ys = ring.iter().map(|p| e7(p[1]));
+            let (Some(x0), Some(x1), Some(y0), Some(y1)) = (xs.clone().min(), xs.max(), ys.clone().min(), ys.max())
+            else {
+                continue;
+            };
+            cells.extend(super::tiles::cells_of([x0, y0, x1 + 1, y1 + 1]));
+        }
+        out.insert(x.recipe.id.clone(), cells);
+    }
+    Ok(out)
+}
+
+/// A scratch check of some regions (`check_folder`'s `only`): those named, and what their findings
+/// need: the regions they name (`region:`, `land:`, `group:`, their hand-out's folder), the members
+/// of a folder whose remainder holds one of them, and their neighbours, every region whose
+/// accepted cells come within `REACH` cells of theirs (the nearest-coast splits reach 450 km, the
+/// zones 200 nmi; a cell is 2°), with what those name in turn. The passes over the Earth's cells
+/// take those within one cell of theirs (`window`): past it the neighbours' own neighbours are
+/// missing, so what they find there isn't kept.
+pub struct Only {
+    pub named: BTreeSet<String>,
+    pub named_files: BTreeSet<String>,
+    pub checked: BTreeSet<String>,
+    pub window: BTreeSet<Cell>,
+}
+
+/// How far a region's neighbours are looked for, in cells (`Only`), north and south; east and
+/// west as far on the ground at the cell's latitude.
+const REACH: i64 = 2;
+
+impl Only {
+    /// `names` chosen from `folder` (a region's id, or a folder's or file's path in it; one naming
+    /// nothing is an error), its neighbours found by `cells` (each accepted region's).
+    pub fn choose(
+        folder: &super::resolve::Folder,
+        names: &[String],
+        cells: &BTreeMap<String, BTreeSet<Cell>>,
+    ) -> Result<Only> {
+        let mut named = BTreeSet::new();
+        for n in names {
+            let n = n.trim_end_matches('/');
+            let hit: Vec<&String> = folder
+                .regions
+                .iter()
+                .filter(|(id, (p, _))| {
+                    id.as_str() == n || p == n || p.strip_suffix(".toml") == Some(n) || super::file::in_group(n, p)
+                })
+                .map(|(id, _)| id)
+                .collect();
+            anyhow::ensure!(
+                !hit.is_empty(),
+                "--only {n}: no region has that id, and no file or folder of the folder that path"
+            );
+            named.extend(hit.into_iter().cloned());
+        }
+        let mut checked = needs(folder, &named);
+        // (Its cells: the accepted version's, else, for a region new since, those of the regions it
+        // names.)
+        let mut own: BTreeSet<Cell> = BTreeSet::new();
+        for id in &named {
+            match cells.get(id) {
+                Some(c) => own.extend(c),
+                None => own.extend(checked.iter().filter_map(|d| cells.get(d)).flatten()),
+            }
+        }
+        anyhow::ensure!(
+            !own.is_empty(),
+            "--only: none of {} has accepted geometry, nor does a region it names: its neighbours can't be told (check the whole folder)",
+            named.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+        let near = round(&own, REACH);
+        let neighbours: BTreeSet<String> = cells
+            .iter()
+            .filter(|(id, c)| folder.regions.contains_key(*id) && !c.is_disjoint(&near))
+            .map(|(id, _)| id.clone())
+            .collect();
+        checked.extend(needs(folder, &neighbours));
+        let named_files = named.iter().map(|id| folder.regions[id].0.clone()).collect();
+        Ok(Only { named, named_files, checked, window: round(&own, 1) })
+    }
+
+    /// Whether the check takes file `p`: a region checked, the remainder of a folder holding one, a
+    /// special file (its pins, its rules), and every shape and symbol (read only where named).
+    pub fn takes(&self, p: &str, folder: &super::resolve::Folder) -> bool {
+        if super::resolve::special(p) == Some(super::resolve::Special::Remainder) {
+            let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+            return folder
+                .regions
+                .iter()
+                .any(|(id, (path, _))| self.checked.contains(id) && super::file::in_group(dir, path));
+        }
+        if !p.ends_with(".toml") || super::resolve::is_special(p) {
+            return true;
+        }
+        folder.regions.iter().any(|(id, (path, _))| path == p && self.checked.contains(id))
+    }
+}
+
+/// `ids` and every region they need, at any depth (`Only`).
+fn needs(folder: &super::resolve::Folder, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    use super::file::Part;
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let mut todo: Vec<String> = ids.iter().cloned().collect();
+    while let Some(id) = todo.pop() {
+        if !out.insert(id.clone()) {
+            continue;
+        }
+        let Some((path, r)) = folder.regions.get(&id) else { continue };
+        let mut more: Vec<String> = Vec::new();
+        for p in r.parts() {
+            match p {
+                Part::Region(d) | Part::Land(d) => more.push(d.clone()),
+                Part::Group(g) => more.extend(folder.members(g, "")),
+                _ => {}
+            }
+        }
+        if let Some(g) = &r.hand_out {
+            more.extend(folder.members(g, ""));
+        }
+        // (A remainder over a folder holding it: that folder's regions, and what it names.)
+        for (d, (_, rem)) in &folder.remainders {
+            if super::file::in_group(d, path) {
+                more.extend(folder.members(d, ""));
+                for p in rem.parts() {
+                    let mut leaves = Vec::new();
+                    p.walk(&mut leaves);
+                    for l in leaves {
+                        match l {
+                            Part::Region(x) | Part::Land(x) => more.push(x.clone()),
+                            Part::Group(g) => more.extend(folder.members(g, "")),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        todo.extend(more.into_iter().filter(|m| !out.contains(m)));
+    }
+    out
+}
+
+/// The cells within `n` cells of `cells`: `n` north and south, east and west as far on the ground at
+/// the row's latitude (at most the whole row), across the antimeridian.
+fn round(cells: &BTreeSet<Cell>, n: i64) -> BTreeSet<Cell> {
+    let mut out = BTreeSet::new();
+    for &(x, y) in cells {
+        for dy in -n..=n {
+            let row = y + dy;
+            if !(-45..45).contains(&row) {
+                continue;
+            }
+            let lat = ((row.min(y) as f64 + 0.5) * 2.0).abs().max(((row.max(y) as f64 + 0.5) * 2.0).abs());
+            // (Within a hundredth of a cell of a whole number of them: that number.)
+            let dx = ((n as f64 / lat.to_radians().dcos().max(1e-3) - 0.01).ceil() as i64).min(90);
+            for k in -dx..=dx {
+                out.insert(((x + k + 90).rem_euclid(180) - 90, row));
+            }
+        }
+    }
+    out
 }
 
 /// The cover check's measures of how the regions fit (tiles::Fit), for the report: each pair's
@@ -614,4 +852,81 @@ pub(crate) fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
             .collect::<Vec<_>>(),
     );
     super::geom::area_km2(&a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(files: &[(&str, &str)]) -> super::super::resolve::Folder {
+        let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+        super::super::resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap()
+    }
+
+    fn region(id: &str, body: &str) -> String {
+        format!("id = \"{id}\"\nname = \"{id}\"\n{body}")
+    }
+
+    /// Task #1523: `--only` checks the regions named, what they name, their neighbours by the
+    /// accepted cells (and what those need: a folder's remainder its folder's members), and looks
+    /// at the cells within one of theirs; a name naming nothing is an error.
+    #[test]
+    fn only_takes_the_named_what_they_need_and_their_neighbours() {
+        let (a, b, c) = (
+            region("a", "outline = [\"osm:1\"]\n"),
+            region("b", "outline = [\"region:a\"]\n"),
+            region("c", "outline = [\"osm:3\"]\n"),
+        );
+        let (x, y) = (region("x", "outline = [\"osm:4\"]\n"), region("y", "outline = [\"osm:5\"]\n"));
+        let n = region("n", "outline = [\"region:c\"]\n");
+        let rem = "of = \"box:0.0,0.0,4.0,4.0\"\n";
+        let f = folder(&[
+            ("_pins.toml", "osm = \"2026-01-01\"\n"),
+            ("a.toml", &a),
+            ("b.toml", &b),
+            ("c.toml", &c),
+            ("n.toml", &n),
+            ("p/x.toml", &x),
+            ("p/y.toml", &y),
+            ("p/_remainder.toml", rem),
+            ("q/z.toml", &region("z", "outline = [\"osm:6\"]\n")),
+            ("q/_remainder.toml", rem),
+        ]);
+        assert!(f.remainders.contains_key("p"), "the remainder read");
+        let cells: BTreeMap<String, BTreeSet<Cell>> =
+            [("a", (0, 0)), ("b", (1, 0)), ("c", (40, 10)), ("x", (0, 1)), ("y", (50, 20))]
+                .into_iter()
+                .map(|(id, c)| (id.to_string(), BTreeSet::from([c])))
+                .collect();
+        let ids = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
+        let o = Only::choose(&f, &["b".into()], &cells).unwrap();
+        assert_eq!(o.named, ids(&["b"]));
+        assert_eq!(o.named_files, ids(&["b.toml"]));
+        // (a: b names it, and borders it; x borders it, and its folder's remainder needs y.)
+        assert_eq!(o.checked, ids(&["a", "b", "x", "y"]));
+        assert!(o.window.contains(&(0, 0)) && o.window.contains(&(2, 1)) && !o.window.contains(&(3, 0)));
+        assert!(o.takes("p/_remainder.toml", &f) && o.takes("_pins.toml", &f) && o.takes("s.geojson", &f));
+        assert!(o.takes("p/y.toml", &f) && !o.takes("c.toml", &f));
+        assert!(!o.takes("q/_remainder.toml", &f), "a remainder of a folder holding no region checked");
+        // A folder names its regions; a file its region.
+        assert_eq!(Only::choose(&f, &["p/".into()], &cells).unwrap().named, ids(&["x", "y"]));
+        assert_eq!(Only::choose(&f, &["p/x.toml".into()], &cells).unwrap().named, ids(&["x"]));
+        // A region new since the accepted version: the cells of those it names.
+        let o = Only::choose(&f, &["n".into()], &cells).unwrap();
+        assert_eq!((o.checked.clone(), o.window.contains(&(40, 10))), (ids(&["c", "n"]), true));
+        assert!(Only::choose(&f, &["nope".into()], &cells).err().unwrap().to_string().contains("--only nope"));
+        let none = BTreeMap::new();
+        assert!(Only::choose(&f, &["a".into()], &none).err().unwrap().to_string().contains("can't be told"));
+    }
+
+    /// The cells round a cell reach as far on the ground east and west as north and south (more
+    /// columns toward the poles), across the antimeridian, never past the poles' rows.
+    #[test]
+    fn round_wraps_and_widens_toward_the_poles() {
+        let r = round(&BTreeSet::from([(89, 0)]), 1);
+        assert!(r.contains(&(-90, 0)) && r.contains(&(88, 1)) && !r.contains(&(87, 0)));
+        let far = round(&BTreeSet::from([(0, 40)]), 1);
+        assert!(far.iter().filter(|c| c.1 == 40).count() > 3, "at 80° a cell's row spans more columns");
+        assert_eq!(round(&BTreeSet::from([(0, 44)]), 2).iter().map(|c| c.1).max(), Some(44));
+    }
 }

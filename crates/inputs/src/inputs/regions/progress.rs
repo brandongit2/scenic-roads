@@ -7,6 +7,7 @@
 //! the slow and stuck flags judge it while it works. The share never goes back.
 
 use std::sync::Mutex;
+use std::time::Instant;
 
 /// A resolve's steps, in the order it takes them (crate::inputs::regions::resolve's `resolve_all`,
 /// then crate::inputs::regions::tiles' `resolve_in` and `cover_check`). A step the folder doesn't
@@ -88,19 +89,52 @@ pub struct Progress(Mutex<State>);
 
 #[derive(Default)]
 struct State {
-    /// The step under way (None: none begun), its items' total and how many are done.
+    /// The step under way (None: none begun), its items' total and how many are done, and when it
+    /// began.
     step: Option<Step>,
     total: u64,
     done: u64,
-    /// The item under way's parts (0: not counted by parts) and how many are done.
+    began: Option<Instant>,
+    /// The item under way's parts (0: not counted by parts) and how many are done; its name (a
+    /// region's id, a folder's path; empty: not named) and when it began.
     parts: u64,
     parts_done: u64,
+    item: String,
+    item_began: Option<Instant>,
     /// The most `share` has said.
     best: f64,
-    /// Each step begun, with its items done and its total as it ended (the one under way: as it
-    /// stands).
-    #[cfg(test)]
-    steps: Vec<(Step, u64, u64)>,
+    /// Each step ended: its items done and its total as it ended, and its wall time.
+    steps: Vec<Took>,
+    /// Each named item done: its step, its name and its wall time.
+    items: Vec<(Step, String, f64)>,
+}
+
+/// A step's time (`Progress::steps`): its items done of its total, and its wall time, s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Took {
+    pub step: Step,
+    pub done: u64,
+    pub total: u64,
+    pub secs: f64,
+}
+
+impl Step {
+    /// What it is, in words (`the cover check`).
+    pub fn what(self) -> &'static str {
+        self.said().0
+    }
+}
+
+impl State {
+    /// The step under way, as it stands.
+    fn now(&self) -> Option<Took> {
+        Some(Took {
+            step: self.step?,
+            done: self.done,
+            total: self.total,
+            secs: self.began.map_or(0.0, |t| t.elapsed().as_secs_f64()),
+        })
+    }
 }
 
 impl Progress {
@@ -108,25 +142,34 @@ impl Progress {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Step `step` begins, with `total` items. A step before or at the one under way begins
-    /// nothing (the share never goes back).
+    /// Step `step` begins, with `total` items, said at once (`say`: a step shorter than the
+    /// ticker's beat is seen too). A step before or at the one under way begins nothing (the share
+    /// never goes back).
     pub fn begin(&self, step: Step, total: usize) {
-        let mut s = self.state();
-        if s.step.is_some_and(|now| now >= step) {
-            return;
+        {
+            let mut s = self.state();
+            if s.step.is_some_and(|now| now >= step) {
+                return;
+            }
+            if let Some(ended) = s.now() {
+                s.steps.push(ended);
+            }
+            (s.step, s.total, s.done, s.began) = (Some(step), total as u64, 0, Some(Instant::now()));
+            (s.parts, s.parts_done, s.item, s.item_began) = (0, 0, String::new(), None);
         }
-        #[cfg(test)]
-        if let Some(now) = s.step {
-            let ended = (now, s.done, s.total);
-            s.steps.push(ended);
-        }
-        (s.step, s.total, s.done, s.parts, s.parts_done) = (Some(step), total as u64, 0, 0, 0);
+        self.say();
     }
 
-    /// An item of the step under way done.
+    /// An item of the step under way done (a named one's time kept).
     fn one(&self) {
         let mut s = self.state();
         s.done = (s.done + 1).min(s.total);
+        if let (Some(step), Some(t)) = (s.step, s.item_began.take()) {
+            let name = std::mem::take(&mut s.item);
+            if !name.is_empty() {
+                s.items.push((step, name, t.elapsed().as_secs_f64()));
+            }
+        }
         (s.parts, s.parts_done) = (0, 0);
     }
 
@@ -141,10 +184,12 @@ impl Progress {
         Done(self, true)
     }
 
-    /// The step's next item is under way, in `parts` parts (`part`).
-    pub fn item(&self, parts: usize) {
+    /// The step's next item, `name` (a region's id; its line says it, and its time is kept), is
+    /// under way, in `parts` parts (`part`).
+    pub fn item(&self, parts: usize, name: &str) {
         let mut s = self.state();
         (s.parts, s.parts_done) = (parts as u64, 0);
+        (s.item, s.item_began) = (name.to_string(), Some(Instant::now()));
     }
 
     /// A part of the item under way done.
@@ -165,20 +210,36 @@ impl Progress {
         s.best
     }
 
-    /// What's under way, for the progress line: `the cover check, 5200 of 16200 cells` (empty
-    /// before a step begins).
+    /// What's under way, for the progress line: `the cover check, 5200 of 16200 cells`, the item
+    /// under way named, by its parts (`the land, 12 of 300 regions; alberta, 40 of 120`); empty
+    /// before a step begins.
     pub fn line(&self) -> String {
         let s = self.state();
         let Some(step) = s.step else { return String::new() };
         let (what, items) = step.said();
-        format!("{what}, {} of {} {items}", s.done, s.total)
+        let mut l = format!("{what}, {} of {} {items}", s.done, s.total);
+        if !s.item.is_empty() {
+            l += &format!("; {}", s.item);
+            if s.parts > 0 {
+                l += &format!(", {} of {}", s.parts_done, s.parts);
+            }
+        }
+        l
     }
 
-    /// Each step begun, its items done and its total (the tests' view).
-    #[cfg(test)]
-    pub fn steps(&self) -> Vec<(Step, u64, u64)> {
+    /// Each step begun, its items done and its total, and its wall time (the one under way: as it
+    /// stands).
+    pub fn steps(&self) -> Vec<Took> {
         let s = self.state();
-        s.steps.iter().copied().chain(s.step.map(|now| (now, s.done, s.total))).collect()
+        s.steps.iter().copied().chain(s.now()).collect()
+    }
+
+    /// The `n` named items that took longest, longest first: their step, name and wall time, s.
+    pub fn slowest(&self, n: usize) -> Vec<(Step, String, f64)> {
+        let mut v = self.state().items.clone();
+        v.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+        v.truncate(n);
+        v
     }
 
     /// A ticker's say for jobrt::jobs::saying: the share and the line, as the stage's under way.
@@ -219,12 +280,17 @@ mod tests {
         assert_eq!(p.line(), "the regions without water, 2 of 4 regions");
         // The land: a region of 4 cells under way, 2 done.
         p.begin(Step::Land, 2);
-        p.item(4);
+        p.item(4, "alberta");
         p.part();
         p.part();
         assert!((p.share() - (1.0 + 0.25) / n).abs() < 1e-12);
+        assert_eq!(p.line(), "the land, 0 of 2 regions; alberta, 2 of 4");
         p.one();
         assert!((p.share() - 1.5 / n).abs() < 1e-12, "the region done: its parts no longer counted");
+        assert_eq!(p.line(), "the land, 1 of 2 regions", "the item done: no longer named");
+        // An item not named isn't kept.
+        p.item(3, "");
+        p.one();
         // Steps passed over count as done; one begun again, or before, begins nothing.
         p.begin(Step::Cover, 16_200);
         let at = p.share();
@@ -240,5 +306,14 @@ mod tests {
         assert!((p.share() - 14.0 / n).abs() < 1e-12);
         p.begin(Step::Stored, 0);
         assert_eq!(p.share(), 1.0, "a step of nothing is done");
+        // Each step begun kept with its count as it ended, and its time; the named items timed.
+        let steps: Vec<(Step, u64, u64)> = p.steps().iter().map(|t| (t.step, t.done, t.total)).collect();
+        assert_eq!(
+            steps,
+            [(Step::Plain, 2, 4), (Step::Land, 2, 2), (Step::Cover, 16_200, 16_200), (Step::Stored, 0, 0)]
+        );
+        assert!(p.steps().iter().all(|t| t.secs >= 0.0));
+        let slow = p.slowest(5);
+        assert_eq!(slow.iter().map(|(s, n, _)| (*s, n.as_str())).collect::<Vec<_>>(), [(Step::Land, "alberta")]);
     }
 }

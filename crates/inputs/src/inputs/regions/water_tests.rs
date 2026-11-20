@@ -252,9 +252,10 @@ fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Ste
         names: String::new(),
         data: Some(&w.data),
         progress: Default::default(),
+        window: None,
     };
     let out = resolve::resolve(&folder, &ctx);
-    (out, ctx.progress.steps(), ctx.progress.share())
+    (out, ctx.progress.steps().iter().map(|t| (t.step, t.done, t.total)).collect(), ctx.progress.share())
 }
 
 /// Task #1145: a resolve counts every step it takes, in order, each to its total: the regions, the
@@ -446,6 +447,7 @@ fn paused_at_every_piece(w: &World, files: &[(&str, &str)]) -> usize {
             names: String::new(),
             data: Some(&w.data),
             progress: Default::default(),
+            window: None,
         };
         resolve::resolve(&folder, &ctx)
     };
@@ -501,6 +503,7 @@ fn old_files_resolve_as_before_beside_new_ones() {
         names: String::new(),
         data: None,
         progress: Default::default(),
+        window: None,
     };
     let out = resolve::resolve(&folder, &ctx);
     assert!(out.problems.iter().any(|p| p.check == "rg-data"), "{:?}", out.problems);

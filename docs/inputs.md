@@ -860,10 +860,13 @@ Mac's server (§6.1.9).
   region, the one under way by its stretches), the 200-nmi zones, the cover check's every cell, the
   gaps' stretches, the rest's cells, the regions stored. Each step
   is an equal share of the resolve (a step the folder doesn't take passed over), its items done of
-  its total within it; every 5 s (`jobrt::jobs::saying`) the share goes out as the check's stage
-  under way, what's under way in its line (`1.642/6 inputs check (the candidate checked whole: the
-  cover check, 5200 of 16200 cells)`), so the slow and stuck flags judge it while it works. The share
-  never goes back. (Planned, #1167: the steps are equal shares whatever they take, so the slow
+  its total within it; as each step begins and every 5 s (`jobrt::jobs::saying`) the share goes out
+  as the check's stage under way, what's under way in its line (`1.642/6 inputs check (the candidate
+  checked whole: the cover check, 5200 of 16200 cells)`), the item under way named where the step
+  takes one region or folder at a time, by its cells (`the land, 12 of 300 regions; alberta, 40 of
+  120`), so the slow and stuck flags judge it while it works. The share never goes back. Each
+  step's wall time is kept, and each named item's (task #1523): a scratch check's report says them
+  (`steps`, `slowest`). (Planned, #1167: the steps are equal shares whatever they take, so the slow
   flag's rate in a long one, the cover check, is under the check's average.)
 - **Snapping and the operations' watch:** the regions with water's operations snap with a growing
   radius (i_overlay's `Precision::HIGH`, from a unit; the others' stay at a unit, so they're byte
@@ -1021,7 +1024,7 @@ it too (docs/steps.md §14, the cut: `Land::rings`, each cell's rings as stored,
 area, and `Land::bytes`, a cell's digest in their keys). `scenic-build regions-land --set <pbf>
 --to <file>` makes it from a local coastline set into a local file.
 
-`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--geometry <dir>]` runs the check on a scratch folder in memory with the datasets those declarations name
+`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--only <id,…>] [--geometry <dir>]` runs the check on a scratch folder in memory with the datasets those declarations name
 (`--geometry`: each region's stored geometry written there as `<id>.rgeo`, to look at),
 and reports each region's size (a region with water's land and water each read cell by cell and
 summed, never one overlay of the whole: the high seas' would be ~200,000 points), and, with
@@ -1029,7 +1032,21 @@ summed, never one overlay of the whole: the high seas' would be ~200,000 points)
 land and water, its largest piece and a point in it), each stretch in no region (its area, its
 share inside a zone, its land, whether it touches land, a point in it, whether it is the rest's,
 the regions it borders) and each region's stray water (its area, a point in it, the regions
-round it).
+round it). Its stages (the datasets read, the regions chosen, the files checked, the resolve, the
+report) go out as `progress:` lines, the resolve's steps within its stage as above, and are its
+timings' phases; the report adds each step's wall time and items (`steps`) and the 25 slowest
+regions or folders of the steps taking one at a time (`slowest`).
+
+`--only <id or path,…>` (task #1523), for an edit's loop: those regions (a region's id, or a file
+or folder of the scratch folder) checked, with what their findings need: the regions they name
+(`region:`, `land:`, `group:`, their hand-out's folder), a folder's regions where its remainder
+holds one, and their neighbours, every region whose accepted outline (its drawn file's rings'
+boxes, by 2° cell) comes within 2 cells of theirs (east and west as far on the ground), with what
+those name; a region new since the accepted version takes the cells of those it names. The passes
+over the Earth's cells (the 200-nmi zones by cell, the cover check, the rest) take only the cells
+within one of theirs, and only the findings naming one of their files are kept (`only` in the
+report says how many were left out): past the window the neighbours' own neighbours are missing.
+So it can't stand for the whole check; the input check always runs whole.
 
 #### 6.1.8 Checks
 

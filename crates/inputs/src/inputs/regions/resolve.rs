@@ -256,6 +256,10 @@ pub struct Context<'a> {
     pub data: Option<&'a super::data::Datasets>,
     /// How far the resolve is, counted as it goes (crate::inputs::regions::progress).
     pub progress: super::progress::Progress,
+    /// The cells a scratch check of some regions looks at (`scenic-build regions-check --only`):
+    /// the passes over every cell of the Earth (the 200-nmi zones by cell, the cover check, the
+    /// rest) take only these. None: every cell (the input check's, always).
+    pub window: Option<&'a BTreeSet<super::tiles::Cell>>,
 }
 
 /// Resolutions kept, by a key of everything they were made from.

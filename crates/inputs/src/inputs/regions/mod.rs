@@ -64,7 +64,19 @@ pub struct Regions {
     /// The last outcome made, whole, by its key: a check resolves the candidate, the next version
     /// and derives from it, often the same version.
     last: Mutex<Option<(String, Arc<resolve::Outcome>)>>,
+    /// The cells a scratch check of some regions looks at (`resolve::Context::window`;
+    /// read::check_folder's `only`); None, as the input check's always is: every cell.
+    pub window: Option<std::collections::BTreeSet<tiles::Cell>>,
+    /// The last resolve's steps and its slowest named items (`progress::Progress::steps`,
+    /// `slowest`): a scratch check's report.
+    steps: Mutex<Steps>,
 }
+
+/// A resolve's steps, and its `SLOWEST` named items (`Regions::last_steps`).
+pub type Steps = (Vec<progress::Took>, Vec<(progress::Step, String, f64)>);
+
+/// How many of a resolve's slowest named items `Regions::last_steps` keeps.
+const SLOWEST: usize = 25;
 
 /// An accepted region's resolution: what it was resolved from (`resolved_from`), and its stored
 /// geometry's and drawing's content names.
@@ -197,7 +209,7 @@ pub const RESOLUTION: u32 = 14;
 /// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "0a29f02a96912b651cb080911f2af461";
+pub const RESOLUTION_CODE: &str = "b76df3284811810d3f33e9e52513c4b4";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.
@@ -240,6 +252,12 @@ pub struct Prepared {
 impl Regions {
     pub fn new(ctx: Option<Prepared>) -> Regions {
         Regions { ctx, ..Default::default() }
+    }
+
+    /// The steps of the last resolve made, each with its time, and its slowest named items (a
+    /// region's land or water, a remainder): empty before one is made.
+    pub fn last_steps(&self) -> Steps {
+        self.steps.lock().unwrap().clone()
     }
 
     /// The folder `v` holds, resolved now (or as this check last made it, by the same key). The
@@ -303,9 +321,11 @@ impl Regions {
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
             data,
             progress: Default::default(),
+            window: self.window.as_ref(),
         };
         let out =
             jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, |_| ctx.progress.say(), || resolve::resolve(folder, &ctx));
+        *self.steps.lock().unwrap() = (ctx.progress.steps(), ctx.progress.slowest(SLOWEST));
         // (A pause a piece kept met: the check stops there.)
         self.kept.stopped()?;
         if let Some(d) = data {
@@ -328,7 +348,12 @@ impl Regions {
         let data = self.data_names(folder)?;
         let names = c.map(|c| c.names.clone()).unwrap_or_default();
         let a = resolve::Against { names: &names, pass: c.and_then(|c| c.pass.as_deref()), data: &data };
-        Ok(resolve::outcome_key(folder, &a, c.map_or("", |c| c.others_names.as_str())))
+        let key = resolve::outcome_key(folder, &a, c.map_or("", |c| c.others_names.as_str()));
+        // (A window's outcome is its cells' alone.)
+        Ok(match &self.window {
+            Some(w) => store::naming::hash16(format!("{key} window {w:?}").as_bytes()),
+            None => key,
+        })
     }
 
     /// A region without water's resolution as the accepted version stores it, when its file is at

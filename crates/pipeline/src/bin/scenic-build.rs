@@ -136,7 +136,7 @@
 //!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   catalogue                      publish a catalogue of the build manifest
-//!   regions-check --dir d [--declarations d] [--report f] [--geometry d]   the regions' check on a scratch
+//!   regions-check --dir d [--declarations d] [--only ids] [--report f] [--geometry d]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
@@ -361,6 +361,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let m = buildstore::records::read_manifest(&root)?;
         // (`--geometry <dir>`: each region resolved written there as <id>.rgeo, to look at.)
         let geometry = opt(&args, "--geometry").map(PathBuf::from);
+        // (`--only <id or path,…>`: those regions checked, with the regions their findings need,
+        // and only their findings kept: for an edit's loop; the input check is always whole.)
+        let only: Vec<String> = opt(&args, "--only")
+            .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
         let rep = ::inputs::inputs::regions::read::check_folder(
             &root,
             &m,
@@ -368,6 +373,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             decl.as_deref(),
             land.as_deref(),
             geometry.as_deref(),
+            &only,
         )?;
         let n = rep["findings"].as_array().map_or(0, Vec::len);
         println!(
