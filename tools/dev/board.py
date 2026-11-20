@@ -20,15 +20,26 @@
       A rerun with the same tasks and options finishes a batch cut short and writes nothing more:
       a task already in the batch isn't set again, and one whose latest batch event has the same
       text gets no second one. A batch grown later is recorded by running it with all of it (its id
-      kept).
+      kept). A batch's size is every task its start events name (a member that left counts), and
+      the tasks it should have taken are those queued and small when it first started.
+  board.py leave <num> <why>
+      Records that a member left its started batch, with why, as an event on its own item (kind
+      note, "Left batch <id>: <why>"; a note of the PM's starting "Left batch <id>" counts too). It
+      must be out of the batch's work already: queued again (the board drops its batch), abandoned,
+      or in another batch. Refused, nothing written, for a task no batch's start names, one still in
+      flight, waiting or done in that batch (done in it is finished with it, not left), an archived
+      one (read-only; it needs no record), or no reason; run again, it writes nothing once its
+      leaving is recorded.
   board.py health
       health.sh's board part: the parked tasks (backgrounded or integrating) with their last events,
       and the small tasks in flight (working, backgrounded, integrating, in review; not waiting) by batch
-      (their `batch`). A batch of fewer than five is flagged when a task queued now was already small
-      when the batch was recorded (its `smallAt`, the server's, no later than the batch's latest start
-      event) and is neither in it nor named as left out; a batch no start event records (an id made
-      up, sent around board.py) is flagged as not recorded; a small task in flight in no batch is
-      flagged.
+      (their `batch`). A batch is judged by its start events: their members, a member that left
+      included, are its size. One of fewer than five is flagged when a task queued now was queued
+      and already small when the batch first started (its `smallAt`, the server's; its status
+      events) and is neither in it nor named as left out. Flagged too: a member that left (queued
+      again, abandoned, in another batch) with no reason recorded (board.py leave); a task in
+      the batch no start event names; a batch no start event records (an id made up, sent around
+      board.py); a small task in flight in no batch.
 
 The definition of small is the board's (tools/devtools/schema.mjs SMALL_MEANS, GET /api/schema's
 `smallMeans`). The board's address: SCENIC_BOARD, else http://mac-mini-de-brandon:8077 (board.sh).
@@ -46,6 +57,7 @@ BATCH = 5  # small tasks started together (the owner's rule, 20 Nov)
 HEAD = re.compile(r"^Batch (\S+) of small tasks:")
 IN_FLIGHT = ("working", "backgrounded", "integrating", "review")  # (tools/devtools/board.mjs IN_FLIGHT)
 WAITS = ("", "waiting")  # not started: queued, or waiting on the owner (also before it starts)
+OUT = ("", "abandoned")  # a member in one of these has left its batch's work (queued again, or dropped)
 NUM = re.compile(r"#(\d+)")
 ENTRY = re.compile(r"^#(\d+)\s*(.*)$", re.S)
 
@@ -123,14 +135,64 @@ def parse(text):
     return m.group(1), [int(n) for n in NUM.findall(lines[0][m.end():])], out
 
 
-def missed(items, members, left_out, at):
-    """The small tasks a batch recorded at `at` should have taken: none when it has five; else each
-    queued now that was already small at `at`, neither in it nor named as left out, by priority."""
-    if len(members) >= BATCH:
+def queued_at(d, statuses, at):
+    """Whether a task was queued at `at`, from its added time and its status events (`statuses`,
+    any order): the last one by then moved it to Queued, or it had none (made queued, never moved)."""
+    if d.get("added", "") > at:
+        return False
+    last = max((e for e in statuses if e.get("t", "") <= at), key=lambda e: e["t"], default=None)
+    return last is None or re.match(r"Status (?:.* → )?Queued \(by ", last.get("text", "")) is not None
+
+
+def missed(items, named, left_out, at, events=None):
+    """The small tasks a batch first started at `at` should have taken: none when it names five;
+    else each queued now that was queued then (by `events`, all the board's; none given: `at` is now)
+    and already small at `at`, neither named in it nor left out, by priority."""
+    if len(named) >= BATCH:
         return []
+    statuses = {}
+    for e in events or ():
+        if e.get("kind") == "status":
+            statuses.setdefault(e.get("item"), []).append(e)
     out = [id for id, d in items.items() if d.get("kind") == "task" and d.get("small") is True and d.get("status") == ""
-           and d.get("smallAt", "") <= at and not archived(items, id) and id not in members and d["num"] not in left_out]
+           and d.get("smallAt", "") <= at and not archived(items, id) and d["num"] not in named and d["num"] not in left_out
+           and (events is None or queued_at(d, statuses.get(id, ()), at))]
     return sorted(out, key=lambda id: (items[id].get("priority") is None, items[id].get("priority") or 0, items[id]["num"]))
+
+
+def starts(events, bid):
+    """A batch's start events (any member's): (the members they name, the tasks they leave out, the
+    first one's time), or None when there are none."""
+    got = [(e, p) for e, p in ((e, parse(e.get("text", ""))) for e in events if e.get("kind") == "start") if p and p[0] == bid]
+    if not got:
+        return None
+    return {n for _, p in got for n in p[1]}, {n for _, p in got for n in p[2]}, min(e["t"] for e, _ in got)
+
+
+def left_why(events, id, bid):
+    """The reason recorded for a member's leaving of batch `bid` (a note on its item saying "Left
+    batch <bid>", board.py leave's or the PM's own words), or None."""
+    head = re.compile(rf"Left batch {re.escape(bid)}(?![\w-])[:\s]*")
+    for e in sorted(events, key=lambda e: e.get("t", ""), reverse=True):
+        m = e.get("item") == id and e.get("kind") == "note" and head.match(e.get("text", ""))
+        if m:
+            return e["text"][m.end():]
+    return None
+
+
+def left_how(items, id, bid):
+    """How a member named by batch `bid`'s start has left its work, or None while it is still in it
+    (in flight or waiting in the batch, or done in it: finished with it): queued again, abandoned, in
+    another batch or none, archived (the board keeps an archived item's history read-only, so its
+    leaving needs no reason), or gone from the board."""
+    d = items.get(id)
+    if d is None:
+        return "not on the board"
+    if d.get("batch") == bid and d.get("status") not in OUT:
+        return None
+    if archived(items, id):
+        return "archived"
+    return "queued" if d.get("status") == "" else d["status"] if d.get("batch") == bid else f"in batch {d['batch']}" if d.get("batch") else "in no batch"
 
 
 def label(items, id):
@@ -146,19 +208,35 @@ def health_small(items, events):
     for id in (i for i in flying if not items[i].get("batch")):
         print(f"  #{items[id]['num']} ({items[id]['status']}) is in no batch  <-- RECORD IT IN ONE (board.py batch #{items[id]['num']} …), OR MARK IT NOT SMALL")
     ids = sorted({items[id]["batch"] for id in flying if items[id].get("batch")})
+    nums = by_num(items)
+    tag = lambda ns: " ".join(f"#{n}" for n in sorted(ns))
     for bid in ids:
-        members = [id for id, d in sorted(items.items(), key=lambda p: p[1].get("num", 0)) if d.get("batch") == bid and d.get("status") != ""]
-        names = " ".join(f"#{items[m]['num']}" for m in members)
-        rec = max((e for e in events if e.get("item") in members and e.get("kind") == "start" and (parse(e.get("text", "")) or ("",))[0] == bid),
-                  key=lambda e: e.get("t", ""), default=None)
-        left, at = (parse(rec["text"])[2], rec["t"]) if rec else (set(), nowiso())
-        miss = missed(items, members, left, at)
-        flags = [] if rec else ["no start event records it  <-- NOT STARTED THROUGH board.py batch: RECORD IT (board.py batch " + names + ")"]
+        held = {d["num"] for d in items.values() if d.get("batch") == bid and d.get("status") != ""}
+        rec = starts(events, bid)
+        named, left, at = rec or (held, set(), nowiso())
+        flags = [] if rec else [f"no start event records it  <-- NOT STARTED THROUGH board.py batch: RECORD IT (board.py batch {tag(held)})"]
+        if held - named:
+            flags.append(f"{tag(held - named)} in it, named by no start event  <-- RECORD IT (board.py batch {tag(named | held)})")
+        lefts = []
+        for n in sorted(named):
+            where = left_how(items, nums.get(n), bid)
+            if where is None:
+                continue
+            why = left_why(events, nums.get(n), bid)
+            if where == "archived" and why is None:
+                lefts.append(f"      #{n} left (archived)")
+            elif why is None:
+                flags.append(f"#{n} left after its start ({where}) with no reason recorded  <-- RECORD WHY (board.py leave {n} 'why')")
+            else:
+                lefts.append(f"      #{n} left ({where}): {why}")
+        miss = missed(items, named, left, at, events if rec else None)
         if miss:
-            flags.append(f"these small tasks were queued{' when it was recorded, ' + at[:16] + 'Z,' if rec else ''} and still are: "
+            flags.append(f"these small tasks were queued{' when it started, ' + at[:16] + 'Z,' if rec else ''} and still are: "
                          f"{', '.join(label(items, m) for m in miss[:BATCH])}{' …' if len(miss) > BATCH else ''}  <-- ADD THEM TO ITS WORK, "
-                         f"OR NAME WHY EACH IS LEFT OUT (board.py batch {names} … --left-out '#N (why)')")
-        print(f"  batch {bid} of {len(members)} ({names}): " + ("; ".join(flags) if flags else "ok"))
+                         f"OR NAME WHY EACH IS LEFT OUT (board.py batch {tag(named)} … --left-out '#N (why)')")
+        print(f"  batch {bid} of {len(named)} ({tag(named)}): " + ("; ".join(flags) if flags else "ok"))
+        for line in lefts:
+            print(line)
     if not flying:
         print("  none")
 
@@ -244,7 +322,14 @@ def batch(args):
     if len(had) > 1:
         errs.append(f"the tasks named are in different batches already ({', '.join(had)})")
     seen = {n for n, _ in left}
-    miss = [] if errs else missed(items, members, seen, nowiso())
+    miss = []
+    if not errs:
+        # (A batch started already is judged by its start: every task its start events name, one that
+        # left included, and the tasks queued when it first started; a new one by now.)
+        rec = starts([e for m in members for e in item_events(m)], had[0]) if had else None
+        named, out, at = rec or (set(), set(), nowiso())
+        named |= set(nums)
+        miss = missed(items, named, out | seen, at, [d["data"] for d in call("GET", "events")["docs"]] if rec and len(named) < BATCH else None)
     if miss:
         errs.append(f"{len(nums)} tasks, fewer than {BATCH}, while these small tasks are queued: {', '.join(label(items, m) for m in miss)}; "
                     "add them, or name each in --left-out with why (blocked by, or conflicting with, work under way)")
@@ -272,6 +357,35 @@ def batch(args):
     return 0
 
 
+def leave(args):
+    if len(args) != 2 or not re.fullmatch(r"#?\d+", args[0]):
+        return die("usage: board.py leave <num> <why>")
+    n, why = int(args[0].lstrip("#")), args[1].strip()
+    if not why:
+        return die(f"#{n}: give why it left its batch. Nothing written.")
+    items = read_items()
+    id = by_num(items).get(n)
+    if id is None:
+        return die(f"#{n} isn't on the board. Nothing written.")
+    evs = item_events(id)
+    bids = [p[0] for p in (parse(e.get("text", "")) for e in evs if e.get("kind") == "start") if p and n in p[1]]
+    bid = items[id].get("batch") if items[id].get("batch") in bids else next(iter(bids), None)  # (else its newest)
+    if bid is None:
+        return die(f"#{n} is named by no batch's start event. Nothing written.")
+    how = left_how(items, id, bid)
+    if how is None:
+        return die(f"#{n} is still {items[id]['status']} in batch {bid}: take it out of the batch's work first "
+                   "(queued again or abandoned), then record why. Nothing written.")
+    if how == "archived":
+        return die(f"#{n} is archived: its history is read-only, and its leaving needs no record. Nothing written.")
+    if left_why(evs, id, bid) is not None:
+        print(f"#{n}: its leaving of batch {bid} is recorded already")
+        return 0
+    call("POST", "events", {"item": id, "kind": "note", "text": f"Left batch {bid}: {why}"})
+    print(f"#{n}: left batch {bid}, recorded")
+    return 0
+
+
 def die(msg):
     print(f"board.py: {msg}", file=sys.stderr)
     return 2
@@ -280,15 +394,15 @@ def die(msg):
 def main(argv):
     if argv[:1] == ["health"] and len(argv) == 1:
         return health()
-    if argv[:1] == ["batch"]:
+    if argv[:1] in (["batch"], ["leave"]):
         try:
-            return batch(argv[1:])
+            return (batch if argv[0] == "batch" else leave)(argv[1:])
         except (OSError, ValueError) as e:
             return die(f"the board: {e} (what was written before this stays; run it again to finish)")
     if argv[:1] in (["-h"], ["--help"]):
         print(__doc__)
         return 0
-    return die("usage: board.py batch <num> ... [--left-out TEXT]... [--note TEXT] | board.py health")
+    return die("usage: board.py batch <num> ... [--left-out TEXT]... [--note TEXT] | board.py leave <num> <why> | board.py health")
 
 
 if __name__ == "__main__":

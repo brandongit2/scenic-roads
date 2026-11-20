@@ -121,7 +121,7 @@ class Health(Base):
         self.b.task(3, priority=2)
         self.b.task(4, priority=1)  # the blocker's number: not left out by being named in a reason
         out = self.small_part()
-        self.assertIn(f"batch {B} of 2 (#1 #2): these small tasks were queued when it was recorded, 2026-11-20T02:00Z, and still are: #4 (P1)  <--", out)
+        self.assertIn(f"batch {B} of 2 (#1 #2): these small tasks were queued when it started, 2026-11-20T02:00Z, and still are: #4 (P1)  <--", out)
         self.assertNotIn("#3 (P2)", out)
 
     def test_no_false_flag_for_a_task_marked_small_after_the_batch_or_not_queued(self):
@@ -165,6 +165,59 @@ class Health(Base):
         self.assertIn(f"batch {B} of 1 (#1): ok", self.small_part())
         self.b.items["i1"]["status"] = "done"
         self.assertIn("\n  none", self.small_part())
+
+    def leave_two(self):
+        """A batch of five, then (#1547) #2 found done (abandoned, its batch kept) and #3 queued again
+        (the board drops its batch), with a small task queued since before the start."""
+        self.b.batch([1, 2, 3, 4, 5])
+        self.b.task(6, priority=1)
+        self.b.items["i2"]["status"] = "abandoned"
+        self.b.task(3)  # (queued again: no batch)
+        self.b.event(3, "status", "Status Under way → Queued (by Python-urllib)", T2)
+
+    def test_a_member_that_left_after_its_start_keeps_the_batch_five_and_needs_its_reason(self):
+        self.leave_two()
+        out = self.small_part()
+        self.assertIn(f"batch {B} of 5 (#1 #2 #3 #4 #5): ", out)
+        self.assertIn("#2 left after its start (abandoned) with no reason recorded  <-- RECORD WHY (board.py leave 2 'why')", out)
+        self.assertIn("#3 left after its start (queued) with no reason recorded  <-- RECORD WHY (board.py leave 3 'why')", out)
+        self.assertNotIn("were queued", out, "its size is its start's: no task it should have taken")
+        for n, why in ((2, "found done already"), (3, "cause not found")):
+            code, out, err = run(self.b, "leave", str(n), why)
+            self.assertEqual(code, 0, err)
+            self.assertIn(f"#{n}: left batch {B}, recorded", out)
+        self.assertEqual([w[2] for w in self.b.writes], [{"item": "i2", "kind": "note", "text": f"Left batch {B}: found done already"},
+                                                          {"item": "i3", "kind": "note", "text": f"Left batch {B}: cause not found"}])
+        out = self.small_part()
+        self.assertIn(f"batch {B} of 5 (#1 #2 #3 #4 #5): ok\n      #2 left (abandoned): found done already\n      #3 left (queued): cause not found", out)
+        self.assertNotIn("<--", out)
+
+    def test_a_member_done_in_its_batch_is_finished_not_left_an_archived_one_needs_no_reason_and_the_pms_own_note_counts(self):
+        self.b.batch([1, 2, 3, 4, 5])
+        self.b.items["i2"].update(status="done", archived=True)
+        self.b.items["i3"].update(status="abandoned", archived=True)
+        self.b.task(4, status="working", batch="b9-later")  # (queued again, then started in another batch)
+        self.b.event(4, "note", f"Left batch {B} after its build (cause not found); filed as #9.", T2)
+        out = self.small_part()
+        self.assertIn(f"batch {B} of 5 (#1 #2 #3 #4 #5): ok\n      #3 left (archived)\n      #4 left (in batch b9-later): after its build (cause not found); filed as #9.", out)
+        self.assertNotIn("#2 left", out)
+        self.assertEqual(run(self.b, "leave", "2", "x")[0], 2, "done in it: finished, not left")
+        self.assertIn("#3 is archived", run(self.b, "leave", "3", "x")[2])
+        self.assertIn(f"#4: its leaving of batch {B} is recorded already", run(self.b, "leave", "4", "x")[1])
+        self.assertEqual(self.b.writes, [])
+
+    def test_the_tasks_a_short_batch_should_have_taken_are_those_queued_when_it_started(self):
+        self.b.batch([1, 2])
+        self.b.task(3, priority=1)  # under way then (in another batch), queued again since: not missed
+        self.b.event(3, "status", "Status Queued → Under way (by board.py)", T0)
+        self.b.event(3, "status", "Status Under way → Queued (by the page)", T2)
+        self.b.task(4, priority=2)  # queued then and now
+        self.b.task(5, priority=3)  # waiting on the owner then, queued since
+        self.b.event(5, "status", "Status Queued → Waiting on you (by the page)", T0)
+        self.b.event(5, "status", "Status Waiting on you → Queued (by the page)", T2)
+        self.b.task(7, priority=0, added=T2, small_at=T2)  # made after
+        out = self.small_part()
+        self.assertIn(f"batch {B} of 2 (#1 #2): these small tasks were queued when it started, 2026-11-20T02:00Z, and still are: #4 (P2)  <--", out)
 
     def test_parked_tasks_are_still_listed(self):
         self.b.task(1, status="backgrounded", small=False)
@@ -269,6 +322,28 @@ class Batch(Base):
         self.assertEqual(len(patch1), 1)
         self.assertEqual(set(patch1[0]), {"batch"}, "its status kept")
         self.assertIn("#1: already backgrounded, put in the batch", out)
+
+    def test_a_started_batch_whose_members_left_is_rerun_by_its_start_not_by_what_waits_now(self):
+        Health.leave_two(self)
+        code, out, err = run(self.b, "batch", "1", "4", "5")
+        self.assertEqual(code, 0, err)  # (#6, queued and small, needn't be named: the batch started with five)
+        self.assertFalse([w for w in self.b.writes if w[0] == "PATCH"], "its members kept as they are")
+
+    def test_leave_is_refused_for_a_member_still_in_the_work_or_a_task_in_no_batch(self):
+        self.b.batch([1, 2, 3, 4, 5])
+        self.b.items["i4"]["status"] = "waiting"
+        self.b.task(6)
+        for args, says in (([], "usage: board.py leave"), (["1", " "], "give why"), (["99", "x"], "#99 isn't on the board"),
+                           (["1", "x"], f"#1 is still working in batch {B}: take it out"), (["4", "x"], f"#4 is still waiting in batch {B}"),
+                           (["6", "x"], "#6 is named by no batch's start event")):
+            code, _, err = run(self.b, "leave", *args)
+            self.assertEqual(code, 2, (args, err))
+            self.assertIn(says, err)
+        self.assertEqual(self.b.writes, [], "nothing written")
+        self.b.items["i1"]["status"] = "abandoned"
+        self.assertEqual(run(self.b, "leave", "1", "merged with #2")[0], 0)
+        self.assertEqual(run(self.b, "leave", "#1", "again")[1], f"#1: its leaving of batch {B} is recorded already\n")
+        self.assertEqual(len(self.b.writes), 1, "one reason recorded")
 
     def test_a_small_task_waiting_on_the_owner_starts_with_its_batch_and_needs_no_naming(self):
         self.b.task(1, status="waiting")

@@ -204,11 +204,18 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   same arguments, it finishes a batch cut short without a second event; a batch grown later is
   recorded by running it with all of it. A small task already in flight in no batch is put in one
   as it is, its status kept.
-- **`tools/dev/health.sh` flags** a batch in flight with fewer than five members when a task queued
-  now was already small when the batch was last recorded (its `smallAt`, set by the board) and is
-  neither in it nor named as left out; a batch with no start event recording it (an id made up
-  around board.py); and a small task in flight in no batch (one marked small while under way; a
-  waiting one isn't flagged).
+- **A batch's size is its start's:** every task its start events name, a member that left
+  included, and the tasks it should have taken are those queued and small when it first started.
+  A member leaves a started batch by going out of its work (queued again, abandoned) and
+  `tools/dev/board.py leave <num> '<why>'`, which records the one reason as a note on its item
+  ("Left batch <id>: …"). A member done in its batch has finished, not left; an archived one needs
+  no record.
+- **`tools/dev/health.sh` flags** a batch in flight whose start events name fewer than five when a
+  task queued now was queued and already small when it first started (its `smallAt`, set by the
+  board; its status events) and is neither in it nor named as left out; a member that left with no
+  reason recorded; a task in a batch no start event names; a batch with no start event recording it
+  (an id made up around board.py); and a small task in flight in no batch (one marked small while
+  under way; a waiting one isn't flagged).
 
 ## Review
 
