@@ -42,7 +42,7 @@ pub struct Event {
     /// "catalog" (a catalogue written: its `n`, its job's time and its crate::pubtimes::CatalogueStats),
     /// "merged" (journal entries merged: their keys), "refused" (a hand-off the lead's merge refused,
     /// its targets offered again: its member's Mac, job, targets and why, crate::coord::Coordinator::merged), "retry" (a page's retry: its
-    /// step, none for any, and target, whose failures and refusals were forgotten: crate::coord::Coordinator::clear_failed), "adopt" (a Mac's map server at the map's `n`, its
+    /// step, none for any, and target, whose failures and refusals were forgotten, its note who asked: crate::coord::Coordinator::clear_failed), "adopt" (a Mac's map server at the map's `n`, its
     /// `worker` the Mac: crate::pubtimes::ADOPT), "mirror-start" and "mirror-end" (its mirror's round at
     /// `n` begun and through: crate::pubtimes::MIRROR_START, MIRROR_END), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to

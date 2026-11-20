@@ -8817,7 +8817,7 @@ impl Agent {
                     }
                 }
                 crate::pool::driver::Act::Retry(r) => {
-                    let n = self.coord.as_ref().map_or(0, |c| c.clear_failed(r.step.as_deref(), &r.target));
+                    let n = self.coord.as_ref().map_or(0, |c| c.clear_failed(r.step.as_deref(), &r.target, &r.by));
                     let before = self.guard_backoff.len();
                     self.guard_backoff.retain(|id, _| !id.split(' ').any(|w| w == r.target));
                     eprintln!(

@@ -3632,8 +3632,9 @@ impl Coordinator {
 
     /// A target's failures forgotten (a page's retry, crate::pool::driver::Act::Retry): every
     /// worker's, of its step (any step: None), and its hand-offs' refusals in a row; how many
-    /// failures. In the history ("retry"), so a lead's restart forgets them too (`seed_backoff`).
-    pub fn clear_failed(&self, step: Option<&str>, target: &str) -> usize {
+    /// failures. In the history ("retry", its note who asked: `by`), so a lead's restart forgets
+    /// them too (`seed_backoff`).
+    pub fn clear_failed(&self, step: Option<&str>, target: &str, by: &str) -> usize {
         let mut s = self.shared.lock().unwrap();
         let before = s.failed.len();
         s.failed.retain(|(_, k), _| !retried(k, step, target));
@@ -3642,6 +3643,7 @@ impl Coordinator {
         s.history.add(history::Event {
             step: step.map(str::to_string),
             targets: vec![target.to_string()],
+            note: by.to_string(),
             ..history::Event::new("retry")
         });
         before - s.failed.len()
@@ -13053,7 +13055,7 @@ mod tests {
         assert_eq!(c.done_unread().len(), 1, "a later job's done entry kept");
         assert_eq!(failed("m1"), Some(2));
         // A page's retry: the hold and the count both gone.
-        c.clear_failed(Some("available"), "terrain");
+        c.clear_failed(Some("available"), "terrain", "a test");
         assert!(failed("m1").is_none() && c.handoffs_refused().is_empty());
         // Refused once more, then g3's hand-off merged: its target's refusals end.
         c.merged(&[], &[refused(&g1)]);
@@ -13256,8 +13258,8 @@ mod tests {
         c.merged(&[], &[refused]);
         assert_eq!(c.shared.lock().unwrap().failed.len(), 3, "all three failed on m2");
         assert_eq!(c.shared.lock().unwrap().handoffs_refused.len(), 1);
-        assert_eq!(c.clear_failed(Some("pack"), "6/1/1"), 1);
-        assert_eq!(c.clear_failed(None, "6/1/2"), 1);
+        assert_eq!(c.clear_failed(Some("pack"), "6/1/1", "a test"), 1);
+        assert_eq!(c.clear_failed(None, "6/1/2", "a test"), 1);
         let kept = |c: &Coordinator| {
             let s = c.shared.lock().unwrap();
             let failed: Vec<String> = s.failed.keys().map(|(w, k)| format!("{w} {k}")).collect();
@@ -15217,8 +15219,8 @@ mod tests {
                 s.failed.insert((w.into(), k.into()), (now, 1));
             }
         }
-        assert_eq!(c.clear_failed(Some("unit"), "6/1/2"), 2);
-        assert_eq!(c.clear_failed(None, "6/1/2"), 1, "any step's");
+        assert_eq!(c.clear_failed(Some("unit"), "6/1/2", "a test"), 2);
+        assert_eq!(c.clear_failed(None, "6/1/2", "a test"), 1, "any step's");
         let left: Vec<String> = c.shared.lock().unwrap().failed.keys().map(|k| k.1.clone()).collect();
         assert_eq!(left, ["6/1/3"]);
         // (Kept so: the state the lead writes per term, read again by a restart's take-up.)
