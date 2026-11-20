@@ -864,13 +864,16 @@ mod tests {
         let x0 = (roadcore::geo::merc_x(10.5) * nn) as u32;
         let y0 = (roadcore::geo::merc_y(45.5) * nn) as u32;
         let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
-        let chunk = chunk_tiles(at_once());
+        // (On 4 threads of its own, whatever the run gives a test (RAYON_NUM_THREADS, #1563): one
+        // thread's single chunk would be more than half the tiles.)
+        let four = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let chunk = four.install(|| chunk_tiles(at_once()));
         assert!(ts.len() > 2 * chunk);
         // The drain asked as the first sampling begins: every later one finds it.
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
         let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
-        let (e, done) = said(&paused, z, &ts);
+        let (e, done) = four.install(|| said(&paused, z, &ts));
         let e = e.unwrap_err();
         assert!(jobrt::control::is_paused(&e), "{e:#}");
         // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
