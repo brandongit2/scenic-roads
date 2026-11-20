@@ -838,8 +838,9 @@ thousandths:
     the NAS from its link: **undecidable** (on 19 and 20 Nov 57.5 % of the readings by the
     cadence, 34.5 % reading by reading; nearly all the mini's). They never halve the window and
     never let it grow past the knee. While they rise against those a step lighter in all the pool
-    moves (its own too) it doesn't grow at all (what keeps jobs of 250 on the mini within the
-    replay's cliff bound: without it, 18 readings at the cliff, 7 in a row; the burst's H5 doesn't
+    moves (its own too) it doesn't grow at all (what keeps the replay at the model's cliff no more
+    often than the rule judging against the weight: without it, jobs of 100 on the mini reach it at
+    7 readings and jobs of 250 at 8, against 5 and 5, never two in a row; the burst's H5 doesn't
     need it). Risen past 3 times their best, the window goes back to **the knee**: the heaviest
     weight in use read in the last `nas-track-minutes`, before the cadence, with answers under 3
     times their best; never under it, or halved where there's none.
@@ -861,7 +862,10 @@ thousandths:
   every Mac holding leased jobs, and only once the jobs last started have run a span (their
   answers in the reading) and, where the weight in use rose a step or more to the knee or past it
   (or no knee is known), a growth cadence more (their answers judged): fast where the answers were
-  good at that weight lately, cautious beyond it. Otherwise it holds, and says why
+  good at that weight lately, cautious beyond it. A knee read before an outside load rose stays
+  trusted for `nas-track-minutes`, so the fast way can admit past the cliff then: up to 60 s more
+  at it than the rule judging against the weight in the one-Mac step of 350, the disks read at
+  half or not at all (a case built for task #1506's review, not among the tests). Otherwise it holds, and says why
   (`nas::Hold`). It is never more than the whole: the weights are estimates, so the answers may say
   the NAS is full before them, but past the whole they'd admit more than the probe measured. It is
   kept in the lead's store, so a restart within 30 minutes takes it up.
@@ -929,7 +933,8 @@ thousandths:
   jobs of 250 as many on the mini, and 6 % fewer on a Mac not answering. It sits at its floor more
   than that rule in three of the four closed-loop rows (106, 136 and 89 readings against 63, 81
   and 81), less with jobs of 100 on the mini (37 against 63). At the model's cliff about as often
-  (5 or 6 readings against 6, never two in a row); at the disks' target at most 1.5 times as often.
+  (5 or 6 readings against 6, never two in a row); at the disks' target at most about 1.5 times
+  as often (63 readings against 41).
   As the readings were it is at its floor a little more (222 readings against 215); by the last
   cut's cause, 111 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a
   disk reading at the target (the rule has no such cut; 7 of its floor readings followed a cut

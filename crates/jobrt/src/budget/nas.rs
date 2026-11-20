@@ -2142,7 +2142,8 @@ mod tests {
     /// where the weight they rose to is under the knee (answers known good there lately), and a
     /// growth cadence more at the knee or past it. Past the knee: a minute at 100 in use at its
     /// best, then 300: still held four readings after the rise. Under it: two minutes at 400 at
-    /// its best, then 100, then 300: grown on, no longer held, four readings after the rise.
+    /// its best, then 100, then 300: grown on, no longer held, four readings after the rise. A
+    /// rise of under a step is held a span alone; one of a step in two rises a cadence more.
     #[test]
     fn the_jobs_started_are_judged_longer_past_the_knee_than_under_it() {
         let best = [ans("m1", 5.0, 5.0)];
@@ -2160,6 +2161,10 @@ mod tests {
         assert_eq!(held_after(&[(12, 100), (span + 1, 300)]), Some(Hold::Started), "past the knee");
         assert_ne!(held_after(&[(12, 400), (12, 100), (span + 1, 300)]), Some(Hold::Started), "under the knee");
         assert_eq!(held_after(&[(12, 400), (12, 100), (1, 300)]), Some(Hold::Started), "a span all the same");
+        // (Past the knee, a rise of under a step (100 to 120): a span alone. A step in two rises
+        // within a cadence (100 to 130 to 160): judged from where it first rose, a cadence more.)
+        assert_ne!(held_after(&[(12, 100), (span + 1, 120)]), Some(Hold::Started), "under a step");
+        assert_eq!(held_after(&[(12, 100), (1, 130), (span + 1, 160)]), Some(Hold::Started), "a step in two rises");
     }
 
     /// Task #1506's two readings of 19 Nov as cases, the jobs moving what they weigh. 18:51: the
@@ -3318,6 +3323,9 @@ mod tests {
             assert_eq!(r.on_the_pool.iter().map(|t| hms(*t)).collect::<Vec<_>>(), Vec::<String>::new(), "{name}");
             let span = (SPAN_S / READ_EVERY_S) as usize;
             assert!(r.longest <= span, "{name}: {} readings in a row at the cliff", r.longest);
+            // (At the cliff no more often than the weight's rule (6 readings in each row): with
+            // the pool's swelling answers grown on, jobs of 250 on the mini reach it at 8.)
+            assert!(r.cliff <= 6, "{name}: {} readings at the cliff", r.cliff);
         }
     }
 
