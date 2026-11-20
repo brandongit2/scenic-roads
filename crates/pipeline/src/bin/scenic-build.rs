@@ -221,6 +221,10 @@ fn main() -> std::process::ExitCode {
     }
     let r = build_main(args);
     let ok = r.is_ok();
+    // (The targets it failed on noted for its agent, which holds only those against this Mac.)
+    if let Err(e) = &r {
+        note_failed(e);
+    }
     // (Its error in its log first: its agent reads it once it takes the job as ended.)
     let code = r.report();
     // (Its end said to its agent first when its exit may not end: jobrt::control::ending.)
@@ -1362,7 +1366,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let cov = coverage_of(&out, &args)?;
             for p in positional(&args) {
                 let pole = roadcore::polar::Pole::of_letter(&p).with_context(|| format!("{p}: not a pole (n or s)"))?;
-                terrain::polar::root_step(&mut out, pole, &terrain::polar::built(&cov, pole))?;
+                // (A pole's failure named its own: jobrt::control::failed_on.)
+                terrain::polar::root_step(&mut out, pole, &terrain::polar::built(&cov, pole))
+                    .map_err(|e| jobrt::control::failed_on(e, "polar-root", &[&terrain::polar::root_target(pole)]))?;
             }
         }
         "put" => {
@@ -2603,6 +2609,33 @@ fn note_live_ended(key: &str) {
     note_cost_line(&p, key, "its live part's end", &serde_json::json!({ "unit": key, "live": false }));
 }
 
+/// Notes that the work of the target whose cost key is `key` ended, its uploads landing beside the
+/// next target's (`Landing`; `SCENIC_COSTS`, a `landing` line): a failure meanwhile is the next's
+/// work's or its landing's, which names it (`Landing::land`), so the agent counts it under way no
+/// more (agentcore::agent::memguard::Targets::open).
+fn note_landing(key: &str) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    note_cost_line(&p, key, "its landing", &serde_json::json!({ "unit": key, "landing": true }));
+}
+
+/// The targets set aside so far (`set_aside`), by cost key: failed too, whatever ends the job.
+static ASIDE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The targets the job's error `e` names (jobrt::control::failed_on) and those it set aside
+/// (`ASIDE`), each noted failed for the agent (`SCENIC_COSTS`, a `failed` line), which holds only
+/// these against this Mac (agentcore::agent::memguard::Targets::failed). Named none, the agent
+/// falls back on the target under way, or every one not done.
+fn note_failed(e: &anyhow::Error) {
+    let mut keys = ASIDE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(f) = jobrt::control::failed_of(e) {
+        keys.extend(f.targets.iter().map(|t| agentcore::coord::cost_key(&f.step, t)));
+    }
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    for k in keys {
+        note_cost_line(&p, &k, "its failure", &serde_json::json!({ "unit": k, "failed": true }));
+    }
+}
+
 /// Target `target` of `step` run as a drop (its "none" key, pipeline::agent::build::is_none_key):
 /// `drop` drops its packs, reading nothing, and says how many it dropped; then it's noted done, its
 /// cost noted as a drop's (agentcore::needs::DROPS), which its step's builds' model leaves out and
@@ -2916,11 +2949,13 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     for (k, &u) in units.iter().enumerate() {
         jobrt::control::safe_point("pois");
         jobrt::jobs::report(k as u64, units.len() as u64, "z6 tiles");
-        let t = cost_start("pois", &u.slash());
         let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
             eprintln!("pois {}: no piece", u.slash());
             continue;
         };
+        // (Begun once it has a piece: one skipped isn't left under way, the target a failure is
+        // taken for when it names none, agentcore::agent::memguard::Targets::open.)
+        let t = cost_start("pois", &u.slash());
         let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let dir = scratch.join(format!("pois-{}", u.dash()));
         // Its extract's candidates a piece kept (task #889): a run resumed after it takes them, not
@@ -3145,7 +3180,7 @@ fn peaks_from(
     read: &str,
 ) -> Result<()> {
     use roads::peaks::unit;
-    let load = |&k: &usize| -> Result<(Vec<unit::UnitPeak>, unit::UnitZ12)> {
+    let read_one = |&k: &usize| -> Result<(Vec<unit::UnitPeak>, unit::UnitZ12)> {
         let u = units[k];
         let p = phase("reading the candidates");
         let pois = pois[k].as_ref().with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
@@ -3161,6 +3196,8 @@ fn peaks_from(
         );
         Ok((peaks, unit::UnitZ12::load_from(packs, &want)?))
     };
+    // (Read ahead while the z6 tile before is under way: its failure named its own.)
+    let load = |k: &usize| read_one(k).map_err(|e| jobrt::control::failed_on(e, "peaks", &[&units[*k].slash()]));
     let order: Vec<usize> = (0..units.len()).collect();
     unit::read_ahead(&order, load, |k, _, (peaks, z12)| {
         let u = units[k];
@@ -4659,12 +4696,14 @@ fn app_folder(exe: &Path) -> Result<PathBuf> {
 }
 
 /// Sets z6 tile `u` aside when `e` is a server that gave no answer (roads::unit::source_down):
-/// noted, for the job's end (`aside_end`); else `e`, which ends the job.
+/// noted, for the job's end (`aside_end`) and its agent (`ASIDE`); else `e`, which ends the job,
+/// named `u`'s (jobrt::control::failed_on).
 fn set_aside(aside: &mut Vec<(TileId, String)>, u: TileId, e: anyhow::Error) -> Result<()> {
     if !roads::unit::source_down(&e) {
-        return Err(e);
+        return Err(jobrt::control::failed_on(e, "unit", &[&u.slash()]));
     }
     eprintln!("unit {}: set aside, the job goes on with its other z6 tiles: {e:#}", u.slash());
+    ASIDE.lock().unwrap_or_else(|e| e.into_inner()).push(agentcore::coord::cost_key("unit", &u.slash()));
     aside.push((u, format!("{e:#}")));
     Ok(())
 }
@@ -4736,7 +4775,8 @@ impl Tile {
     fn held(self, linked: Option<store::cachefile::Linked>) -> Result<Built> {
         let linked = match linked {
             Some(l) => l,
-            None => store::cachefile::hold_links(&[&self.dir, &self.bdir])?,
+            None => store::cachefile::hold_links(&[&self.dir, &self.bdir])
+                .map_err(|e| jobrt::control::failed_on(e.into(), "unit", &[&self.u.slash()]))?,
         };
         Ok(Built { tile: self, _linked: linked })
     }
@@ -4809,8 +4849,15 @@ fn settle_tails(
 /// A z6 tile's last part, its folder ready: the grids its packs lacked, its scenic results kept for
 /// its next run, its base pack, road values, road ids and roads' English saved, its folders
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
-/// `roads::unit::saved_files`, all a member's hand-off may change: keep the two together.)
+/// `roads::unit::saved_files`, all a member's hand-off may change: keep the two together.) Its
+/// failure named its z6 tile's (jobrt::control::failed_on).
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
+    let u = b.u;
+    commit_tile(out, date, b, how).map_err(|e| jobrt::control::failed_on(e, "unit", &[&u.slash()]))
+}
+
+/// `commit_unit`'s work.
+fn commit_tile(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     // (What its folders link to held to its end, after they go: `_linked`.)
     let Built { tile: Tile { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, pieces, .. }, _linked } =
         b;
@@ -6175,12 +6222,13 @@ struct Uploading {
 
 impl Landing {
     /// The target uploading saved and noted done, once its uploads have landed (failing, the job
-    /// fails, the target not noted done); its cost line written with its uploads' bytes.
+    /// fails on it, jobrt::control::failed_on, the target not noted done); its cost line written
+    /// with its uploads' bytes.
     fn land(&mut self, out: &mut Out) -> Result<()> {
         if let Some(mut u) = self.up.take() {
             // (Its uploads waited for: what the work beside them didn't cover.)
             let p = phase("waiting for the uploads beside to land");
-            out.save_upto(u.mark)?;
+            out.save_upto(u.mark).map_err(|e| jobrt::control::failed_on(e, u.step, &[&u.target]))?;
             drop(p);
             let (wrote, creates) = out.claim_written(u.mark);
             if let Some(m) = u.cost.get_mut("sizes").and_then(|v| v.as_object_mut()) {
@@ -6218,8 +6266,8 @@ impl Landing {
 
     /// `target` of `step` (begun at `began`, `cost_start`), its work done and its uploads put off
     /// just now, uploading next: its cost line taken now (its measures, before the next target's
-    /// begin), the one before landed first (its uploads came before these, so this waits for those
-    /// alone).
+    /// begin), its work's end noted (`note_landing`), the one before landed first (its uploads
+    /// came before these, so this waits for those alone).
     fn then(
         &mut self,
         out: &mut Out,
@@ -6229,6 +6277,7 @@ impl Landing {
         began: std::time::Instant,
     ) -> Result<()> {
         let cost = done_line(step, target, began);
+        note_landing(&agentcore::coord::cost_key(step, target));
         self.land(out)?;
         self.up = Some(Uploading { step, target: target.to_string(), mark: out.mark(), said, began, cost });
         Ok(())
@@ -7169,7 +7218,7 @@ mod tests {
     /// upload failed isn't noted done, and the job fails.
     #[test]
     fn a_target_uploading_is_noted_done_once_its_uploads_have_landed() {
-        use super::{Landing, Out};
+        use super::{cost_start, note_failed, set_aside, Landing, Out, TileId};
         // (Alone in a process of its own: a target's cost line takes this process's measures
         // (buildstore::costin, every NAS write any test here makes counted in them), and the done
         // and cost files are named by its environment: run beside the others, a test's put_file
@@ -7198,7 +7247,7 @@ mod tests {
         let cost_of = |target: &str| -> Option<(u64, u64)> {
             let text = std::fs::read_to_string(&costs).unwrap_or_default();
             text.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find_map(|v| {
-                (v["unit"].as_str()? == agentcore::coord::cost_key("slope", target))
+                (v["unit"].as_str()? == agentcore::coord::cost_key("slope", target) && v.get("peak_mb").is_some())
                     .then(|| (v["sizes"]["wrote"].as_u64().unwrap_or(0), v["sizes"]["creates"].as_u64().unwrap_or(0)))
             })
         };
@@ -7239,10 +7288,29 @@ mod tests {
         std::fs::write(&p, b"c").unwrap();
         out.put_file_later("hidata/6-1-3", "sect", &p).unwrap();
         landing.then(&mut out, "slope", "6/1/4", "c".into(), now()).unwrap();
-        assert!(landing.land(&mut out).is_err());
+        let e = landing.land(&mut out).unwrap_err();
         assert_eq!(noted(), ["6/1/1", "6/1/2"]);
         assert_eq!(cost_of("6/1/4"), None);
         assert!(landing.land(&mut out).is_ok(), "nothing uploading");
+        // (Task #1567: each target's work's end noted, landing, so none of them counts as under way;
+        // the landing that failed named its target, noted failed for the agent as the job ends.)
+        let key = |t: &str| agentcore::coord::cost_key("slope", t);
+        let c = cost_start("slope", "6/1/5");
+        landing.then(&mut out, "slope", "6/1/5", "d".into(), c).unwrap();
+        cost_start("slope", "6/1/6");
+        let t = agentcore::agent::memguard::targets(&costs);
+        assert_eq!((t.open, t.failed), (vec![key("6/1/6")], Vec::new()), "the one landing isn't under way");
+        note_failed(&e.context("the job"));
+        assert_eq!(agentcore::agent::memguard::targets(&costs).failed, [key("6/1/4")]);
+        // (A z6 tile set aside, a server giving no answer, is failed too, whatever ends the job; one
+        // failing otherwise names itself.)
+        let mut aside = Vec::new();
+        let down = anyhow::Error::new(roads::unit::SourceDown("no answer".into()));
+        set_aside(&mut aside, TileId { z: 6, x: 5, y: 18 }, down).unwrap();
+        let e = set_aside(&mut aside, TileId { z: 6, x: 17, y: 22 }, anyhow::anyhow!("a dangling link")).unwrap_err();
+        assert_eq!(jobrt::control::failed_of(&e).map(|f| f.targets.clone()), Some(vec!["6/17/22".to_string()]));
+        note_failed(&anyhow::anyhow!("the pass's reaches"));
+        assert_eq!(agentcore::agent::memguard::targets(&costs).failed, [key("6/1/4"), "6/5/18".into()]);
     }
 
     /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.

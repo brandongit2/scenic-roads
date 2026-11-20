@@ -1863,9 +1863,14 @@ pub struct Done {
     #[serde(default)]
     pub handoff: Option<Handoff>,
     /// Its job failed after the targets its hand-off says it did: the lease's others are held
-    /// against the worker (as a failure's).
+    /// against the worker (as a failure's), those it failed on alone when it names them
+    /// (`failed_on`).
     #[serde(default)]
     pub failed: bool,
+    /// The targets its job failed on (crate::agent's `failed_on`): only these held; none (an older
+    /// app's too), every target not done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_on: Vec<String>,
     #[serde(default)]
     pub costs: Vec<(String, Cost)>,
     /// What its targets took at least, as it saw them (crate::agent::memguard: cost key, floor).
@@ -1896,7 +1901,7 @@ pub struct Done {
 }
 
 /// Work failed: why, and for a task out of memory, the peak it reached (MB).
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Fail {
     pub worker: String,
     pub lease: u64,
@@ -1918,6 +1923,10 @@ pub struct Fail {
     pub disks: Vec<(String, u64)>,
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub job_disk_mb: u64,
+    /// The targets a failed job failed on (crate::agent's `failed_on`): only these held; none (an
+    /// older app's too), every target of its lease.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_on: Vec<String>,
 }
 
 impl Coordinator {
@@ -2515,16 +2524,17 @@ impl Coordinator {
     /// made before their record was read offers them at those keys: `offer`; the rest are free
     /// again).
     pub fn finish(&self, id: u64, done: &[(String, String)]) {
-        self.end_own(id, done, false);
+        self.end_own(id, done, None);
     }
 
-    /// `finish`, its job failed: its targets not `done` are kept from this Mac as a member's failed
-    /// ones are from it (the backoff, `Sched::fail_hold`), as its "end" event says (`held`).
-    pub fn finish_failed(&self, id: u64, done: &[(String, String)]) {
-        self.end_own(id, done, true);
+    /// `finish`, its job failed: the targets it failed on (`failed_on`), else its targets not
+    /// `done`, are kept from this Mac as a member's failed ones are from it (the backoff,
+    /// `Sched::fail_hold`), as its "end" event says (`held`, `failed`).
+    pub fn finish_failed(&self, id: u64, done: &[(String, String)], failed_on: &[String]) {
+        self.end_own(id, done, Some(failed_on));
     }
 
-    fn end_own(&self, id: u64, done: &[(String, String)], failed: bool) {
+    fn end_own(&self, id: u64, done: &[(String, String)], failed_on: Option<&[String]>) {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         if let Some(l) = s.leases.finish(id, &self.me, now) {
@@ -2533,8 +2543,10 @@ impl Coordinator {
                     s.done.insert((step.clone(), t.clone()), k.clone());
                     s.done_by.insert((step.clone(), t.clone()), (l.job(), self.me.clone()));
                 }
-                if failed {
-                    for (t, _) in targets.iter().filter(|t| !done.iter().any(|d| d.0 == t.0)) {
+                if let Some(on) = failed_on {
+                    let left: Vec<&String> =
+                        targets.iter().map(|t| &t.0).filter(|t| !done.iter().any(|d| d.0 == **t)).collect();
+                    for t in held_of(&left, on) {
                         let e = s.failed.entry((self.me.clone(), cost_key(step, t))).or_insert((now, 0));
                         *e = (now, e.1 + 1);
                     }
@@ -4776,13 +4788,27 @@ fn retried(k: &str, step: Option<&str>, target: &str) -> bool {
     }
 }
 
+/// Of a failed job's targets `left` (not done), those held against its Mac (the backoff): those
+/// it failed on (`failed_on`, crate::agent's), else, naming none (an older app's, an older
+/// event's), every one.
+fn held_of<'a>(left: &[&'a String], failed_on: &[String]) -> Vec<&'a String> {
+    let named: Vec<&String> = left.iter().copied().filter(|t| failed_on.contains(t)).collect();
+    if named.is_empty() {
+        left.to_vec()
+    } else {
+        named
+    }
+}
+
 /// The failures' holds (`Sched::failed`) and the hand-offs' refusals in a row
 /// (`Shared::handoffs_refused`) as the lead before its restart had them (task #1447): the history's
 /// events replayed in order, counted as the live code counts them (`Coordinator::merged`,
 /// `finish_failed`, "/work/done", "/work/fail"). A failure: a member's "fail" not interrupted (its
 /// note not "stopped: "), its "done" that failed (`ok` false: its lease's targets less those done),
 /// or the lead's own "end" that `held` (the same, a job of this lead, `me`, that no "done" or
-/// "fail" ended); a target done by a "done" lets go of its worker's hold. A "merged" job's
+/// "fail" ended), each holding those of its targets its `failed` names, else (an event before
+/// task #1567, or a job that named none) every one (`held_of`); a target done by a "done" lets go
+/// of its worker's hold. A "merged" job's
 /// targets' refusals end (its jobs read from the history's file, as memory keeps no `data`); a
 /// "refused" counts each of its targets, and from crate::agent::flags::REFUSED_AGAIN in a row on
 /// holds it against its job's worker (its "lease"'s, else the Mac of its "done" or "end", as
@@ -4841,7 +4867,7 @@ fn seed_backoff(s: &mut Shared, me: &str) {
                 }
             }
             "fail" if !e.note.starts_with("stopped: ") => {
-                for t in &e.targets {
+                for t in held_of(&e.targets.iter().collect::<Vec<_>>(), &e.failed) {
                     fail(&mut failed, w, step, t, e.t, None);
                 }
             }
@@ -4850,13 +4876,13 @@ fn seed_backoff(s: &mut Shared, me: &str) {
                     failed.remove(&(w.to_string(), cost_key(step, t)));
                 }
                 if e.ok == Some(false) {
-                    for t in rest() {
+                    for t in held_of(&rest().collect::<Vec<_>>(), &e.failed) {
                         fail(&mut failed, w, step, t, e.t, None);
                     }
                 }
             }
             "end" if e.held && e.job.is_some_and(|j| !by_lead.contains(&j)) && lease.is_some_and(|l| l.0 == me) => {
-                for t in rest() {
+                for t in held_of(&rest().collect::<Vec<_>>(), &e.failed) {
                     fail(&mut failed, me, step, t, e.t, None);
                 }
             }
@@ -5780,9 +5806,12 @@ fn route(
                         s.done_by.insert((step.clone(), t.clone()), (l.job(), d.worker.clone()));
                         s.failed.remove(&(d.worker.clone(), cost_key(step, t)));
                     }
-                    // (Failed after these: the rest held against the worker, as a failure's.)
+                    // (Failed after these: those it failed on, else the rest, held against the
+                    // worker, as a failure's.)
                     if d.failed {
-                        for (t, _) in lease_targets.iter().filter(|t| !targets.contains(t)) {
+                        let left: Vec<&String> =
+                            lease_targets.iter().filter(|t| !targets.contains(t)).map(|t| &t.0).collect();
+                        for t in held_of(&left, &d.failed_on) {
                             let e = s.failed.entry((d.worker.clone(), cost_key(step, t))).or_insert((now, 0));
                             *e = (now, e.1 + 1);
                         }
@@ -5844,6 +5873,7 @@ fn route(
                         targets: targets.iter().map(|t| t.0.clone()).collect(),
                         secs: Some(secs.round()),
                         ok: Some(!d.failed),
+                        failed: if d.failed { d.failed_on.clone() } else { Vec::new() },
                         ..history::Event::new("done")
                     };
                     let e = history::Event { left: s.leases.take_left(l.id, now), ..l.noted(e, now) };
@@ -5912,7 +5942,8 @@ fn route(
             match &l.work {
                 Work::Job { step, targets } => {
                     if !f.interrupted {
-                        for (t, _) in targets {
+                        let all: Vec<&String> = targets.iter().map(|t| &t.0).collect();
+                        for t in held_of(&all, &f.failed_on) {
                             let e = s.failed.entry((f.worker.clone(), cost_key(step, t))).or_insert((now, 0));
                             *e = (now, e.1 + 1);
                         }
@@ -5963,6 +5994,7 @@ fn route(
                 Work::Job { step, targets } => history::Event {
                     step: Some(step.clone()),
                     targets: targets.iter().map(|t| t.0.clone()).collect(),
+                    failed: if f.interrupted { Vec::new() } else { f.failed_on.clone() },
                     ..history::Event::new("fail")
                 },
                 // (A task given back, not failed: "task-back", #703.)
@@ -8450,7 +8482,13 @@ mod tests {
         let (alive, _, cancel) = w.beat_told(g.lease, None, None, None).unwrap();
         assert!(alive && cancel.is_some_and(|x| x.rerun_after_update && x.by == "scenic job cancel on m4"));
         // Given back, not failed: nothing kept from m1, no failure counted.
-        w.end_with(g.lease, "cancelled by scenic job cancel on m4", true, &[], &[], 0).unwrap();
+        w.end_with(&Fail {
+            lease: g.lease,
+            error: "cancelled by scenic job cancel on m4".into(),
+            interrupted: true,
+            ..Default::default()
+        })
+        .unwrap();
         {
             let s = c.shared.lock().unwrap();
             assert!(s.failed.is_empty() && s.workers.get("m1").is_none_or(|w| w.failed == 0));
@@ -8482,7 +8520,8 @@ mod tests {
         let told = m2.cancel(&Cancel::new("6/55/25", None, false, "scenic job cancel on m2")).unwrap();
         assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
         assert!(w.beat_told(g.lease, None, None, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
-        w.end_with(g.lease, "cancelled", true, &[], &[], 0).unwrap();
+        w.end_with(&Fail { lease: g.lease, error: "cancelled".into(), interrupted: true, ..Default::default() })
+            .unwrap();
         assert!(c.held("unit").is_empty());
         // Not from the plan it was cancelled under (lease::Cancelled); the next plan reruns it.
         assert!(w.ask(&on(new)).unwrap().is_none());
@@ -8897,14 +8936,13 @@ mod tests {
         // A cold start: no target of its step measured.
         assert_eq!(c.measured("peaks", "6/1/1"), None);
         // Given back with what it took on the disk (its lease's targets' alone).
-        w.end_with(
-            g.lease,
-            "the build paused",
-            true,
-            &[],
-            &[(cost_key("peaks", "6/1/1"), 7000), (cost_key("peaks", "6/9/9"), 1)],
-            0,
-        )
+        w.end_with(&Fail {
+            lease: g.lease,
+            error: "the build paused".into(),
+            interrupted: true,
+            disks: vec![(cost_key("peaks", "6/1/1"), 7000), (cost_key("peaks", "6/9/9"), 1)],
+            ..Default::default()
+        })
         .unwrap();
         assert_eq!(c.disks(), [(cost_key("peaks", "6/1/1"), 7000)].into());
         // Only rises; it moves with the pool's state.
@@ -11122,7 +11160,7 @@ mod tests {
         c.offer("p", vec![own]);
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
-        c.finish_failed(g.lease, &[]);
+        c.finish_failed(g.lease, &[], &[]);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "kept from it an hour");
     }
 
@@ -13450,6 +13488,100 @@ mod tests {
         let st = crate::agent::Status { handoffs_refused: b.handoffs_refused(), ..Default::default() };
         let f = crate::agent::flags::refused(&st, unix_now());
         assert!(f.len() == 1 && f[0].kind == "refused", "still flagged after the restart: {f:?}");
+    }
+
+    /// Task #1567 (unit job 1078 failed on 6/5/18, and all 8 targets its lease hadn't finished were
+    /// held on the mini an hour): a failed job holds against its Mac only the targets it failed on,
+    /// the lead's own ("end") and a member's ("fail", and a "done" that failed), live and again on
+    /// a restart from the history; one naming none (an older app's, an event before them) every
+    /// target not done, as before.
+    #[test]
+    fn a_failed_job_holds_only_the_targets_it_failed_on_live_and_after_a_restart() {
+        let (d, c, w, _clock) = every((0, 0));
+        c.set_epoch(1);
+        let me = c.me.clone();
+        let ts = |n: u32| -> Vec<(String, String)> { (1..=3).map(|i| (format!("6/{n}/{i}"), "k".into())).collect() };
+        let names = |v: &[&str]| -> Vec<String> { v.iter().map(|t| t.to_string()).collect() };
+        // (Granted as an ask grants: its lease and its "lease" event.)
+        let grant = |worker: &str, targets: &[(String, String)]| {
+            let mut s = c.shared.lock().unwrap();
+            let (now, unix) = (s.now(), s.wall_s());
+            let id = s.leases.grant_at(worker, Work::Job { step: "pack".into(), targets: targets.to_vec() }, now, unix);
+            let job = s.leases.job_of(id);
+            s.history.add(history::Event {
+                worker: Some(worker.into()),
+                job,
+                step: Some("pack".into()),
+                targets: targets.iter().map(|t| t.0.clone()).collect(),
+                ..history::Event::new("lease")
+            });
+            (id, job)
+        };
+        // (The lead's own job's end, as its agent notes it: crate::agent's `note_end`.)
+        let own_end = |job, done: &[&str], failed: &[&str]| {
+            c.note(history::Event {
+                worker: Some(me.clone()),
+                job,
+                step: Some("pack".into()),
+                targets: names(done),
+                ok: Some(false),
+                held: true,
+                failed: names(failed),
+                ..history::Event::new("end")
+            });
+        };
+        // The lead's own, 6/1/3 done, failed on 6/1/1; one naming none.
+        let (id, job) = grant(&me, &ts(1));
+        c.finish_failed(id, &ts(1)[2..], &names(&["6/1/1"]));
+        own_end(job, &["6/1/3"], &["6/1/1"]);
+        let (id, job) = grant(&me, &ts(2));
+        c.finish_failed(id, &[], &[]);
+        own_end(job, &[], &[]);
+        // m2's: one failed on 6/3/2, one that handed 6/4/1 off and failed on 6/4/3; m3's naming none.
+        let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        let (id, _) = grant("m2", &ts(3));
+        w2.end_with(&Fail { lease: id, error: "boom".into(), failed_on: names(&["6/3/2"]), ..Default::default() })
+            .unwrap();
+        let (id, _) = grant("m2", &ts(4));
+        let h = Handoff { done: Some(("pack".into(), ts(4)[..1].to_vec())), ..Default::default() };
+        let d4 = Done {
+            lease: id,
+            handoff: Some(h),
+            journaled: true,
+            failed: true,
+            failed_on: names(&["6/4/3"]),
+            ..Default::default()
+        };
+        assert_eq!(w2.done(&d4).unwrap(), client::Handed::Taken);
+        let w3 = client::Client::at(w.urls(), c.contact.token.clone(), "m3");
+        let (id, _) = grant("m3", &ts(5));
+        w3.fail(id, "boom", None).unwrap();
+        let held = |c: &Coordinator| -> BTreeSet<(String, String)> {
+            c.shared.lock().unwrap().failed.keys().cloned().collect()
+        };
+        let key = |w: &str, t: &str| (w.to_string(), cost_key("pack", t));
+        let want: BTreeSet<_> = [
+            key(&me, "6/1/1"),
+            key(&me, "6/2/1"),
+            key(&me, "6/2/2"),
+            key(&me, "6/2/3"),
+            key("m2", "6/3/2"),
+            key("m2", "6/4/3"),
+            key("m3", "6/5/1"),
+            key("m3", "6/5/2"),
+            key("m3", "6/5/3"),
+        ]
+        .into();
+        assert_eq!(held(&c), want, "live");
+        // (Each member's event says what it held.)
+        let failed_of = |kind: &str| -> Vec<Vec<String>> {
+            c.history().iter().filter(|e| e.kind == kind).map(|e| e.failed.clone()).collect()
+        };
+        assert_eq!(failed_of("fail"), [names(&["6/3/2"]), Vec::new()]);
+        assert_eq!(failed_of("done"), [names(&["6/4/3"])]);
+        c.stop();
+        let (b, _) = start_for_test(&d.path().join("coord"), &me, "");
+        assert_eq!(held(&b), want, "the same after a restart");
     }
 
     /// Task #1447 review: a page's retry (`clear_failed`) is in the history, so a restarted lead

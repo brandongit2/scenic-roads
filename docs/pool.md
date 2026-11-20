@@ -742,11 +742,21 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   hand-off from it the merge refused a second time in a row on (§7.3), isn't offered to it for
   `backoff-start-hours` (1) after the first, twice as long after each more, at most
   `backoff-ceiling-hours` (32); a failure is forgotten that long after its last, and the worker's
-  hand-off of the target lets its hold go. Both are pool settings (`scenic pool set
+  hand-off of the target lets its hold go. A failed job holds only the targets it failed on
+  (`failed_on`): those its error names (jobrt::control::failed_on: a unit z6 tile's work, its
+  set-aside, its commit; a target's landing beside the next one's work, scenic-build's `Landing`;
+  peaks' read-ahead; a polar block or root) or it set aside, as its costs file says (`{unit,
+  failed: true}`); naming none (a job killed, stopped by the memory guard, or failing in a step's
+  work of one target at a time), the one target under way as it ended when there was exactly one
+  (begun, not ended, not landing); else every target its lease didn't finish. The lead's own job's
+  "end" says which in its note; it, a member's "fail" and its "done" that failed carry them as
+  `failed` (/work/fail's and /work/done's `failed_on`), and an end of none, an older app's, holds
+  every target not done. Both are pool settings (`scenic pool set
   backoff-start-hours|backoff-ceiling-hours <hours>|off`, the build page's Settings, "Backoff"; the
   start 0.1 to 24 h, the ceiling 1 to 168 h, the history's week), taken as set. A lead's start
   counts the holds and the refusals in a row again from its history (`seed_backoff`): its "fail",
-  "done" (failed: its "lease"'s targets less those done), own "end" (`held`), "refused",
+  "done" (failed: its "lease"'s targets less those done), own "end" (`held`), each holding its
+  `failed` where it names any, "refused",
   "merged" and "retry" (a page's retry, `clear_failed`: its target's holds and refusals
   forgotten) events, in order, each hold from its event's time.
 - **The lead's own work backs off too** (jobrt::backoff's `own_hold`): a job of the lead's agent

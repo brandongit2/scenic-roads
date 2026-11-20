@@ -558,7 +558,13 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                         c.finish(lease, &[]);
                     }
                     Some(w) => w
-                        .end_with(lease, "the memory guard", true, &floors, &[], 0)
+                        .end_with(&coord::Fail {
+                            lease,
+                            error: "the memory guard".into(),
+                            interrupted: true,
+                            floors,
+                            ..Default::default()
+                        })
                         .map_err(|e| format!("end: {e:#}"))?,
                 }
                 return Ok(false);

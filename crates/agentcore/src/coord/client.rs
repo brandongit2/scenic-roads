@@ -144,17 +144,10 @@ pub trait LeaseCalls {
     /// key, MB), for the lease's floors.
     fn give_back_with(&self, lease: u64, why: &str, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()>;
 
-    /// Ends lease `lease` unfinished: given back (`interrupted`) or failed, with what the job saw its
-    /// targets take at least, in memory (`floors`) and on the disk (`disks`: cost key, MB).
-    fn end_with(
-        &self,
-        lease: u64,
-        why: &str,
-        interrupted: bool,
-        floors: &[(String, crate::agent::memguard::Floor)],
-        disks: &[(String, u64)],
-        job_disk_mb: u64,
-    ) -> Result<()>;
+    /// Ends a lease unfinished, as `f` says (its worker this client's): given back (`interrupted`)
+    /// or failed, with what the job saw its targets take at least, in memory (`floors`) and on the
+    /// disk (`disks`: cost key, MB), and, failed, the targets it failed on (`failed_on`).
+    fn end_with(&self, f: &Fail) -> Result<()>;
 }
 
 impl LeaseCalls for Client {
@@ -253,18 +246,7 @@ impl LeaseCalls for Client {
         oom_mb: Option<u64>,
         floors: &[(String, crate::agent::memguard::Floor)],
     ) -> Result<()> {
-        let f = Fail {
-            worker: self.worker.clone(),
-            lease,
-            error: error.chars().take(4000).collect(),
-            oom_mb,
-            interrupted: false,
-            floors: floors.to_vec(),
-            disks: Vec::new(),
-            job_disk_mb: 0,
-        };
-        self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
-        Ok(())
+        self.end_with(&Fail { lease, error: error.to_string(), oom_mb, floors: floors.to_vec(), ..Default::default() })
     }
 
     fn give_back(&self, lease: u64, why: &str) -> Result<()> {
@@ -272,39 +254,17 @@ impl LeaseCalls for Client {
     }
 
     fn give_back_with(&self, lease: u64, why: &str, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()> {
-        let f = Fail {
-            worker: self.worker.clone(),
+        self.end_with(&Fail {
             lease,
-            error: why.chars().take(4000).collect(),
-            oom_mb: None,
+            error: why.to_string(),
             interrupted: true,
             floors: floors.to_vec(),
-            disks: Vec::new(),
-            job_disk_mb: 0,
-        };
-        self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
-        Ok(())
+            ..Default::default()
+        })
     }
 
-    fn end_with(
-        &self,
-        lease: u64,
-        why: &str,
-        interrupted: bool,
-        floors: &[(String, crate::agent::memguard::Floor)],
-        disks: &[(String, u64)],
-        job_disk_mb: u64,
-    ) -> Result<()> {
-        let f = Fail {
-            worker: self.worker.clone(),
-            lease,
-            error: why.chars().take(4000).collect(),
-            oom_mb: None,
-            interrupted,
-            floors: floors.to_vec(),
-            disks: disks.to_vec(),
-            job_disk_mb,
-        };
+    fn end_with(&self, f: &Fail) -> Result<()> {
+        let f = Fail { worker: self.worker.clone(), error: f.error.chars().take(4000).collect(), ..f.clone() };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }

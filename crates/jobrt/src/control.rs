@@ -720,6 +720,31 @@ pub fn done(step: &str, target: &str) {
     }
 }
 
+/// The targets of `step` a job's error is of: its context (`failed_on`), set where the step knows
+/// which target failed, so its agent holds only those against its Mac (the lead's backoff), not
+/// every target the job didn't finish. Its words lead the error's: "<step> <targets>".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedOn {
+    pub step: String,
+    pub targets: Vec<String>,
+}
+
+impl std::fmt::Display for FailedOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.step, self.targets.join(" "))
+    }
+}
+
+/// `e` as the failure of `targets` of `step` (`FailedOn`).
+pub fn failed_on(e: anyhow::Error, step: &str, targets: &[&str]) -> anyhow::Error {
+    e.context(FailedOn { step: step.to_string(), targets: targets.iter().map(|t| t.to_string()).collect() })
+}
+
+/// The targets error `e` says it is of (`failed_on`, its outermost), if any.
+pub fn failed_of(e: &anyhow::Error) -> Option<&FailedOn> {
+    e.downcast_ref::<FailedOn>()
+}
+
 /// The targets of `step` a job noted done (`done`), in order, once each.
 pub fn read_done(path: &Path, step: &str) -> Vec<String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -1387,6 +1412,17 @@ pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #1567: an error a step names its failing target in is found under the contexts added
+    /// after it, its words leading the message; one never named names none.
+    #[test]
+    fn a_failure_names_its_target_under_later_contexts() {
+        let e = failed_on(anyhow::anyhow!("a dangling link"), "unit", &["6/5/18"]).context("the job");
+        let named = failed_of(&e).expect("named");
+        assert_eq!((named.step.as_str(), named.targets.as_slice()), ("unit", &["6/5/18".to_string()][..]));
+        assert_eq!(format!("{e:#}"), "the job: unit 6/5/18: a dangling link");
+        assert!(failed_of(&anyhow::anyhow!("a dangling link").context("the job")).is_none());
+    }
 
     /// Task #948: a target runs on its job's grant as it began (a change written meanwhile, fewer
     /// or more, changes nothing under way: a call inside runs on the same pool), and the next target

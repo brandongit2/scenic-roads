@@ -330,6 +330,43 @@ fn fail_why(outcome: Outcome, note: &str, handed: bool) -> String {
     }
 }
 
+/// The targets a failed job of `step` over `targets` (`done` of them done) is held on against its
+/// Mac (the lead's backoff: crate::coord::Coordinator::finish_failed, a member's `failed_on`), as
+/// its costs file says (`t`), and how they were found, in words for its end's event: those it
+/// said it failed on (scenic-build's `note_failed`); named none, the one target under way as it
+/// ended when there was exactly one (memguard::Targets::open: a job stopped or killed mid-target);
+/// else none, which holds every target not done.
+fn failed_on(
+    t: &memguard::Targets,
+    step: &str,
+    targets: &[(String, String)],
+    done: &[(String, String)],
+) -> (Vec<String>, String) {
+    let of = |keys: &[String]| -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for k in keys {
+            let c = crate::coord::CostKey::parse(k);
+            let left = targets.iter().any(|t| t.0 == c.target) && !done.iter().any(|d| d.0 == c.target);
+            if c.step == step && left && !v.iter().any(|x| x == c.target) {
+                v.push(c.target.to_string());
+            }
+        }
+        v
+    };
+    let named = of(&t.failed);
+    if !named.is_empty() {
+        let which = if named.len() == 1 { "the target" } else { "the targets" };
+        let said = format!("held against this Mac: {}, {which} it failed on", named.join(" "));
+        return (named, said);
+    }
+    match of(&t.open).as_slice() {
+        [one] if t.open.len() == 1 => {
+            (vec![one.clone()], format!("held against this Mac: {one}, under way as it ended (it named none)"))
+        }
+        _ => (Vec::new(), "held against this Mac: every target not done (it named none)".to_string()),
+    }
+}
+
 /// A slot's files' suffix in the agent's folder: none for the first, `-2`, `-3`, … after
 /// (`job.json`, `job-2.json`, …; `scratch/`, `scratch-2/`, …).
 fn slot_suffix(k: usize) -> String {
@@ -585,8 +622,8 @@ impl Outcome {
 #[derive(Clone, Debug)]
 enum Tell {
     Done(Box<crate::coord::Done>),
-    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)>, job_disk: u64 },
-    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)>, job_disk: u64 },
+    /// Given back (`interrupted`) or failed.
+    End(Box<crate::coord::Fail>),
 }
 
 impl Tell {
@@ -604,12 +641,7 @@ impl Tell {
                     _ => false,
                 }),
             ),
-            Tell::GiveBack { id, why, floors, disks, job_disk } => {
-                (*id, c.end_with(*id, why, true, floors, disks, *job_disk).map(|()| false))
-            }
-            Tell::Fail { id, why, floors, disks, job_disk } => {
-                (*id, c.end_with(*id, why, false, floors, disks, *job_disk).map(|()| false))
-            }
+            Tell::End(f) => (f.lease, c.end_with(f).map(|()| false)),
         };
         match r {
             Ok(refused) => Some(refused),
@@ -624,7 +656,7 @@ impl Tell {
     fn lease(&self) -> u64 {
         match self {
             Tell::Done(d) => d.lease,
-            Tell::GiveBack { id, .. } | Tell::Fail { id, .. } => *id,
+            Tell::End(f) => f.lease,
         }
     }
 }
@@ -3185,6 +3217,8 @@ impl Agent {
             eprintln!("agent: slot {k}'s job: the disk fell {} while it ran alone, its counts {} (a weaker signal, not a floor)", room::size(watch.disk_fell), room::size(watch.disk_peak));
         }
         let guard_stopped = self.slots[k].guard_stopped;
+        // (Held, the targets it's held on: those it failed on, or none for every one not done.)
+        let failed_on = if outcome.holds(guard_stopped) { self.failed_on(k, done).0 } else { Vec::new() };
         // An own job's timings, taken whichever way it ends (none left for the slot's next job).
         let own_timings = self.slots[k].timings_out.take();
         // (A member's job's tasks, at this Mac's broker: gone with it.)
@@ -3196,10 +3230,11 @@ impl Agent {
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
-                    // (Failed, or stopped by the memory guard: its targets not done kept from this
-                    // Mac as a member's are, the lead's backoff, `finish_failed`.)
+                    // (Failed, or stopped by the memory guard: those it failed on, else its targets
+                    // not done, kept from this Mac as a member's are, the lead's backoff,
+                    // `finish_failed`.)
                     if outcome.holds(guard_stopped) {
-                        c.finish_failed(id, done);
+                        c.finish_failed(id, done, &failed_on);
                     } else {
                         c.finish(id, done);
                     }
@@ -3247,7 +3282,7 @@ impl Agent {
                 if local {
                     if let Some(c) = &self.coord {
                         if outcome.holds(guard_stopped) {
-                            c.finish_failed(id, done);
+                            c.finish_failed(id, done, &failed_on);
                         } else {
                             c.finish(id, done);
                         }
@@ -3295,6 +3330,7 @@ impl Agent {
                             disks,
                             job_disk_mb: job_disk,
                             failed,
+                            failed_on: failed_on.clone(),
                             journaled: pooled,
                             timings,
                             ..Default::default()
@@ -3312,10 +3348,19 @@ impl Agent {
                                 ..Default::default()
                             }))
                         }
-                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => {
-                            Tell::GiveBack { id, why: note.to_string(), floors, disks, job_disk }
+                        _ => {
+                            let back = matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped;
+                            Tell::End(Box::new(crate::coord::Fail {
+                                lease: id,
+                                error: if back { note.to_string() } else { fail_why(outcome, note, entry.is_some()) },
+                                interrupted: back,
+                                floors,
+                                disks,
+                                job_disk_mb: job_disk,
+                                failed_on,
+                                ..Default::default()
+                            }))
                         }
-                        _ => Tell::Fail { id, why: fail_why(outcome, note, entry.is_some()), floors, disks, job_disk },
                     };
                     if !pooled && matches!(tell, Tell::Done(_)) {
                         self.unjournaled.insert(id, dir.clone());
@@ -3347,7 +3392,6 @@ impl Agent {
                 let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()));
                 let done =
                     step.filter(|_| outcome != Outcome::Interrupted && !done.is_empty()).map(|s| (s, done.to_vec()));
-                let failed = outcome == Outcome::Failed && done.is_some();
                 // A task's: what `scenic run-task` wrote (its outputs are with the coordinator already).
                 let task: Option<serde_json::Value> =
                     std::fs::read(dir.join("task.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -3359,7 +3403,7 @@ impl Agent {
                 let interrupted = !ok && matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped;
                 // (What its targets held at least, for the lead's floors when it isn't done.)
                 let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"), job)) };
-                let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
+                let r = serde_json::json!({ "ok": ok, "done": done, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
                 if let Err(e) = store::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
                 }
@@ -6197,6 +6241,15 @@ impl Agent {
         self.sampler.held(k)
     }
 
+    /// Slot `k`'s job's `failed_on`, as its costs file says (`slot_costs`), `done` of its targets
+    /// done: none for a job of no record.
+    fn failed_on(&self, k: usize, done: &[(String, String)]) -> (Vec<String>, String) {
+        let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) else {
+            return (Vec::new(), String::new());
+        };
+        failed_on(&memguard::targets(&self.slot_costs(k)), &w.step, &w.targets, done)
+    }
+
     /// Where slot `k`'s job notes what its targets cost (`SCENIC_COSTS`): this Mac's own job's in
     /// the agent's folder, a member's leased job's in its lease's folder.
     fn slot_costs(&self, k: usize) -> PathBuf {
@@ -7813,7 +7866,7 @@ impl Agent {
 
     /// Notes slot `k`'s job's end: its step, the targets it finished, its time, and how it ended
     /// (`outcome`, and `how`: empty when it succeeded), its targets not done held against this Mac
-    /// or not (`Outcome::holds`).
+    /// or not (`Outcome::holds`): those it failed on (`failed_on`, said in its note), or every one.
     fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, outcome: Outcome, how: &str) {
         let ok = outcome == Outcome::Done;
         // (Its end in its spans, for the lead: crate::agent::spans.)
@@ -7826,6 +7879,10 @@ impl Agent {
             .as_ref()
             .map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
+        // (What of it is held, and how that was found, said: `failed_on`.)
+        let held = outcome.holds(self.slots[k].guard_stopped);
+        let (failed, said) = if held { self.failed_on(k, done) } else { Default::default() };
+        let note = [how, said.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("; ");
         let e = crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
             job: self.slots[k].job,
@@ -7833,9 +7890,10 @@ impl Agent {
             targets: done.iter().map(|t| t.0.clone()).collect(),
             secs: Some(secs as f64),
             ok: Some(ok),
-            held: outcome.holds(self.slots[k].guard_stopped),
+            held,
+            failed,
             what,
-            note: how.to_string(),
+            note,
             ..crate::coord::history::Event::new("end")
         };
         // (What its lease measured, as the lead heard its beats: its stillness and its pace, noted
@@ -13145,20 +13203,23 @@ mod tests {
             member: true,
         })
         .unwrap();
-        let fail = |id| Tell::Fail { id, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 };
+        let end = |lease, interrupted| {
+            Tell::End(Box::new(crate::coord::Fail { lease, error: "x".into(), interrupted, ..Default::default() }))
+        };
+        let fail = |id| end(id, false);
         a.tell_or_owe(fail(1));
         assert_eq!(a.owed.len(), 1, "no client: owed");
         a.client = Some(crate::coord::client::Client::at(vec![coordwire::testkit::dead()], "t".into(), "m1"));
         a.begin_round();
         a.tell_or_owe(fail(2));
         assert!(a.client.as_ref().unwrap().round_failed());
-        a.tell_or_owe(Tell::GiveBack { id: 3, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 });
+        a.tell_or_owe(end(3, true));
         a.tell_or_owe(Tell::Done(Box::new(crate::coord::Done { lease: 4, ..Default::default() })));
         assert_eq!(
             a.owed
                 .iter()
                 .map(|t| match t {
-                    Tell::Fail { id, .. } | Tell::GiveBack { id, .. } => *id,
+                    Tell::End(f) => f.lease,
                     Tell::Done(d) => d.lease,
                 })
                 .collect::<Vec<_>>(),
@@ -21634,7 +21695,7 @@ mod membership_tests {
             (g("6/1/1"), g("6/1/2"), g("6/1/3"))
         };
         a.slots[0].lease = Some(Held::Leased { lease: job, dir: d.path().join("out") });
-        a.owed.push(Tell::Fail { id: owed, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 });
+        a.owed.push(Tell::End(Box::new(crate::coord::Fail { lease: owed, error: "x".into(), ..Default::default() })));
         assert_eq!(a.held_of_lead(), [job, owed].into());
         a.client = Some(crate::coord::client::Client::at(
             vec![format!("http://127.0.0.1:{port}")],
@@ -21778,6 +21839,42 @@ mod membership_tests {
         assert!(!fail_why(Outcome::Done, "", false).is_empty());
         assert!(!fail_why(Outcome::Failed, " ", true).trim().is_empty());
         assert_eq!(fail_why(Outcome::Failed, "boom", true), "boom");
+    }
+
+    /// Task #1567: a failed job is held on what its costs file says it failed on, not the last
+    /// target it began (unit job 1078: 6/5/18 failed while 6/17/22 was under way), less those done
+    /// and others' keys; one that named none, killed mid-target, on the one target under way; else
+    /// on none, which holds every target not done; each way said.
+    #[test]
+    fn a_failed_job_is_held_on_what_it_failed_on_or_what_was_under_way() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("costs.jsonl");
+        let ts: Vec<(String, String)> =
+            ["6/5/18", "6/17/22", "6/1/1"].iter().map(|t| (t.to_string(), "k".to_string())).collect();
+        let done = [ts[2].clone()];
+        let held = |lines: &[&str]| {
+            std::fs::write(&p, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+            failed_on(&memguard::targets(&p), "unit", &ts, &done)
+        };
+        let started = |t: &str| format!("{{\"unit\":\"{t}\",\"started\":1}}");
+        let failed = |t: &str| format!("{{\"unit\":\"{t}\",\"failed\":true}}");
+        let (a, b, c) = (started("6/5/18"), started("6/17/22"), started("6/1/1"));
+        let named = held(&[&a, &b, &failed("6/5/18"), &failed("pois 6/17/22"), &failed("6/1/1")]);
+        assert_eq!(
+            named,
+            (vec!["6/5/18".to_string()], "held against this Mac: 6/5/18, the target it failed on".into())
+        );
+        let killed = held(&[&c, r#"{"unit":"6/1/1","peak_mb":9}"#, &b]);
+        assert_eq!(
+            killed,
+            (
+                vec!["6/17/22".to_string()],
+                "held against this Mac: 6/17/22, under way as it ended (it named none)".into()
+            )
+        );
+        let unknown = (Vec::new(), "held against this Mac: every target not done (it named none)".to_string());
+        assert_eq!(held(&[&a, &b]), unknown, "two under way: which isn't known");
+        assert_eq!(held(&[]), unknown, "none under way");
     }
 
     /// Task #815: a member paused (or away) through a change of lead kept its way to the old lead's

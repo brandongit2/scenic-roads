@@ -694,121 +694,142 @@ fn resume_target(pole: Pole, b: (u32, u32)) -> (u8, u32, u32) {
     (BLOCK_Z + if pole == Pole::South { 128 } else { 0 }, b.0, b.1)
 }
 
-/// `polar-terrain`: each block's terrain pack (`terrain_block`), from the pool over its latitudes.
+/// `polar-terrain`: each block's terrain pack (`terrain_block`), from the pool over its latitudes;
+/// a block's failure named its own (jobrt::control::failed_on).
 pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     let net = buildstore::fetch::Fetcher::from_env();
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
-        jobrt::control::safe_point("polar-terrain");
-        jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
-        let max_z = finest_now(out, pole)?;
-        // (The pool over the block's latitudes; the stored files the block reads much of read from
-        // this Mac's whole copies, as the terrain's are, buildstore::localread: the same bytes.)
-        let area = polar::lat_box(pole, BLOCK_Z, b.0, b.1);
-        let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, area)?;
-        let plans = plans(&pool.plan, max_z);
-        let o = inputs::dem::generic::Opts {
-            fetch: &net,
-            store: Some(pool.store.clone()),
-            local: pool.local.as_ref().map(|local| inputs::dem::generic::Copies { local, area }),
-        };
-        let ss = samplers(&plans, &o)?;
-        let voids = Voids::default();
-        let mut pieces = jobrt::resume_log::Pieces::open(
-            &out.scratch,
-            resume_target(pole, b),
-            "polar-terrain",
-            &jobrt::resume_log::job_id(
-                "polar-terrain",
-                &format!("{} {} z{max_z}", TERRAIN_V, codecs::terrain_codec::version()),
-                &t,
-                &[&crate::terrain_resume::inputs_read(out.root(), &out.manifest)?, &format!("{plans:?}")],
-            ),
-            jobrt::resume_log::on(),
-        );
-        let mut tiles = Vec::new();
-        terrain_block(
-            &ss,
-            pole,
-            b,
-            max_z,
-            &voids,
-            &mut pieces,
-            &mut |z, x, y, t| {
-                tiles.push((z, x, y, t));
-                Ok(())
-            },
-            &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks"),
-        )
-        // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
-        .map_err(|e| jobrt::control::stop_if_paused("polar-terrain", e))?;
-        let (v, f, n) = voids.total();
-        eprintln!(
-            "polar-terrain {t}: {} tiles; of {n} samples {v} with no data, {f} of them filled from voids",
-            tiles.len()
-        );
-        write(out, "terrain", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
-        pieces.finish();
-        jobrt::control::done("polar-terrain", &t);
+        terrain_one(out, &net, targets.len(), k, pole, b, &t)
+            .map_err(|e| jobrt::control::failed_on(e, "polar-terrain", &[&t]))?;
     }
     jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
 }
 
+/// `terrain_step`'s block `b` of `pole`, its `k`th of `of`, target `t`.
+fn terrain_one(
+    out: &mut buildstore::out::Out,
+    net: &buildstore::fetch::Fetcher,
+    of: usize,
+    k: usize,
+    pole: Pole,
+    b: (u32, u32),
+    t: &str,
+) -> Result<()> {
+    jobrt::control::safe_point("polar-terrain");
+    jobrt::jobs::report(k as u64, of as u64, "polar blocks");
+    let max_z = finest_now(out, pole)?;
+    // (The pool over the block's latitudes; the stored files the block reads much of read from
+    // this Mac's whole copies, as the terrain's are, buildstore::localread: the same bytes.)
+    let area = polar::lat_box(pole, BLOCK_Z, b.0, b.1);
+    let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, area)?;
+    let plans = plans(&pool.plan, max_z);
+    let o = inputs::dem::generic::Opts {
+        fetch: net,
+        store: Some(pool.store.clone()),
+        local: pool.local.as_ref().map(|local| inputs::dem::generic::Copies { local, area }),
+    };
+    let ss = samplers(&plans, &o)?;
+    let voids = Voids::default();
+    let mut pieces = jobrt::resume_log::Pieces::open(
+        &out.scratch,
+        resume_target(pole, b),
+        "polar-terrain",
+        &jobrt::resume_log::job_id(
+            "polar-terrain",
+            &format!("{} {} z{max_z}", TERRAIN_V, codecs::terrain_codec::version()),
+            t,
+            &[&crate::terrain_resume::inputs_read(out.root(), &out.manifest)?, &format!("{plans:?}")],
+        ),
+        jobrt::resume_log::on(),
+    );
+    let mut tiles = Vec::new();
+    terrain_block(
+        &ss,
+        pole,
+        b,
+        max_z,
+        &voids,
+        &mut pieces,
+        &mut |z, x, y, t| {
+            tiles.push((z, x, y, t));
+            Ok(())
+        },
+        &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, of as u64, "polar blocks"),
+    )
+    // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
+    .map_err(|e| jobrt::control::stop_if_paused("polar-terrain", e))?;
+    let (v, f, n) = voids.total();
+    eprintln!(
+        "polar-terrain {t}: {} tiles; of {n} samples {v} with no data, {f} of them filled from voids",
+        tiles.len()
+    );
+    write(out, "terrain", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
+    pieces.finish();
+    jobrt::control::done("polar-terrain", t);
+    Ok(())
+}
+
 /// `polar-slope`: each block's shading pack (`slope_block`), from the terrain packs of it (read
-/// whole) and its neighbours (their tiles read as wanted).
+/// whole) and its neighbours (their tiles read as wanted); a block's failure named its own
+/// (jobrt::control::failed_on).
 pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
-        let max_z = finest_now(out, pole)?;
-        jobrt::control::safe_point("polar-slope");
-        jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
-        let mut packs: HashMap<(u32, u32), Pack> = HashMap::new();
-        for n in around(pole, b) {
-            if let Some(p) = Pack::open(out, &block_logical("terrain", pole, n), n == b)? {
-                packs.insert(n, p);
-            }
-        }
-        anyhow::ensure!(packs.contains_key(&b), "{t}: no terrain pack ({})", block_logical("terrain", pole, b));
-        let terrain = |z: u8, x: u32, y: u32| -> Result<Option<Arc<Vec<f32>>>> {
-            let Some(p) = packs.get(&(x >> (z - BLOCK_Z), y >> (z - BLOCK_Z))) else { return Ok(None) };
-            p.get(z, x, y)?.map(|b| roadcore::grid::decode_terrain(&b).map(Arc::new)).transpose()
-        };
-        let mut pieces = jobrt::resume_log::Pieces::open(
-            &out.scratch,
-            resume_target(pole, b),
-            "polar-slope",
-            &jobrt::resume_log::job_id(
-                "polar-slope",
-                &format!("{} {} z{max_z}", SLOPE_V, codecs::shade_codec::version()),
-                &t,
-                &[&jobrt::resume_log::names(
-                    out,
-                    around(pole, b).into_iter().map(|n| block_logical("terrain", pole, n)),
-                )],
-            ),
-            jobrt::resume_log::on(),
-        );
-        let mut tiles = Vec::new();
-        slope_block(
-            pole,
-            b,
-            max_z,
-            &terrain,
-            &mut pieces,
-            &mut |z, x, y, s| {
-                tiles.push((z, x, y, s));
-                Ok(())
-            },
-            &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks"),
-        )
-        .map_err(|e| jobrt::control::stop_if_paused("polar-slope", e))?;
-        eprintln!("polar-slope {t}: {} tiles", tiles.len());
-        write(out, "slope", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
-        pieces.finish();
-        jobrt::control::done("polar-slope", &t);
+        slope_one(out, targets.len(), k, pole, b, &t)
+            .map_err(|e| jobrt::control::failed_on(e, "polar-slope", &[&t]))?;
     }
     jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
+    Ok(())
+}
+
+/// `slope_step`'s block `b` of `pole`, its `k`th of `of`, target `t`.
+fn slope_one(out: &mut buildstore::out::Out, of: usize, k: usize, pole: Pole, b: (u32, u32), t: &str) -> Result<()> {
+    let max_z = finest_now(out, pole)?;
+    jobrt::control::safe_point("polar-slope");
+    jobrt::jobs::report(k as u64, of as u64, "polar blocks");
+    let mut packs: HashMap<(u32, u32), Pack> = HashMap::new();
+    for n in around(pole, b) {
+        if let Some(p) = Pack::open(out, &block_logical("terrain", pole, n), n == b)? {
+            packs.insert(n, p);
+        }
+    }
+    anyhow::ensure!(packs.contains_key(&b), "{t}: no terrain pack ({})", block_logical("terrain", pole, b));
+    let terrain = |z: u8, x: u32, y: u32| -> Result<Option<Arc<Vec<f32>>>> {
+        let Some(p) = packs.get(&(x >> (z - BLOCK_Z), y >> (z - BLOCK_Z))) else { return Ok(None) };
+        p.get(z, x, y)?.map(|b| roadcore::grid::decode_terrain(&b).map(Arc::new)).transpose()
+    };
+    let mut pieces = jobrt::resume_log::Pieces::open(
+        &out.scratch,
+        resume_target(pole, b),
+        "polar-slope",
+        &jobrt::resume_log::job_id(
+            "polar-slope",
+            &format!("{} {} z{max_z}", SLOPE_V, codecs::shade_codec::version()),
+            t,
+            &[&jobrt::resume_log::names(out, around(pole, b).into_iter().map(|n| block_logical("terrain", pole, n)))],
+        ),
+        jobrt::resume_log::on(),
+    );
+    let mut tiles = Vec::new();
+    slope_block(
+        pole,
+        b,
+        max_z,
+        &terrain,
+        &mut pieces,
+        &mut |z, x, y, s| {
+            tiles.push((z, x, y, s));
+            Ok(())
+        },
+        &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, of as u64, "polar blocks"),
+    )
+    .map_err(|e| jobrt::control::stop_if_paused("polar-slope", e))?;
+    eprintln!("polar-slope {t}: {} tiles", tiles.len());
+    write(out, "slope", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
+    pieces.finish();
+    jobrt::control::done("polar-slope", t);
     Ok(())
 }
 

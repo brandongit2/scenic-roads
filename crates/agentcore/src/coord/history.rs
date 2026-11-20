@@ -75,6 +75,12 @@ pub struct Event {
     /// its "done" (`ok` false) or "fail" (not "stopped: "). Events before task #1447 have none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// Of a failed job's targets, those it failed on (crate::agent's `failed_on`: those it named,
+    /// or the one under way as it was killed), held alone against its Mac: on the lead's own
+    /// "end" that `held`, a member's "fail" not interrupted, its "done" that failed. None (an
+    /// event before task #1567, or a job that named none): every target not done is held.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<String>,
     /// What the job does (its description), for a start and an end.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub what: String,

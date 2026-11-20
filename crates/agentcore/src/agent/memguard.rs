@@ -382,13 +382,18 @@ pub fn current(costs: &Path) -> Option<String> {
 /// time left and the flags' count); and the threads the last to begin runs on, where its `started`
 /// line says (a target run on its job's threads as it began, jobrt::control::on_grant: docs/pool.md
 /// §7.1, Threads controlled live), and whether it says it is live (jobrt::control::on_grant_live:
-/// on its threads file's threads as they change, `threads` those it began on).
+/// on its threads file's threads as they change, `threads` those it began on). And, for its end:
+/// the targets it said it failed on (`failed`, a `failed` line each: scenic-build's `note_failed`),
+/// and those under way (`open`: begun, neither ended nor failed, nor landing beside the next's
+/// work, scenic-build's `note_landing`), by cost key, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
     pub ended: usize,
     pub threads: Option<u32>,
     pub live: bool,
+    pub failed: Vec<String>,
+    pub open: Vec<String>,
 }
 
 /// Costs file `costs`'s `Targets` (none when it can't be read). A target's `peak_mb` line ends it
@@ -400,10 +405,17 @@ pub fn targets(costs: &Path) -> Targets {
     let mut t = Targets::default();
     let Ok(s) = std::fs::read_to_string(costs) else { return t };
     let mut begun: Vec<String> = Vec::new();
+    let mut landing: Vec<String> = Vec::new();
     for l in s.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let Some(key) = v["unit"].as_str() else { continue };
-        if let Some(at) = v.get("started") {
+        if v["failed"] == true {
+            if !t.failed.iter().any(|f| f == key) {
+                t.failed.push(key.to_string());
+            }
+        } else if v["landing"] == true {
+            landing.push(key.to_string());
+        } else if let Some(at) = v.get("started") {
             t.on = Some((key.to_string(), at.as_u64().unwrap_or(0)));
             begun.push(key.to_string());
             // (A drop's line, run outside its grant, says none: the last said stands.)
@@ -425,6 +437,7 @@ pub fn targets(costs: &Path) -> Targets {
             t.live = false;
         }
     }
+    t.open = begun.into_iter().filter(|b| !landing.contains(b) && !t.failed.contains(b)).collect();
     t
 }
 
@@ -2304,7 +2317,12 @@ mod tests {
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/2"));
         assert_eq!(
             targets(&p),
-            Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1, threads: None, live: false }
+            Targets {
+                on: Some(("terrain 6/1/2".into(), 4)),
+                ended: 1,
+                open: vec!["terrain 6/1/2".into()],
+                ..Default::default()
+            }
         );
         // (Task #948: the threads the last target to begin runs on, as its line says; a drop's line,
         // run outside its job's grant, says none and leaves them.)
@@ -2325,14 +2343,27 @@ mod tests {
         std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/3\",\"started\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n").unwrap();
         assert_eq!(
             targets(&p),
-            Targets { on: Some(("terrain-hi 6/1/3".into(), 9)), ended: 2, threads: None, live: false }
+            Targets {
+                on: Some(("terrain-hi 6/1/3".into(), 9)),
+                ended: 2,
+                open: vec!["terrain-hi 6/1/3".into()],
+                ..Default::default()
+            }
         );
         std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"never begun\",\"peak_mb\":9}\n").unwrap();
         assert_eq!(
             targets(&p),
-            Targets { on: None, ended: 2, threads: None, live: false },
+            Targets { on: None, ended: 2, ..Default::default() },
             "each ends once, only after its start"
         );
+        // (Task #1567: for its end, the targets it said it failed on, once each, and those under
+        // way: begun, neither ended nor failed, nor landing beside the next's work.)
+        std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/1\",\"landing\":true}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n").unwrap();
+        assert_eq!(targets(&p).open, ["terrain-hi 6/1/2"], "the one landing isn't under way");
+        assert_eq!(targets(&p).on, Some(("terrain-hi 6/1/2".into(), 5)));
+        std::fs::write(&p, "{\"unit\":\"6/1/1\",\"started\":1}\n{\"unit\":\"6/1/2\",\"started\":5}\n{\"unit\":\"6/1/1\",\"failed\":true}\n{\"unit\":\"6/1/1\",\"failed\":true}\n").unwrap();
+        let t = targets(&p);
+        assert_eq!((t.failed, t.open, t.ended), (vec!["6/1/1".to_string()], vec!["6/1/2".to_string()], 0));
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");
