@@ -518,6 +518,7 @@ the Earth once: the check moves nothing, and a place in two regions, or in none 
 | `minus` | list of parts, their union taken away | optional |
 | `intersect` | list of parts, the region kept only inside their union | optional |
 | `water` | list of parts, the region's water: their union (`water = []`: none but its lakes; with no outline, none but what a hand-out gives it) | optional; makes it a region of land and water |
+| `land` | list of `shape:`, `osm:` or `osm-way:` parts: land the coastline lacks (a cay it doesn't draw), added to the region's land as it is, for the region's area and its strays; its stored land shape stays the coastline's ("Land and water") | optional, with `water` |
 | `hand_out` | a folder's path: each stretch of this region's water only one member of that folder borders goes to that member: a region, or a subfolder holding a waters region, whose waters region takes it ("Land and water") | optional, with `water` |
 | `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
@@ -525,7 +526,7 @@ the Earth once: the check moves nothing, and a place in two regions, or in none 
 | `[symbol]` | its flag, or the symbol it goes by ("Symbols", below) | optional |
 
 Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
-with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
+with `water` is its land, that cut back to the coastline's land with the land it declares added, and its water ("Land and water").
 
 **Disabled regions.** `disabled = true` keeps a region in the list without building it. The check
 treats it like any other region: it is parsed, resolved, held and stored the same way, other regions
@@ -594,7 +595,10 @@ cross itself.
 **Land and water.** A region with a `water` key is resolved in two steps, cell by cell (crate::inputs::
 regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
 (the pass's, §6.1.7) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
-outline are its water, unless another region's water names them. Then its water: the `water` parts,
+outline are its water, unless another region's water names them. The land it declares (`land`,
+task #1453: land the coastline lacks, a cay it doesn't draw) is added as it is, inside its outline
+or not, never cut back: each part sourced (a `shape:` file saying where it's from, or OSM's own
+`osm:` or `osm-way:` outline of it), so its sea there touches its land and isn't a stray. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
 order where a region comes after those its water names whole (`region:`, `group:`). Then one
 coastline, with or without `cover`: the outlines' coastal edges are taken from the coastline. What

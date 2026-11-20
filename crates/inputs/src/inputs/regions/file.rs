@@ -190,6 +190,10 @@ pub struct Region {
     /// Whether the file has a `water` key at all (`water = []`: land and lakes only, cut back to
     /// the coastline's land; with no outline, a waters region holding only what it's handed).
     water_key: bool,
+    /// Land the coastline lacks (§6.1.3, "Land and water"; a cay it doesn't draw): sourced parts
+    /// (`shape:`, `osm:`, `osm-way:`), their union added to its land as they are, never cut back
+    /// to the coastline's. Only with `water`.
+    pub land: Vec<Part>,
     /// `hand_out = "<folder>"`: each stretch of its water that only one member of that folder
     /// borders goes to that member (`tiles::resolve`; a subfolder holding a waters region is one
     /// member, its waters region taking the stretch).
@@ -265,14 +269,14 @@ impl Region {
             .any(|p| matches!(p, Part::Rest))
     }
 
-    /// Every part of its outline (`outline`, `minus`, `intersect`), or of its water, nested ones
-    /// included.
+    /// Every part of its outline (`outline`, `minus`, `intersect`) and the land it declares
+    /// (`land`), or of its water, nested ones included.
     pub fn parts_of(&self, water: bool) -> Vec<&Part> {
         let mut out = Vec::new();
         let top: Vec<&Part> = if water {
             self.water.iter().collect()
         } else {
-            self.outline.iter().chain(&self.minus).chain(&self.intersect).collect()
+            self.outline.iter().chain(&self.minus).chain(&self.intersect).chain(&self.land).collect()
         };
         for p in top {
             p.walk(&mut out);
@@ -301,7 +305,7 @@ impl Region {
     /// Every part, nested ones included.
     pub fn parts(&self) -> Vec<&Part> {
         let mut out = Vec::new();
-        for p in self.outline.iter().chain(&self.minus).chain(&self.intersect).chain(&self.water) {
+        for p in self.outline.iter().chain(&self.minus).chain(&self.intersect).chain(&self.water).chain(&self.land) {
             p.walk(&mut out);
         }
         out
@@ -368,7 +372,12 @@ impl Region {
     /// Its outline entries as text, as a catalogue records them and `outline_digest` hashes them: the
     /// same strings as a recipe's for `osm:` parts.
     pub fn outline_text(&self) -> Vec<String> {
-        self.outline.iter().map(|p| p.to_string()).chain(self.water.iter().map(|p| format!("water {p}"))).collect()
+        self.outline
+            .iter()
+            .map(|p| p.to_string())
+            .chain(self.water.iter().map(|p| format!("water {p}")))
+            .chain(self.land.iter().map(|p| format!("land {p}")))
+            .collect()
     }
 
     /// What its stored shapes and drawing are said to be from: its outline entries (`outline_text`),
@@ -587,6 +596,8 @@ struct RawRegion {
     #[serde(default)]
     intersect: Vec<toml::Value>,
     #[serde(default)]
+    land: Vec<toml::Value>,
+    #[serde(default)]
     lines: BTreeMap<String, RawLine>,
     #[serde(default)]
     pins: BTreeMap<String, toml::Value>,
@@ -686,6 +697,7 @@ impl Remainder {
             intersect: Vec::new(),
             water: Vec::new(),
             water_key: false,
+            land: Vec::new(),
             hand_out: None,
             disabled: false,
             lines: BTreeMap::new(),
@@ -769,6 +781,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     let intersect = list(&raw.intersect);
     let water_key = raw.water.is_some();
     let water = list(raw.water.as_deref().unwrap_or_default());
+    let land = list(&raw.land);
     let mut lines = BTreeMap::new();
     for (name, l) in raw.lines {
         if !valid_id(&name) {
@@ -809,6 +822,18 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if raw.hand_out.is_some() && !water_key {
         faults.push(fault("part", "hand_out is for a region with water"));
     }
+    if !raw.land.is_empty() && !water_key {
+        faults.push(fault("part", "land is for a region with water (one cut back to the coastline's land)"));
+    }
+    // (Declared land is sourced: a shape file, or OSM's own outline of it.)
+    for p in &land {
+        if !matches!(p, Part::Shape(_) | Part::Osm(_) | Part::OsmWay(_)) {
+            faults.push(fault(
+                "part",
+                format!("land {p}: land the coastline lacks is a shape:, osm: or osm-way: part (sourced), not an operation or another kind"),
+            ));
+        }
+    }
     if !faults.is_empty() {
         return Err(faults);
     }
@@ -820,6 +845,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         intersect,
         water,
         water_key,
+        land,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
         disabled: raw.disabled,
         lines,

@@ -432,6 +432,20 @@ fn a_remainder_is_kept_as_a_piece() {
     assert_eq!(paused_at_every_piece(&w, &files), lands + 2, "the remainder one piece");
 }
 
+/// Task #1453: a region's declared land stays its where its folder's remainder gives it pieces and
+/// cuts its land again (San Andrés's Quitasueño cay, in a cell Colombia's remainder reaches).
+#[test]
+fn declared_land_stays_through_a_remainder() {
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
+    let cay = r#"{"type": "Polygon", "coordinates": [[[30.5, 21.5], [30.501, 21.5], [30.501, 21.501], [30.5, 21.501], [30.5, 21.5]]]}"#;
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nland = [\"shape:cay.geojson\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n";
+    let rem = "of = \"box:30.0,20.0,33.0,21.0\"\n";
+    let out = run(&w, &[PINS, ("p/l.toml", l), ("p/r.toml", r), ("p/cay.geojson", cay), ("p/_remainder.toml", rem)]);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("l", 31.4, 20.5) && at("l", 30.5005, 21.5005), "the remainder's piece and the cay l's: {:?}", out.problems);
+}
+
 /// Folder `files` resolved, then again paused after every piece kept and resumed each time: the
 /// same outcome as one never paused; how many pieces the runs made (a run making several side by
 /// side, the land's regions, before its pause stops the rest: each made once, never again).
@@ -1388,6 +1402,41 @@ fn water_touching_none_of_its_land_is_an_error() {
     assert!((1.98..2.02).contains(&at[0]) && (0.0..0.05).contains(&at[1]), "{}", p.message);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
     assert!(at("s", 1.99, 0.02) && at("s", 2.01, 0.02) && !at("t", 1.99, 0.02), "nothing moved");
+    // Task #1453: the cay the coastline lacks there, declared its land (a shape, outside its
+    // outline): its sea there touches its land, no stray; the cay and the sea round it are its.
+    // (Its stored land shape stays the coastline's: the cay is in its area, drawn with its water.)
+    let cay = r#"{"type": "Polygon", "coordinates": [[[2.005, 0.02], [2.006, 0.02], [2.006, 0.021], [2.005, 0.021], [2.005, 0.02]]]}"#;
+    // (Its coast's sea its outline's buffer: the buffer of its land, the cay's now too, would
+    // reach t's.)
+    let with = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nland = [\"shape:cay.geojson\"]\nwater = [\"box:1.98,0.0,2.02,0.05\", { buffer = \"osm:4\", by = \"10 km\" }]\n";
+    let without = with.replace("land = [\"shape:cay.geojson\"]\n", "");
+    let out = run(&w, &[PINS, RULES, ("s.toml", &without), ("cay.geojson", cay), ("t.toml", t), ("high-seas.toml", HIGH)]);
+    assert!(out.problems.len() == 1 && out.problems[0].found[0] == "stray", "{:?}", out.problems);
+    let out = run(&w, &[PINS, RULES, ("s.toml", with), ("cay.geojson", cay), ("t.toml", t), ("high-seas.toml", HIGH)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("s", 1.99, 0.02) && at("s", 2.0055, 0.0205) && !at("t", 2.0055, 0.0205));
+}
+
+/// Task #1453: `land` is for a region with water, and each of its parts sourced land (`shape:`,
+/// `osm:`, `osm-way:`), never an operation or a part of another kind.
+#[test]
+fn declared_land_is_sourced_and_with_water() {
+    let parse = |t: &str| super::file::parse("x.toml", &format!("id = \"x\"\nname = \"X\"\n{t}"));
+    let r = parse("outline = [\"osm:4\"]\nland = [\"shape:c.geojson\", \"osm-way:7\", \"osm:9\"]\nwater = []\n").unwrap();
+    assert_eq!(r.land.len(), 3);
+    assert!(r.parts_of(false).iter().any(|p| matches!(p, super::file::Part::OsmWay(7))), "read as its outline's are");
+    assert_eq!(r.ways(), vec![7]);
+    assert!(r.from_text().contains("land shape:c.geojson"), "{}", r.from_text());
+    let fault = |t: &str| parse(t).unwrap_err().iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ");
+    assert!(fault("outline = [\"osm:4\"]\nland = [\"shape:c.geojson\"]\n").contains("land is for a region with water"));
+    for bad in ["\"box:1,1,2,2\"", "\"eez:5\"", "\"land:y\"", "{ union = [\"osm:3\"] }"] {
+        let f = fault(&format!("outline = [\"osm:4\"]\nland = [{bad}]\nwater = []\n"));
+        assert!(f.contains("land the coastline lacks is a shape:, osm: or osm-way: part"), "{bad}: {f}");
+    }
+    // (None declared: its texts as before, so no stored region is made again.)
+    let plain = parse("outline = [\"osm:4\"]\nwater = []\n").unwrap();
+    assert_eq!(plain.outline_text(), vec!["osm:4".to_string()]);
 }
 
 /// With `cover = "earth"`: a big lake in a region's outline or named by its water is its, wherever

@@ -1706,12 +1706,15 @@ fn land(
         if !r.intersect.is_empty() {
             cells = cells.intersection(&cells_of_key(&r.intersect)).copied().collect();
         }
+        // (The land it declares, wherever it lies.)
+        cells.extend(cells_of_key(&r.land));
         cells
     });
     let key = within.as_ref().map(|cells| {
         let parts = r.parts_of(false);
         let mut k = Reads::new(folder, ctx, "land");
-        k.file(folder, path, &format!("{:?}\n{:?}\n{:?}\n{:?}", r.outline, r.minus, r.intersect, r.lines), &parts);
+        let read = format!("{:?}\n{:?}\n{:?}\n{:?}\n{:?}", r.outline, r.minus, r.intersect, r.lines, r.land);
+        k.file(folder, path, &read, &parts);
         k.refs(&parts, &[], id, folder, made, others);
         let kept: BTreeSet<Cell> = cells.intersection(keep).copied().collect();
         k.cells(&kept, &ByCell::new());
@@ -1732,6 +1735,7 @@ fn land(
                 let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
                 cells = cells.intersection(&i).copied().collect();
             }
+            cells.extend(r.land.iter().flat_map(|p| support(p, &env)));
             let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
             (make_land(id, r, path, data, &env, cells, keep, item), ok)
         },
@@ -1778,11 +1782,14 @@ fn make_land(
                 &r.minus.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?,
             ))
         };
+        // (The land it declares, which the coastline lacks: its as it is, outline or not.)
+        let declared = geom::union_all(&r.land.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
         if o.is_empty() {
-            return Ok((c, o.clone(), o, None));
+            return Ok((c, declared, o, None));
         }
         let (land, lakes) = land_and_lakes(data, c);
         let (l, k) = (o.intersect(&land), o.intersect(&lakes));
+        let l = if declared.is_empty() { l } else { l.union(&declared) };
         Ok((c, l, k, keep.contains(&c).then_some(o)))
     });
     let mut m = Made {
@@ -1978,6 +1985,10 @@ fn remainders(
                     }
                     for (m, land, lakes, o) in v {
                         let x = made.get_mut(&m).unwrap();
+                        // (The land it declares kept: its land had it, and the cut of the new
+                        // outline to the coastline's holds all else it had, task #1453.)
+                        let declares = folder.regions.get(&m).is_some_and(|(_, r)| !r.land.is_empty());
+                        let land = if declares { land.union(&x.land.get(c)) } else { land };
                         x.land.set(c, land);
                         x.lakes.set(c, lakes);
                         x.outline.set(c, o);
