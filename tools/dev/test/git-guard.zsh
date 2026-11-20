@@ -2,7 +2,8 @@
 # tools/dev/git-guard.py (#980) on a toy repo with worktrees: a git write goes only to the
 # session's own checkouts (an agent's worktree; the PM's main checkout, the checkout it started in
 # and the worktrees it made); reads and other repos pass. And shell-guard.sh runs it, after its own
-# rules (tools/dev/shell-guard.py: `ln -s` without -n, deletes of the shared scratchpad). Run by check.sh.
+# rules (tools/dev/shell-guard.py: wait loops with no deadline, `ln -s` without -n, deletes of the
+# shared scratchpad). Run by check.sh.
 set -u
 here=${0:A:h}
 fail=0
@@ -187,6 +188,29 @@ if (( rc == 2 )) && [[ $out == *"$no"* ]]; then print "ok: shell-guard.sh refuse
 in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git reset --hard"},"cwd":sys.argv[1],"agent_id":"aaa","session_id":"s1"}))' $own)
 out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok: shell-guard.sh lets the own worktree's pass"; else print "FAIL: shell-guard.sh: $rc $out"; fail=1; fi
+# The wait-loop rule (#1525): a `while`/`until` loop that sleeps needs a deadline, a PID it waits
+# on, or lines it reads; a bounded for-loop and a single sleep aren't loops waiting on something.
+wl="No wait loop without a deadline"
+for want cmd in \
+  $wl "until ssh m6 'grep -q done ~/s/after.log'; do sleep 20; done" \
+  $wl "while true; do sleep 5; done" \
+  $wl $'while [ ! -e f ]\ndo\n  sleep 2\ndone' \
+  $wl "until curl -sf localhost:1/x; do sleep 1; done" \
+  ok "while kill -0 123 2>/dev/null; do sleep 30; done" \
+  ok "until grep -q x f; do [ -e f ] || break; [ \$SECONDS -gt 1800 ] && break; sleep 20; done" \
+  ok "until curl -sf localhost:1/x; do (( \$SECONDS > 60 )) && break; sleep 1; done" \
+  ok "timeout 60 sh -c 'until test -e f; do sleep 1; done'" \
+  ok "while read l; do sleep 1; done < f" \
+  ok "for i in \$(seq 1 3); do sleep 1; done" ok "sleep 3" \
+  ok $'cat > f <<EOF\nwhile true; do sleep 1; done\nEOF'; do
+  in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
+  out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
+  if [[ $want == ok && $rc == 0 ]] || [[ $want != ok && $rc == 2 && $out == *"$want"* ]]; then
+    print "ok ($want): $cmd"
+  else
+    print "FAIL ($want): $cmd: $rc $out"; fail=1
+  fi
+done
 # The ln rule (#1004): `ln -s` without -n/-h refused as any command of the line; -sn, -sfn, -sfh
 # pass, and so does `ln -s` in quoted text, a comment or a heredoc.
 for want cmd in \

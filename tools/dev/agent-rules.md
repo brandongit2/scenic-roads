@@ -56,6 +56,41 @@ rely on the agent.
 - **Never filter a test run in its pipe:** `tee` the full output to a log and search the log.
 - Keep each foreground command under 10 minutes; split longer runs or run them in the background.
 
+## Turns
+
+Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a poll is costly.
+
+- **Edit with the Edit tool** after a Read (Write for a new file). For a change a script makes,
+  write the script to your scratch folder and run it by its path. Never `python3 - <<EOF`,
+  `cat > f <<EOF` or the like in a worktree: Claude Code's worktree check refuses a heredoc it
+  can't verify ("too complex to verify"), and the retry costs a second turn. Give paths in full
+  (or `git -C <worktree>`) rather than `cd`: a `cd` out of the working folders is refused or
+  asks too.
+- **Read the part of a file you need in one call:** find it with `grep -n`, then one Read with
+  `offset` and `limit` round it, not successive `sed -n` slices of 40 lines, one turn each. Don't
+  read a big file whole either: it stays in every later turn's context (testing.md is 900 lines;
+  its headings are a `grep -n '^#'` away).
+- **Wait on a long run with one background command** (the Bash tool's `run_in_background`) and
+  end your turn: its notification wakes you when it exits. Not a poll loop in slices
+  (`for i in $(seq 1 19); do …; sleep 9; done`, one turn each), and while a check.sh of your
+  worktree runs, report-guard lets your stop through.
+- **When a command is moved to the background** (a foreground one past its time), wait for its
+  notification; never start it again beside it.
+- **The bounded waits the hooks accept**, when a wait must be a loop:
+  - on a process: `while kill -0 <pid> 2>/dev/null; do sleep 30; done` (it ends with the process);
+  - on a file's text: `until grep -q DONE <log>; do [ -e <log> ] || break; [ $SECONDS -gt 1800 ]
+    && break; sleep 20; done`, the same over `ssh`;
+  - the Monitor tool, with an until-loop, for a condition.
+  Refused: a bare `sleep N` in the foreground (Claude Code), a loop over `pgrep -f` (it matches its
+  own shell) and an `until grep` with no bound (tools/dev/shell-guard.py).
+- **Every wait loop has a deadline and stops when what it watches is gone** (the file, the
+  folder, the process): a loop whose log was deleted with its scratch folder never ends (#1361's
+  ran for two days). *Enforced* for the deadline: shell-guard.py refuses a `while`/`until` loop
+  that sleeps with no bound (`$SECONDS`, `timeout`, a count, `-gt`/`-ge`), but one on a PID
+  (`kill -0`) or reading lines.
+- **Before reporting, stop every background task of yours still running** (TaskStop, or your
+  process's exact PID) and list them in the report.
+
 ## Git
 
 - Work only in your own worktree; never write in another agent's (*enforced*:
@@ -165,5 +200,5 @@ rely on the agent.
 
 ## Your report
 
-- The branch and sha, what changed, what you cut, the check.sh PASS line, and what is left or
-  untested.
+- The branch and sha, what changed, what you cut, the check.sh PASS line, what is left or
+  untested, and the background tasks you stopped.

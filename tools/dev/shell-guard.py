@@ -4,7 +4,10 @@
 #   NAS's project folder or a named folder instead);
 # - no waiting on `pgrep -f` in a loop (its pattern is on the waiting shell's own command line, so
 #   it matches itself and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`;
-# - no open-ended `until grep` wait;
+# - no open-ended `until grep` wait, nor any `while`/`until` loop that sleeps with no deadline
+#   (#1525: `$SECONDS`, `timeout`, a counted `seq` or arithmetic, `-gt`/`-ge`), but one on a PID
+#   (`kill -0`) or reading lines (`while read`); read with heredocs' text left out, so a script
+#   written out passes;
 # - no `ln -s` without `-n` or `-h` (#1004): where the link's name is already a link to a folder, it
 #   makes the link inside that folder (on the NAS, `inputs/inputs` and 16 more like it, 7 Nov);
 # - no delete of the session's shared scratchpad (#1521): every subagent of a session gets the same
@@ -38,8 +41,15 @@ for seg in re.split(r"&&|\|\||;|\||\(|\)|\$\(|`", cmd):
         block("No `find /` (the owner's rule): search the repo, the NAS project folder or a named folder.")
 if re.search(r"\b(?:until|while)\b[^\n]*\bpgrep\s+(?:-\w*\s+)*-\w*f", cmd):
     block("No waiting on `pgrep -f` (it matches its own shell and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`.")
-if re.search(r"\buntil\s+!?\s*grep\b", cmd) and not re.search(r"SECONDS|seq\s|\$\(\(|-gt\s|-ge\s|timeout|kill\s+-0", cmd):
+BOUND = re.compile(r"SECONDS|seq\s|\$\(\(|-gt\s|-ge\s|timeout|kill\s+-0")
+if re.search(r"\buntil\s+!?\s*grep\b", cmd) and not BOUND.search(cmd):
     block("No open-ended `until grep` wait (it never ends if the text never comes): bound it (e.g. `[ $SECONDS -gt 1800 ] && break`) or wait on the PID that writes the log.")
+# (#1525: every wait loop has a deadline. A `while`/`until` loop that sleeps, other than one reading
+# lines, which ends with its input, needs a bound: #1361's `until ssh … grep …; do sleep 20; done`
+# ran two days once its log's folder was deleted.)
+_plain = strip_heredocs(cmd)
+if re.search(r"\b(?:while|until)\b(?!\s+(?:IFS=\S*\s+)?read\b)[\s\S]*?\bdo\b[\s\S]*?\bsleep\b", _plain) and not BOUND.search(_plain):
+    block("No wait loop without a deadline (it never ends if what it waits for never comes, or is deleted): bound it (e.g. `[ $SECONDS -gt 1800 ] && break`), or wait on the PID with `while kill -0 <pid>; do sleep 30; done`; better, run the command in the background and wait for its notification (tools/dev/agent-rules.md, \"Turns\").")
 
 LEAD = ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "sudo")
 GLOB = re.compile(r"[*?\[{]")
