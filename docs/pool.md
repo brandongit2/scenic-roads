@@ -910,12 +910,25 @@ thousandths:
   or the answers rising, past 3 times their best, `nas-slow`), it drops at once to half the weight
   in use (`nas-decrease`), never under a step, and nothing paced starts until enough jobs end; no
   further cut until the load has fallen to the window and a span has passed. Missed deadlines with
-  the disks read within the target and the pool's jobs all together moving under a step as
-  measured aren't the NAS's doing (a Mac's own link or session, task #1554): their cut stands a
-  span, then, the answers back under the knee and nothing congested, is taken back (the window as
-  it was, no further than one job past the load its readings tested; its threshold and hold-off as
-  before), and the miss's stand-in ratio isn't judged among the answers; congested by the NAS's
-  doing meanwhile, nothing is taken back. **With room** (the
+  the disks read well under the target (under half of it, `nas::QUIET_SHARE`) and the pool's jobs
+  all together moving under a step as measured aren't the NAS's doing (a Mac's own link or
+  session, task #1554): their cut stands a span, then, the answers back under the knee and nothing
+  congested, is taken back (the window as it was, no further than one job past the load its
+  readings tested; its hold-off as before; the cut's threshold kept, so it grows on a step a
+  minute), and the miss's stand-in ratio isn't judged among the answers; congested by the NAS's
+  doing meanwhile, nothing is taken back. **The risk**: a stall of the pool's own that the disks
+  and the measured share don't show (an SMB session stalling past some load, every Mac missing,
+  nothing moving) looks the same, and taking back every cut on it kept the pool in the stall (a
+  simulation of jobs of 100 asked for 6 h, stalled over 600 in use: 1,827 of 2,160 readings
+  stalled, main 53). **Bounded** so: taken back with the weight in use fallen under what the
+  misses came at, the window goes back a step under that weight, and misses there or heavier are
+  then the NAS's doing (`State::stall`), cut as any, until the pool has run there a span without
+  missing; so such a stall is taken back once, not once per job. In that simulation, over jobs of
+  450 to 800 s (`a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`): 1,775
+  readings stalled over 600 against main's 1,648 (8 % more: the one take-back each, and where the
+  stalls then fall in the jobs' cycle), 3,667 over 300 against 4,822; with outside stalls of 40 s
+  every 300 s or 120 s, whatever the load, 2,234 and 1,446 jobs started against 661 and 286.
+  **With room** (the
   answers read, not rising and under the knee, the disks with room for the next job), it grows
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a
   minute, never more than one job past the load its readings tested, only on fresh readings from
@@ -999,23 +1012,23 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 177 (146) | 199 (215) | 26, 4 (26, 4) | 0 (0) |
+  | the readings as they were | – | 177 (146) | 204 (215) | 26, 4 (26, 4) | 0 (0) |
   | jobs of 100, on a Mac not answering | 806 (685) | 361 (315) | 106 (63) | 57, 9 (41, 4) | 6, 1 (6, 1) |
   | jobs of 250, on a Mac not answering | 320 (342) | 414 (416) | 90 (81) | 54, 4 (76, 7) | 5, 1 (6, 1) |
   | jobs of 100, on the mini | 844 (685) | 381 (315) | 37 (63) | 63, 9 (41, 4) | 5, 1 (6, 1) |
-  | jobs of 250, on the mini | 377 (342) | 457 (416) | 81 (81) | 61, 4 (76, 7) | 6, 1 (6, 1) |
+  | jobs of 250, on the mini | 342 (342) | 423 (416) | 89 (81) | 65, 4 (76, 7) | 5, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
   With jobs of 100 it starts 18 to 23 % more jobs than the rule judging against the weight; with
-  jobs of 250 10 % more on the mini, and 6 % fewer on a Mac not answering. It sits at its floor
-  more than that rule in two of the four closed-loop rows (106 and 90 readings against 63 and 81),
-  as often with jobs of 250 on the mini (81), less with jobs of 100 on the mini (37 against 63).
-  At the model's cliff about as often (5 or 6 readings against 6, never two in a row); at the
-  disks' target at most about 1.5 times as often (63 readings against 41).
-  As the readings were it is at its floor less (199 readings against 215); by the last cut's
-  cause, 88 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
+  jobs of 250 as many on the mini, and 6 % fewer on a Mac not answering. It sits at its floor more
+  than that rule in three of the four closed-loop rows (106, 90 and 89 readings against 63, 81 and
+  81), less with jobs of 100 on the mini (37 against 63). At the model's cliff about as often (5
+  or 6 readings against 6, never two in a row); at the disks' target at most about 1.5 times as
+  often (63 readings against 41).
+  As the readings were it is at its floor less (204 readings against 215); by the last cut's
+  cause, 93 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
   reading at the target (the rule has no such cut; 7 of its floor readings followed a cut that fell
-  on one) and 20 on the smoothed share (20). In 141 of the 199 the answers were undecidable too: a
+  on one) and 20 on the smoothed share (20). In 143 of the 204 the answers were undecidable too: a
   coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 29 to 31 %, with
   no cut, where the weight's rule went from 5 % to 22 % with 2 cuts.
   With the disks read at half the NAS's true load, or not read
@@ -1034,18 +1047,17 @@ thousandths:
 
   | | at the floor after deadline cuts | at the floor | at the cliff |
   |---|---|---|---|
-  | the readings as they were | 88 (111) | 199 (222) | 0 (0) |
-  | the same, the answers apart | 74 (104) | 125 (155) | 0 (0) |
+  | the readings as they were | 93 (111) | 204 (222) | 0 (0) |
+  | the same, the answers apart | 84 (104) | 135 (155) | 0 (0) |
   | jobs of 100, on a Mac not answering | 60 (60) | 106 (106) | 6 (6) |
   | jobs of 250, on a Mac not answering | 23 (35) | 90 (136) | 5 (6) |
   | jobs of 100, on the mini | 11 (11) | 37 (37) | 5 (5) |
-  | jobs of 250, on the mini | 18 (26) | 81 (89) | 6 (5) |
-  | jobs of 100, on the mini, the answers apart | 11 (11) | 47 (47) | 6 (5) |
-  | jobs of 250, on the mini, the answers apart | 8 (16) | 64 (67) | 5 (6) |
+  | jobs of 250, on the mini | 26 (26) | 89 (89) | 5 (5) |
+  | jobs of 100, on the mini, the answers apart | 11 (11) | 47 (47) | 5 (5) |
+  | jobs of 250, on the mini, the answers apart | 16 (16) | 67 (67) | 6 (6) |
 
-  At the cliff 33 readings in all against 33, never two in a row: one more in two rows, one
-  fewer in two, where a job let go sooner moves when the next ones go. The bursts above are
-  main's to the second (one cut more in one case, the disks at half and one Mac's R2). With every Mac's probe judging (task #1552, `replay`'s
+  At the cliff no more often in any row (32 readings in all against 33), never two in a row. The
+  bursts above are main's to the second, cut for cut. With every Mac's probe judging (task #1552, `replay`'s
   `apart`): the readings hold no probe's answers, so where a Mac's own jobs moved a step or more its
   answer is modelled as the median of its own recorded answers at that tenth of the disks' busy
   share while its jobs moved under a step (`calm_ms`: the NAS's load without its own session's
@@ -1056,18 +1068,18 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) | undecidable |
   |---|---|---|---|---|---|---|
-  | the readings as they were | – | 224 (214) | 125 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
-  | jobs of 100, on the mini | 806 (903) | 361 (406) | 47 (14) | 65, 4 (81, 13) | 6, 1 (6, 1) | 0 (5,328) |
-  | jobs of 250, on the mini | 303 (345) | 385 (429) | 64 (36) | 79, 7 (92, 23) | 5, 1 (11, 2) | 0 (5,110) |
+  | the readings as they were | – | 224 (214) | 135 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
+  | jobs of 100, on the mini | 806 (903) | 360 (406) | 47 (14) | 63, 4 (81, 13) | 5, 1 (6, 1) | 0 (5,328) |
+  | jobs of 250, on the mini | 313 (345) | 389 (429) | 67 (36) | 79, 7 (92, 23) | 6, 1 (11, 2) | 0 (5,110) |
 
   Nothing is undecidable, against 3,105 readings of 5,400 with the answers as recorded (5,288 and
   5,091 with the jobs on the mini). Judging the mini's own load, it cuts on it: at its floor more
-  often than main on the same answers in the closed loops (47 and 64 readings against 14 and 36),
-  and with jobs of 100 the recorded answers' 37 readings; at the cliff as often or less (6 and 5
+  often than main on the same answers in the closed loops (47 and 67 readings against 14 and 36),
+  and with jobs of 100 the recorded answers' 37 readings; at the cliff less often (5 and 6
   readings against 6 and 11, never two in a row, where main reaches it twice in a row with jobs of
   250), and at the disks' target less often for longer (4 and 7 readings in a row at most against
   13 and 23). As the readings were, at its floor less often than with the answers as recorded
-  (125 readings against 199).
+  (135 readings against 204).
 
   **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
   those readings (0.046 %).
