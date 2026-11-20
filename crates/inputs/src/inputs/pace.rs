@@ -33,8 +33,6 @@ struct State {
     active: usize,
     allowed: usize,
     read_at: Option<Instant>,
-    /// The items waiting to take back the permit they lent (`Pace::lend`): served before any task.
-    back: usize,
 }
 
 /// The threads allowed, and the tasks running under them.
@@ -59,7 +57,7 @@ impl Pace {
         Pace {
             file,
             fallback,
-            state: Mutex::new(State { active: 0, allowed: fallback, read_at: None, back: 0 }),
+            state: Mutex::new(State { active: 0, allowed: fallback, read_at: None }),
             freed: Condvar::new(),
         }
     }
@@ -96,35 +94,25 @@ impl Pace {
     }
 
     fn take(&self, held: u8) -> Permit<'_> {
-        self.wait_and_count(false);
+        self.wait_and_count();
         Permit { pace: self, before: HELD.with(|h| h.replace(held)) }
     }
 
-    /// Waits until fewer run than are allowed, then counts this one; `back`, an item taking back
-    /// its permit, before every other waiting (its region's next step, between its cells' maps,
-    /// would otherwise wait behind every cell of the others).
-    fn wait_and_count(&self, back: bool) {
+    fn wait_and_count(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        s.back += usize::from(back);
         loop {
             self.refresh(&mut s);
-            if s.active < s.allowed && (back || s.back == 0) {
+            if s.active < s.allowed {
                 break;
             }
             s = self.freed.wait_timeout(s, POLL).unwrap_or_else(|e| e.into_inner()).0;
         }
-        s.back -= usize::from(back);
         s.active += 1;
-        drop(s);
-        // (The others see `back` fall.)
-        if back {
-            self.freed.notify_all();
-        }
     }
 
     fn uncount(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
-        self.freed.notify_all();
+        self.freed.notify_one();
     }
 
     /// `f`, a parallel operation inside a `par_each` item, with the item's permit lent to it (its
@@ -133,7 +121,7 @@ impl Pace {
         struct Back<'a>(&'a Pace);
         impl Drop for Back<'_> {
             fn drop(&mut self) {
-                self.0.wait_and_count(true);
+                self.0.wait_and_count();
                 HELD.with(|h| h.set(ITEM));
             }
         }
