@@ -1147,6 +1147,129 @@ mod tests {
         assert_eq!(resumed, in_turn[0], "paused at each of its safe points");
     }
 
+    /// Task #1475 review: the z8 tiles a run says it read are what its results stand on (its key's
+    /// lo line, pipeline's agent::idents::peaks_lo), whether the isolation search or the flood read
+    /// them. A z8 tile it didn't read changed: the same results and the same tiles read. One it
+    /// read raised past its peaks: other results (nearer higher ground) and other tiles read (the
+    /// search and the flood stop short).
+    #[test]
+    fn the_z8_tiles_a_run_read_are_what_its_results_stand_on() {
+        let (lon, lat) = (11.27f64, 46.98f64);
+        // A lone 2000 m dome on a 100 m plain, the highest for far more than 25 km: its isolation
+        // and its flood go to the coarse stage.
+        z8_read_holds(&[(lon, lat, 2000.0)], &[(11.30, 47.02), (lon, lat)], true);
+        // A 1500 m dome, a higher one 18 km east: its isolation found at z12, its flood (600k
+        // pixels, ~11 km) to the coarse stage alone, where it reads its own z8 tile (the sea at 0 m
+        // all round).
+        z8_read_holds(&[(lon, lat, 1500.0), (lon + 0.236, lat, 2000.0)], &[(lon, lat)], false);
+    }
+
+    /// `the_z8_tiles_a_run_read_are_what_its_results_stand_on` on `domes` (lon, lat, height, on a
+    /// 100 m plain) with peaks at `at`, the first dome's top the one measured at z8; `wide`, its
+    /// isolation searched there (read short once a tile it read is raised).
+    fn z8_read_holds(domes: &[(f64, f64, f32)], at: &[(f64, f64)], wide: bool) {
+        use terrain::terrain_pack::ManifestTiles;
+        let d = tempfile::tempdir().unwrap();
+        let mut out = buildstore::out::Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
+            &d.path().join("scratch"),
+        )
+        .unwrap();
+        let w = (1u64 << Z12) as f64 * 256.0;
+        let px = |lon: f64, lat: f64| {
+            ((lon + 180.0) / 360.0 * w, (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * w)
+        };
+        let unit: Vec<(UnitPeak, Summit)> = at
+            .iter()
+            .enumerate()
+            .map(|(n, &(lon, lat))| {
+                let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);
+                (
+                    UnitPeak { key: format!("k{n}"), id: format!("n{n}"), lon, lat, ele: None },
+                    Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele: None, z8: None },
+                )
+            })
+            .collect();
+        let summits: Vec<Summit> = unit.iter().map(|p| p.1.clone()).collect();
+        let peaks: Vec<UnitPeak> = unit.iter().map(|p| p.0.clone()).collect();
+        let want = tiles_wanted(at, 29.5);
+        let tops: Vec<((f64, f64), f32)> = domes.iter().map(|&(lon, lat, e)| (px(lon, lat), e)).collect();
+        let mut by_pack: BTreeMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+        for &(x, y) in &want {
+            let e: Vec<f32> = (0..256 * 256)
+                .map(|i| {
+                    let (gx, gy) = ((x * 256 + i % 256) as f64, (y * 256 + i / 256) as f64);
+                    let dome = |&((cx, cy), e): &((f64, f64), f32)| {
+                        (e as f64 - 100.0) * (-((gx - cx).powi(2) + (gy - cy).powi(2)) / (80.0 * 80.0)).exp()
+                    };
+                    (100.0 + tops.iter().map(dome).fold(0.0, f64::max)).round() as f32
+                })
+                .collect();
+            let png = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
+            by_pack.entry((x >> 6, y >> 6)).or_default().push((Z12, x, y, png, 1));
+        }
+        for ((x, y), tiles) in by_pack {
+            terrain::layers::write_pack(
+                &mut out,
+                "terrain",
+                "terrarium-png",
+                false,
+                "hi",
+                (6, x, y),
+                &mut tiles.into_iter(),
+            )
+            .unwrap();
+        }
+        let z12 = UnitZ12::load_from(&ManifestTiles::new(&out, "terrain"), &want).unwrap();
+        let base8 = Z8Base::new(&summits);
+        // The z8 as lo packs holding `tiles` (each flat at its height), a pack per z3 tile.
+        let z8_of = |name: &str, tiles: &[((u32, u32), f32)]| {
+            let mut packs: BTreeMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+            for &((x, y), e) in tiles {
+                let png = roadcore::grid::encode_terrain_png(&vec![e; 256 * 256], 256, 256).unwrap();
+                packs.entry((x >> 5, y >> 5)).or_default().push((8, x, y, png, 1));
+            }
+            let local: Vec<((u32, u32), std::path::PathBuf)> = packs
+                .into_iter()
+                .map(|(q, ts)| {
+                    let name = format!("{name}-{}-{}", q.0, q.1);
+                    let p = terrain::layers::write_pack_local(
+                        &out,
+                        &name,
+                        "terrarium-png",
+                        false,
+                        "lo",
+                        (3, q.0, q.1),
+                        &mut ts.into_iter(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    (q, p.local.clone())
+                })
+                .collect();
+            Z8::open(&local, 64).unwrap()
+        };
+        let measure = |z8: &Z8| {
+            let (res, read) =
+                run(&peaks, &summits, &base8, &z12, z8, 2, &mut jobrt::resume_log::Pieces::none()).unwrap();
+            (res.iter().map(|(k, o)| format!("{k} {}", o.json())).collect::<Vec<_>>(), read)
+        };
+        let far = (200, 200);
+        let (first, read) = measure(&z8_of("a", &[(far, 0.0)]));
+        assert!(!read.is_empty(), "the coarse stage read the z8");
+        assert!(!read.contains(&far), "{far:?} is past what it reads");
+        // A tile it didn't read raised: the same results, the same tiles read.
+        assert_eq!(measure(&z8_of("b", &[(far, 9500.0)])), (first.clone(), read.clone()), "a tile it didn't read");
+        // One it read raised past its peaks (the nearest to five z8 tiles east): nearer higher ground.
+        let (tx, ty) = (tops[0].0 .0 as i64 / 4096, tops[0].0 .1 as i64 / 4096);
+        let near = *read.iter().min_by_key(|&&(x, y)| (x as i64 - tx - 5).abs() + (y as i64 - ty).abs()).unwrap();
+        let (moved, read2) = measure(&z8_of("c", &[(far, 9500.0), (near, 9500.0)]));
+        assert_ne!(moved, first, "a tile it read raised changes its results");
+        if wide {
+            assert!(read2.len() < read.len(), "the search stops at the nearer higher ground");
+        }
+    }
+
     /// A load that fails fails in its turn, after the z6 tiles before it were done.
     #[test]
     fn read_ahead_fails_in_turn() {

@@ -188,7 +188,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | region-tiles | `regionlayer::KEY_V`, each accepted region's file path and geometry content name | versions; `in regions:geometry` (`idents::regions_geometry`) | new (task #1129): names, flags and `disabled` not keyed (the app reads them from the list) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
 | summits | (pass) | `Input`s | same |
-| peaks | candidates, summits, the z8 tiles its run read, hi packs within 30 km | `Targets pois` (its tile), `Whole summits`, `Targets terrain-hi` (30 km box), `Targets terrain-lo` | changes in waiting only: the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box. Key same |
+| peaks | candidates, summits, hi packs within 30 km, the z8 tiles its run read | `Targets pois` (its tile), `Whole summits`, `Targets terrain-hi` (30 km box), `Whole terrain-lo` (`Grain::Read`: the z8 tiles its coarse stage read, as its run recorded them, `idents::peaks_lo`) | the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box; task #1475: keyed on the z8 tiles read, not every lo pack |
 | items | date, current candidates | `Whole pois` | same |
 | heritage | heritage-sources, sets, coverage | `Whole heritage-sites`, `in pass:*`, `in coverage:cover` | task #1130: the cover |
 | marks | facts, views, heritage files, every tile's pois and peaks | `Whole items`, `Whole heritage`, `Whole pois`, `Whole peaks` | same |
