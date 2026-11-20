@@ -73,16 +73,17 @@ export function makeBoard(store, changed) {
 
   // ---- a task's size and its start (#1534) -------------------------------------------------------
   // `doc`, about to be written (`cur`, what it was, none for a new one; `sent`, the request's
-  // fields). `smallAt` is when `small` was last set; a task queued again leaves its batch.
+  // fields; `now`, the write's one time, so a new task's smallAt is its added). `smallAt` is when
+  // `small` was last set; a task queued again leaves its batch.
   // A move checked: into a status in flight from one that isn't (queued, waiting, done, abandoned;
   // a new task is from queued), or into working from any other status. It needs the task's size
   // classified, and a small task's a batch: sent in the same request (tools/dev/board.py batch sends
   // it: small tasks start five at a time, as one piece of work), or, unless it comes from queued,
   // the one it holds, so a batched task resumes as it is. Queued ↔ waiting, a closing, and moves
   // between statuses in flight other than into working, aren't checked.
-  function sizeAndStart(doc, cur, sent) {
+  function sizeAndStart(doc, cur, sent, now) {
     if (doc.small === undefined || doc.kind !== "task") delete doc.smallAt;
-    else if (cur?.small !== doc.small || cur?.kind !== "task") doc.smallAt = nowIso();
+    else if (cur?.small !== doc.small || cur?.kind !== "task") doc.smallAt = now;
     if (doc.kind !== "task") return;
     const from = cur?.kind === "task" ? cur.status : "", to = doc.status;
     if (to === "" && from !== "") delete doc.batch;
@@ -177,7 +178,7 @@ export function makeBoard(store, changed) {
       doc.added = nowIso();
       doc.order = (store.maxOrder() ?? 0) + 1;
       doc.num = takeNum();
-      sizeAndStart(doc, null, given);
+      sizeAndStart(doc, null, given, doc.added);
       refuseIf(itemErrors(doc));
       checkParent("", doc.parent, true);
       let id = `i${doc.num}`;
@@ -216,15 +217,15 @@ export function makeBoard(store, changed) {
       invalid([{ field: "", message: `${ro}: it can't be changed (archived items are read-only); the one change taken is unarchiving it, PATCH {"archived": false}` }]);
     }
     return tx(() => {
-      const sent = normTimes(ITEM_FIELDS, fields);
+      const now = nowIso(), sent = normTimes(ITEM_FIELDS, fields);
       const doc = replace
         ? { ...Object.fromEntries(Object.entries(cur).filter(([k]) => ITEM_FIELDS[k]?.server || (k === "order" && !("order" in sent)))), ...dropNulls(sent) }
         : { ...cur, ...sent };
       if (!replace) for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
       const archiving = doc.archived === true && !cur.archived, unarchiving = !!cur.archived && doc.archived !== true;
-      if (archiving && doc.archivedAt === undefined) doc.archivedAt = nowIso();
+      if (archiving && doc.archivedAt === undefined) doc.archivedAt = now;
       if (unarchiving) delete doc.archivedAt;
-      sizeAndStart(doc, cur, sent);
+      sizeAndStart(doc, cur, sent, now);
       refuseIf(itemErrors(doc));
       checkParent(id, doc.parent, doc.parent !== cur.parent);
       if (doc.kind !== "folder" && store.childrenOf(id).length) invalid([{ field: "kind", message: `${id} holds ${store.childrenOf(id).length} item(s); only folders hold items, so it stays a folder` }]);
