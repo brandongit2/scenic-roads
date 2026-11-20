@@ -35,13 +35,14 @@ impl Default for Backoff {
 }
 
 /// The backoff's bounds as the pool's settings: each a number in its range, null its default. The
-/// start from six minutes (a hold shorter than a job's start is a retry at once) to a day; the
-/// ceiling from an hour to a week, the history the lead's start recalls the holds from
-/// (agentcore::coord::history::KEEP_S).
+/// lead's start from six minutes (a hold shorter than a job's start is a retry at once) to a day;
+/// its ceiling from an hour to a week, the history the lead's start recalls the holds from
+/// (agentcore::coord::history::KEEP_S). The agent's own start from a minute to a day; its ceiling
+/// from six minutes to a week.
 pub const KNOBS: [Knob<Backoff>; 4] = [
     Knob {
         name: "backoff-start-hours",
-        what: "a target that failed on a Mac, or whose hand-off from it was refused again, isn't offered to it again for this long, twice as long after each more",
+        what: "a target that failed on a Mac, or whose hand-off from it was refused again, isn't offered to it again for this long, twice as long after each more; a job the lead's own memory guard stopped is kept from the lead this long too",
         unit: "h",
         least: 0.1,
         most: 24.0,
