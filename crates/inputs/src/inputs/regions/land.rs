@@ -12,9 +12,11 @@
 //! - **The file** (`encode`): magic `RLAND001`, a JSON head (`{"fmt", "pass", "stats", "cells":
 //!   [[col, row, offset, length], …]}`), then each cell's rings (even–odd, E7, the cell's
 //!   canonical area) as zigzag varint deltas, a ring's point count first.
-//! - **Reading** (`Land`): the head once; a cell's rings by its offset, decoded into an area, the
-//!   last `CACHED` cells kept. A cell that can't be read is no land and fails the land
-//!   (`Land::failed`), which fails the check that read it.
+//! - **Reading** (`Land`): the head once; a cell's rings by its offset (a positional read, any
+//!   number of threads at once: no lock round the file), decoded into an area once and kept
+//!   while the land is open (the whole land decoded is the file's size several times over at
+//!   most). A cell that can't be read is no land and fails the land (`Land::failed`), which
+//!   fails the check that read it.
 
 use super::geom::{self, Area, Pt, Ring};
 use super::tiles::{Cell, TArea};
@@ -36,9 +38,6 @@ pub const SIMPLIFY_M: f64 = super::data::SIMPLIFY_M;
 /// the 2026-09-28 pass's coastline was broken by 5.5 km at the Outer Banks (the Americas' ring)
 /// and by 1.1 km in Scotland (Great Britain's).
 pub const GAP_M: f64 = 10_000.0;
-
-/// The cells kept decoded.
-const CACHED: usize = 256;
 
 /// The land's records name: per pass.
 pub fn logical(date: &str) -> String {
@@ -433,9 +432,12 @@ fn decode_rings(b: &[u8]) -> Result<Vec<Ring>> {
 pub enum Land {
     Memory(BTreeMap<Cell, Area>),
     File {
-        f: Mutex<std::fs::File>,
+        /// Read by position (`PosIo::read_exact_at`, pread): threads read cells at once, no lock.
+        f: std::fs::File,
         index: HashMap<Cell, (u64, u64)>,
-        cache: Mutex<(HashMap<Cell, Arc<Area>>, Vec<Cell>)>,
+        /// Each cell decoded once, kept while the land is open (task #1559: 256 kept, the first
+        /// in first out, were decoded 7.7 times each in the regions check, several regions at once).
+        cache: Mutex<HashMap<Cell, Arc<Area>>>,
         /// The first cell that couldn't be read, and why: sticky; `failed` says it.
         failed: Mutex<Option<String>>,
         stats: Stats,
@@ -462,7 +464,7 @@ impl Land {
         let base = 12 + n as u64;
         let index = head.cells.iter().map(|&(x, y, o, l)| ((x, y), (base + o, l))).collect();
         Ok(Land::File {
-            f: Mutex::new(f),
+            f,
             index,
             cache: Default::default(),
             failed: Default::default(),
@@ -517,7 +519,7 @@ impl Land {
                 let Some(&(off, len)) = index.get(&c) else { return Ok(None) };
                 let mut b = vec![0u8; len as usize];
                 use store::sys::PosIo;
-                f.lock().unwrap().read_exact_at(&mut b, off)?;
+                f.read_exact_at(&mut b, off)?;
                 Ok(Some(b))
             }
         }
@@ -554,7 +556,7 @@ impl Land {
                 if !index.contains_key(&c) {
                     return Arc::new(Area::default());
                 }
-                if let Some(a) = cache.lock().unwrap().0.get(&c) {
+                if let Some(a) = cache.lock().unwrap().get(&c) {
                     return a.clone();
                 }
                 let a = match self.bytes(c).and_then(|b| decode_cell(&b.unwrap_or_default())) {
@@ -566,18 +568,8 @@ impl Land {
                         return Arc::new(Area::default());
                     }
                 };
-                let mut k = cache.lock().unwrap();
-                // (Another thread may have read it meanwhile.)
-                if let Some(a) = k.0.get(&c) {
-                    return a.clone();
-                }
-                if k.1.len() >= CACHED {
-                    let old = k.1.remove(0);
-                    k.0.remove(&old);
-                }
-                k.1.push(c);
-                k.0.insert(c, a.clone());
-                a
+                // (Another thread may have read it meanwhile: the first kept.)
+                cache.lock().unwrap().entry(c).or_insert(a).clone()
             }
         }
     }

@@ -1050,7 +1050,8 @@ along its latitude, simplifies the rings within 20 m, adds the Earth south of 85
 Antarctica along 85.0511°S) and keeps the land on disk by 2° cell: `sources/osm/<date>/regions-land.<hash16>.bin` (magic
 `RLAND001`, a JSON head with its counts and each cell's offset and length, then each cell's rings
 as zigzag varint deltas), keyed by the set and `land::LAND_V`. The check reads its head, then each
-cell where it's asked for, by its offset (`Land::cell`; the last 256 cells kept decoded), never the
+cell where it's asked for, by its offset (`Land::cell`: positional reads, from any number of
+threads at once; each cell decoded once and kept while the land is open, task #1559), never the
 whole; a cell it can't read fails the check (an error, not findings, never a panic); its content name is in the check's context (`regions land`), so a new land re-checks the
 regions. Without it a region with water is held (`rg-data`). The data-available layers are cut to
 it too (docs/steps.md §14, the cut: `Land::rings`, each cell's rings as stored, never made an

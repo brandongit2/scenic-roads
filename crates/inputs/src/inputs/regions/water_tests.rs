@@ -1630,6 +1630,32 @@ fn the_land_file_reads_back_by_cell() {
     }
     assert!(l.cell((40, 40)).is_empty() && !l.is_empty());
     assert!(l.failed().is_ok());
+    // Read from several threads at once (positional reads, no lock round them: task #1559): each
+    // cell's bytes and land as the file holds them.
+    let one = land::Land::open(std::fs::File::open(d.path().join("l.bin")).unwrap()).unwrap();
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| {
+                for _ in 0..50 {
+                    for (c, a) in &t.cells {
+                        assert_eq!(one.bytes(*c).unwrap(), l.bytes(*c).unwrap());
+                        assert_eq!(*one.cell(*c), *a);
+                    }
+                }
+            });
+        }
+    });
+    assert!(one.failed().is_ok());
+    // Each cell decoded once and kept while the land is open, however many are read (task #1559:
+    // 256 kept were decoded 7.7 times each in a regions check).
+    let wide = tiles::TArea::from_rings(&[vec![lp(0.5, 0.5), lp(99.5, 0.5), lp(99.5, 20.5), lp(0.5, 20.5)]]);
+    assert!(wide.cells.len() > 500, "{}", wide.cells.len());
+    std::fs::write(d.path().join("w.bin"), land::encode("2026-09-28", &land::Stats::default(), &wide)).unwrap();
+    let w = land::Land::open(std::fs::File::open(d.path().join("w.bin")).unwrap()).unwrap();
+    let first: Vec<_> = wide.cells.keys().map(|c| w.cell(*c)).collect();
+    for (c, a) in wide.cells.keys().zip(&first) {
+        assert!(std::sync::Arc::ptr_eq(&w.cell(*c), a), "decoded again: {c:?}");
+    }
     // A file cut short: its last cell reads as no land and fails the land, no panic.
     std::fs::write(d.path().join("s.bin"), &b[..b.len() - 3]).unwrap();
     let s = land::Land::open(std::fs::File::open(d.path().join("s.bin")).unwrap()).unwrap();
