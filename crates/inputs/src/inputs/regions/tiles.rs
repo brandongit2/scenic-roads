@@ -1125,8 +1125,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     trace("stored");
     // 6. Stored: every region with water, and the rest (those without, as they resolved).
     progress.begin(Step::Stored, all.len());
+    let mut todo: Vec<(&String, &Region, &TArea, super::progress::Done)> = Vec::new();
     for (id, t) in &all {
-        let _one = progress.one_on_drop();
+        let one = progress.one_on_drop();
         if rest_id.as_ref() == Some(id) {
             continue;
         }
@@ -1146,23 +1147,21 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             out.resolved.remove(id);
             continue;
         }
-        if let Some(res) = out.resolved.get_mut(id) {
-            if let Some(c) = countries.get(id).filter(|c| !c.is_empty()) {
-                res.geometry.shapes = vec![Shape {
-                    from: String::new(),
-                    country: c.clone(),
-                    tolerance_m: 0,
-                    rings: Vec::new(),
-                    water: false,
-                }];
-            }
-            store(r, res, t, data);
+        if out.resolved.contains_key(id) {
+            todo.push((id, r, t, one));
         }
+    }
+    // (Several regions at once, each its cells several at once: none reads another's.)
+    let stored = pace::par_each(todo, |(id, r, t, _one)| {
+        (id, store(r, countries.get(id).map_or("", String::as_str), t, data))
+    });
+    for (id, s) in stored {
+        put(out.resolved.get_mut(id).unwrap(), s);
     }
     if let Some(id) = rest_id {
         let (p, r) = &folder.regions[&id];
         match out.resolved.get_mut(&id) {
-            Some(res) if !rest.is_empty() => store(r, res, &rest, data),
+            Some(res) if !rest.is_empty() => put(res, store(r, "", &rest, data)),
             _ => {
                 out.problems.push(problem(
                     "rg-empty",
@@ -3372,7 +3371,7 @@ pub(super) fn dissolved(t: &TArea) -> Area {
 /// land (the coastline's, less the lakes over 100 km²) and one of its water, worked out cell by cell
 /// from what it ends with (the coast's and the hand-outs' included: a region whose own parts had no
 /// land may be given some), either left out when empty. Drawn as one.
-fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets) {
+fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> Stored {
     let mut from = r.outline_text().join(", ");
     if !r.intersect.is_empty() {
         from += &format!(" ∩ {}", r.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
@@ -3380,8 +3379,9 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
     if !r.minus.is_empty() {
         from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
     }
-    let country = res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default();
     let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
+    // (Dissolved and drawn under a permit, `pace::par_each`; its cells take theirs.)
+    let turn = pace::permit_unless_held();
     let tol = buildstore::coverage::draw_tolerance_m(&rings32(t));
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
         .polys
@@ -3394,7 +3394,8 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
                 .collect()
         })
         .collect();
-    let shape = |from: String, rings, water| Shape { from, country: country.clone(), tolerance_m: 0, rings, water };
+    drop(turn);
+    let shape = |from: String, rings, water| Shape { from, country: country.to_string(), tolerance_m: 0, rings, water };
     let cells: Vec<(Cell, Area)> = t.cells.iter().map(|(c, a)| (*c, a.clone())).collect();
     let (mut land, mut water) = (TArea::default(), TArea::default());
     for (c, a, l) in pace::par_map(cells, |(c, a)| {
@@ -3404,12 +3405,21 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
         water.set(c, a.minus(&l));
         land.set(c, l);
     }
-    res.geometry.shapes = [(from.clone(), land, false), (format!("{from} (water)"), water, true)]
+    let shapes = [(from.clone(), land, false), (format!("{from} (water)"), water, true)]
         .into_iter()
         .filter(|(_, t, _)| !t.is_empty())
         .map(|(f, t, w)| shape(f, rings32(&t), w))
         .collect();
-    res.drawn.shapes = BTreeMap::from([(from, polys)]);
+    (shapes, BTreeMap::from([(from, polys)]))
+}
+
+/// A region's stored shapes and drawing (`store`).
+type Stored = (Vec<Shape>, BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>);
+
+/// `store`'s, put in the region's resolution.
+fn put(res: &mut Resolved, (shapes, drawn): Stored) {
+    res.geometry.shapes = shapes;
+    res.drawn.shapes = drawn;
     res.lakes = Area::default();
 }
 
