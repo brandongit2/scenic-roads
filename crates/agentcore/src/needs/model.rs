@@ -323,10 +323,11 @@ fn above<T>(v: &[T], u: f64, size: impl Fn(&T) -> f64) -> &[T] {
 
 /// A measure `x` of a run of `size` units, for a target of `u`: where the run was smaller, grown by
 /// `slope` (the step's measure per unit over its runs, `slope`) for each unit more, at most in
-/// proportion (`x` per `size`). With no slope fitted (its runs' sizes all one, as inputs' files
-/// created: 1 for 9 of its 10 runs, which scaled a never-run target's 20-221 MB runs by its 2,012
-/// files to hundreds of GB, task #1535), it isn't grown: the runs say nothing of what a unit more
-/// takes, and past them the target is read as they are.
+/// proportion (`x` per `size`). With no slope (`slope`'s 0: fewer than `MIN_RUNS` runs, their sizes
+/// all equal, or a fit that falls), it isn't grown: the runs say nothing of what a unit more takes,
+/// and past them the target is read as they are. (inputs' 9 runs but regions each created 1 file:
+/// scaled in proportion, a never-run target of 2,012 files was read as 20-221 MB times 2,012,
+/// hundreds of GB, task #1535.)
 fn scaled_up(x: f64, size: f64, u: f64, slope: f64) -> f64 {
     if size > 0.0 && size < u {
         x + slope.min(x / size) * (u - size)
@@ -336,8 +337,8 @@ fn scaled_up(x: f64, size: f64, u: f64, slope: f64) -> f64 {
 }
 
 /// The least-squares slope of a measure over size among `v` (size, measure), at least 0: what a
-/// unit more of the size adds to it. 0 where it isn't fitted: fewer than `MIN_RUNS`, or their
-/// sizes all one. On the lead's costs of 19 Nov, each step's largest target by each of its sizes
+/// unit more of the size adds to it. 0 where it isn't fitted (fewer than `MIN_RUNS` of them, or
+/// their sizes all equal) or the fit falls (a negative slope). On the lead's costs of 19 Nov, each step's largest target by each of its sizes
 /// held out and predicted from the rest past their range (112 such): the peak predicted over what it
 /// took was a geometric mean 1.69, at most 30, under it for 19 (at least 0.34); in proportion to
 /// size it had been 3.36, at most 16,875, under it for 5.
