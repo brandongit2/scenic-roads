@@ -1234,7 +1234,7 @@ fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
     // (A shadow plan's targets are its own: read where the plan keeps them, never kept there, its
     // keys being what it checks. The terrain's and slope's keys served by them aren't derived:
     // docs/incremental-planning.md §4.1.)
-    if x.memo.is_some_and(KeyMemo::shadow) {
+    if x.shadow() {
         return match tiles.memo_found("terrain-targets", &from).map(|json| serde_json::from_str(&json)) {
             Some(Ok(t)) => t,
             _ => terrain_slope_targets_made(x),
@@ -2132,12 +2132,13 @@ impl ReadSets {
 }
 
 /// What of a plan's context every key reads besides its entries and inputs (theplan's read sets:
-/// changed, the diff moves every key): the coverage's version, the pass, and the reaches the keys
-/// read, by what they were read from (`reach`; None: the keys had none).
+/// changed, the diff moves every key): the coverage whole (`Coverage::digest`: its shapes' countries and
+/// sources too, which some keys read, task #1077), the pass, and the reaches the keys read, by what
+/// they were read from (`reach`; None: the keys had none).
 pub fn context_rest(cov: &Coverage, date: &str, reach: Option<&str>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (cov.version(), date, reach).hash(&mut h);
+    (cov.digest(), date, reach).hash(&mut h);
     h.finish()
 }
 
@@ -2259,14 +2260,22 @@ impl<'a> KeyCtx<'a> {
         }
     }
 
-    /// A digest of everything a key reads of this context (`KeyMemo`): the coverage's version, the
+    /// Whether its keys are a shadow plan's (`KeyMemo::after`): what it works out it keeps in no
+    /// shared cache of one cell the plan's next round would find (the terrain's targets, the warm
+    /// passes' marks, `bld_tiles`' plan slot), which it reads.
+    pub fn shadow(&self) -> bool {
+        self.memo.is_some_and(KeyMemo::shadow)
+    }
+
+    /// A digest of everything a key reads of this context (`KeyMemo`): the coverage whole (its digest:
+    /// the countries and sources too, which a 3D buildings key reads, task #1077), the
     /// pass, the manifest, the planner's inputs, the reaches (their pass and format, how many z6
     /// tiles, the base packs' extents) and what the terrain packs' indexes hold now
     /// (`TerrainTiles::state`).
     pub fn stamp(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.cov.version().hash(&mut h);
+        self.cov.digest().hash(&mut h);
         self.date.hash(&mut h);
         self.m.unrecorded_map().hash(&mut h);
         self.inputs.unrecorded_map().hash(&mut h);
@@ -3799,7 +3808,7 @@ pub struct BldTargets {
 pub fn bld_targets(x: &KeyCtx) -> BldTargets {
     let sources = bld_sources(x.inputs) == Some(true);
     let mut out = BldTargets::default();
-    for (tx, ty, shapes) in bld_tiles(x.cov).iter() {
+    for (tx, ty, shapes) in bld_tiles(x.cov, x.shadow()).iter() {
         let t = format!("6/{tx}/{ty}");
         if sources && x.inputs.contains_key(&format!("bldprep {t}")) {
             out.prep.push((t.clone(), key_now("bldprep", &t, false, x)));
@@ -3824,10 +3833,13 @@ pub fn bld_targets(x: &KeyCtx) -> BldTargets {
 /// The z6 tiles within 1 km of the coverage, each with, when it meets the coverage itself, the
 /// coverage's shapes over it grown by 1 km (`idents::shapes_geo`): what `bld_targets` reads of
 /// the coverage. Kept for the coverage last asked about (the plan, the checklist and the forecast
-/// each ask, several times a loop; the shapes' fingerprints over 380 tiles are seconds of work).
+/// each ask, several times a loop; the shapes' fingerprints over 380 tiles are seconds of work):
+/// the plan's in one slot, a shadow plan's (`shadow`: theplan's, of a round maybe older) in
+/// another, so a shadow never puts out what the plan's next round finds. Either slot answers
+/// either. Made with no lock held.
 type BldTiles = std::sync::Arc<Vec<(u32, u32, Option<String>)>>;
-pub(crate) fn bld_tiles(cov: &Coverage) -> BldTiles {
-    static KEPT: std::sync::Mutex<Option<(String, BldTiles)>> = std::sync::Mutex::new(None);
+pub(crate) fn bld_tiles(cov: &Coverage, shadow: bool) -> BldTiles {
+    static KEPT: std::sync::Mutex<[Option<(String, BldTiles)>; 2]> = std::sync::Mutex::new([None, None]);
     // (The coverage by what shapes_key and meets_rect read: its version (each shape's rings,
     // buffer and water, without reading the rings' points again: every target's key lines ask,
     // crate::agent::idents::coverage_shapes) and each shape's country, in order.)
@@ -3837,11 +3849,10 @@ pub(crate) fn bld_tiles(cov: &Coverage) -> BldTiles {
         id.push(0);
     }
     let id = store::naming::hash16(&id);
-    let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, v)) = g.as_ref() {
-        if *k == id {
-            return v.clone();
-        }
+    let kept =
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().find(|(k, _)| *k == id).map(|(_, v)| v.clone());
+    if let Some(v) = kept {
+        return v;
     }
     let mut v = Vec::new();
     for x in 0..64u32 {
@@ -3854,7 +3865,7 @@ pub(crate) fn bld_tiles(cov: &Coverage) -> BldTiles {
         }
     }
     let v = std::sync::Arc::new(v);
-    *g = Some((id, v.clone()));
+    KEPT.lock().unwrap_or_else(|e| e.into_inner())[usize::from(shadow)] = Some((id, v.clone()));
     v
 }
 
@@ -7542,6 +7553,78 @@ mod tests {
         incremental_is_full_in(&["held"], true, 5_000);
     }
 
+    /// Keys kept twice (task #1077 review): shadow plans chained over two changes in a row, each
+    /// going on from the one before's memo (`KeyMemo::after` of its `read_sets`), are the full
+    /// plans, key by key and whole; the second keeps more keys than the first derived, so some
+    /// were kept through both.
+    #[test]
+    fn keys_kept_twice_are_the_full_plans() {
+        use buildstore::reads::{Changes, Diff};
+        let f = fixtures().into_iter().find(|f| f.name == "built").unwrap();
+        let each = f.c.by_region();
+        let (on_map, served) = (BTreeMap::new(), BTreeMap::new());
+        let publish = Publish {
+            each: &each,
+            on_map: &on_map,
+            served: &served,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+        };
+        let plan = |memo: &KeyMemo, m: &BTreeMap<String, String>| {
+            super::plan_with(memo, &f.c, "d", m, &Keys::default(), &f.inputs, f.reach.as_ref(), &(f.tiles)(m), publish)
+        };
+        let reach = roads::reach::logical("d");
+        let names: Vec<&String> = f.m.keys().filter(|l| **l != reach).collect();
+        let changed = |m: &BTreeMap<String, String>, l: &String| {
+            let mut m = m.clone();
+            m.insert(l.clone(), format!("{}~", m[l]));
+            m
+        };
+        let m1 = changed(&f.m, names[0]);
+        let m2 = changed(&m1, names[names.len() / 2]);
+        let memo = KeyMemo::after(None, &Diff::default(), false).0;
+        plan(&memo, &f.m);
+        let (mut sets, mut was) = (memo.read_sets().unwrap(), &f.m);
+        let mut counts = Vec::new();
+        for m in [&m1, &m2] {
+            let d = Diff {
+                manifest: Changes::of(was, m),
+                inputs: Changes::default(),
+                load: (f.tiles)(was).load_state() != (f.tiles)(m).load_state(),
+            };
+            let memo = KeyMemo::after(Some(sets), &d, false).0;
+            let ours = plan(&memo, m);
+            let full = KeyMemo::default();
+            assert!(ours == plan(&full, m), "the plan after {} changes isn't the full plan", counts.len() + 1);
+            let mine = memo.keys();
+            for (id, k) in full.keys() {
+                assert_eq!(mine.get(&id), Some(&k), "{} {}", id.0, id.1);
+            }
+            let (mut kept, mut derived) = (0, 0);
+            memo.each(|_, _, was_kept| if was_kept { kept += 1 } else { derived += 1 });
+            counts.push((kept, derived));
+            (sets, was) = (memo.read_sets().unwrap(), m);
+        }
+        assert!(counts[0].0 > 0 && counts[1].0 > counts[0].1, "kept and derived: {counts:?}");
+    }
+
+    /// A coverage changed in a shape's country alone (which the 3D buildings' keys read, its
+    /// version not) changes what every key reads besides its entries (`context_rest`: a shadow
+    /// plan keeps none) and a memo's context (`KeyCtx::stamp`: its keys not served), task #1077.
+    #[test]
+    fn a_country_change_keeps_no_key() {
+        let c = cov();
+        let mut c2 = c.clone();
+        c2.shapes[0].country = format!("{}~", c2.shapes[0].country);
+        assert_eq!(c.version(), c2.version(), "the country isn't in the version");
+        assert_ne!(context_rest(&c, "d", None), context_rest(&c2, "d", None));
+        let (m, tiles) = (BTreeMap::new(), TerrainTiles::default());
+        let stamp = |c: &Coverage| KeyCtx::new(c, "d", &m, &m, None, &tiles).stamp();
+        assert_ne!(stamp(&c), stamp(&c2));
+    }
+
     /// The declared elevation datasets are held by the geoid sources too, which converted their
     /// heights (`TerrainTiles::load_elevation`): reading them reads the accepted sources, so a key
     /// naming a converted dataset moves when only the sources' entry changes (task #1076 review).
@@ -7565,7 +7648,7 @@ mod tests {
         let mut m2 = m.clone();
         m2.insert(su.clone(), "sources/inputs/sources/@index.7e7e7e7e7e7e7e7e.json".into());
         let d = Diff { manifest: Changes::of(&m, &m2), ..Default::default() };
-        assert!(rec.graph().moved(&d, &[])[n], "a change of the sources alone moves it");
+        assert!(rec.renumbered().0.moved(&d, &[])[n], "a change of the sources alone moves it");
     }
 
     /// Task #668: the polar caps' points (`polar-points`) are a step of their own, keyed by the
@@ -11999,7 +12082,7 @@ mod tests {
         assert!(!lo.is_empty());
         assert!((0..64u32).all(|x| (0..64u32).all(|y| !c
             .meets_rect(codecs::hipack::grow(codecs::hipack::tile_bounds(6, x, y), roadcore::geo::NEAR_COVERAGE_KM)))));
-        assert!(bld_tiles(&c).is_empty());
+        assert!(bld_tiles(&c, false).is_empty());
         // Through the stored geometry: a region of water alone goes to `depth_only`.
         let g = inputs::inputs::regions::stored::Geometry {
             id: "zone".into(),

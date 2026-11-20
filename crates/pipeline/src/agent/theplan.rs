@@ -16,8 +16,6 @@ use roads::reach::Reaches;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use store::nasfs::{NasPath, NasRoot};
@@ -202,7 +200,6 @@ impl Plan for ThePlan {
             memo: RefCell::default(),
             shadow: RefCell::default(),
             shadowing: Cell::new(true),
-            planning: Arc::default(),
         })
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -354,9 +351,6 @@ struct Held {
     shadow: RefCell<Option<Shadowing>>,
     /// Whether each plan has its shadow made (off only in a test of what it costs).
     shadowing: Cell<bool>,
-    /// Whether `build::plan` is being made: a shadow waits for it to end before it starts, so the
-    /// two plans' peaks overlap only when a plan starts while a shadow runs.
-    planning: Arc<AtomicBool>,
 }
 
 /// What a shadow plan's keys read their context as, for the next one's diff: the manifest and the
@@ -430,7 +424,7 @@ impl Ask {
 /// its shadow plans kept (`Kept`), none of it shared with the plan. Its line and any difference
 /// are logged.
 struct Shadowing {
-    asks: Sender<Ask>,
+    asks: agentcore::agent::bus::Post<Ask>,
     /// How many plans it was asked to shadow.
     asked: u64,
     #[cfg(test)]
@@ -446,28 +440,38 @@ struct Kept {
     sets: build::ReadSets,
 }
 
+/// How many threads a shadow plan's rayon work runs on (its own pool at the utility QoS, never the
+/// plan's): the warm-up of the keys' records is the plan's (the shadow finds what it filled), so
+/// little is left to it.
+const SHADOW_THREADS: usize = 2;
+
 impl Shadowing {
-    /// Its worker started, each shadow begun only while no plan is being made (`planning`); None,
-    /// said, when no thread can be.
-    fn start(planning: Arc<AtomicBool>) -> Option<Shadowing> {
-        let (asks, taken) = channel::<Ask>();
+    /// Its worker started, each shadow begun once no plan is being made (`Post::hold`, the plan's
+    /// while it makes `build::plan`) and ended with the plan part (its mailbox's sender dropped);
+    /// None, said, when no thread can be.
+    fn start() -> Option<Shadowing> {
+        let (asks, inbox) = agentcore::agent::bus::mailbox::<Ask>();
         #[cfg(test)]
-        let (say, said) = channel();
+        let (say, said) = std::sync::mpsc::channel();
         let run = move || {
             nasread::unphased();
             agentcore::agent::forecast::low_priority();
-            let mut kept: Option<Kept> = None;
-            while let Ok(mut ask) = taken.recv() {
-                // (A plan being made: its end awaited, then the latest plan shadowed.)
-                while planning.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-                let mut skipped = 0;
-                while let Ok(next) = taken.try_recv() {
-                    (ask, skipped) = (next, skipped + 1);
-                }
-                let n = ask.n;
-                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shadow(&mut kept, ask, skipped)));
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(SHADOW_THREADS)
+                .thread_name(|i| format!("plan shadow {i}"))
+                .start_handler(|_| agentcore::agent::forecast::low_priority())
+                .build();
+            if let Err(e) = &pool {
+                eprintln!("agent: the plan's shadow has no threads of its own ({e}): it runs on rayon's");
+            }
+            let (mut kept, mut last): (Option<Kept>, u64) = (None, 0);
+            while let Some(ask) = inbox.take() {
+                let (n, skipped) = (ask.n, ask.n - last - 1);
+                last = n;
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &pool {
+                    Ok(p) => p.install(|| shadow(&mut kept, ask, skipped)),
+                    Err(_) => shadow(&mut kept, ask, skipped),
+                }));
                 let s = match made {
                     Ok(s) => s,
                     Err(e) => {
@@ -546,6 +550,7 @@ fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
     // (Each key against the plan's: kept, or derived here.)
     let (mut kept_n, mut derived_n) = (0, 0);
     let mut apart: Vec<(String, String, Option<String>, Option<String>, bool)> = Vec::new();
+    let mut held: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     memo.each(|(step, t), k, was_kept| {
         if was_kept {
             kept_n += 1;
@@ -556,8 +561,19 @@ fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
             Some(theirs) if theirs != k => apart.push((step.clone(), t.clone(), k.clone(), theirs.clone(), was_kept)),
             _ => {}
         }
+        held.insert((step.clone(), t.clone()));
     });
     apart.sort_unstable();
+    // (The plan's keys it holds none of: the comparison walks its own. The terrain's and slope's
+    // are served by the terrain-targets cell, not derived: §4.1.)
+    let mut lacks: Vec<String> = ask
+        .keys
+        .keys()
+        .filter(|id| !held.contains(*id) && !id.0.starts_with("terrain-") && !id.0.starts_with("slope-"))
+        .map(|(s, t)| format!("{s} {t}"))
+        .collect();
+    lacks.sort_unstable();
+    drop(held);
     // (The keys the diff let go that the plan has as they were: a read moved under a key not naming
     // it so, or a target's own coverage record put, which its key reads: buildstore::asked.)
     let changed: std::collections::HashSet<&str> = d.manifest.names.iter().map(|(l, _)| l.as_str()).collect();
@@ -649,7 +665,8 @@ fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
     let said = format!(
         concat!(
             "plan shadow {} (docs/incremental-planning.md step 4): {}; {}, {} derived, moved but the same {}, ",
-            "and by their own coverage record put {}; {:.1} s CPU in {:.1} s against the plan's {:.1} s in {:.1} s{}; {}"
+            "and by their own coverage record put {}; the plan's keys it lacks, the terrain's and slope's aside, {}; ",
+            "{:.1} s CPU in {:.1} s against the plan's {:.1} s in {:.1} s{}; {}"
         ),
         n,
         summary,
@@ -657,6 +674,7 @@ fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
         derived_n,
         by_step(&moved_same),
         by_step(&own_record),
+        by_step(&lacks),
         cpu.as_secs_f64(),
         wall.as_secs_f64(),
         plan_cpu.as_secs_f64(),
@@ -817,9 +835,6 @@ impl Held {
         made: (Duration, Duration),
     ) {
         let mut s = self.shadow.borrow_mut();
-        if s.is_none() {
-            *s = Shadowing::start(self.planning.clone());
-        }
         let Some(sh) = s.as_mut() else { return };
         debug_assert!(std::ptr::eq(publish.each, &r.covs.each[..]), "the plan publishes by the coverages' regions");
         sh.asked += 1;
@@ -843,10 +858,22 @@ impl Held {
             wall: made.0,
             cpu: made.1,
         };
-        if sh.asks.send(ask).is_err() {
-            eprintln!("agent: the plan's shadow's worker is gone; started again with the next plan");
-            *s = None;
+        // (One waits at most, the latest: one it replaces is never shadowed.)
+        sh.asks.put(ask);
+    }
+
+    /// While it lives, the plan's shadow starts no plan (`bus::Post::hold`): one started at once
+    /// (the plan's own just ended) would have its peak beside this plan's. The worker started
+    /// with the first plan; None while shadows are off, or when it has no thread.
+    fn shadow_hold(&self) -> Option<agentcore::agent::bus::Hold<Ask>> {
+        if !self.shadowing.get() {
+            return None;
         }
+        let mut s = self.shadow.borrow_mut();
+        if s.is_none() {
+            *s = Shadowing::start();
+        }
+        s.as_ref().map(|s| s.asks.hold())
     }
 }
 
@@ -896,15 +923,15 @@ impl PlanHeld for Held {
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
                 let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
-                self.planning.store(true, Ordering::Relaxed);
+                let hold = self.shadow_hold();
                 let p = build::plan_with(&memo, cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
-                self.planning.store(false, Ordering::Relaxed);
                 if self.shadowing.get() {
                     let cpu = Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu));
                     nasread::PLAN.enter("its shadow's copy");
                     self.ask_shadow(r, publish, &tiles, &p, &memo, (t.elapsed(), cpu));
                 }
-                drop(tiles);
+                // (Its ask left first: the worker takes this plan's, not the one before.)
+                drop((hold, tiles));
                 (p, memo)
             }
         };

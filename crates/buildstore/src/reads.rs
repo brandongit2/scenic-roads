@@ -282,8 +282,9 @@ impl Recorder {
         }
     }
 
-    /// The reads recorded, with their reverse index.
-    pub fn graph(self) -> Graph {
+    /// The reads recorded, with their reverse index (the tests'; `renumbered` with a kept graph).
+    #[cfg(test)]
+    fn graph(self) -> Graph {
         self.renumbered().0
     }
 
@@ -310,7 +311,7 @@ impl Recorder {
     }
 }
 
-/// What each key of a plan read (`Recorder::graph`), as the reverse index alone: (read, node) by
+/// What each key of a plan read (`Recorder::renumbered`), as the reverse index alone: (read, node) by
 /// read, (kid, reader) by kid. A node's own reads aren't kept apart (the diff asks only who read
 /// what changed).
 #[derive(Clone)]
@@ -333,7 +334,7 @@ pub struct Size {
     pub edges: usize,
     /// The bytes held: the reverse index and the edges.
     pub bytes: usize,
-    /// The bytes held at most while it was built (`Recorder::graph`).
+    /// The bytes held at most while it was built (`Recorder::renumbered`).
     pub peak: usize,
 }
 

@@ -275,6 +275,11 @@ fn asked_line<'m>(
 /// reaches (the plan runs it every loop: none of that changed, nothing done). A record put since
 /// is asked again by its key alone.
 pub fn warm_asked(x: &KeyCtx) {
+    // (A shadow plan's warms nothing: its round may be older than the plan's, whose mark it would
+    // put out; it finds the lines the plan's warm put, each key asking its own otherwise.)
+    if x.shadow() {
+        return;
+    }
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let fine = tiles.spacing(m);
     let mut each: Vec<(&str, String)> = Vec::new();
@@ -305,7 +310,7 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
     // (A cache filled, on other threads: each key finds its line by what it reads itself.)
     let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
     let bld: BTreeMap<(u32, u32), Option<String>> = if each.iter().any(|(s, _)| *s == "bldtiles") {
-        super::build::bld_tiles(cov).iter().map(|(a, b, g)| ((*a, *b), g.clone())).collect()
+        super::build::bld_tiles(cov, false).iter().map(|(a, b, g)| ((*a, *b), g.clone())).collect()
     } else {
         BTreeMap::new()
     };
@@ -750,6 +755,10 @@ fn lake_line<'m>(
 /// the key that reads it.
 pub fn warm_lakes(x: &KeyCtx) {
     use rayon::prelude::*;
+    // (None in a shadow plan, as `warm_asked`.)
+    if x.shadow() {
+        return;
+    }
     // (A cache filled, on other threads: each key finds its line by what it reads itself.)
     let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
     let named = |p: &'static str| m.under(p);
@@ -1028,7 +1037,7 @@ pub fn shapes_geo(cov: &buildstore::coverage::Coverage, u: TileId) -> String {
 /// the cheap test, as `build::bld_tiles` keeps it); None for a tile not meeting it.
 pub fn coverage_shapes(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    let geo = super::build::bld_tiles(x.cov).iter().find(|(a, b, _)| (*a, *b) == (u.x, u.y))?.2.clone()?;
+    let geo = super::build::bld_tiles(x.cov, x.shadow()).iter().find(|(a, b, _)| (*a, *b) == (u.x, u.y))?.2.clone()?;
     Some(vec![target_asked("bldtiles", t, geo, x, &|_| None)?])
 }
 
