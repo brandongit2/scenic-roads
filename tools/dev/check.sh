@@ -309,7 +309,7 @@ elif (( rustin )) && stopped prod; then :
 elif (( rustin )); then part --parse cargo prod cargo check -q --workspace --lib --bins
 else skip prod "no workspace crate changed"; fi
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
-# folder per test slot, three runs at a time there, the rest queued); here on the test Mac itself
+# folder per test slot, as many runs at a time there as its capacity's slots, the rest queued); here on the test Mac itself
 # or with SCENIC_CHECK_LOCAL=1; kept from the test Mac otherwise (it is down, …), not run: a FAIL
 # saying why (remote-tests.sh's NOT RUN line).
 rt=$root/tools/app/remote-tests.sh

@@ -89,7 +89,7 @@ remote-tests: got key k after 120 s
 remote-tests: tree copied to the test Mac in 1 s (this Mac's load 6.52)
 remote-tests: the test Mac's 3 test slots are taken (a b c ): waiting
 remote-tests: got a test-Mac slot after 5 s
-remote-tests: on the test Mac Mac-mini-M4 (load 13.09, slot 1, /x)
+remote-tests: on the test Mac Mac-mini-M4 (load 13.09, slot 1 of 3, 5 test threads, /x)
    Compiling pipeline v0.1.0
     Finished `test` profile [optimized] target(s) in 1s
      Running unittests src/lib.rs (/x/target/debug/deps/store-0123456789abcdef)
@@ -103,7 +103,14 @@ remote-tests: exit 0 on the test Mac (load 12.00)
         self.assertEqual((run["t0"], run["t1"]), (T + 10 - 5.0, T + 10))
         self.assertEqual(sorted(k["kind"] for k in run["kids"]), ["compile", "suite"])
         self.assertEqual(run["attrs"]["ran_on"], "Mac-mini-M4")
+        self.assertEqual((run["attrs"]["slot"], run["attrs"]["slots"], run["attrs"]["threads"]), ("1", "3", "5"))
         self.assertEqual(attrs, {"exit_on_test_mac": "0", "load_after": "12.00"})
+        # (Publish's own slot taken: a wait too.)
+        out, _ = devjob.parse(lines("""
+remote-tests: the test Mac's publish slot is taken (publish): waiting
+remote-tests: got a test-Mac slot after 5 s
+""", step=1.0), {"remote"}, T, T + 3)
+        self.assertEqual([(s["kind"], s["name"]) for s in out], [("wait", "a test-Mac slot")])
 
     def test_progress_lines_are_phases_a_long_tests_under_its_suite_on_the_test_mac(self):
         # (#1538: a 19-min test was one bar; its own progress lines say where the time went.)

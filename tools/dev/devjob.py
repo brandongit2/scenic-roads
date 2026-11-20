@@ -184,9 +184,9 @@ RT = "remote-tests: "
 RT_KEY_WAIT = re.compile(r"^remote-tests: key \S+ is in use on the test Mac \((.*)\): waiting")
 RT_KEY_GOT = re.compile(r"^remote-tests: got key \S+ after (\d+) s")
 RT_COPIED = re.compile(r"^remote-tests: tree copied to the test Mac in (\d+) s \(this Mac's load ([\d.]+)\)")
-RT_SLOT_WAIT = re.compile(r"^remote-tests: the test Mac's \d+ test slots are taken")
+RT_SLOT_WAIT = re.compile(r"^remote-tests: the test Mac's (?:\d+ test slots are|publish slot is) taken")
 RT_SLOT_GOT = re.compile(r"^remote-tests: got a test-Mac slot after (\d+) s")
-RT_ON = re.compile(r"^remote-tests: on the test Mac (\S+) \(load ([\d.]+), slot (\d+)")
+RT_ON = re.compile(r"^remote-tests: on the test Mac (\S+) \(load ([\d.]+), slot (\d+)(?: of (\d+), (\d+) test threads)?")
 RT_TOOK = re.compile(r"^remote-tests: the run took ([\d.]+)s on the test Mac, cpu ([\d.]+)s user \+ ([\d.]+)s sys")
 RT_EXIT = re.compile(r"^remote-tests: exit (\d+) on the test Mac \(load ([\d.]+)\)")
 RT_HERE = re.compile(r"^remote-tests: running here \((.*)\)$")
@@ -373,11 +373,12 @@ def parse(lines, kinds, t_start, t_end):
                 out.append(span("wait", "a test-Mac slot", slot_wait, t))
                 slot_wait = None
             elif m := RT_ON.match(l):
-                on = (t, m.group(1), m.group(2), m.group(3))
+                # (The slot, and the test Mac's slots and this run's test threads, #1539.)
+                on = (t, m.group(1), m.group(2), m.group(3), {k: v for k, v in (("slots", m.group(4)), ("threads", m.group(5))) if v})
             elif (m := RT_TOOK.match(l)) and on:
                 wall = float(m.group(1))
                 run = span("run", "run on the test Mac", max(on[0], t - wall), t, ran_on=on[1], load=on[2], slot=on[3],
-                           cpu_user=m.group(2), cpu_sys=m.group(3))
+                           cpu_user=m.group(2), cpu_sys=m.group(3), **on[4])
                 out.append(run)
             elif m := RT_EXIT.match(l):
                 attrs["exit_on_test_mac"] = m.group(1)

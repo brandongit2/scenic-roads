@@ -582,8 +582,21 @@ are its own for the disk rule and the drop below.
   agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
-  and nextest versions and whether the NAS is mounted. Three runs at a time on the test Mac; the rest
-  queue (30 min, then refused). A stopped run is stopped on the test Mac too.
+  and nextest versions and whether the NAS is mounted. A stopped run is stopped on the test Mac too.
+- The test Mac's capacity (#1539): as many runs at once as it has slots, the rest queued (30 min, then
+  refused), each with its share of the cores as test threads (`NEXTEST_TEST_THREADS` and
+  `RUST_TEST_THREADS`), so the whole stays within its cores. The slots: one per 4 cores and per 12 GB
+  of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots of 5 test threads), or as
+  `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`, either; read
+  by each run as it starts). Publish's run (key `publish`) has a slot of its own besides, slot 0 with
+  its own build folder, and every core: it never waits behind a check and comes first. Each run says
+  its slot, the slots and its threads, and how they were set ("on the test Mac … slot 2 of 3, 5 test
+  threads …; capacity derived: …"); the dev jobs page records them on the run (`slots`, `threads`).
+  A caller's own `NEXTEST_TEST_THREADS` or `--test-threads` stands. Builds aren't shared out: cargo
+  builds with every core, at nice 20 as the tests (a check's compile is most of its time on the test
+  Mac, and its tests are what time out). On 20 Nov three runs of 14 test threads each, the plan
+  tests' own threads and the builds beside them put the M4's load at 108-229 on 14 cores, and tests
+  of 14-17 s alone timed out at 3 min.
 - The result: the test Mac's side ends with a status line (read, not shown); the exit status is the
   command's. Without one (connection lost, no tree, no slot) the run is refused.
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits

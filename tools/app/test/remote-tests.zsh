@@ -130,8 +130,18 @@ run_remote() {  # <key> <command>: a run, the group's leader
 wait_for() { local i; for i in {1..300}; do [[ -e $1 ]] && return 0; sleep 0.1; done; return 1 }
 hold_two() { mkdir -p $fb/.slots/{2,3}; print -r -- $holdme > $fb/.slots/2/owner; print -r -- $holdme > $fb/.slots/3/owner }
 
+# The capacity (#1539): a slot per 4 cores and per 12 GB, the fewer, at least one; each run's test
+# threads its share of the cores, rounded up; the capacity file's slots and threads, either.
+cap() { capacity $tmp/capacity $1 $2; print -r -- "$reply[1] $reply[2]" }
+rm -f $tmp/capacity
+[[ $(cap 14 48) == "3 5" && $(cap 10 16) == "1 10" && $(cap 2 4) == "1 2" && $(cap 16 24) == "2 8" ]] \
+  && ok "the capacity, from the cores and the memory" || no "the capacity, from the cores and the memory" "$(cap 14 48), $(cap 10 16), $(cap 2 4), $(cap 16 24)"
+print 'slots=2' > $tmp/capacity; a=$(cap 14 48); print 'threads=3\nslots=x' > $tmp/capacity; b=$(cap 14 48)
+capacity $tmp/capacity 14 48
+[[ $a == "2 7" && $b == "3 3" && $reply[3] == "set in $tmp/capacity" ]] && ok "the capacity, as its file sets it" || no "the capacity, as its file sets it" "$a, $b, $reply[3]"
+
 # Ended as a run ends, with a test's server left: it goes first, then the slot.
-rm -rf $fh; hold_two; run_setup e1
+rm -rf $fh; mkdir -p $fb; print 'slots=3' > $fb/capacity; hold_two; run_setup e1
 out=$(run_remote e1 "print -r -- \$PWD > $tmp/where; sleep 300 & print \$! > $tmp/left")
 left=$(<$tmp/left)
 [[ $(<$tmp/where) == *"/.build/1/src" && $out == *"@@remote-tests-status 0"* ]] && ok "a run in its slot's folder" || no "a run in its slot's folder" "$(<$tmp/where): $out"
@@ -173,8 +183,17 @@ for k in c1 c2 c3 c4 c5; do
   run_remote $k "mkdir ../inuse 2>/dev/null || print \$PWD >> $tmp/overlap; print \$PWD >> $tmp/folders; sleep 1; rmdir ../inuse" >/dev/null & pids+=($!)
 done
 wait $pids
-[[ ! -e $tmp/overlap && $(wc -l < $tmp/folders) -eq 5 && $(sort -u $tmp/folders | wc -l) -le 3 ]] \
-  && ok "runs at once: never two in a folder" || no "runs at once: never two in a folder" "$(cat $tmp/overlap $tmp/folders 2>&1)"
+[[ ! -e $tmp/overlap && $(wc -l < $tmp/folders) -eq 5 && $(sort -u $tmp/folders | wc -l) -le 3 && $(<$tmp/folders) != */.build/0/* ]] \
+  && ok "runs at once: never two in a folder, none in publish's" || no "runs at once: never two in a folder, none in publish's" "$(cat $tmp/overlap $tmp/folders 2>&1)"
+
+# Publish's run: its own slot, 0, with every core as its test threads; a check's, its share.
+run_setup publish
+out=$(run_remote publish "print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub")
+[[ $(<$tmp/pub) == "*/.build/0/src $(sysctl -n hw.ncpu)" || $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) ]] && [[ $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
+  && ok "publish's run: its own slot, every core" || no "publish's run: its own slot, every core" "$(<$tmp/pub): $out"
+out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS > $tmp/chk")
+n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
+[[ $(<$tmp/chk) == $n && $out == *" of 3, $n test threads"* ]] && ok "a check's run: its share of the cores" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
 
 base=$tmp/scenic-check
 # The slot a key tries first: its last; then the least recently used, those never used before all.
