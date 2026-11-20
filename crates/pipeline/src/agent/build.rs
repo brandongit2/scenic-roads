@@ -7078,7 +7078,7 @@ mod tests {
 
     /// The threads a test working through its cases takes: a test's own share of its run's cores,
     /// RAYON_NUM_THREADS as tools/app/remote-tests.sh sets it (#1563: the run's cores over its test
-    /// threads), as rayon's own pools in the code under test take it; else 4 at most. nextest runs as
+    /// threads, 2 at least), as rayon's own pools in the code under test take it; else 4 at most. nextest runs as
     /// many tests at once as the run has test threads, so a test of a thread per core took them from
     /// the others (#1539: 14 a test on the M4 beside two other runs; #1563: in publish's run, 14
     /// tests at once of 14 threads each put the M4's load at 64-147 with nothing else on it).

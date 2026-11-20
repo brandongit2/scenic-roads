@@ -27,9 +27,10 @@ its attributes the settings, `alone` ([binary, test, seconds alone, median in th
 began and ended; the dashboard shows the latest (`/api/jobs/latest?kind=budget`). A measure that
 failed to measure (refused, cut short before a test ended: none timed of those chosen) doesn't count
 as the last for `every_h`, nor for `rest`. It runs `--test-threads 1`, one test at a time, in
-publish's slot on the test Mac, beside the pool's jobs and the checks under way as it starts (none
-starts meanwhile: publish's slot has the test Mac to itself, tools/app/remote-tests.sh; it doesn't
-wait for those to end, as publish's suite does, within its max_min). It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
+publish's slot on the test Mac once the test Mac is that slot's alone (tools/app/remote-tests.sh's
+SCENIC_TEST_MAC_ALONE: no check starts meanwhile, those under way ended first, that wait within
+max_min), with the threads a test takes on an idle M4 (RAYON_NUM_THREADS at every core, which rayon's
+pools and the plan tests' own threads take), beside the pool's jobs. It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
 says why. With the dev job records off (`SCENIC_DEVJOB=0`) it measures nothing: its due time and its
 flags are those records.
 """
@@ -193,7 +194,12 @@ def run(tree):
     else:
         print(f"test budget: {len(tests)} tests alone (the slowest of the {n_over} at or over {s['budget_s']} s in the last {len(read)} publishes' suites, "
               f"{left_out} measured under it lately left out), within {s['max_min']} min")
+        # (Alone as the owner's budget means it, #1563: once the test Mac is publish's slot's alone,
+        # remote-tests.sh's SCENIC_TEST_MAC_ALONE, and with the threads a test takes on an idle M4:
+        # rayon's pools and the plan tests' own threads at every core, not a test's share in a suite.)
         cmd = ("export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval \"$(mise env -s zsh)\"; }; "
+               "if [[ -n ${SCENIC_TEST_MAC_ALONE:-} ]]; then $SCENIC_TEST_MAC_ALONE >/dev/null || exit $?; fi; "
+               "export RAYON_NUM_THREADS=$(sysctl -n hw.ncpu); "
                f"cargo nextest run --no-fail-fast --hide-progress-bar --workspace --test-threads 1 -E {shlex.quote(filterset(tests))}")
         p = remote(["publish", tree, cmd], dict(os.environ, SCENIC_DEVJOB_PARENT=sid))
         timer, fired = bounded(p, s["max_min"] * 60)

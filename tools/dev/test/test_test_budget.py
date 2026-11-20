@@ -215,6 +215,9 @@ class TestBudget(unittest.TestCase):
         (argv, parent), = cmds
         self.assertEqual(argv[:2], ["publish", "/tree"])
         self.assertIn("--test-threads 1", argv[2])
+        # (Alone, #1563: the test Mac publish's slot's own first, then every core a test's.)
+        self.assertLess(argv[2].index("$SCENIC_TEST_MAC_ALONE"), argv[2].index("export RAYON_NUM_THREADS=$(sysctl -n hw.ncpu)"))
+        self.assertLess(argv[2].index("export RAYON_NUM_THREADS="), argv[2].index("cargo nextest run"))
         self.assertIn("(binary_id(=terrain) & test(=a::t)) | (binary_id(=inputs) & test(=c::t))", argv[2])
         start, end = self.events()
         self.assertEqual((start["op"], start["kind"], start["id"], end["id"]), ("start", "budget", parent, parent))

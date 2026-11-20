@@ -618,8 +618,8 @@ are its own for the disk rule and the drop below.
   Lowered, the build folders of the slots above go at the next run, but one a live run holds: a
   slot whose run is gone is freed first, as when a slot is taken. Publish's run (key `publish`, publish.sh's alone: it
   is refused without SCENIC_PUBLISH) has a slot of its own besides, slot 0 with its own build folder,
-  and the test Mac to itself (#1563): it never waits behind a check and comes first; while slot 0 is
-  held no other run starts (it says "the test Mac is publish's run's (slot 0 since …): waiting for
+  and the test Mac to itself (#1563): it never waits for a slot behind a check, and its build starts
+  at once; while slot 0 is held no other run starts (it says "the test Mac is publish's run's (slot 0 since …): waiting for
   it to end", that wait not counted in its 30 min), and publish's run takes every check slot as it
   frees, so a run from a branch without #1563 waits too (every version since #969 takes a slot). Runs
   under way when it starts go on to their end, and its tests wait for them: its command builds first
@@ -773,9 +773,12 @@ fails, and is never given more. `cargo test` runs have no such bound.
   them all (`SCENIC_PUBLISH`, set by publish.sh's run; #1539: pipeline's plan tests over each
   manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
   six). A test's own threads are its share of its run's cores (#1563): remote-tests.sh exports
-  `RAYON_NUM_THREADS`, the run's cores (less the pool's jobs) over its test threads, one at least,
-  which rayon's pools in the code under test and the plan tests' own threads (`case_threads`) take
-  (a caller exporting its own keeps it; without it, at most 4). Nextest already runs a test a
+  `RAYON_NUM_THREADS`, the run's cores (less the pool's jobs) over its test threads, two at least
+  (a test's parallel code runs parallel, as the code it tests does), which rayon's pools in the code
+  under test and the plan tests' own threads (`case_threads`) take (a caller exporting its own keeps
+  it; without it, at most 4). On the M4 that is 2 in every run: a check's 14 cores / 3 slots = 4 over
+  5 test threads, publish's 14 (less the pool's) over as many test threads, both under 1 before the
+  floor. Nextest already runs a test a
   thread: in publish's run 14 tests at once of 14 threads each had put the M4's load at 64-147 with
   nothing else on it, and the plan tests ran about 10 times their time alone (the 20 Nov 11:24
   publish). Where every change
@@ -788,8 +791,8 @@ fails, and is never given more. `cargo test` runs have no such bound.
   a suite that passed and once a measure is due, runs `tools/dev/test-budget.py`: the slowest tests
   of the last publishes' suites (from the dev job records: each test's median there, those at or over
   the budget, the slowest few, less those measured under it in the last few measures, so the measures
-  go on down the list), each run alone (`--test-threads 1`, with its own threads as in publish's
-  run, `RAYON_NUM_THREADS` from publish's slot) in publish's slot on the test Mac, on the
+  go on down the list), each run alone (`--test-threads 1`, with the threads a test takes on an
+  idle M4: `RAYON_NUM_THREADS` at every core, not a test's share in a suite) in publish's slot on the test Mac, on the
   build the suite just made, within a bound of its own (its run stopped past it, by its PID, what it
   timed kept); any over the budget is flagged on the dev job dashboard (its "Test budget", the latest
   measure) and in publish's output, never failing it. Its settings, each shown with the measure, are
@@ -797,9 +800,10 @@ fails, and is never given more. `cargo test` runs have no such bound.
   72 tests had a median of 10 s or more in the last 3 publishes' suites; the 20 slowest alone, a few
   minutes once a day), `rest` 3, `max_min` 10. A measure that timed nothing (refused, cut short) is
   not the last for `every_h`; with the dev job records off (`SCENIC_DEVJOB=0`) nothing is measured,
-  as they hold its due time. Alone means one test at a time, not an idle Mac: the pool's jobs and
-  other slots' checks run beside it, the test Mac's load as its run began and ended recorded and shown
-  with it. Its test:
+  as they hold its due time. Alone means one test at a time on a test Mac with no other run (#1563: it
+  waits through `$SCENIC_TEST_MAC_ALONE` until publish's slot holds every check slot, that wait within
+  `max_min`); the pool's jobs still run beside it, the test Mac's load as its run began and ended
+  recorded and shown with it. Its test:
   `tools/dev/test/test_test_budget.py` (check.sh's `testbudget` part). Three tests it would have
   flagged were made smaller (#1553, alone on the M4 under the same load before and after:
   `depth::lakes::tests::the_small_lakes_resume_where_a_stop_left_them`, its empty z10 tiles no

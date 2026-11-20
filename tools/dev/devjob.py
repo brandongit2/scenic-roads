@@ -390,7 +390,7 @@ def parse(lines, kinds, t_start, t_end):
             elif m := RT_COPIED.match(l):
                 out.append(span("copy", "copy to the test Mac", t - int(m.group(1)), t, load=m.group(2)))
             elif RT_SLOT_WAIT.match(l):
-                slot_wait = t
+                slot_wait = slot_wait or t  # (said again as it goes on: the first saying its start)
             elif (m := RT_SLOT_GOT.match(l)) and slot_wait:
                 out.append(span("wait", "a test-Mac slot", slot_wait, t))
                 slot_wait = None

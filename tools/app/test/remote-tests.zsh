@@ -232,7 +232,7 @@ out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_T
   && ok "publish's run: its own slot, every core as it builds" || no "publish's run: its own slot, every core as it builds" "$(<$tmp/pub): $out"
 out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS \$RAYON_NUM_THREADS > $tmp/chk")
 n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
-[[ $(<$tmp/chk) == "$n 1" && $out == *" of 3, $n test threads"*"1 thread a test"* ]] && ok "a check's run: its share of the cores, a test's own threads its share of those" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+[[ $(<$tmp/chk) == "$n 2" && $out == *" of 3, $n test threads"*"2 threads a test"* ]] && ok "a check's run: its share of the cores, a test's own threads its share of those" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
 
 # The pool's jobs (#1563): the CPU of the agent's process and every process under it, nothing else;
 # taken off a check's share, and off publish's tests' threads, half the cores left them at least.
@@ -245,6 +245,14 @@ print -r -- "    1     0   0.0 /sbin/launchd
   800     1 900.0 rustc --crate-name scenic agentx
   801     1 200.0 awk /(^|\\/)scenic agent( |\$)/" > $tmp/ps
 [[ $(SCENIC_TESTS_PS=$tmp/ps pool_busy) == "4 4.0 4" ]] && ok "the pool's jobs: its agent's tree alone" || no "the pool's jobs: its agent's tree alone" "$(SCENIC_TESTS_PS=$tmp/ps pool_busy)"
+# A job its agent's restart left (adopted by the new agent, its wrapper's parent launchd): counted,
+# with what is under it; the map server and others of the app's folder not.
+cp $tmp/ps $tmp/ps-orphan
+print -r -- "91014     1   0.0 /bin/sh -c s=\$1; shift; \"\$@\"
+91018 91014 199.0 /Users/x/Library/Application Support/scenic/app/v0/scenic-build depth --root /n
+91019 91018  50.0 /usr/bin/python3 -I x.py
+92000     1 120.0 /Users/x/Library/Application Support/scenic/app/v1/server --port 0" >> $tmp/ps-orphan
+[[ $(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy) == "7 6.5 6" ]] && ok "the pool's jobs: one left by an agent's restart too" || no "the pool's jobs: one left by an agent's restart too" "$(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy)"
 [[ $(SCENIC_TESTS_PS=$tmp/ps0 pool_busy) == "0 0.0 0" ]] && ok "the pool's jobs: no agent, none" || no "the pool's jobs: no agent, none" "$(SCENIC_TESTS_PS=$tmp/ps0 pool_busy)"
 rm -f $tmp/capacity; capacity $tmp/capacity 14 48 5
 [[ "$reply[1] $reply[2]" == "3 3" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots" ]] \
@@ -272,7 +280,7 @@ sleep 3
   && ok "behind publish: another run waits at start, publish's tests wait for the run under way" || no "behind publish: another run waits at start, publish's tests wait for the run under way" "$(cat $tmp/chkout $tmp/pubout)"
 rm -rf $fb/.slots/2  # (the run under way ends)
 wait_for $tmp/pubtests
-[[ -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/slotsheld) == $'0\n1\n2\n3' && $(<$tmp/pubthreads) == "NEXTEST_TEST_THREADS=$(sysctl -n hw.ncpu) RUST_TEST_THREADS=$(sysctl -n hw.ncpu) RAYON_NUM_THREADS=1" \
+[[ -e $tmp/pubtests && ! -e $tmp/chkran && $(<$tmp/slotsheld) == $'0\n1\n2\n3' && $(<$tmp/pubthreads) == "NEXTEST_TEST_THREADS=$(sysctl -n hw.ncpu) RUST_TEST_THREADS=$(sysctl -n hw.ncpu) RAYON_NUM_THREADS=2" \
    && $(<$fb/.slots/2/owner) == $(<$fb/.slots/0/owner) ]] \
   && ok "publish's tests: once every slot is its own" || no "publish's tests: once every slot is its own" "$(cat $tmp/slotsheld $tmp/pubthreads $tmp/pubout)"
 [[ $(<$tmp/pubout) == *"wait for the test Mac's other runs to end"*"slot 2 test (since"*"the test Mac is publish's after"* ]] \
@@ -296,10 +304,19 @@ out=$(run_remote t1560-base "true")
 [[ $out == *"@@remote-tests-status 0"* ]] && ! publish_holds $fb && ok "publish killed outright: its slots freed for the next run" || no "publish killed outright: its slots freed for the next run" "$out; $(ls $fb/.slots)"
 rm -rf $fb/.slots
 
+# The reservation stops once its run is gone (killed outright, no trap: a run on the test Mac itself).
+mkdir -p $fb/.slots/2; print -r -- $holdme > $fb/.slots/2/owner
+true & dead=$!; wait $dead
+( reserve_all $fb 2 "$dead Fri Nov 20 20:00:00 2026 publish" ) & rp=$!
+for i in {1..50}; do kill -0 $rp 2>/dev/null || break; sleep 0.1; done
+if kill -0 $rp 2>/dev/null; then kill $rp; no "the reservation stops once its run is gone" "still running"
+else ok "the reservation stops once its run is gone"; fi
+rm -rf $fb/.slots
+
 # Publish's wait is bounded (publish_wait): past it, its tests go on, saying what is left.
 mkdir -p $fb/.slots/{0,1}; print -r -- $holdme > $fb/.slots/1/owner
 out=$(wait_alone $fb 1 1 14 "" "me" 2>&1)
-[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == "NEXTEST_TEST_THREADS=14 RUST_TEST_THREADS=14 RAYON_NUM_THREADS=1" ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
+[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == "NEXTEST_TEST_THREADS=14 RUST_TEST_THREADS=14 RAYON_NUM_THREADS=2" ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
 rm -rf $fb/.slots
 
 # A run on the test Mac itself (no copy): a slot taken, behind publish's run too, freed as it ends.

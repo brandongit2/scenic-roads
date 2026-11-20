@@ -116,6 +116,7 @@ remote-tests: got a test-Mac slot after 5 s
         # was left.)
         out, _ = devjob.parse(lines("""
 remote-tests: the test Mac is publish's run's (slot 0 since 12:00:00; its tests run alone): waiting for it to end
+remote-tests: the test Mac is publish's run's (slot 0 since 12:00:00; its tests run alone): waiting for it to end, 300 s so far
 remote-tests: got a test-Mac slot after 5 s
 remote-tests: on the test Mac Mac-mini-M4 (load 13.09, slot 0 of 3, 14 test threads, /x)
 remote-tests: publish's tests wait for the test Mac's other runs to end (none starts meanwhile): slot 1 a (since 12:00:00)
@@ -125,9 +126,10 @@ remote-tests: publish's tests went on after 1 s (publish_wait) beside the test M
 remote-tests: the run took 7.00s on the test Mac, cpu 9.00s user + 1.00s sys
 """, step=1.0), {"remote"}, T, T + 9)
         self.assertEqual([(s["kind"], s["name"]) for s in out], [("wait", "a test-Mac slot"), ("run", "run on the test Mac")])
+        self.assertEqual((out[0]["t0"] - T, out[0]["t1"] - T), (0, 2), "the wait from its first saying")
         waits = out[1]["kids"]
         self.assertEqual([(w["t0"] - T, w["t1"] - T, w["attrs"]) for w in waits],
-                         [(3, 5, {"pool_cores": "3.5", "test_threads": "10"}), (5, 6, {"went_on_beside": "slot 2 b (since 12:00:00)"})])
+                         [(4, 6, {"pool_cores": "3.5", "test_threads": "10"}), (6, 7, {"went_on_beside": "slot 2 b (since 12:00:00)"})])
 
     def test_progress_lines_are_phases_a_long_tests_under_its_suite_on_the_test_mac(self):
         # (#1538: a 19-min test was one bar; its own progress lines say where the time went.)

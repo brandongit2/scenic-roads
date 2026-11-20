@@ -252,7 +252,10 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
 }
 
 # The pool's jobs on this Mac (#1563): the cores its agent and every process under it (its jobs:
-# scenic-build and theirs) keep busy, from ps's %cpu (a decaying average over about the last
+# scenic-build and theirs) keep busy, and every program of the app's (`scenic`, `scenic-build` from
+# ~/Library/Application Support/scenic/app/<release>/) with what is under it: a job outlives its
+# agent's restart (every publish restarts it), adopted by the new one but no longer its child (its
+# wrapper's parent is launchd). From ps's %cpu (a decaying average over about the last
 # minute), read only. They run at nice 0 and the tests at nice 20, so what they take the tests don't
 # get: a run's share is of the cores they leave. Prints "<whole cores, rounded> <cores, a tenth>
 # <processes>". (SCENIC_TESTS_PS names a file of `ps -axo pid=,ppid=,pcpu=,args=` lines read in its
@@ -260,7 +263,7 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
 pool_busy() {
   { if [[ -n ${SCENIC_TESTS_PS:-} ]]; then cat $SCENIC_TESTS_PS; else ps -axo pid=,ppid=,pcpu=,args=; fi } | awk '
     { kids[$2] = kids[$2] " " $1; cpu[$1] = $3; a = $0; sub(/^ *[0-9]+ +[0-9]+ +[0-9.]+ +/, "", a)
-      if (a ~ /(^|\/)scenic agent( |$)/) q[++n] = $1 }
+      if (a ~ /(^|\/)scenic agent( |$)/ || a ~ /\/Application Support\/scenic\/app\/[^\/]+\/scenic(-build)?( |$)/) q[++n] = $1 }
     END { t = 0; c = 0
       for (i = 1; i <= n; i++) { p = q[i]; if (p in seen) continue; seen[p] = 1; t += cpu[p]; c++
         m = split(kids[p], ks, " "); for (j = 1; j <= m; j++) q[++n] = ks[j] }
@@ -300,10 +303,11 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
     t=$reply[2]; how+="; the pool's jobs keep ${p[2]} cores busy"
   fi
   # (A test's own threads, its share of the run's: RAYON_NUM_THREADS, read by rayon's pools and the
-  # tests' own threads, pipeline's case_threads.)
-  local each=$(( ($2 == 0 ? $4 - ${p[1]} : ($4 - ${p[1]}) / $3) / t )); (( each < 1 )) && each=1
+  # tests' own threads, pipeline's case_threads; two at least, so a test's parallel code runs
+  # parallel, as the code it tests does: on the M4 every run's share comes to 2.)
+  local each=$(( ($2 == 0 ? $4 - ${p[1]} : ($4 - ${p[1]}) / $3) / t )); (( each < 2 )) && each=2
   export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=$each
-  REPLY=$t; reply=("capacity: $how; $each thread$( (( each > 1 )) && print s) a test")
+  REPLY=$t; reply=("capacity: $how; $each threads a test")
 }
 
 publish_holds() {  # <base>: 0 while publish's run holds slot 0 (its process alive); REPLY its owner line
@@ -323,6 +327,9 @@ publish_holds() {  # <base>: 0 while publish's run holds slot 0 (its process ali
 reserve_all() {  # <base> <slots> <owner>
   local s all
   while true; do
+    # (Its run gone, killed outright with nothing to stop this, as a run on the test Mac itself
+    # can be: it stops, and what it took is a gone run's.)
+    proc_alive "${3% *}" || return 1
     all=1
     for s in {1..$2}; do
       [[ $(cat $1/.slots/$s/owner 2>/dev/null) == "$3" ]] && continue
@@ -357,7 +364,7 @@ wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empt
   done
   local p=($(pool_busy))
   publish_share $4 ${p[1]} "$5"
-  local each=$(( ($4 - ${p[1]}) / REPLY )); (( each < 1 )) && each=1
+  local each=$(( ($4 - ${p[1]}) / REPLY )); (( each < 2 )) && each=2
   print -u2 -r -- "remote-tests: the test Mac is publish's after $(( SECONDS - t0 )) s (load $(loadavg); the pool's jobs keep ${p[2]} cores busy, ${p[3]} processes): $REPLY test threads (${reply[1]}), $each a test"
   print "NEXTEST_TEST_THREADS=$REPLY RUST_TEST_THREADS=$REPLY RAYON_NUM_THREADS=$each"
 }
@@ -365,7 +372,8 @@ wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empt
 # A slot (remote_main's, and a run on the test Mac itself): publish's run slot 0, any other the
 # key's last, then the least recently used (slot_order); none free, it waits, 30 min at most, but
 # while publish's run holds slot 0 (publish_holds) a run waits for it without trying one, that wait
-# not counted in the 30 min. Says what it waits for at once. REPLY: the slot; 1 when none came.
+# not counted in the 30 min. Says what it waits for at once (behind publish's run, again every 5 min
+# with the time so far). REPLY: the slot; 1 when none came.
 take_slot() {  # <base> <key> <key folder> <slots> <owner>
   local base=$1 key=$2 dir=$3 slots=$4 mine=$5 s waited=0 behind=0 said=
   local -a order
@@ -373,7 +381,10 @@ take_slot() {  # <base> <key> <key folder> <slots> <owner>
   while true; do
     if [[ $key == publish ]]; then order=(0)
     elif publish_holds $base; then
-      [[ $said == publish ]] || print "remote-tests: the test Mac is publish's run's (slot 0 since $(date -r $(stat -f %m $base/.slots/0) +%H:%M:%S); its tests run alone): waiting for it to end"
+      # (Said at once, then every 5 min with the time waited so far.)
+      if [[ $said != publish ]] || (( behind % 300 == 0 )); then
+        print "remote-tests: the test Mac is publish's run's (slot 0 since $(date -r $(stat -f %m $base/.slots/0) +%H:%M:%S); its tests run alone): waiting for it to end$( (( behind )) && print ", $behind s so far")"
+      fi
       said=publish; sleep 5; (( behind += 5 )); continue
     else order=($(slot_order $base $slots $dir))
     fi
