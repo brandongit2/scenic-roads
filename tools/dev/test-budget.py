@@ -30,7 +30,8 @@ as the last for `every_h`, nor for `rest`. It runs `--test-threads 1`, one test 
 publish's slot on the test Mac once the test Mac is that slot's alone (tools/app/remote-tests.sh's
 SCENIC_TEST_MAC_ALONE: no check starts meanwhile, those under way ended first, that wait within
 max_min), with the threads a test takes on an idle M4 (RAYON_NUM_THREADS at every core, which rayon's
-pools and the plan tests' own threads take), beside the pool's jobs. It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
+pools and the plan tests' own threads take), beside the pool's jobs, those cores held from them as
+for publish's tests (remote-tests.sh's test hold, #1570). It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
 says why. With the dev job records off (`SCENIC_DEVJOB=0`) it measures nothing: its due time and its
 flags are those records.
 """

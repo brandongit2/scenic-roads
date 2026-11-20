@@ -786,8 +786,8 @@ fails, and is never given more. `cargo test` runs have no such bound.
   (a test's parallel code runs parallel, as the code it tests does), which rayon's pools in the code
   under test and the plan tests' own threads (`case_threads`) take (a caller exporting its own keeps
   it; without it, at most 4). On the M4 that is 2 in every run: a check's 14 cores / 3 slots = 4 over
-  5 test threads, publish's 14 (less the pool's) over as many test threads, both under 1 before the
-  floor. Nextest already runs a test a
+  5 test threads, under 1 before the floor; publish's tests' are 2 as set (their cores held from
+  the pool's jobs are as many as their test threads: above, Tests on the test Mac). Nextest already runs a test a
   thread: in publish's run 14 tests at once of 14 threads each had put the M4's load at 64-147 with
   nothing else on it, and the plan tests ran about 10 times their time alone (the 20 Nov 11:24
   publish). Where every change
