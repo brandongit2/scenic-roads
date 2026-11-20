@@ -217,6 +217,7 @@ mod tests {
 
     #[test]
     fn a_connection_that_ends_is_down() {
+        // (Its first answer the connection's opening, its second the ask's; then it ends.)
         let mut p = Probe::new(
             vec!["/bin/bash".into(), "-c".into(), "read l; echo; read l; echo; read l; exit 0".into()],
             Duration::from_secs(10),
@@ -232,12 +233,13 @@ mod tests {
         let why = p.ask(Duration::from_secs(5)).unwrap_err();
         assert!(why.contains("ended at once"), "{why}");
         assert_eq!(p.down(), Some(why.as_str()));
-        // (Within `RETRY`: no new connection, the same why.)
-        let t0 = Instant::now();
+        // (Within `RETRY`: no new connection, the same why, though one would open now.)
+        p.cmd = echoing().cmd;
         assert_eq!(p.ask(Duration::from_secs(5)).unwrap_err(), why);
-        assert!(t0.elapsed() < Duration::from_millis(100));
+        assert!(p.open.is_none());
         p.close();
         assert_eq!(p.down(), None);
+        assert!(p.ask(Duration::from_secs(5)).is_ok(), "closed, tried again");
     }
 
     #[test]
