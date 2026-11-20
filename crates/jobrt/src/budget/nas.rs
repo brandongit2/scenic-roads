@@ -83,13 +83,15 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// reads (`Sample`):
 ///
 /// - each Mac's NAS answer time over its **floor** (`Answer`: both the Mac's own, from its live
-///   store, carried by each beat), over the last `Tuning::span_s` while a build runs: its probe's
-///   on its own ssh to the NAS, a 4 KB read past the NAS's cache every `Tuning::apart_s`
-///   (agentcore::agent::apart: `Answer::apart_s`); that probe off or down, its listing of the
-///   project's folder every 5 s on its jobs' SMB session; a probe or listing past its deadline, or
+///   store, carried by each beat), over the last `Tuning::span_s` while a build runs: its listing
+///   of the project's folder every 5 s on its jobs' SMB session, or, with `Tuning::apart_judges`
+///   on, its probe's while it answers, a 4 KB read past the NAS's cache on its own ssh every
+///   `Tuning::apart_s` (agentcore::agent::apart: `Answer::apart_s`; off, in shadow, the probe's
+///   figures beside the listings, `Answer::probe`); a probe or listing past its deadline, or
 ///   while the last is still stuck, counts as the deadline or the stuck call's age. A NAS's load adds
 ///   milliseconds to every Mac's answers; it doesn't multiply each floor: each Mac is ranked by
-///   its **excess** (its answer time less its floor) over the least floor among those answering,
+///   its **excess** (its answer time less its floor) over the least floor among those answering
+///   the same way (listings or probes),
 ///   and its ratio is one more than that (alone, its own answer over its floor). With two Macs or
 ///   more read, the second-highest counts: one Mac's own link (the M1's Wi-Fi, a Mac away on
 ///   Tailscale) never paces the pool alone, while a NAS slowdown, the same milliseconds on a Mac

@@ -20,8 +20,8 @@
 //! agent waiting for an approval, as 1Password's does while locked), that ended, or whose answer
 //! passed its deadline is closed and **down**: no connection is opened again for `RETRY`, doubled
 //! with each such end in a row to `RETRY_MOST`, so a locked key agent is asked once a step, never
-//! in a stream; an answer in time ends the run. Meanwhile the Mac's answers are its jobs'
-//! session's, as without the probe, and the lead flags it (crate::agent::flags, `nas-apart`). Its
+//! in a stream; an answer in time ends the run. Meanwhile its figures are missing (with
+//! `nas-apart-judges` on, the Mac's answers its jobs' session's), and the lead flags it (crate::agent::flags, `nas-apart`). Its
 //! connections opened and answers past their deadline are counted (`connects`, `timeouts`) for the
 //! status line.
 
