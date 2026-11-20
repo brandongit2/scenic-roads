@@ -553,7 +553,9 @@ cores ×1; the last: cores: 0.5 of 8 left, a job of unit takes 1.0
   state, that cut slope-deep's wait once ready from a median 10.2 h to 0.1 h.
 - **Placement by how crucial** (`crate::agent::placement`, the pool's setting `placement`, §12): a
   member's asks try steps by their forecast slack, least first; within a step, the targets near
-  its last one first (they read the same inputs), then the longest. **Where it finishes soonest**:
+  its last one first (they read the same inputs), then the longest (a target whose run stopped
+  short by what is left of it, `forecast::partials`, as the forecast takes it: `Sched::stopped`,
+  task #1454). **Where it finishes soonest**:
   each target goes to whichever of the asker and the members asking lately that would take it now
   (`Sched::would_take_now`) finishes it soonest by its needs over that Mac's supply
   (`Sched::finish_s`), divided by `CACHE_PREFER` (4) where the Mac holds the step's shared cache

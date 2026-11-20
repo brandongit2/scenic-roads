@@ -672,8 +672,26 @@ impl Shared {
     /// again from the week the history keeps once its file is rewritten (its older events gone).
     fn note(&mut self, e: history::Event) -> u64 {
         let ratios = history::left_ratios_of(&e).map(|(step, r)| (step.to_string(), r));
+        // (A job's end sets or clears what is left of its targets' stopped runs, task #1454: a good
+        // end that stopped nothing part way clears its targets; any other is read from the week's
+        // history again, forecast::partials.)
+        let ended = e.job.is_some() && matches!(e.kind.as_str(), "end" | "done" | "fail");
+        let part_way = e.progress.as_ref().is_some_and(|p| p.done > p.since && p.done < p.total && p.secs > 0.0);
+        let cleared = (e.ok == Some(true) && !e.targets.is_empty() && !part_way)
+            .then(|| (e.step.clone().unwrap_or_default(), e.targets.clone()));
         let n = self.history.add(e);
-        if self.history.rewrites() != self.lefts_at {
+        // (A rewrite of the history's file drops its events older than the week: the stops among
+        // them leave with them, read again as the discounts below are.)
+        let rewritten = self.history.rewrites() != self.lefts_at;
+        match cleared.filter(|_| ended && !rewritten) {
+            Some((step, targets)) => self.sched.clear_stopped(&step, &targets),
+            None if ended || rewritten => {
+                let events = self.history.all();
+                self.sched.set_stopped(&events);
+            }
+            None => {}
+        }
+        if rewritten {
             self.lefts_at = self.history.rewrites();
             let by = self.history.left_ratios();
             self.sched.set_lefts(by);
@@ -2104,7 +2122,7 @@ impl Coordinator {
         }
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared {
+        let mut shared = Shared {
             sched: sched::Sched {
                 the_plan,
                 leases,
@@ -2144,6 +2162,7 @@ impl Coordinator {
                 tuning: Default::default(),
                 batch_s: 0,
                 lefts: sched::Lefts::of(history.left_ratios()),
+                stopped: BTreeMap::new(),
             },
             pass: String::new(),
             plan: 0,
@@ -2208,6 +2227,8 @@ impl Coordinator {
         if !viewer {
             shared.save_leases();
         }
+        let events = shared.history.all();
+        shared.sched.set_stopped(&events);
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published; kept (`jobs-token`), so
         // a job outlives its coordinator's restart with it (an agent restarted into an update that
@@ -5891,7 +5912,7 @@ fn route(
                 ..e
             };
             // (A job stopped short says how far it got: the forecast's time for what is left of it.)
-            s.history.add(if back { e } else { l.stopped(e) });
+            s.note(if back { e } else { l.stopped(e) });
             let how = if f.interrupted { "gave back" } else { "failed" };
             s.seen(&f.worker, format!("{how} {}: {why}", l.what()), None, now);
             eprintln!("coordinator: {} {how} {}: {why}", f.worker, l.what());
@@ -13703,6 +13724,64 @@ mod tests {
         // Off again: as before.
         c.set_placement(None);
         assert!(c.shared.lock().unwrap().placement.is_none());
+    }
+
+    /// Task #1454: a target whose run stopped short is placed by what is left of it (its pace over
+    /// the rest, crate::agent::forecast::partials, as the forecast takes it), not last as never
+    /// measured: 3/1/3's run made 10 of 100 z6 tiles in 300 s, so 3,000 s are left (the step not
+    /// seen to resume), past 3/1/2's 900; once a run of it ends well, it has no time left.
+    #[test]
+    fn placement_takes_a_stopped_run_by_its_time_left() {
+        let (_d, c, w, _clock) = every((0, 0));
+        for (t, secs) in [("3/1/1", 600), ("3/1/2", 900)] {
+            let sizes = [("threads".to_string(), 1)].into();
+            let cost = Cost { peak_mb: 500, secs, v: cost_version("slope-hi"), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
+            c.add_disks(&[(cost_key("slope-hi", t), 10)]);
+        }
+        let job = jobrt::jobid::JobId { epoch: 1, n: 77 };
+        let progress = history::Progress {
+            target: Some("slope-hi 3/1/3".into()),
+            done: 10.0,
+            total: 100.0,
+            since: 0.0,
+            unit: "z6 tiles".into(),
+            secs: 300.0,
+        };
+        c.note(history::Event {
+            job: Some(job),
+            step: Some("slope-hi".into()),
+            targets: vec!["3/1/3".into()],
+            ok: Some(false),
+            v: Some(cost_version("slope-hi")),
+            progress: Some(progress),
+            ..history::Event::new("fail")
+        });
+        assert_eq!(c.shared.lock().unwrap().sched.secs_of("slope-hi", "3/1/3", "m1"), Some(3000));
+        let offers = vec![Offer {
+            step: "slope-hi".into(),
+            targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(),
+            job: None,
+        }];
+        let a = Ask { can: vec!["slope-hi".into()], ..every_ask("m1", "slope-hi", 4096, 10_000) };
+        c.set_placement(Some(placement(&[("slope-hi", 0)])));
+        c.offer("p", offers);
+        assert_eq!(granted(&w, &a), ["3/1/3"]);
+        assert_eq!(granted(&w, &a), ["3/1/2"]);
+        assert_eq!(granted(&w, &a), ["3/1/1"]);
+        c.note(history::Event {
+            job: Some(jobrt::jobid::JobId { epoch: 1, n: 78 }),
+            step: Some("slope-hi".into()),
+            targets: vec!["3/1/3".into()],
+            ok: Some(true),
+            ..history::Event::new("done")
+        });
+        let mut s = c.shared.lock().unwrap();
+        assert!(s.sched.stopped.is_empty(), "{:?}", s.sched.stopped);
+        // (The good end cleared it without the history read again; read again, it is the same.)
+        let events = s.history.all();
+        s.sched.set_stopped(&events);
+        assert!(s.sched.stopped.is_empty(), "{:?}", s.sched.stopped);
     }
 
     /// Task #1163: each ask answered is kept (`Coordinator::answers`, what the lead's departure

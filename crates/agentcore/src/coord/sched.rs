@@ -300,6 +300,10 @@ pub struct Sched {
     pub batch_s: u64,
     /// How the progress estimates of each step's jobs ended (`Lefts`; set through `set_lefts`).
     pub lefts: Lefts,
+    /// What is left of each target whose run stopped short (s, at the lead's pace), by step, then
+    /// target: crate::agent::forecast::partials of the history (`set_stopped`), so placement takes it
+    /// by its time left, not as never measured (`secs_of`, task #1454).
+    pub stopped: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 /// How jobs' progress estimates ended (task #1505 review): what was left in fact over what their
@@ -1224,10 +1228,40 @@ impl Sched {
         }
     }
 
-    /// How long `target` of `step` is measured to take `worker` (s), as it ran its threads
-    /// (`secs_on`).
+    /// How long `target` of `step` is measured to take `worker` (s): what is left of its run that
+    /// stopped short (`stopped`) at the worker's Mac's pace, as the forecast takes it
+    /// (crate::agent::forecast::target_cost); else as it ran its threads (`secs_on`).
     pub(super) fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
+        if let Some(&left) = self.stopped.get(step).and_then(|t| t.get(target)) {
+            return Some((left * self.paces.get(worker)).round() as u64);
+        }
         self.secs_on(step, target, worker, 0).map(|s| s.0)
+    }
+
+    /// What is left of each target whose run stopped short, from the history's `events` (oldest
+    /// first; crate::agent::forecast::partials), each at the lead's pace by the Macs' speeds
+    /// (`paces`).
+    pub fn set_stopped(&mut self, events: &[crate::coord::history::Event]) {
+        let paces = &self.paces;
+        let left = crate::agent::forecast::partials(self.the_plan, events, &|secs, worker, _| {
+            secs / worker.map_or(1.0, |w| paces.get(w))
+        });
+        self.stopped.clear();
+        for ((step, t), secs) in left {
+            self.stopped.entry(step).or_default().insert(t, secs);
+        }
+    }
+
+    /// `targets` of `step` finished: none has a stopped run left (`stopped`).
+    pub fn clear_stopped(&mut self, step: &str, targets: &[String]) {
+        if let Some(t) = self.stopped.get_mut(step) {
+            for x in targets {
+                t.remove(x);
+            }
+            if t.is_empty() {
+                self.stopped.remove(step);
+            }
+        }
     }
 
     /// How long `target` of `step` is measured to take `worker` on `threads` (s; 0: as it ran), and
@@ -3035,7 +3069,8 @@ impl Sched {
     /// targets it may take (`takeable`): those in its last one's neighbourhood (`after`, its last
     /// of the step's index past it; `placement::group`: a z6 tile's z3 tile) first, from just after
     /// it in plan order, so its consecutive jobs share their inputs (task #552); then from the one
-    /// measured to take longest (`secs_of`; plan order between equals, those never measured last).
+    /// measured to take longest (`secs_of`, a stopped run's time left among them; plan order between
+    /// equals, those never measured last).
     /// The first that finishes soonest on its Mac (`finish_s`: its needs over that Mac's supply now)
     /// among the members asking lately that would take it now (`would_take_now`), each other member
     /// counted for as many targets before it as it has slots free (its ask's, less the jobs granted
@@ -3253,6 +3288,10 @@ pub struct State {
     /// pool's under ""; task #1505 review: a record before it has none, and no progress end).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lefts: BTreeMap<String, f64>,
+    /// What is left of each target whose run stopped short (`Sched::stopped`; task #1454: a record
+    /// before it has none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stopped: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -3397,6 +3436,7 @@ impl Sched {
             fail_hold: self.fail_hold,
             batch_s: self.batch_s,
             lefts: self.lefts_taken(),
+            stopped: self.stopped.clone(),
         }
     }
 
@@ -3492,6 +3532,7 @@ impl Sched {
             tuning: s.tuning,
             batch_s: s.batch_s,
             lefts: Lefts { by: BTreeMap::new(), taken: s.lefts.clone() },
+            stopped: s.stopped.clone(),
         };
         sched.set_offers(s.offers.clone());
         sched
