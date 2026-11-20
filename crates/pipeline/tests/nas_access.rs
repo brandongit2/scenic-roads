@@ -78,6 +78,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/agentcore/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
     ("crates/jobrt/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),
     ("crates/agentcore/src/agent/live.rs", "add_files", 1, "a note's full path (store::nasio's ring) shown under the root"),
+    ("crates/agentcore/src/agent/live.rs", "spawn", 1, "the project folder as the NAS sees it, for the probe apart's ssh (store::nas::on_nas)"),
     ("crates/store/src/iopool.rs", "for_root", 1, "the I/O pool's probe: a stat of the root itself, on its own thread"),
 ];
 

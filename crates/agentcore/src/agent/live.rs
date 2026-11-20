@@ -378,17 +378,18 @@ pub struct Store {
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
     /// The probe apart's cadence as the pool's settings last said it (s, `nas-apart-seconds`, set
-    /// by `answer_in`; 0: off), and why it is down (None: answering, or off).
+    /// by `answer_in`; 0: off).
     apart_s: std::sync::atomic::AtomicU64,
-    apart_down: Mutex<Option<String>>,
 }
 
-/// The NAS as the agent reaches it (`Store::root`): its root (None: away), and the link and since
-/// when (`Store::set_link`; None: not said yet).
+/// The NAS as the agent reaches it (`Store::root`): its root (None: away), the link and since
+/// when (`Store::set_link`; None: not said yet), and why the probe apart is down (None:
+/// answering, or off; crate::agent::apart).
 #[derive(Default)]
 struct Reach {
     root: Option<store::nasfs::NasRoot>,
     links: Vec<Stint>,
+    apart_down: Option<String>,
 }
 
 /// A stint on one of the NAS's links as a Mac reaches it (`Store::set_link`): its key (at home or
@@ -441,13 +442,12 @@ impl Store {
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
-            root: Mutex::new(Reach { root: None, links }),
+            root: Mutex::new(Reach { root: None, links, apart_down: None }),
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
             apart_s: std::sync::atomic::AtomicU64::new(jobrt::budget::nas::APART_S),
-            apart_down: Mutex::new(None),
         })
     }
 
@@ -543,7 +543,7 @@ impl Store {
         cap.nas_young = a.is_some_and(|a| a.2);
         cap.nas_apart_s = if apart.is_some() { k.apart_s } else { 0 };
         cap.nas_apart_down = match apart {
-            None if k.apart_s > 0 => self.apart_down.lock().ok().and_then(|d| d.clone()),
+            None if k.apart_s > 0 => self.root.lock().ok().and_then(|r| r.apart_down.clone()),
             _ => None,
         };
         cap.nas_at = now;
@@ -1084,8 +1084,8 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                         }
                     }
                 };
-                if let Ok(mut d) = apart.apart_down.lock() {
-                    *d = down;
+                if let Ok(mut r) = apart.root.lock() {
+                    r.apart_down = down;
                 }
                 std::thread::sleep(if every == 0 { NAS_EVERY } else { Duration::from_secs(every) });
             }
@@ -1776,7 +1776,7 @@ mod tests {
         assert_eq!((cap.nas_ms, cap.nas_apart_s, cap.nas_apart_down.as_deref()), (Some(300.0), 0, None));
         assert_eq!(s.apart_s.load(Ordering::Relaxed), 0);
         // (Down: none of its answers in the span; the jobs' session's, and why.)
-        *s.apart_down.lock().unwrap() = Some("its connection ended".into());
+        s.root.lock().unwrap().apart_down = Some("its connection ended".into());
         for i in 0..6 {
             s.record(NAS_MS, t0 + 60 + 5 * i, 250.0);
         }
