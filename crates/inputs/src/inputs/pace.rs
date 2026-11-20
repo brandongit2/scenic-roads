@@ -370,15 +370,20 @@ mod tests {
         let pace = Pace::new(Some(f), 2);
         let pool = rayon::ThreadPoolBuilder::new().num_threads(6).build().unwrap();
         let (now, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
-        // (A piece of work: counted while it runs; `meet`, it waits up to 2 s for two to have run at
-        // once.)
+        // (Signalled as the most at once changes.)
+        let (seen, rose) = (Mutex::new(()), Condvar::new());
+        // (A piece of work: counted while it runs; `meet`, it waits, up to 2 s, for two to have run
+        // at once.)
         let work = |meet: bool| {
             let n = now.fetch_add(1, Ordering::SeqCst) + 1;
-            most.fetch_max(n, Ordering::SeqCst);
-            let t = Instant::now();
-            std::thread::sleep(Duration::from_millis(5));
-            while meet && most.load(Ordering::SeqCst) < 2 && t.elapsed() < Duration::from_secs(2) {
-                std::thread::sleep(Duration::from_millis(1));
+            if most.fetch_max(n, Ordering::SeqCst) < n {
+                let _g = seen.lock().unwrap();
+                rose.notify_all();
+            }
+            std::thread::sleep(Duration::from_millis(5)); // (sleep ok: a piece of work's length)
+            if meet {
+                let g = seen.lock().unwrap();
+                drop(rose.wait_timeout_while(g, Duration::from_secs(2), |_| most.load(Ordering::SeqCst) < 2).unwrap());
             }
             now.fetch_sub(1, Ordering::SeqCst);
         };
