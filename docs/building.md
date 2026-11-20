@@ -199,7 +199,8 @@ from the first (`edit_held`).
   - A clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
     Each ends early when the agent is asked to stop.
 - **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.
-- **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
+- **Retries:** a failed job is retried after `own-retry-start-minutes` (10), doubling to
+  `own-retry-ceiling-hours` (6), pool settings (docs/pool.md §7.5, Failures back off).
 - **Stopping a job** (a cancel, a lapsed lease, a guard, the Mac's sleep, a quit): SIGCONT and
   SIGTERM to its process group, SIGKILL after the grace (`jobs::Running::stop`). A SIGKILL can
   miss a member: a fork under way as it goes out makes a child after it, never signalled (task

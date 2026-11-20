@@ -363,9 +363,10 @@ pub enum PoolCmd {
     /// percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
     /// `needs-mem-pct`, `needs-thread-share`, `needs-runs`, `needs-off`, `needs-relearn`), and the
-    /// failures' backoff, each `<hours>|off` (jobrt::backoff::KNOBS: `backoff-start-hours`,
+    /// failures' backoff, each `<number>|off` (jobrt::backoff::KNOBS: `backoff-start-hours`,
     /// `backoff-ceiling-hours`: a target that failed on a Mac kept from it that long, doubling with
-    /// each failure up to the ceiling); the lead takes each at its next reading
+    /// each failure up to the ceiling; `own-retry-start-minutes`, `own-retry-ceiling-hours`: the
+    /// lead's own work's retry after a failure, likewise); the lead takes each at its next reading
     Set {
         /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,
         /// hold-catalog, near-slope, one of the NAS pacing's bounds, of the needs model's knobs or

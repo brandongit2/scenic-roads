@@ -1731,8 +1731,8 @@ the id with the clicked point. A reader takes version 8 only.
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
     carry `ahead`), `nas-budget`, `nas-target`, the NAS pacing's bounds (`nas-step` … `nas-apart-judges`,
     docs/pool.md §7.7), the needs model's (`needs-work-pct` … `needs-relearn`, docs/pool.md §7.7, What
-    a step needs), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, docs/pool.md
-    §7.5), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2, The map
+    a step needs), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`,
+    `own-retry-start-minutes`, `own-retry-ceiling-hours`, docs/pool.md §7.5), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2, The map
     updates' switches) are the lead's settings (`/pool/settings`).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).

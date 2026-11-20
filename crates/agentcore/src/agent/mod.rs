@@ -531,10 +531,6 @@ impl std::ops::DerefMut for Slots {
     }
 }
 
-/// How long a job the memory guard stopped is kept from this Mac (a member's lead keeps it from it
-/// as long, its lease ended as failed).
-const GUARD_BACKOFF_S: u64 = 3600;
-
 /// How often this Mac's caches are counted when nothing asks sooner (`count_start`, on a thread of
 /// its own; a job that ran, room-making, a clear or a freeing asks again: `count_caches`): a chosen
 /// duty cycle, not a derived one. Each count is a walk of their files with a lock test of each, so
@@ -5640,7 +5636,7 @@ impl Agent {
                 return Some(format!("needs about {:.1} GB, past the {:.1} GB this Mac's jobs could hold above its memory floor, and no other Mac runs it: for the owner to see to (a lower floor, or `scenic pool floors --clear` once it's fixed)", f.mb as f64 / 1024.0, limit as f64 / 1024.0));
             }
         }
-        // (One the memory guard stopped, kept from this Mac an hour.)
+        // (One the memory guard stopped, kept from this Mac for the pool's `guard_hold`.)
         if let Some((until, why)) = self.guard_backoff.get(&spec.id).filter(|(u, _)| now_s() < *u && self.leads()) {
             return Some(format!("{why}; tried here again in {} min", (until - now_s()).div_ceil(60)));
         }
@@ -5767,7 +5763,7 @@ impl Agent {
             self.floor_short.is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < FLOOR_SHORT_HOLD);
         // (By measure, the first slot alone waits for the target, when room-making fell short of it: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
-        // likewise, each kept from this Mac an hour.)
+        // likewise, each kept from this Mac for the pool's backoff, `Backoff::guard_hold`.)
         // (Each wait for room below holds it for the job: the caches are freed toward it on a thread
         // of their own, `held_room`, `tend_caches`.)
         if !(k > 0 || other) && self.leads() && short && self.disk_free() < room {
@@ -6063,6 +6059,12 @@ impl Agent {
             l.answer_in(&mut cap, now_s(), &self.pace_tuning());
         }
         cap
+    }
+
+    /// The failures' backoff as the pool's settings give them (jobrt::backoff; the defaults before
+    /// any are had): this agent's own retries and its memory guard's holds are taken by it.
+    fn backoff(&self) -> jobrt::backoff::Backoff {
+        self.pool_settings().map(|s| s.backoff()).unwrap_or_default()
     }
 
     /// The NAS pacing's bounds as the pool's settings give them (jobrt::budget::nas::Tuning; the
@@ -6516,7 +6518,8 @@ impl Agent {
     }
 
     /// Stops slot `k`'s job for a guard (`what`: the memory guard, the disk guard), `why`: given back,
-    /// not failed, kept from this Mac an hour (a member's lease ends as failed, so its lead keeps it
+    /// not failed, kept from this Mac as long as the pool's backoff keeps a first failure
+    /// (`jobrt::backoff::Backoff::guard_hold`: a member's lease ends as failed, so its lead keeps it
     /// from this Mac as long), what it took learned as its target's floors. True when it stopped one.
     fn guard_stop(&mut self, k: usize, what: &str, why: &str) -> bool {
         self.guard_stop_as(k, what, why, true)
@@ -6539,7 +6542,7 @@ impl Agent {
         self.outlived.extend(r.stop(Duration::from_secs(30)));
         self.guard_last = Some((now_s(), format!("{id} {why}")));
         if fail {
-            self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
+            self.guard_backoff.insert(id, (now_s() + self.backoff().guard_hold().as_secs(), why.clone()));
         }
         self.slots[k].guard_stopped = fail;
         // (The lead's ramp's clean stretch starts again, `tend_ramp`, kept.)
@@ -7886,8 +7889,8 @@ impl Agent {
             }
         } else {
             let n = self.mem.retry.get(id).map(|r| r.0).unwrap_or(0) + 1;
-            // 10 min, 20, 40 … up to 6 h.
-            let delay = (600u64 << (n - 1).min(6)).min(6 * 3600);
+            // (As the pool's settings say: 10 min, 20, 40 … up to 6 h by default.)
+            let delay = self.backoff().own_hold(n).as_secs();
             self.mem.retry.insert(id.to_string(), (n, now_s() + delay));
         }
         self.mem.recent.insert(
@@ -11032,6 +11035,34 @@ mod tests {
             member: false,
         })
         .unwrap()
+    }
+
+    /// Pool setting `name` set to `v` on the lead (crate::coord::asks).
+    fn set_setting(lead: &Agent, name: &str, v: f64) {
+        use crate::coord::asks::{Ask, SettingAsk};
+        let a = SettingAsk { name: name.into(), value: v.into(), by: "a test".into(), at: now_s() };
+        lead.coord.as_ref().unwrap().take_ask(&Ask::Setting(a)).unwrap();
+    }
+
+    /// Task #1546: the lead's own work's retry backs off as the pool's settings say: ten minutes
+    /// doubling to six hours by default, and as set once set, from its next failure.
+    #[test]
+    fn the_leads_own_retry_backs_off_as_its_settings_say() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (store::nasfs::NasRoot::local_for_test(&d.path().join("nas")), d.path().join("home"));
+        let mut a = agent(&root, &home);
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        let held = |a: &mut Agent| {
+            a.finished("backup", None, "backup", false, false, 5, String::new());
+            let (n, until) = a.mem.retry["backup"];
+            (n, (until - now_s()).div_ceil(60))
+        };
+        assert_eq!([held(&mut a), held(&mut a)], [(1, 10), (2, 20)]);
+        set_setting(&a, "own-retry-start-minutes", 3.0);
+        set_setting(&a, "own-retry-ceiling-hours", 0.2);
+        assert_eq!([held(&mut a), held(&mut a)], [(3, 12), (4, 12)], "3 min doubled twice, past its 12 min ceiling");
+        a.finished("backup", None, "backup", true, false, 5, String::new());
+        assert_eq!(held(&mut a), (1, 3));
     }
 
     /// Task #780: the owner's redo, as the lead's coordinator takes it (`/api/redo`), kept in its
@@ -15267,8 +15298,10 @@ mod tests {
         a.grace = DRAIN_GRACE;
         // The larger past the limit by itself, the Mac not short of memory: it stops at its next safe
         // point; short of it, at once (the sampler froze it), given back, not failed, kept from this
-        // Mac for an hour; what it held its target's floor, a batch's (two targets). Admitted at 4
-        // GB, its estimate flagged in its drain's words (task #1415).
+        // Mac for the pool's backoff start (task #1546: here set to half an hour); what it held its
+        // target's floor, a batch's (two targets). Admitted at 4 GB, its estimate flagged in its
+        // drain's words (task #1415).
+        set_setting(&a, "backoff-start-hours", 0.5);
         a.slots[0].peak_mb = Some(4 << 10);
         tick(&mut a, vec![Some(15 << 10), None], false);
         assert!(!a.guard() && a.slots[0].mem_drain.is_some() && a.slots[0].running.is_some());
@@ -15302,7 +15335,7 @@ mod tests {
         assert!(!a.mem.retry.contains_key("terrain-hi 6/1/1"), "not held against it as a failure");
         assert!(a
             .wait_reason(&job("terrain-hi 6/1/1", &["6/1/1"]), &cond)
-            .is_some_and(|w| w.contains("tried here again in 60 min")));
+            .is_some_and(|w| w.contains("tried here again in 30 min")));
         let v = a.guard_view();
         assert!(
             v.on && v.reading.is_some_and(|r| r.floor_mb == 2 << 10 && r.avail_mb == 14 << 10)

@@ -644,7 +644,9 @@ cores again and the Mac is granted nothing more until they fit.
   interrupted job. Replayed on the M1's 15 stops of 18–19 Nov, the rule would have made one: 9 freed
   nothing near the shortfall and 4 were the other processes' growth.
 - A freeze outlives its agent's restart (docs/building.md §2, Restarts). A drain that finds no safe
-  point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
+  point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for
+  `backoff-start-hours` (1, §7.5): the lead holds a member's as a first failure, and the lead's
+  agent its own as long (`Backoff::guard_hold`), the setting taken as set.
   Only the floor gives a job back: holding more than its expected peak isn't a reason alone.
 - **An update's drain** (a newer app installed): every job stops at its next safe point and the
   agent restarts once every slot is free, each job given its own wait (its target's measured time,
@@ -729,6 +731,12 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   "done" (failed: its "lease"'s targets less those done), own "end" (`held`), "refused",
   "merged" and "retry" (a page's retry, `clear_failed`: its target's holds and refusals
   forgotten) events, in order, each hold from its event's time.
+- **The lead's own work backs off too** (jobrt::backoff's `own_hold`): a job of the lead's agent
+  that failed (its own work, a backup, a check, a region's step, besides the lead's hold above of
+  those it took as offers) waits `own-retry-start-minutes` (10) before it is tried again, twice as
+  long after each more failure in a row, at most `own-retry-ceiling-hours` (6); a success forgets
+  them. Pool settings too, in the build page's "Backoff" (the start 1 to 1,440 min, the ceiling 0.1
+  to 168 h), taken from the job's next failure.
 - **What a job waited on**: the coordinator writes on each "start" and "lease" event `after`: the
   numbers of the "end"/"done" events of the jobs it waited on (per step its targets wait on in the
   forecast's dependencies, the one that finished last). The build page's schedule draws its arrows
@@ -1635,7 +1643,7 @@ election, handover or takeover, and no pool switch.
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, the NAS pacing's bounds
 (`nas-step` … `nas-apart-judges`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
-§7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
+§7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, `own-retry-start-minutes`, `own-retry-ceiling-hours`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
 and `near-slope` (docs/building.md §2; off while not set). A new setting is made only once every
 member's heartbeat shows the app that has it. A role is read as the agent starts (docs/agent-parts.md §9.1);
 `state/pool/slots` is read by no current app but stays `on` on the NAS for older apps, and

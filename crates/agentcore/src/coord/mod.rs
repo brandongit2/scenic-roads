@@ -13287,7 +13287,10 @@ mod tests {
         // Forgotten at the ceiling, not at 32 h.
         s.failed.insert(key.clone(), (t0, 1));
         drop(s);
-        assert_eq!(c.sched_state().fail_hold, jobrt::backoff::Backoff { start_h: 0.5, ceiling_h: 3.0 });
+        assert_eq!(
+            c.sched_state().fail_hold,
+            jobrt::backoff::Backoff { start_h: 0.5, ceiling_h: 3.0, ..Default::default() }
+        );
         clock.advance(Duration::from_secs(3 * 3600 + 60));
         c.expire();
         assert!(c.shared.lock().unwrap().failed.is_empty(), "forgotten past the ceiling");
