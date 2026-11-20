@@ -1022,7 +1022,7 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 177 (146) | 204 (215) | 26, 4 (26, 4) | 0 (0) |
+  | the readings as they were | – | 177 (146) | 210 (215) | 26, 4 (26, 4) | 0 (0) |
   | jobs of 100, on a Mac not answering | 806 (685) | 361 (315) | 106 (63) | 57, 9 (41, 4) | 6, 1 (6, 1) |
   | jobs of 250, on a Mac not answering | 320 (342) | 414 (416) | 90 (81) | 54, 4 (76, 7) | 5, 1 (6, 1) |
   | jobs of 100, on the mini | 844 (685) | 381 (315) | 37 (63) | 63, 9 (41, 4) | 5, 1 (6, 1) |
@@ -1035,12 +1035,12 @@ thousandths:
   81), less with jobs of 100 on the mini (37 against 63). At the model's cliff about as often (5
   or 6 readings against 6, never two in a row); at the disks' target at most about 1.5 times as
   often (63 readings against 41).
-  As the readings were it is at its floor less (204 readings against 215); by the last cut's
-  cause, 93 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
+  As the readings were it is at its floor less (210 readings against 215); by the last cut's
+  cause, 99 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
   reading at the target (the rule has no such cut; 7 of its floor readings followed a cut that fell
-  on one) and 20 on the smoothed share (20). In 143 of the 204 the answers were undecidable too: a
-  coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 29 to 31 %, with
-  no cut, where the weight's rule went from 5 % to 22 % with 2 cuts.
+  on one) and 20 on the smoothed share (20). In 150 of the 210 the answers were undecidable too: a
+  coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 32 %, cut once
+  (back to the knee), where the weight's rule went from 5 % to 22 % with 2 cuts.
   With the disks read at half the NAS's true load, or not read
   (`bursts_with_the_disks_read_low_or_not_at_all`), the burst's cases at the cliff (s; the
   weight's rule's in brackets, the same either way):
@@ -1057,8 +1057,8 @@ thousandths:
 
   | | at the floor after deadline cuts | at the floor | at the cliff |
   |---|---|---|---|
-  | the readings as they were | 93 (111) | 204 (222) | 0 (0) |
-  | the same, the answers apart | 84 (104) | 135 (155) | 0 (0) |
+  | the readings as they were | 99 (111) | 210 (222) | 0 (0) |
+  | the same, the answers apart | 96 (104) | 147 (155) | 0 (0) |
   | jobs of 100, on a Mac not answering | 60 (60) | 106 (106) | 6 (6) |
   | jobs of 250, on a Mac not answering | 23 (35) | 90 (136) | 5 (6) |
   | jobs of 100, on the mini | 11 (11) | 37 (37) | 5 (5) |
@@ -1078,7 +1078,7 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) | undecidable |
   |---|---|---|---|---|---|---|
-  | the readings as they were | – | 224 (214) | 135 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
+  | the readings as they were | – | 224 (214) | 147 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
   | jobs of 100, on the mini | 806 (903) | 360 (406) | 47 (14) | 63, 4 (81, 13) | 5, 1 (6, 1) | 0 (5,328) |
   | jobs of 250, on the mini | 313 (345) | 389 (429) | 67 (36) | 79, 7 (92, 23) | 6, 1 (11, 2) | 0 (5,110) |
 
@@ -1089,7 +1089,7 @@ thousandths:
   readings against 6 and 11, never two in a row, where main reaches it twice in a row with jobs of
   250), and at the disks' target less often for longer (4 and 7 readings in a row at most against
   13 and 23). As the readings were, at its floor less often than with the answers as recorded
-  (135 readings against 204).
+  (147 readings against 210).
 
   **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
   those readings (0.046 %).
