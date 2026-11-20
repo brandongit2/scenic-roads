@@ -13,9 +13,12 @@
 #   above it, or of a glob directly in it (`<scratchpad>/*`, `<scratchpad>/t14*`); `find` from any
 #   of those with -delete, or -exec/-execdir/-ok rm, or piped to `xargs rm`. A delete inside a
 #   folder of the scratchpad (an agent's own, tools/dev/agent-rules.md, "Scratch") passes.
-#   A path is read as the shell would: variables set earlier on the line or in the environment,
-#   `~`, and the folder a `cd`/`pushd` earlier on the line went to; one that can't be told (a
-#   substitution) passes.
+#   A path is read as the shell would: variables set or exported earlier on the line, `~`, the
+#   folder a `cd`/`pushd` earlier on the line went to, and the hook's own environment, which is
+#   Claude Code's (HOME, TMPDIR, CLAUDE_CODE_SESSION_ID; never a variable an earlier call
+#   exported). A path that can't be told (a substitution, a variable unknown here) passes; Claude
+#   Code's own check on `rm` asks about such a target. Not seen: a list piped to xargs from anything but a find, for-loops,
+#   typeset/local/declare assignments, a variable set from another (`U=$T`), `find -exec sh -c 'rm …'`.
 # The ln and scratchpad rules read commands (tools/dev/shellwords.py): quoted text, a comment or a
 # heredoc is no command; the scripts of substitutions, sh/bash/zsh -c and eval are read too.
 import fnmatch, json, os, re, sys
@@ -98,6 +101,15 @@ def find(rest, base, env, piped_rm):
         if p and shared(p): refuse(p)
 
 
+def runs_rm_by_xargs(toks):
+    """Whether a command's words are an `xargs` running rm or trash (`xargs -0 rm -rf`, not
+    `xargs grep -l rm`)."""
+    while toks and (toks[0] in LEAD or re.match(r"^\w+=", toks[0])): toks = toks[1:]
+    if not (toks and os.path.basename(toks[0]) == "xargs"): return False
+    _, run = command(toks)   # (command() takes xargs and its options off)
+    return bool(run) and os.path.basename(run[0]) in ("rm", "trash")
+
+
 def scan(text, base, env, depth=0):
     """Whether a command of text is an `ln -s` without -n/-h (returned); refuses a shared-scratchpad delete."""
     ln = False
@@ -105,7 +117,7 @@ def scan(text, base, env, depth=0):
     for t in inner:
         if depth < 4: ln |= scan(t, base, env, depth + 1)
     segs = segments(text)
-    xargs_rm = any(re.search(r"(?:^|\s)xargs\s(?:.*\s)?(?:/\S*/)?rm(?:\s|$)", s) for s in segs)
+    xargs_rm = any(runs_rm_by_xargs(tokens(s)) for s in segs)
     stack = []
     for seg in segs:
         sets, toks = command(tokens(seg))

@@ -740,11 +740,16 @@ of its own there and deletes only that (tools/dev/agent-rules.md, "Scratch"). `t
 run by the same hook, refuses a delete that would take the other agents' files too: `rm` or `trash`
 of the scratchpad (under `/tmp` or `/private/tmp`), of a folder above it, or of a glob directly in it;
 a `find` starting at any of those with `-delete`, `-exec`/`-execdir`/`-ok rm`, or on a line that
-pipes into `xargs rm`. Paths are read as the shell would read them: variables set or exported
-earlier on the line or in the environment, `~`, an earlier `cd`/`pushd`, else the cwd; a path from
-a substitution can't be told and passes. Commands in quotes, comments and heredocs are none; the
-scripts of substitutions, `sh -c` and `eval` are read. What a script run by the command deletes
-(a Python `shutil.rmtree`, a zsh script) isn't seen. Tested in `tools/dev/test/git-guard.zsh`.
+pipes it into an `xargs` running `rm` or `trash`. Paths are read as the shell would read them:
+variables set or exported earlier on the line, `~`, an earlier `cd`/`pushd`, else the cwd. The hook's
+own environment is Claude Code's, so of the rest it knows only Claude Code's variables (`HOME`,
+`TMPDIR`, `CLAUDE_CODE_SESSION_ID`), never one an earlier call exported. A path it can't tell (a
+substitution, a variable unknown to it) passes; Claude Code's own check on `rm` asks about such a
+target. Commands in quotes, comments and heredocs are none; the scripts of substitutions, `sh -c`
+and `eval` are read. Not seen: what a script run by the command deletes (a Python `shutil.rmtree`,
+a zsh script); a list piped to xargs from anything but a find; for-loops; typeset/local/declare
+assignments; a variable set from another (`U=$T`); `find -exec sh -c 'rm …'`. Tested in
+`tools/dev/test/git-guard.zsh`.
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 

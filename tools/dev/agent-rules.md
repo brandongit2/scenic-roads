@@ -38,13 +38,11 @@ rely on the agent.
 - **The session's scratchpad is shared:** every subagent of a PM session gets the same scratchpad
   folder (the system prompt's "Scratchpad directory",
   `/private/tmp/claude-<uid>/<project>/<session>/scratchpad`). Keep your files in a folder of your
-  own inside it:
-  - with a worktree, the folder named after it: `<scratchpad>/<worktree folder name>`, for example
-    `<scratchpad>/agent-a7d798ebd89a5ed3a` (`basename "$(git rev-parse --show-toplevel)"` in your
-    worktree);
-  - without one, a folder you make with `mktemp -d <scratchpad>/t<task>-XXXXXX`, using the name it
-    printed from then on.
-- **Clean up only your own folder:** `rm -rf <scratchpad>/<your folder>`, and say in your report
+  own inside it, made once at your start with `mktemp -d <scratchpad>/t<task>-XXXXXX` (for #1521,
+  `mktemp -d <scratchpad>/t1521-XXXXXX`). Note the path it prints and use it from then on. Every
+  agent does this, with a worktree or without: a reviewer works in its builder's worktree, so a
+  name taken from the worktree would be the builder's.
+- **Clean up only your own folder:** `rm -rf <the path mktemp printed>`, and say in your report
   where your files were. *Enforced*: `tools/dev/shell-guard.py` refuses `rm` or `trash` of the
   scratchpad, of a folder above it or of a glob directly in it (`<scratchpad>/*`), and a `find`
   from any of those that deletes (`-delete`, `-exec rm`, piped to `xargs rm`).

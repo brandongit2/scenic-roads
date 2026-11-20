@@ -209,8 +209,8 @@ for want cmd in \
   fi
 done
 # The scratchpad rule (#1521): a delete of the session's shared scratchpad, a folder above it or a
-# glob directly in it is refused, its path given literally, by a variable (set on the line, exported
-# or in the environment), relative to a `cd` or to the session's cwd; a delete inside an agent's own
+# glob directly in it is refused, its path given literally, by a variable (set or exported on the
+# line), relative to a `cd` or to the session's cwd; a delete inside an agent's own
 # folder of it passes. Nothing is deleted: the guard reads the command only.
 S=/private/tmp/claude-$(id -u)/-Users-x-p/0f3c5b2e-1d30-4140-be0f-8a8503e93e7e/scratchpad
 mine=$S/agent-aaa sp="No delete of the session's shared scratchpad"
@@ -240,7 +240,8 @@ for want cmd in \
   $sp "cd $S; rm -rf ./* .[!.]*" \
   $sp "sh -c 'rm -rf $S/*'" \
   $sp "x=\$(rm -rf $S/*)" \
-  $sp "SCRATCH_ENV/*" \
+  $sp "find $S -type f | xargs -I{} rm {}" \
+  $sp "find $S | sudo xargs -n 1 trash" \
   ok "rm -rf $mine" \
   ok "rm -rf $mine/*" \
   ok "rm -f $mine/run.log" \
@@ -250,13 +251,14 @@ for want cmd in \
   ok "cd $S && rm -rf agent-aaa" \
   ok "find $mine -delete" \
   ok "find $S -name '*.log'" \
+  ok "find $S -name '*.rs' | xargs grep -l rm" \
+  ok "find $S -print0 | xargs -0 ls -l rm trash" \
   ok "ls $S/*" \
   ok "echo rm -rf $S/*" \
   ok "rm -rf \$(mktemp -d)" \
   ok "rm -rf /tmp/scenic-x*"; do
-  [[ $cmd == SCRATCH_ENV/* ]] && cmd='rm -rf $SCRATCH/*'
   in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
-  out=$(print -r -- $in | SCRATCH=$S zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
+  out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
   if [[ $want == ok && $rc == 0 ]] || [[ $want != ok && $rc == 2 && $out == *"$want"* ]]; then
     print "ok ($want): $cmd"
   else
