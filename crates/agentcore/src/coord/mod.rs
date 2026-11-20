@@ -8801,7 +8801,7 @@ mod tests {
             [("inputs", false, n)]
         );
         // (Task #1536's re-review: its small targets rerun within their spread, 20 to 221 MB, each
-        // at another's peak, count for nothing: under a tenth of its 4.6 GB.)
+        // at another's peak, count for nothing: under a tenth of its 95th-percentile peak.)
         let (_d, c, _w) = start();
         let small = [20, 137, 25, 221, 41, 58, 23, 20, 20];
         for (i, peak) in small.into_iter().enumerate() {
@@ -8817,22 +8817,23 @@ mod tests {
 
         // Task #1536 and its reviews: a step whose runs record no threads (bldtile's, tail's,
         // terrainsub's and treeblock's) has a bar too, each run's whole peak one thread's, as
-        // admission sizes it, a tenth of the heaviest (`needs::model::HEAVY_SHARE`). On a
-        // continuous distribution through the lead's peaks of each (least, 10th, 25th, 50th,
-        // 75th, 90th and 97th percentiles, most; its coord/costs.json of 31 Oct and its coord
-        // store of 20 Nov 12:56), a typical target's memory four times over flags its step, and a
-        // quarter of it where that target is past the bar (not tail's 250 to 300 MB, a tenth of
-        // its 9 GB the bar: the safe side); small targets' moves, 6 to 20 MB, count for nothing.
+        // admission sizes it, a tenth of its 95th-percentile peak (`needs::model::HEAVY_SHARE`,
+        // `HEAVY_PCT`). On a continuous distribution through the lead's peaks of each (least,
+        // 10th, 25th, 50th, 75th, 90th and 97th percentiles, most; its coord/costs.json of 31 Oct
+        // and its coord store of 20 Nov 12:56), a typical target's memory four times over flags
+        // its step, and so does a quarter of it (tail's 250 to 300 MB past its bar, 226 MB on the
+        // 31 Oct peaks, where a tenth of its 9 GB heaviest was 916); small targets' moves, 6 to
+        // 20 MB, count for nothing.
         let at = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.97, 1.0];
-        for (step, q, down) in [
-            ("bldtile", [74, 115, 828, 1_660, 2_665, 2_941, 3_484, 4_014], true),
-            ("tail", [6, 165, 187, 242, 701, 1_549, 3_067, 9_161], false),
-            ("terrainsub", [27, 32, 89, 269, 302, 387, 440, 440], true),
-            ("treeblock", [79, 189, 217, 264, 351, 367, 370, 370], true),
-            ("bldtile", [74, 394, 863, 1_437, 1_992, 2_692, 3_288, 4_250], true),
-            ("tail", [6, 176, 215, 288, 528, 1_358, 2_049, 9_161], false),
-            ("terrainsub", [12, 53, 89, 116, 176, 242, 289, 440], true),
-            ("treeblock", [79, 239, 284, 302, 340, 358, 397, 474], true),
+        for (step, q) in [
+            ("bldtile", [74, 115, 828, 1_660, 2_665, 2_941, 3_484, 4_014]),
+            ("tail", [6, 165, 187, 242, 701, 1_549, 3_067, 9_161]),
+            ("terrainsub", [27, 32, 89, 269, 302, 387, 440, 440]),
+            ("treeblock", [79, 189, 217, 264, 351, 367, 370, 370]),
+            ("bldtile", [74, 394, 863, 1_437, 1_992, 2_692, 3_288, 4_250]),
+            ("tail", [6, 176, 215, 288, 528, 1_358, 2_049, 9_161]),
+            ("terrainsub", [12, 53, 89, 116, 176, 242, 289, 440]),
+            ("treeblock", [79, 239, 284, 302, 340, 358, 397, 474]),
         ] {
             const N: usize = 40;
             let peak = |i: usize| {
@@ -8863,8 +8864,7 @@ mod tests {
             let (up, bar) = case(4.0);
             assert!(bar.is_some_and(|b| b > 20), "{step}: {bar:?}");
             assert_eq!(up, [(false, n, n)], "{step}: four times over, past its bar {bar:?}");
-            let quarter = if down { vec![(true, n, n)] } else { vec![] };
-            assert_eq!(case(0.25).0, quarter, "{step}: a quarter, the bar {bar:?}");
+            assert_eq!(case(0.25).0, [(true, n, n)], "{step}: a quarter, the bar {bar:?}");
             assert_eq!(case(1.0).0, [], "{step}: its small targets' moves count for nothing");
         }
     }
