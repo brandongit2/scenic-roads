@@ -188,8 +188,10 @@ if (( rc == 2 )) && [[ $out == *"$no"* ]]; then print "ok: shell-guard.sh refuse
 in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git reset --hard"},"cwd":sys.argv[1],"agent_id":"aaa","session_id":"s1"}))' $own)
 out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok: shell-guard.sh lets the own worktree's pass"; else print "FAIL: shell-guard.sh: $rc $out"; fail=1; fi
-# The wait-loop rule (#1525): a `while`/`until` loop that sleeps needs a deadline, a PID it waits
-# on, or lines it reads; a bounded for-loop and a single sleep aren't loops waiting on something.
+# The wait-loop rule (#1525): a `while`/`until` loop that sleeps needs a deadline in its own
+# condition or body (a bound word elsewhere on the line doesn't count), a PID it waits on, or lines
+# it reads; a heredoc fed to a shell is read, prose (a quoted message, a comment) isn't; a bounded
+# for-loop and a single sleep aren't loops waiting on something.
 wl="No wait loop without a deadline"
 for want cmd in \
   $wl "until ssh m6 'grep -q done ~/s/after.log'; do sleep 20; done" \
@@ -202,6 +204,15 @@ for want cmd in \
   ok "timeout 60 sh -c 'until test -e f; do sleep 1; done'" \
   ok "while read l; do sleep 1; done < f" \
   ok "for i in \$(seq 1 3); do sleep 1; done" ok "sleep 3" \
+  $wl "echo seq 1; while true; do sleep 5; done" \
+  $wl "while [ ! -e f ]; do sleep 5; done; [ \$n -gt 0 ]" \
+  $wl "while true; do sleep 5; done # no timeout" \
+  "No open-ended \`until grep\`" "start=\$SECONDS; until grep -q x f; do sleep 5; done" \
+  $wl $'bash <<\'E\'\nwhile true; do sleep 5; done\nE' \
+  "No open-ended \`until grep\`" $'ssh m6 zsh <<\'E\'\nuntil grep -q x f; do sleep 5; done\nE' \
+  ok "i=0; while [ \$i -lt 90 ]; do let i++; sleep 2; done" \
+  ok "gh pr comment 1 -b 'while true; do sleep 5; done'" \
+  ok "grep -n 'until grep' x" ok "echo hi # while true; do sleep 5; done" \
   ok $'cat > f <<EOF\nwhile true; do sleep 1; done\nEOF'; do
   in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
   out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?

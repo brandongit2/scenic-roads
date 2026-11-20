@@ -5,9 +5,12 @@
 # - no waiting on `pgrep -f` in a loop (its pattern is on the waiting shell's own command line, so
 #   it matches itself and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`;
 # - no open-ended `until grep` wait, nor any `while`/`until` loop that sleeps with no deadline
-#   (#1525: `$SECONDS`, `timeout`, a counted `seq` or arithmetic, `-gt`/`-ge`), but one on a PID
-#   (`kill -0`) or reading lines (`while read`); read with heredocs' text left out, so a script
-#   written out passes;
+#   (#1525). The loops are read as the shell reads them (shellwords), and the bound is looked for in
+#   the loop's own condition and body: `$SECONDS`, `timeout`, a test comparing with -gt/-ge/-lt/-le
+#   (a counter) or an arithmetic comparison; a loop on a PID (`kill -0`) or reading lines
+#   (`while read`) passes. Both wait rules read the same scripts: the command line, substitutions,
+#   `sh -c`, `eval`, ssh's remote command, and heredocs fed to a shell or ssh (any other heredoc's
+#   text, quoted words and comments are no commands);
 # - no `ln -s` without `-n` or `-h` (#1004): where the link's name is already a link to a folder, it
 #   makes the link inside that folder (on the NAS, `inputs/inputs` and 16 more like it, 7 Nov);
 # - no delete of the session's shared scratchpad (#1521): every subagent of a session gets the same
@@ -39,17 +42,138 @@ def block(m):
 for seg in re.split(r"&&|\|\||;|\||\(|\)|\$\(|`", cmd):
     if re.match(r"\s*(?:sudo\s+)?(?:find|bfs)\s+(?:-\S+\s+)*/(?:\s|$)", seg):
         block("No `find /` (the owner's rule): search the repo, the NAS project folder or a named folder.")
-if re.search(r"\b(?:until|while)\b[^\n]*\bpgrep\s+(?:-\w*\s+)*-\w*f", cmd):
-    block("No waiting on `pgrep -f` (it matches its own shell and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`.")
-BOUND = re.compile(r"SECONDS|seq\s|\$\(\(|-gt\s|-ge\s|timeout|kill\s+-0")
-if re.search(r"\buntil\s+!?\s*grep\b", cmd) and not BOUND.search(cmd):
-    block("No open-ended `until grep` wait (it never ends if the text never comes): bound it (e.g. `[ $SECONDS -gt 1800 ] && break`) or wait on the PID that writes the log.")
-# (#1525: every wait loop has a deadline. A `while`/`until` loop that sleeps, other than one reading
-# lines, which ends with its input, needs a bound: #1361's `until ssh … grep …; do sleep 20; done`
-# ran two days once its log's folder was deleted.)
-_plain = strip_heredocs(cmd)
-if re.search(r"\b(?:while|until)\b(?!\s+(?:IFS=\S*\s+)?read\b)[\s\S]*?\bdo\b[\s\S]*?\bsleep\b", _plain) and not BOUND.search(_plain):
-    block("No wait loop without a deadline (it never ends if what it waits for never comes, or is deleted): bound it (e.g. `[ $SECONDS -gt 1800 ] && break`), or wait on the PID with `while kill -0 <pid>; do sleep 30; done`; better, run the command in the background and wait for its notification (tools/dev/agent-rules.md, \"Turns\").")
+
+# ---- wait loops (#1525) ----------------------------------------------------------------------------
+# A `while`/`until` loop is read as the shell reads it (shellwords), its condition and its body:
+# words in quotes, a comment or a heredoc fed to a program that isn't a shell are no commands. Its
+# bound is looked for in the loop itself: `$SECONDS` in a word, a `timeout`, a test comparing with
+# -gt/-ge/-lt/-le (a counter, `[ $i -lt 90 ]`) or an arithmetic comparison (`(( SECONDS > 60 ))`), or
+# `kill -0` (a PID's wait, ended with the process). A loop under `timeout` is bounded. Read too: the
+# scripts of substitutions, `sh|bash|zsh|dash -c`, `eval`, ssh's remote command, and a heredoc fed to a
+# shell or to ssh.
+SHELLS = ("sh", "bash", "zsh", "dash")
+SSH_TAKES = set("bcDEeFIiJLlmOoopQRSWw")
+LEADS = ("then", "else", "elif", "if", "!", "{", "}", "fi", "sudo")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
+COMPARE = ("-gt", "-ge", "-lt", "-le")
+UNTIL_GREP = "No open-ended `until grep` wait (it never ends if the text never comes): bound it (e.g. `[ $SECONDS -gt 1800 ] && break`) or wait on the PID that writes the log."
+PGREP = "No waiting on `pgrep -f` (it matches its own shell and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`."
+NO_DEADLINE = "No wait loop without a deadline (it never ends if what it waits for never comes, or is deleted): bound it in the loop (e.g. `[ $SECONDS -gt 1800 ] && break`), or wait on the PID with `while kill -0 <pid>; do sleep 30; done`; better, run the command in the background and wait for its notification (tools/dev/agent-rules.md, \"Turns\")."
+
+
+def words_of(seg):
+    """A segment's command words, leading assignments, prefixes and `sudo` taken off."""
+    _, toks = command(tokens(seg))
+    return toks
+
+
+def remote(rest):
+    """ssh's remote command (its words after the host), or None."""
+    k = 0
+    while k < len(rest) and rest[k].startswith("-"):
+        k += 2 if len(rest[k]) == 2 and rest[k][1] in SSH_TAKES else 1
+    return " ".join(rest[k + 1:]) if k + 1 < len(rest) else None
+
+
+def scripts(text, depth=0):
+    """The scripts a command line runs, itself first: (script, bounded) pairs, `bounded` when it runs
+    under `timeout`."""
+    out = []
+    # (Heredocs: the body of one fed to a shell or ssh is a script; any heredoc is no command here.)
+    bodies, kept, at = [], [], 0
+    for m in HEREDOC.finditer(text):
+        line = re.split(r"[\n;&|()]", text[:m.start()])[-1]
+        w = words_of(line)
+        while w and w[0] in LEADS + ("do",): w = w[1:]
+        c0 = os.path.basename(w[0]) if w else ""
+        if c0 in SHELLS or c0 == "ssh":
+            bodies.append(m.group(3))
+        kept.append(text[at:m.start()] + "<<HEREDOC")
+        at = m.end()
+    text = "".join(kept) + text[at:]
+    text, inner = substitutions(text)
+    out.append((text, False))
+    if depth >= 4:
+        return out
+    for b in bodies + inner:
+        out += scripts(b, depth + 1)
+    for seg in segments(text):
+        w = words_of(seg)
+        while w and w[0] in LEADS + ("do", "while", "until"): w = w[1:]
+        if not w:
+            continue
+        c0, rest = os.path.basename(w[0]), w[1:]
+        timed = c0 in ("timeout", "gtimeout")
+        if timed:
+            # (timeout <duration> <command…>: what it runs is bounded.)
+            rest = [r for r in rest if not r.startswith("-")][1:]
+            if not rest: continue
+            c0, rest = os.path.basename(rest[0]), rest[1:]
+        got = []
+        if c0 in SHELLS:
+            for k, t in enumerate(rest):
+                if re.match(r"^-\w*c\w*$", t) and k + 1 < len(rest): got.append(rest[k + 1]); break
+        elif c0 == "eval":
+            got.append(" ".join(rest))
+        elif c0 == "ssh" and (r := remote(rest)):
+            got.append(r)
+        for g in got:
+            out += [(s, b or timed) for s, b in scripts(g, depth + 1)]
+    return out
+
+
+def loops(text):
+    """Each `while`/`until` loop of a script: (kind, its condition's commands, its body's commands)."""
+    # (Arithmetic, `(( … ))`, kept as one word: segments split at parentheses.)
+    text = re.sub(r"\(\((.*?)\)\)", lambda m: " __arith__ '" + m.group(1).replace("'", "") + "' ", text)
+    out, open_ = [], []
+    for seg in segments(text):
+        w = words_of(seg)
+        while w:
+            if w[0] in ("while", "until", "for", "select"):
+                open_.append([w[0], [], [], False]); w = w[1:]
+                if open_[-1][0] in ("for", "select"): w = []
+            elif w[0] == "do" and open_:
+                open_[-1][3] = True; w = w[1:]
+            elif w[0] == "done" and open_:
+                f = open_.pop(); w = w[1:]
+                if f[0] in ("while", "until"): out.append((f[0], f[1], f[2]))
+            elif w[0] in LEADS:
+                w = w[1:]
+            else:
+                break
+        if w:
+            for f in open_:
+                (f[2] if f[3] else f[1]).append(w)
+    return out
+
+
+def bounded(cmds):
+    for c in cmds:
+        c0 = os.path.basename(c[0])
+        if any("SECONDS" in x for x in c): return True
+        if c0 in ("timeout", "gtimeout"): return True
+        if c0 == "kill" and "-0" in c: return True
+        if c0 in ("[", "[[", "test") and any(x in COMPARE for x in c): return True
+        if c0 == "__arith__" and re.search(r"[<>]|-[lg][te]\b", " ".join(c[1:])): return True
+    return False
+
+
+for script, under_timeout in scripts(cmd):
+    for kind, cond, body in loops(script):
+        first = cond[0] if cond else []
+        while first and first[0] == "!": first = first[1:]
+        c0 = os.path.basename(first[0]) if first else ""
+        if c0 == "read":
+            continue
+        if any(os.path.basename(c[0]) == "pgrep" and any(re.match(r"^-\w*f", x) for x in c[1:]) for c in cond):
+            block(PGREP)
+        if under_timeout or bounded(cond + body):
+            continue
+        if kind == "until" and c0 == "grep":
+            block(UNTIL_GREP)
+        if any(os.path.basename(c[0]) == "sleep" for c in cond + body):
+            block(NO_DEADLINE)
 
 LEAD = ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "sudo")
 GLOB = re.compile(r"[*?\[{]")

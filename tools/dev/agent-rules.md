@@ -81,13 +81,15 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   - on a file's text: `until grep -q DONE <log>; do [ -e <log> ] || break; [ $SECONDS -gt 1800 ]
     && break; sleep 20; done`, the same over `ssh`;
   - the Monitor tool, with an until-loop, for a condition.
-  Refused: a bare `sleep N` in the foreground (Claude Code), a loop over `pgrep -f` (it matches its
-  own shell) and an `until grep` with no bound (tools/dev/shell-guard.py).
+  Refused: a bare `sleep N` in the foreground (Claude Code); a loop over `pgrep -f` (it matches its
+  own shell); and any `while`/`until` loop that sleeps, or an `until grep`, with no bound in its own
+  condition or body, on the command line, in `sh -c`, over `ssh` or in a heredoc fed to a shell
+  (tools/dev/shell-guard.py). A bound elsewhere on the line, or in a comment, doesn't count.
 - **Every wait loop has a deadline and stops when what it watches is gone** (the file, the
   folder, the process): a loop whose log was deleted with its scratch folder never ends (#1361's
   ran for two days). *Enforced* for the deadline: shell-guard.py refuses a `while`/`until` loop
-  that sleeps with no bound (`$SECONDS`, `timeout`, a count, `-gt`/`-ge`), but one on a PID
-  (`kill -0`) or reading lines.
+  that sleeps with no bound in the loop (`$SECONDS`, `timeout`, a counter compared with
+  `-lt`/`-le`/`-gt`/`-ge` or `(( … ))`), but one on a PID (`kill -0`) or reading lines.
 - **Before reporting, stop every background task of yours still running** (TaskStop, or your
   process's exact PID) and list them in the report.
 
