@@ -1370,7 +1370,8 @@ mod tests {
     fn a_program_that_ended_counts_the_files_bytes_asked() {
         let asked = || get(Count::ReadBytes) + own_held();
         let (a, f) = (asked(), get(Count::Files));
-        ProgramReads::begin().ended(&[(Path::new("/Volumes/x/a.osm.pbf"), 2 << 20), (Path::new("/Volumes/x/b"), 1 << 20)]);
+        ProgramReads::begin()
+            .ended(&[(Path::new("/Volumes/x/a.osm.pbf"), 2 << 20), (Path::new("/Volumes/x/b"), 1 << 20)]);
         assert!(asked() - a >= 3 << 20 && get(Count::Files) >= f + 2);
     }
 
