@@ -1177,7 +1177,7 @@ mod tests {
         .unwrap();
         let w = (1u64 << Z12) as f64 * 256.0;
         let px = |lon: f64, lat: f64| {
-            ((lon + 180.0) / 360.0 * w, (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * w)
+            ((lon + 180.0) / 360.0 * w, (1.0 - lat.to_radians().dtan().dasinh() / std::f64::consts::PI) / 2.0 * w)
         };
         let unit: Vec<(UnitPeak, Summit)> = at
             .iter()
@@ -1200,7 +1200,7 @@ mod tests {
                 .map(|i| {
                     let (gx, gy) = ((x * 256 + i % 256) as f64, (y * 256 + i / 256) as f64);
                     let dome = |&((cx, cy), e): &((f64, f64), f32)| {
-                        (e as f64 - 100.0) * (-((gx - cx).powi(2) + (gy - cy).powi(2)) / (80.0 * 80.0)).exp()
+                        (e as f64 - 100.0) * (-((gx - cx).powi(2) + (gy - cy).powi(2)) / (80.0 * 80.0)).dexp()
                     };
                     (100.0 + tops.iter().map(dome).fold(0.0, f64::max)).round() as f32
                 })
