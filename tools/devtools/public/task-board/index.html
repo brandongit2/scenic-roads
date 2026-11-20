@@ -1966,7 +1966,7 @@ import { patchChildren } from "./patch.mjs";
     f.times.hidden = !times.length;
     const evs = M.ev.get(it.id) || [];
     const n = M.evN(it.id);
-    f.trail.replaceChildren(h("h3", { class: "sec-h" }, "History", h("span", { class: "n" }, String(n))), evs.length ? h("ul", { class: "trail" }, evs.map((e) => h("li", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "")), e.kind === "owner" ? h("span", { class: "who" }, "you") : null))) : n && !S.evHead.has(it.id) ? h("p", { class: "hint" }, "Loading…") : h("p", { class: "hint" }, it.$folder ? "Nothing yet. Deletions inside it are noted here." : "Nothing yet. Claude notes each step here: delegated, reviewed, merged, published."), olderBtn(it.id));
+    put(f.trail, h("h3", { class: "sec-h" }, "History", h("span", { class: "n" }, String(n))), evs.length ? h("ul", { class: "trail" }, evs.map((e) => h("li", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "")), e.kind === "owner" ? h("span", { class: "who" }, "you") : null))) : n && !S.evHead.has(it.id) ? h("p", { class: "hint" }, "Loading…") : h("p", { class: "hint" }, it.$folder ? "Nothing yet. Deletions inside it are noted here." : "Nothing yet. Claude notes each step here: delegated, reviewed, merged, published."), olderBtn(it.id));
   }
 
   // Photos: added from a file or a paste, removed, opened large.
