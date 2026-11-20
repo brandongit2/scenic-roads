@@ -63,7 +63,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/coordwire/src/lib.rs", "map_now", 1, "a root that isn't the NAS (a test root) holds its own map, read as a local folder (store::map::root_map: none for the NAS's)"),
     ("crates/server/src/data.rs", "serve_root_map", 1, "a `--root`'s own map, read as a local folder (store::map::root_map: none for the NAS's)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lake_folder", 1, "the lake-depth step's zip and shapefile readers open GLOBathy's and HydroLAKES' zips by path"),
-    ("crates/inputs/src/inputs/regions/data.rs", "read", 1, "GDAL and the shapefile reader read the datasets by path"),
+    ("crates/inputs/src/inputs/regions/data.rs", "read", 1, "the shapefile reader opens the lakes' zip by path (PlainFile: counted as it reads)"),
     // A raw path for what isn't a file's read or write.
     ("crates/buildstore/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
     ("crates/agentcore/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),

@@ -186,21 +186,20 @@ impl Datasets {
     ) -> Result<Option<Datasets>> {
         let Ok(sea) = s.role(SEA) else { return Ok(None) };
         let names = Datasets::names_of(s, land.as_ref().map(|l| l.0.as_str()));
-        let path = |src: &crate::inputs::sources::Source| -> Result<std::path::PathBuf> {
-            // (Read by GDAL and the shapefile reader, by path: tests/nas_access.rs.)
-            Ok(root.join(src.param_str("path")?).unchecked_path())
+        let path = |src: &crate::inputs::sources::Source| -> Result<store::nasfs::NasPath> {
+            Ok(root.join(src.param_str("path")?))
         };
+        let zones = |src: &crate::inputs::sources::Source| read_geojson_raw(&path(src)?, src.param_str("id")?);
         let mut d = Datasets::default();
         // (The zones read whole first, then simplified with the borders any two of their rings
         // share kept: neighbours' borders stay the same on both sides, no slivers between them.)
-        let p = path(sea)?;
-        let eez = read_geojson_raw(&p, sea.param_str("id")?)?;
+        let eez = zones(sea)?;
         let iw = match s.role(INTERNAL) {
-            Ok(iw) => read_geojson_raw(&path(iw)?, iw.param_str("id")?)?,
+            Ok(iw) => zones(iw)?,
             Err(_) => Raw::new(),
         };
         let ts = match s.role(TERRITORIAL) {
-            Ok(ts) => read_geojson_raw(&path(ts)?, ts.param_str("id")?)?,
+            Ok(ts) => zones(ts)?,
             Err(_) => Raw::new(),
         };
         let pins = shared_points(&[&eez, &iw, &ts]);
@@ -209,7 +208,8 @@ impl Datasets {
         d.ts12 = simplified(ts, &pins);
         drop(pins);
         if let Ok(l) = s.role(LAKES) {
-            let p = path(l)?;
+            // (The lakes' zip is read by the shapefile reader through PlainFile: counted as it reads.)
+            let p = path(l)?.unchecked_path();
             for (id, rings) in read_shapefile(&p, l.param_str("layer")?, Some(l.param_str("id")?))? {
                 let a = geom::area_km2(&Area::from_rings(&rings));
                 d.lakes.insert(id, (rings, a));
@@ -272,8 +272,10 @@ fn e7(r: &[[f64; 2]]) -> Ring {
 /// its rings).
 pub type Raw = Vec<(u64, Vec<Ring>)>;
 
-pub fn read_geojson_raw(p: &Path, id: &str) -> Result<Raw> {
-    let b = std::fs::read(p).with_context(|| format!("read {}", p.display()))?;
+/// A zone layer's GeoJSON on the NAS read whole through the counted read (the three of the regions
+/// are about 520 MB), as rings by the integer property `id`.
+pub fn read_geojson_raw(p: &store::nasfs::NasPath, id: &str) -> Result<Raw> {
+    let b = p.read().with_context(|| format!("read {}", p.display()))?;
     parse_geojson_raw(&b, id).with_context(|| format!("parse {}", p.display()))
 }
 
@@ -372,4 +374,31 @@ pub fn each_shape(p: &Path, layer: &str, id: Option<&str>, f: &mut dyn FnMut(u64
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A zone layer read from the NAS is counted in what the job asked of it (`read_b + held_b`)
+    /// whole, and parses as it did.
+    #[test]
+    fn a_zone_layer_read_is_counted() {
+        use store::nasio::{get, own_held, Count};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let mut features = Vec::new();
+        for k in 0..2000u64 {
+            let x = (k % 90) as f64;
+            features.push(serde_json::json!({"type": "Feature", "properties": {"mrgid": k + 1},
+                "geometry": {"type": "Polygon", "coordinates": [[[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0], [x, 0.0]]]}}));
+        }
+        let text = serde_json::json!({"type": "FeatureCollection", "features": features}).to_string();
+        root.join("zones.geojson").write(&text).unwrap();
+        let asked = || get(Count::ReadBytes) + own_held();
+        let before = asked();
+        let raw = read_geojson_raw(&root.join("zones.geojson"), "mrgid").unwrap();
+        assert_eq!(raw.len(), 2000);
+        assert!(asked() - before >= text.len() as u64, "{} asked of {}", asked() - before, text.len());
+    }
 }
