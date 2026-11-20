@@ -633,12 +633,13 @@ import { patchChildren } from "./patch.mjs";
     $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more).`;
     $("bad-list").replaceChildren(...bad.slice(0, 200).map((t) => h("li", null, t)), ...(bad.length > 200 ? [h("li", null, `… and ${bad.length - 200} more`)] : []));
   }
-  const TASK_FIELDS = ["priority", "assigned", "status", "discuss", "started", "finished", "reply"];
-  // The toggles: one per status, and needing discussion. Several on: a task that fits any of them.
+  const TASK_FIELDS = ["priority", "assigned", "status", "discuss", "small", "started", "finished", "reply"];
+  // The toggles: one per status, needing discussion, and small. Several on: a task that fits any of them.
   const SW = { "": "var(--faint)", working: "var(--st-work-fg)", backgrounded: "var(--st-work-fg)", integrating: "var(--st-int-fg)", review: "var(--st-rev-fg)", waiting: "var(--st-wait-fg)", done: "var(--st-done-fg)", abandoned: "var(--dim, #888)" };
   const FILTERS = [
     ...Object.entries(STATUSES).map(([st, label]) => ({ key: st || "queued", label, sw: SW[st], test: (t) => statusOf(t) === st })),
     { key: "discuss", label: "Needs discussion", sw: "var(--disc)", test: (t) => !!t.discuss },
+    { key: "small", label: "Small", sw: "var(--muted)", test: (t) => !!t.small },
   ];
   // The list's views: the tree, or every task flat by one of the sorts.
   const VIEWS = ["tree", "priority", "recent", "added"];
@@ -1509,6 +1510,7 @@ import { patchChildren } from "./patch.mjs";
   }
 
   // Row pieces shared by both panes.
+  const smallTag = (t) => (t.small ? h("span", { class: "tag", title: schema.SMALL_MEANS }, "Small") : null);
   const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${t.assigned || schema.DEFAULT_ASSIGNED}`)] : statusText(t)) : null);
   function discBtn(t) {
     const on = !!t.discuss;
@@ -1589,7 +1591,7 @@ import { patchChildren } from "./patch.mjs";
     if (canWrite() && !isArch(it)) row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to move (or ⌥↑ ⌥↓, Tab, ⇧Tab)" }));
     if (it.$folder) row.append(h("button", { class: "tw" + (kidsOf(it.id).length ? "" : " leaf"), type: "button", tabindex: "-1", "data-act": "toggle", "aria-label": expanded(it) ? "Collapse" : "Expand" }));
     else row.append(h("span", { class: `box s-${st || "queued"}`, "aria-hidden": "true" }));
-    const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it.$folder ? {} : it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
+    const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it.$folder ? {} : it), smallTag(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
     const main = h("span", { class: "main" }, l1);
     if (!it.$folder && it.reply) main.append(h("span", { class: "l2", title: it.reply }, rich(it.reply, { mark: true, row: true })));
     row.append(main);
@@ -1668,7 +1670,7 @@ import { patchChildren } from "./patch.mjs";
     const has = isNum(it.priority);
     row.append(h("span", { class: "pr lead" + (has ? "" : " none") + (statusOf(it) === "" && has && it.priority === M.next && !isArch(it) ? " next" : ""), title: has ? `Priority ${it.priority}` : "No priority" }, has ? String(it.priority) : "–"));
     row.append(it.$folder ? h("span", { class: "tw leaf", "aria-hidden": "true" }) : h("span", { class: `box s-${statusOf(it) || "queued"}`, "aria-hidden": "true" }));
-    const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
+    const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it), smallTag(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
     const crumbs = it.$crumbs.map(title).join(" › ");
     row.append(h("span", { class: "main" }, l1, crumbs ? h("span", { class: "l2 crumbs", title: crumbs }, hl(crumbs)) : null));
     row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, statusOf(it) === "working" ? "" : hl(String(it.assigned ?? "")))));
@@ -1743,6 +1745,7 @@ import { patchChildren } from "./patch.mjs";
       legend.append(h("dt", null, stChip({ status: st, assigned: schema.DEFAULT_ASSIGNED })), h("dd", null, what));
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));
+    legend.append(h("dt", null, smallTag({ small: true })), h("dd", null, `started with the next four small tasks, as one piece of work. ${schema.SMALL_MEANS}`));
     const keys = h("dl", { class: "keys" });
     for (const [k, what] of [["↑ ↓", "move between rows"], ["⌘J ⌘K", "the previous or next row, from anywhere"], ["⌘E", "archive what is selected (or unarchive it)"], ["⌘-click", "pick several; ⇧-click picks a range"], ["Enter", "edit the row's details"], ["⌥↑ ⌥↓", "move it up or down"], ["Tab ⇧Tab", "into the folder above, or out of its folder"], ["← →", "collapse or expand a folder"], ["/", "search"], ["⌘Z", "undo, while the notice shows"], ["⇧⌘Z", "redo, while the notice shows"]]) {
       keys.append(h("dt", null, k.split(" ").map((x) => h("kbd", null, x))), h("dd", null, what));
@@ -1869,17 +1872,20 @@ import { patchChildren } from "./patch.mjs";
       f.assigned = h("input", { class: "inp", id: "ed-assigned", type: "text", list: "ed-assigned-list", autocomplete: "off", spellcheck: "false", maxlength: "200", placeholder: "nobody" });
       f.assignedList = h("datalist", { id: "ed-assigned-list" }, schema.ASSIGNED_SUGGESTIONS.map((w) => h("option", { value: w })));
       f.disc = h("button", { class: "toggle", id: "ed-disc", type: "button", "aria-pressed": "false" }, icon("bubble"), "Needs discussion");
+      f.small = h("button", { class: "toggle", id: "ed-small", type: "button", "aria-pressed": "false", title: schema.SMALL_MEANS }, "Small");
       f.status.disabled = ro;
       f.prio.readOnly = ro;
       f.assigned.readOnly = ro;
       f.disc.disabled = ro;
+      f.small.disabled = ro;
       const base = "1 is next; equal numbers go together; 2.5 slots in between 2 and 3.";
       f.prioHint = h("p", { class: "hint", "data-hint-for": "ed-prio", "data-base": ro ? "" : base }, ro ? "" : base);
       parts.push(h("div", { class: "sec" }, h("div", { class: "fields" },
         h("label", { for: "ed-status" }, "Status"), f.status,
         h("label", { for: "ed-prio" }, "Priority"), h("div", null, f.prio),
         h("label", { for: "ed-assigned" }, "Assigned to"), h("div", null, f.assigned, f.assignedList),
-        h("span", { class: "lbl" }, "Discussion"), f.disc), f.prioHint));
+        h("span", { class: "lbl" }, "Discussion"), f.disc,
+        h("span", { class: "lbl" }, "Size"), f.small), f.prioHint, h("p", { class: "hint" }, schema.SMALL_MEANS)));
       bindField(f.status, (t, v) => { if (v !== statusOf(t)) patch(t.id, { status: v }); });
       bindField(f.prio, (t, v) => {
         const ok = typePrio(t, v);
@@ -1888,6 +1894,7 @@ import { patchChildren } from "./patch.mjs";
       });
       bindField(f.assigned, (t, v) => { const a = v.replace(/\s+/g, " ").trim(); f.assigned.value = a; if (a !== (t.assigned ?? "")) patch(t.id, { assigned: a }); });
       f.disc.addEventListener("click", () => { const t = edItem(); if (t && canEdit() && !isArch(t)) patch(t.id, { discuss: !t.discuss }); });
+      f.small.addEventListener("click", () => { const t = edItem(); if (t && canEdit() && !isArch(t)) patch(t.id, { small: !t.small }); });
     } else {
       f.stats = h("div", { class: "stats" });
       parts.push(f.stats);
@@ -1946,6 +1953,7 @@ import { patchChildren } from "./patch.mjs";
       setVal(f.prio, isNum(it.priority) ? String(it.priority) : "");
       setVal(f.assigned, String(it.assigned ?? ""));
       f.disc.setAttribute("aria-pressed", String(!!it.discuss));
+      f.small.setAttribute("aria-pressed", String(!!it.small));
       f.reply.replaceChildren(...(it.reply ? [h("h3", { class: "sec-h" }, "Claude's note"), h("div", { class: "reply" }, rich(it.reply))] : []));
       f.reply.hidden = !it.reply;
     }

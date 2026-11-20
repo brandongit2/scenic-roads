@@ -7,7 +7,7 @@ import { STATUSES } from "./schema.mjs";
 // The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it, so the
 // M6's update can put the file back if the version that changed it doesn't start). A file of another
 // form is refused at open.
-export const FORM = 2;
+export const FORM = 3;
 
 // A task's status is also enforced by the table itself (a CHECK constraint). A changed list rebuilds
 // the table at open.
@@ -28,7 +28,8 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     archived INTEGER,          -- 0/1
     archivedAt TEXT,
     added TEXT, started TEXT, finished TEXT,   -- ISO times
-    photos TEXT                -- JSON array of blob ids
+    photos TEXT,               -- JSON array of blob ids
+    small INTEGER              -- 0/1 (last: form 2's file gets it by ALTER TABLE, below)
   )`;
 const eventsTable = (name) => `CREATE TABLE ${name} (id TEXT PRIMARY KEY, item TEXT, kind TEXT, t TEXT, text TEXT)`;
 // An open task in SQL (priority.mjs isOpen: neither done nor abandoned, not archived; no item that
@@ -47,7 +48,7 @@ const INDEXES = `
   CREATE INDEX events_item ON events(item, t, id);`;
 
 export const COLS = {
-  items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
+  items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos", "small"],
   events: ["item", "kind", "t", "text"],
 };
 // A list's order when it asks for none: the items by number, the events by time (oldest first). A
@@ -56,7 +57,7 @@ export const DEFAULT_ORDER = { items: "num", events: "t" };
 const UNIQUE = new Set(["id", "num"]); // (no tie to break: an item's number is its own)
 // How many changes the change log keeps (`since`, below): a reader further behind reads everything.
 export const CHANGES_KEPT = 10000;
-const BOOL = new Set(["discuss", "archived"]);
+const BOOL = new Set(["discuss", "archived", "small"]);
 const JSONCOL = new Set(["photos"]);
 const q = (c) => `"${c}"`;
 
@@ -112,6 +113,9 @@ export function openStore(file) {
     const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
     if (!cur) {
       inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
+    } else if (form === 2) {
+      // (Form 3 is form 2 with the items' `small` column, added last, as itemsTable has it.)
+      inTx(db, () => db.exec(`ALTER TABLE items ADD COLUMN small INTEGER; PRAGMA user_version = ${FORM};`));
     } else if (form !== FORM) {
       throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
     } else if (!cur.sql.includes(STATUS_CHECK)) {

@@ -14,6 +14,10 @@ export const ASSIGNED_SUGGESTIONS = [
   DEFAULT_ASSIGNED, "Subagent", "Subagent (Opus)", "Subagent (Sonnet)", "Subagent (Fable)", "Fable subagent (high effort)", "Sonnet subagent",
   "worktree agent (Opus)", "worktree agent on the M1 (Opus)", "agent, this Mac", "PM (M4)", "Claude", "You", "Pipeline (lead)",
 ];
+// What makes a task small (a task's `small`): the one definition, which the page shows, GET
+// /api/schema gives (`smallMeans`) and tools/dev/board.py prints. Small tasks are started five at a
+// time, as one piece of work (tools/dev/agent-rules.md, "Starting tasks").
+export const SMALL_MEANS = "Small: one module or a few files, no design decision to make, a few hundred lines changed at most. Read it generously: when in doubt, it's small.";
 // `status` and `archive`: the server's own (a task's status changed; an item archived or unarchived).
 export const EVENT_KINDS = ["note", "owner", "status", "archive", "priority", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
 // Names from before #1229, refused with the name to use instead.
@@ -62,6 +66,7 @@ export const ITEM_FIELDS = {
   assigned: { ...F.string(200), task: true }, // who or what it's assigned to: free text ("" nobody)
   priority: { type: "number", min: 0, task: true },
   discuss: { type: "bool", task: true },
+  small: { type: "bool", task: true }, // SMALL_MEANS
   started: { type: "time", task: true },
   finished: { type: "time", task: true },
   reply: { ...F.string(100000), task: true },
@@ -78,7 +83,7 @@ export const META_FIELDS = {
 };
 // What a client may send when it creates one (the server fills the rest: ids, num, order, added, t,
 // and the defaults).
-export const ITEM_CREATE = ["kind", "text", "parent", "note", "assigned", "priority", "status", "discuss"];
+export const ITEM_CREATE = ["kind", "text", "parent", "note", "assigned", "priority", "status", "discuss", "small"];
 export const EVENT_CREATE = ["item", "kind", "text"];
 // What a client may change in one that exists (null removes an optional field).
 export const ITEM_EDIT = Object.keys(ITEM_FIELDS).filter((k) => !ITEM_FIELDS[k].server);
@@ -172,7 +177,7 @@ export const errorText = (errs) => errs.map((e) => (e.field ? `${e.field}: ${e.m
 export function describe() {
   const f = (fields) => Object.fromEntries(Object.entries(fields).map(([k, s]) => [k, { type: s.type, ...(s.values ? { values: s.values } : {}), ...(s.max ? { max: s.max } : {}), ...(s.min !== undefined ? { min: s.min } : {}), ...(s.server ? { server: true } : {}), ...(s.task ? { taskOnly: true } : {}) }]));
   return {
-    statuses: STATUSES, itemKinds: ITEM_KINDS, assignedSuggestions: ASSIGNED_SUGGESTIONS, eventKinds: EVENT_KINDS, timeFormat: TIME_FORMAT, renamed: RENAMED,
+    statuses: STATUSES, smallMeans: SMALL_MEANS, itemKinds: ITEM_KINDS, assignedSuggestions: ASSIGNED_SUGGESTIONS, eventKinds: EVENT_KINDS, timeFormat: TIME_FORMAT, renamed: RENAMED,
     items: { fields: f(ITEM_FIELDS), create: ITEM_CREATE, edit: ITEM_EDIT },
     events: { fields: f(EVENT_FIELDS), create: EVENT_CREATE, edit: EVENT_EDIT },
     meta: Object.fromEntries(Object.entries(META_FIELDS).map(([k, v]) => [k, f(v)])),

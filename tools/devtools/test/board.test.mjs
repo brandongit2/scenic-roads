@@ -8,7 +8,7 @@ import path from "node:path";
 import { openStore } from "../store.mjs";
 import { openJobs } from "../jobs.mjs";
 import { makeServer } from "../server.mjs";
-import { STATUSES, ASSIGNED_SUGGESTIONS, DEFAULT_ASSIGNED, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
+import { STATUSES, ASSIGNED_SUGGESTIONS, DEFAULT_ASSIGNED, EVENT_KINDS, SMALL_MEANS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-test-"));
 const store = openStore(path.join(dir, "t.db"));
@@ -397,6 +397,30 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   await refused(() => call("GET", `/api/c/events?item=${a}&item=${b}`), { says: /item: is given more than once/ });
   await refused(() => call("GET", "/api/c/events?limit=1&limit=2"), { says: /limit: is given more than once/ });
   await refused(() => call("GET", "/api/c/events?item=a%20b"), { says: /item: isn't an item's id/ });
+});
+
+test("small (#1534): a task's flag, set by POST and PATCH, cleared by null; no folder's; one definition, the page's and /api/schema's", async () => {
+  const s = await post("items", { text: "A small one", small: true });
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  assert.equal((await get("items", s.body.id)).small, true);
+  assert.equal((await patch("items", s.body.id, { small: false })).status, 200);
+  assert.equal((await get("items", s.body.id)).small, false);
+  assert.equal((await patch("items", s.body.id, { small: true })).status, 200);
+  assert.equal((await patch("items", s.body.id, { small: null })).status, 200);
+  assert.equal((await get("items", s.body.id)).small, undefined);
+  await refused(() => post("items", { text: "x", small: "yes" }), { says: /small: must be true or false/ });
+  await refused(() => post("items", { text: "x", kind: "folder", small: true }), { says: /small: is only for tasks/ });
+  // (A task made a folder drops it with its other task fields, as the page sends.)
+  const m = await post("items", { text: "Becomes a folder", small: true });
+  assert.equal((await patch("items", m.body.id, { kind: "folder", status: null, assigned: null, small: null })).status, 200);
+  assert.equal((await get("items", m.body.id)).small, undefined);
+  const sch = (await call("GET", "/api/schema")).body;
+  assert.equal(sch.smallMeans, SMALL_MEANS);
+  assert.ok(sch.items.create.includes("small") && sch.items.edit.includes("small"));
+  const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /few hundred lines/, "the definition isn't spelled out in the page");
+  assert.match(page, /patch\(t\.id, \{ small: !t\.small \}\)/, "the details' toggle sets it");
+  assert.match(page, /TASK_FIELDS = \[[^\]]*"small"/, "a task made a folder drops it");
 });
 
 test("a task's default assignee is one constant, the server's and the page's, and the first suggestion", () => {

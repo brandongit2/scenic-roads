@@ -23,10 +23,31 @@ test("a new file is made at this form, with its indexes", (t) => {
   openStore(file).close();
   const db = new DatabaseSync(file);
   assert.equal(db.prepare("PRAGMA user_version").get().user_version, FORM);
-  assert.equal(FORM, 2);
+  assert.equal(FORM, 3);
   assert.deepEqual(indexes(db), NOW);
   assert.deepEqual(db.prepare("SELECT name FROM pragma_table_info('events')").all().map((r) => r.name), ["id", "item", "kind", "t", "text"]);
   db.close();
+});
+
+test("a form-2 file is moved to form 3 at open: its items gain `small`, last, and keep the rest", (t) => {
+  const file = tmp(t);
+  // (Form 2: this form's file without the column.)
+  const s = openStore(file);
+  s.put("items", "i1", { kind: "task", text: "Kept", parent: "", order: 1, num: 1, status: "", assigned: "You", discuss: true, added: "2026-11-01T00:00:00.000Z" });
+  s.close();
+  const db = new DatabaseSync(file);
+  db.exec("ALTER TABLE items DROP COLUMN small; PRAGMA user_version = 2");
+  db.close();
+  const s3 = openStore(file);
+  assert.deepEqual(s3.get("items", "i1"), { kind: "task", text: "Kept", parent: "", order: 1, num: 1, status: "", assigned: "You", discuss: true, added: "2026-11-01T00:00:00.000Z" });
+  s3.put("items", "i1", { ...s3.get("items", "i1"), small: true });
+  assert.equal(s3.get("items", "i1").small, true);
+  s3.close();
+  const after = new DatabaseSync(file);
+  assert.equal(after.prepare("PRAGMA user_version").get().user_version, FORM);
+  assert.equal(after.prepare("SELECT name FROM pragma_table_info('items')").all().at(-1).name, "small");
+  assert.deepEqual(indexes(after), NOW);
+  after.close();
 });
 
 test("a file of a form this version doesn't read is refused, untouched (form 0 too)", (t) => {

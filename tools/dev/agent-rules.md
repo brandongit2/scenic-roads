@@ -124,6 +124,21 @@ rely on the agent.
   with `{item, kind, text}`, `item` the task's id as a string, `i<number>` (`"i1521"` for #1521).
   Leave the item's status to the PM unless your brief says otherwise.
 
+## Starting tasks (the PM)
+
+- **Small tasks start five at a time** (owner, 20 Nov). A task marked small on the board (its
+  `small` flag; the one definition is `SMALL_MEANS` in `tools/devtools/schema.mjs`, read generously)
+  is never started alone: when the next task picked is small, it starts with the four next
+  highest-priority small tasks, as one piece of work: one slot, one builder, one branch, one review,
+  one merge and publish. A small task blocked by, or conflicting with, work under way is left out.
+  Each task keeps its own board item, events and close.
+- **Record the batch as it starts:** `tools/dev/board.py batch <the five numbers> [--note '…']`
+  sets each queued one under way and gives each the same `start` event ("Batch of small tasks: #a
+  #b …"). Fewer than five is refused while another small task is queued, unless `--left-out` names
+  each with why (`--left-out '#1610 (blocked by #1600)'`). A batch grown later is recorded by running
+  it again with all of it. `tools/dev/health.sh` flags a small task under way whose batch has fewer
+  than five while a small task queued at its start, and still queued, was neither taken nor named.
+
 ## Your report
 
 - The branch and sha, what changed, what you cut, the check.sh PASS line, and what is left or

@@ -97,39 +97,14 @@ for wt in .claude/worktrees/*(N/); do
 done
 tools/dev/sweep-targets.sh
 tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
-# Parked tasks: each backgrounded or integrating task, with its last event, so every check looks
-# again at what it waits on and affirms or corrects its status.
-print "parked tasks (backgrounded or integrating): check what each waits on, then affirm or correct its status:"
-python3 - <<'PY' 2>&1 | sed 's/^/  /'
-import json, urllib.request
-from datetime import datetime, timezone
-B = "http://mac-mini-de-brandon:8077/api/c/"
-try:
-    items = json.load(urllib.request.urlopen(B + "items", timeout=20))["docs"]
-    events = json.load(urllib.request.urlopen(B + "events", timeout=20))
-    events = events.get("docs", []) if isinstance(events, dict) else events
-except Exception as e:
-    print(f"BOARD UNREADABLE: {e}"); raise SystemExit
-last = {}
-for e in events:
-    e = e.get("data", e)
-    if e.get("t", "") > last.get(e.get("item"), {}).get("t", ""):
-        last[e.get("item")] = e
-now = datetime.now(timezone.utc)
-rows = [(x["id"], x["data"]) for x in items if x["data"].get("status") in ("backgrounded", "integrating")]
-for id, r in sorted(rows, key=lambda p: (p[1].get("status"), p[1].get("num", 0))):
-    e = last.get(id, {})
-    age = ""
-    if e.get("t"):
-        d = now - datetime.fromisoformat(e["t"].replace("Z", "+00:00"))
-        age = f"{d.days} d" if d.days else f"{d.seconds // 3600} h"
-    print(f"#{r.get('num')} {r.get('status')}, last event {age or 'none'} ago: {r.get('text', '')[:70]}")
-    if e.get("text"):
-        print(f"    {e['text'][:150]}")
-if not rows:
-    print("none")
-PY
+# The board (tools/dev/board.py health): the parked tasks (backgrounded or integrating), each with its
+# last event, so every check looks again at what it waits on and affirms or corrects its status; and
+# the small tasks under way by batch, a batch of fewer than five flagged while other small tasks were
+# queued at its start without being named as left out (small tasks start five at a time,
+# tools/dev/agent-rules.md, "Starting tasks").
+python3 tools/dev/board.py health 2>&1
 print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
+print "== fill free slots by priority; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out naming why each other small one waits; agent-rules.md, \"Starting tasks\")"
 # (The PM's marker, #1398: while it is there, every agent's tests on this Mac run here, not on the test Mac.)
 [[ -e .claude/tests-local ]] && print -r -- "tests-local: agents' tests run on this Mac, not the test Mac, since $(stat -f %Sm .claude/tests-local) ($(head -1 .claude/tests-local)): delete .claude/tests-local once the test Mac is back"
 print "gates (.claude/gates.txt):"
