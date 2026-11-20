@@ -970,7 +970,7 @@ past its targets' runs) plus each target's time on that Mac at the threads it wo
 own run (on its Mac as it ran; another Mac's by the two Macs' speeds, twice its time where a speed
 isn't measured), else its step's model. A target's own run is read by one rule everywhere it's read
 (`needs::own`). The grant's log line and the history's lease event say what it was sized to and how
-("sized to 14.8 min at its Mac's speed"), and placement's why, and with the NAS budget on the NAS
+("sized to 14.8 min at its Mac's speed"), and placement's why, and, with the NAS budget on, the NAS
 weight it was granted under (`nas_w`, `nas_measured`: `sched::Pick::nas`); the job's page shows
 them. The
 forecast offers an ask at most the first 64 ready targets of a step (`forecast::OFFER_MAX`) where
@@ -1244,8 +1244,8 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
   `/api/history`, `/api/pause`, `/api/act`, `/api/settings`, …) from a page of its own origin or
   none with a 307 to the lead's same path and query, at the lead's address of the network the
   request came by (`memberpage::location`: its HTTPS page through `tailscale serve`, its tailnet
-  address, its LAN name `<host>.local`, else its first). Answered there still: `/api/live` and
-  `/api/settings` asked by the lead's page (CORS, Cross-member calls, §8), the jobs' calls, and
+  address, its LAN name `<host>.local`, else its first). Answered there still: `/api/live`,
+  `/api/settings` and `/api/asked` asked by the lead's page (CORS, Cross-member calls, §8), the jobs' calls, and
   `sw.js`; the build's own asks from any other origin are refused. It redirects only to a lead whose
   beat answer says `page` (`beats::PAGE`), heard within 35 s (`beats::PAGE_AWAY_S`); else the port
   answers `/` with a small page of this Mac's own status and "The lead (<name>) isn't reachable

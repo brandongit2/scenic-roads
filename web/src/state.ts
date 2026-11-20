@@ -286,7 +286,7 @@ const RAIL_KEYS: RailMetric[] = RAIL_METRICS.map((m) => m.key);
 const FERRY_KEYS: FerryMetric[] = FERRY_METRICS.map((m) => m.key);
 /** A layer's screen-widths fits in its link value (rail, ferries): the base in two fields, then
  * after them the units (unitsField), the metrics with another fit (pairsField) and the other
- * metrics' palettes and percentiles (looksField), empty fields at the end left out. */
+ * metrics' palettes, percentiles, fades and spans (looksField), empty fields at the end left out. */
 function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, keys: readonly K[], looks: string): (string | number)[] {
   const { base, rest } = pairsField((k) => pairOf(lens, k, FIT_LEN_DEFAULT), keys, FIT_LEN_DEFAULT);
   const tail = [unitsField(units, keys), rest, looks];
@@ -1022,7 +1022,7 @@ export function toHash(s: AppState, buildings: boolean, base: LinkBase): string 
     const { a, b, label } = s.stretch;
     p.set('st', `${[...a, ...b].map((v) => v.toFixed(5)).join(',')},${label}`);
   }
-  return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
+  return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',').replace(/%7E/g, '~');
 }
 
 /** A link field's number: `d` when it is empty or not a finite number. */

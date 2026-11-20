@@ -302,6 +302,9 @@ for (const b of [base.s, seed]) {
   for (const [m, l] of Object.entries(seed.rail.looks)) assert.deepEqual(l!.range, railMetricDef(m as never).range, m);
   for (const [m, l] of Object.entries(seed.ferry.looks)) assert.deepEqual(l!.range, ferryMetricDef(m as never).range, m);
   for (const l of [...Object.values(seed.rail.looks), ...Object.values(seed.ferry.looks)]) assert.ok(l!.thrValue >= l!.range[0] && l!.thrValue <= l!.range[1]);
+  // (And each layer's shown metric, its top-level fields.)
+  assert.deepEqual(seed.rail.range, railMetricDef(seed.rail.metric).range);
+  assert.deepEqual(seed.ferry.range, ferryMetricDef(seed.ferry.metric).range);
   // A metric the seed didn't list ends at the seed's shown look over the metric's own range (no
   // endless reading back): a road display type at the seed's own fields.
   const keptRail = seed.rail.looks.elev, keptRoad = seed.looks.grade;
@@ -336,11 +339,13 @@ for (const b of [base.s, seed]) {
   s.ferry.metric = 'freq';
   s.ferry.looks = { months: { ...st.ferryFreshLook('months'), fit: [5, 95], lowFade: 0.6 } };
   const h = toHash(s, true, { id: 'base', name: 'Default', s: seed });
-  const rs = params(h).get('rs')!, fy = params(h).get('fy')!;
-  assert.match(rs, /freq~0\.2~0\.35/);
-  assert.match(rs, /view_magma~0\.25(\/|,|$)/);
-  assert.match(rs, /water~~0\.4/);
-  assert.match(fy, /months__5_95~0\.6/);
+  const rs = params(h).get('rs')!;
+  // (In the link as written: `~` as it is, not %7E.)
+  assert.match(h, /[,/]freq~0\.2~0\.35[/,&]/);
+  assert.match(h, /\/view_magma~0\.25[/,&]/);
+  assert.match(h, /\/water~~0\.4(&|,|$)/);
+  assert.match(h, /,months__5_95~0\.6(&|,|$)/);
+  assert.ok(!h.includes('%7E'), h);
   const back = fromHash(h, true, seed);
   assert.deepEqual(back.rail.looks, s.rail.looks);
   assert.deepEqual(back.ferry.looks, s.ferry.looks);
