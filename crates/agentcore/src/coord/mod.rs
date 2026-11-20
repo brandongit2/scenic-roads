@@ -1516,6 +1516,14 @@ pub struct Capacity {
     pub nas_young: bool,
     #[serde(default)]
     pub nas_at: u64,
+    /// Where those answers were taken (crate::agent::live::Store::answer_in): on the probe's own
+    /// ssh to the NAS, apart from its jobs' SMB session, at this cadence (s; crate::agent::apart,
+    /// the pool's `nas-apart-seconds`); 0, on the jobs' session, the probe off or down, and then
+    /// why it is down (None: off, or not answered yet).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub nas_apart_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_apart_down: Option<String>,
     /// Its room at its quietest sustained state over the last 48 hours (crate::agent::live::Store::best,
     /// task #951): what the forecast takes it to have from now on; the scheduler never reads it.
     /// None: not measured (an older app's, or not 30 minutes of samples yet).
@@ -1751,6 +1759,7 @@ pub fn pool_answers(
                 floor_ms: c.nas_floor_ms?,
                 missed: c.nas_calls.is_some_and(|x| x[1] > 0.0),
                 fresh: new && !c.nas_young,
+                apart_s: c.nas_apart_s,
             })
         })
         .collect()

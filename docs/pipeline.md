@@ -494,7 +494,8 @@ The Jobs tab's stages are the one exception.
   range), one column, under a line saying the range, its resolution and when the NAS's capacity
   was last measured (the best of how many probes over the last day). From the lead's status
   (`nas`) and its `/api/live` answer, which `live.js` asks while the Machines or NAS tab is shown:
-  **response time** (the lead's listing, `nas_ms`; the server's name, protocol and free space,
+  **response time** (the lead's listing on its jobs' session, `nas_ms`, and its probe apart's read
+  on its own ssh, `nas_apart_ms`; the server's name, protocol and free space,
   `nas.mount`), **requests waiting** (`pool_nas_calls`, every Mac's calls in flight, against
   `pool_nas_held_cap` dashed: the most the Macs hold past their deadline, their caps summed), **timed out** (`pool_nas_missed`, a minute; the range's count),
   **NAS budget** (`pool_nas_used_pct` filled, the weight the pool's jobs hold, against
@@ -503,7 +504,8 @@ The Jobs tab's stages are the one exception.
   least a paced job weighs, `nas.tuning.small`: docs/pool.md §7.7), **answers vs best**
   (`pool_nas_answer_x`, the counted Mac's ratio: one more than its answer time less its floor,
   over the least floor among those answering (the second-highest with two Macs or more), against `nas.tuning.slow` and `nas.tuning.near` dashed; the Mac, its time
-  and its floor, or that it misses its deadlines, `nas.pace.counted`), **NAS disks busy** (`nas_disk_busy_pct` against the owner's target dashed),
+  and its floor, or that it misses its deadlines, and where it answered, its own ssh and how often
+  or its jobs' SMB session, `nas.pace.counted`'s `apart_s`; undecidable said, `nas.pace.undecided`), **NAS disks busy** (`nas_disk_busy_pct` against the owner's target dashed),
   then the pool's use against the limits its probes give (`nas.limits`, dashed,
   with its share of each): **data moved** (`pool_nas_read_mbs` and `pool_nas_write_mbs` stacked),
   **files created**, **entries listed**, **files looked up** (`pool_nas_creates_s`,

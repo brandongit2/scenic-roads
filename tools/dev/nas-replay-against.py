@@ -11,7 +11,9 @@
       both there on the test Mac (tools/app/remote-tests.sh, key `<this worktree>-against`),
       printing their lines whole. A ref whose `Sample` has no `moving` (judging against the weight,
       as main to 6e92eb8bf) is given the replay without it, its `Reading` without `outside`,
-      `undecided` and `own` (taken as false); a burst without `disks` is given it. The folder is
+      `undecided` and `own` (taken as false); a burst without `disks` is given it; an `Answer`
+      without `apart_s` (main before task #1552) is given the answers on the jobs'
+      session alone, its cases with the answers apart then the same as without. The folder is
       deleted after (--keep: made there and kept).
       Exit: the run's.
 """
@@ -50,6 +52,8 @@ def graft(theirs, ours):
                      ("p.last.as_ref().is_some_and(|l| l.undecided)", "false"),
                      ("|l| l.undecided", "|_| false"), ("|l| l.own.is_some_and(|o| o >= k.step)", "|_| false")]:
             block = block.replace(x, y)
+    if "pub apart_s:" not in theirs:
+        block = block.replace("apart_s: if apart { APART_S } else { 0 }, ", "")
     if "disks: Option<f64>" not in theirs:
         for x, y in DISKS:
             assert theirs.count(x) == 1, x

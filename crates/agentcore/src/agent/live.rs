@@ -116,6 +116,9 @@ const MAGIC_V1: &[u8; 8] = b"SCLIVE01";
 
 /// The series' names (units in the name; docs/pool.md §10).
 pub const NAS_MS: &str = "nas_ms";
+/// The NAS's answers on the probe's own ssh (ms: crate::agent::apart), apart from the jobs' SMB
+/// session.
+pub const NAS_APART_MS: &str = "nas_apart_ms";
 pub const LOAD: &str = "load1";
 pub const MEM_FREE: &str = "mem_free_pct";
 /// The memory available (GB: jobrt::sys::memory_available), and what compressing idle memory frees
@@ -374,6 +377,10 @@ pub struct Store {
     sampling: AtomicBool,
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
+    /// The probe apart's cadence as the pool's settings last said it (s, `nas-apart-seconds`, set
+    /// by `answer_in`; 0: off), and why it is down (None: answering, or off).
+    apart_s: std::sync::atomic::AtomicU64,
+    apart_down: Mutex<Option<String>>,
 }
 
 /// The NAS as the agent reaches it (`Store::root`): its root (None: away), and the link and since
@@ -439,6 +446,8 @@ impl Store {
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
+            apart_s: std::sync::atomic::AtomicU64::new(jobrt::budget::nas::APART_S),
+            apart_down: Mutex::new(None),
         })
     }
 
@@ -475,9 +484,13 @@ impl Store {
     /// that floor is young (under `k.young_spans` of spans measured on the link within
     /// `k.floor_s`: its answers may then cut the pool's window, never grow it, as a floor taken on
     /// a new link under load would read the load as its best). None: no listing over the span but
-    /// the cache's.
-    pub fn nas_answers(&self, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
+    /// the cache's. Of the series `name`: `NAS_MS`, the listings on the jobs' session, or
+    /// `NAS_APART_MS`, the probe apart's answers (over its cadence where that's longer than the
+    /// span).
+    pub fn nas_answers(&self, name: &str, now: u64, k: &jobrt::budget::nas::Tuning) -> Option<(f64, f64, bool)> {
         use jobrt::budget::nas::answer_of;
+        let span_s = if name == NAS_APART_MS { k.span_s.max(k.apart_s) } else { k.span_s };
+        let k = &jobrt::budget::nas::Tuning { span_s, ..*k };
         let from = now.saturating_sub(k.floor_s);
         let spans: Vec<(u64, u64)> = {
             let g = self.root.lock().ok()?;
@@ -495,7 +508,7 @@ impl Store {
         let (step, _) = TIERS[1];
         let m = (k.span_s / step).max(1) as usize;
         let s = self.series.lock().ok()?;
-        let series = s.get(NAS_MS)?;
+        let series = s.get(name)?;
         let ms = answer_of(
             series.buckets(1, now.saturating_sub(k.span_s), now + 1).iter().flat_map(samples_of),
             k.cached_ms,
@@ -518,11 +531,21 @@ impl Store {
     /// `nas_at`), its jobs' NAS traffic over the same span (`nas_traffic`: each `NAS_TRAFFIC`
     /// series' mean over `k.span_s`; None while one has no point in it) and NAS calls at `now` as
     /// this store has them (`nas_answers`, `calls_now`): a member's beat sets them as it goes, the
-    /// lead's prober its own Mac's as it reads.
+    /// lead's prober its own Mac's as it reads. The answers are the probe apart's while it is on
+    /// (`Tuning::apart_s`) and has answered over the span (`nas_apart_s` its cadence), else the
+    /// jobs' session's listings, today's, with why the probe isn't answering (`nas_apart_down`).
+    /// The cadence is kept for the NAS thread (`spawn`).
     pub fn answer_in(&self, cap: &mut crate::coord::Capacity, now: u64, k: &jobrt::budget::nas::Tuning) {
-        let a = self.nas_answers(now, k);
+        self.apart_s.store(k.apart_s, Ordering::Relaxed);
+        let apart = (k.apart_s > 0).then(|| self.nas_answers(NAS_APART_MS, now, k)).flatten();
+        let a = apart.or_else(|| self.nas_answers(NAS_MS, now, k));
         (cap.nas_ms, cap.nas_floor_ms) = (a.map(|a| a.0), a.map(|a| a.1));
         cap.nas_young = a.is_some_and(|a| a.2);
+        cap.nas_apart_s = if apart.is_some() { k.apart_s } else { 0 };
+        cap.nas_apart_down = match apart {
+            None if k.apart_s > 0 => self.apart_down.lock().ok().and_then(|d| d.clone()),
+            _ => None,
+        };
         cap.nas_at = now;
         cap.nas_calls = self.calls_now(now);
         let traffic: Option<Vec<f64>> = NAS_TRAFFIC.iter().map(|n| self.mean(n, now, k.span_s)).collect();
@@ -1009,6 +1032,7 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
             }
         })
         .ok();
+    let apart = store.clone();
     std::thread::Builder::new()
         .name("live-nas".into())
         .spawn(move || {
@@ -1029,6 +1053,41 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                     }
                 }
                 std::thread::sleep(NAS_EVERY);
+            }
+        })
+        .ok();
+    std::thread::Builder::new()
+        .name("live-nas-apart".into())
+        .spawn(move || {
+            let mut probe: Option<super::apart::Probe> = None;
+            loop {
+                let every = apart.apart_s.load(Ordering::Relaxed);
+                let root = apart.nas.lock().ok().and_then(|n| n.clone()).filter(|_| every > 0);
+                let down = match root.map(|r| store::nas::on_nas(&r.unchecked_path())) {
+                    None => {
+                        probe = None;
+                        None
+                    }
+                    Some(None) => Some("the share isn't mounted".to_string()),
+                    Some(Some(dir)) => {
+                        let cmd = super::apart::ssh_command(&dir);
+                        let p = match probe.take() {
+                            Some(p) if p.cmd() == cmd => probe.insert(p),
+                            _ => probe.insert(super::apart::Probe::new(cmd, buildstore::nasssh::SSH_START)),
+                        };
+                        match p.ask(super::nasread::DEADLINE) {
+                            Ok(d) => {
+                                apart.record(NAS_APART_MS, now_s(), d.as_secs_f64() * 1000.0);
+                                None
+                            }
+                            Err(why) => Some(why),
+                        }
+                    }
+                };
+                if let Ok(mut d) = apart.apart_down.lock() {
+                    *d = down;
+                }
+                std::thread::sleep(if every == 0 { NAS_EVERY } else { Duration::from_secs(every) });
             }
         })
         .ok();
@@ -1608,16 +1667,16 @@ mod tests {
             s.record(NAS_MS, t, if t < t0 + 3600 { 5.0 } else { 10.0 });
         }
         let now = t0 + 3 * 3600 - 1;
-        assert_eq!(s.nas_answers(now, &k), Some((10.0, 5.0, false)), "the day's least");
+        assert_eq!(s.nas_answers(NAS_MS, now, &k), Some((10.0, 5.0, false)), "the day's least");
         let half = jobrt::budget::nas::Tuning { floor_s: 1800, ..k };
-        assert_eq!(s.nas_answers(now, &half), Some((10.0, 10.0, false)), "a half hour's drifts up under load");
+        assert_eq!(s.nas_answers(NAS_MS, now, &half), Some((10.0, 10.0, false)), "a half hour's drifts up under load");
         // (Away now: a floor of its own from the change, young until ten minutes are measured.)
         let moved = t0 + 4 * 3600;
         s.set_link(false, moved);
         for t in (moved..moved + 120).step_by(5) {
             s.record(NAS_MS, t, 40.0);
         }
-        assert_eq!(s.nas_answers(moved + 119, &k), Some((40.0, 40.0, true)));
+        assert_eq!(s.nas_answers(NAS_MS, moved + 119, &k), Some((40.0, 40.0, true)));
         let mut cap = crate::coord::Capacity::default();
         s.answer_in(&mut cap, moved + 119, &k);
         assert_eq!(
@@ -1627,15 +1686,15 @@ mod tests {
         for t in (moved + 120..moved + 900).step_by(5) {
             s.record(NAS_MS, t, 40.0);
         }
-        assert_eq!(s.nas_answers(moved + 899, &k), Some((40.0, 40.0, false)), "measured long enough");
+        assert_eq!(s.nas_answers(NAS_MS, moved + 899, &k), Some((40.0, 40.0, false)), "measured long enough");
         let longer = jobrt::budget::nas::Tuning { young_spans: 40, ..k };
-        assert_eq!(s.nas_answers(moved + 899, &longer), Some((40.0, 40.0, true)), "nas-young-spans as set");
+        assert_eq!(s.nas_answers(NAS_MS, moved + 899, &longer), Some((40.0, 40.0, true)), "nas-young-spans as set");
         // (Restarted on the same link: its stints kept.)
         s.save();
         let back = Store::new(Some(f.clone()), "m1");
         back.set_root(Some(&root));
         back.set_link(false, moved + 900);
-        assert_eq!(back.nas_answers(moved + 899, &k), Some((40.0, 40.0, false)));
+        assert_eq!(back.nas_answers(NAS_MS, moved + 899, &k), Some((40.0, 40.0, false)));
         // (Home again, under load: its own floor, the stint at home's, taken up, not the load's;
         // then flapping away and back never makes it the load.)
         let home = moved + 1000;
@@ -1643,13 +1702,13 @@ mod tests {
         for t in (home..home + 120).step_by(5) {
             back.record(NAS_MS, t, 30.0);
         }
-        assert_eq!(back.nas_answers(home + 119, &k), Some((30.0, 5.0, false)), "its floor at home again");
+        assert_eq!(back.nas_answers(NAS_MS, home + 119, &k), Some((30.0, 5.0, false)), "its floor at home again");
         back.set_link(false, home + 120);
         back.set_link(true, home + 130);
         for t in (home + 130..home + 250).step_by(5) {
             back.record(NAS_MS, t, 30.0);
         }
-        assert_eq!(back.nas_answers(home + 249, &k), Some((30.0, 5.0, false)));
+        assert_eq!(back.nas_answers(NAS_MS, home + 249, &k), Some((30.0, 5.0, false)));
         let kept: Vec<Stint> = serde_json::from_slice(&std::fs::read(f.with_file_name(LINK_FILE)).unwrap()).unwrap();
         assert_eq!(
             kept.iter().map(|l| (&l.key[..4], l.from, l.to)).collect::<Vec<_>>(),
@@ -1661,7 +1720,7 @@ mod tests {
                 ("home", home + 130, None),
             ]
         );
-        assert_eq!(Store::new(None, "m1").nas_answers(now, &k), None, "nothing measured");
+        assert_eq!(Store::new(None, "m1").nas_answers(NAS_MS, now, &k), None, "nothing measured");
     }
 
     /// A Mac's NAS answer is the lower quartile of its span's listings, the SMB cache's left out
@@ -1678,7 +1737,7 @@ mod tests {
             for (i, ms) in ms.into_iter().enumerate() {
                 s.record(NAS_MS, at + 5 * i as u64, ms);
             }
-            s.nas_answers(at + 29, &k).map(|a| (a.0, a.1))
+            s.nas_answers(NAS_MS, at + 29, &k).map(|a| (a.0, a.1))
         };
         // (Its listings from the cache, an eighth of a ms, left out: the floor the NAS's own.)
         assert_eq!(span(t0, [0.125, 3.0, 0.125, 3.25, 3.5, 3.0]), Some((3.0, 3.0)));
@@ -1686,7 +1745,44 @@ mod tests {
         assert_eq!(span(t0 + 60, [41.0, 3.0, 60.0, 80.0, 95.0, 41.0]), Some((41.0, 3.0)), "most queued");
         assert_eq!(span(t0 + 90, [0.125; 6]), None, "the cache's alone: no answer");
         let all = jobrt::budget::nas::Tuning { cached_ms: 0.0, ..k };
-        assert_eq!(s.nas_answers(t0 + 119, &all).map(|a| a.0), Some(0.125), "nas-cached-ms 0: every listing counts");
+        assert_eq!(
+            s.nas_answers(NAS_MS, t0 + 119, &all).map(|a| a.0),
+            Some(0.125),
+            "nas-cached-ms 0: every listing counts"
+        );
+    }
+
+    /// Task #1552: a Mac's answers for its lead are its probe's on its own ssh while it answers
+    /// (its cadence said, `nas_apart_s`), its floor that probe's; the probe down or off, its
+    /// listings on the jobs' session as before, and why it is down said (`nas_apart_down`).
+    #[test]
+    fn a_macs_answers_are_its_probe_aparts_while_it_answers() {
+        let k = jobrt::budget::nas::Tuning::default();
+        let s = Store::new(None, "m6");
+        let t0 = 1_700_000_000;
+        for i in 0..6 {
+            // (The jobs' session stalled behind its own jobs' traffic; the probe apart not.)
+            s.record(NAS_MS, t0 + 5 * i, 300.0);
+            s.record(NAS_APART_MS, t0 + 5 * i, 12.0);
+        }
+        let mut cap = crate::coord::Capacity::default();
+        s.answer_in(&mut cap, t0 + 29, &k);
+        assert_eq!((cap.nas_ms, cap.nas_floor_ms, cap.nas_apart_s), (Some(12.0), Some(12.0), 5));
+        assert_eq!(cap.nas_apart_down, None);
+        assert_eq!(s.apart_s.load(Ordering::Relaxed), 5, "the cadence kept for the NAS thread");
+        // (Off: the jobs' session's, nothing said down.)
+        let off = jobrt::budget::nas::Tuning { apart_s: 0, ..k };
+        s.answer_in(&mut cap, t0 + 29, &off);
+        assert_eq!((cap.nas_ms, cap.nas_apart_s, cap.nas_apart_down.as_deref()), (Some(300.0), 0, None));
+        assert_eq!(s.apart_s.load(Ordering::Relaxed), 0);
+        // (Down: none of its answers in the span; the jobs' session's, and why.)
+        *s.apart_down.lock().unwrap() = Some("its connection ended".into());
+        for i in 0..6 {
+            s.record(NAS_MS, t0 + 60 + 5 * i, 250.0);
+        }
+        s.answer_in(&mut cap, t0 + 89, &k);
+        assert_eq!((cap.nas_ms, cap.nas_apart_s), (Some(250.0), 0));
+        assert_eq!(cap.nas_apart_down.as_deref(), Some("its connection ended"));
     }
 
     #[test]

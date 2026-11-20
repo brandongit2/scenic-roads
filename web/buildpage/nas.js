@@ -32,11 +32,11 @@ function build() {
   parts.body = el("div", "lbody");
   const rows = el("div", "mac");
   const r = (name, tip, col) => row(rows, name, tip, col);
-  parts.resp = r("response time", "How long the lead's listing of the project's folder on the NAS takes (every 5 s while a build runs on the lead). Over a few hundred ms, every job reading the NAS slows down.");
+  parts.resp = r("response time", "How long the lead's listing of the project's folder on the NAS takes on its jobs' SMB session (every 5 s while a build runs on the lead), and its probe's 4 KB read past the NAS's cache on its own ssh (as often as the pool's nas-apart-seconds says), which its own jobs' traffic doesn't stall. Over a few hundred ms, every job reading the NAS slows down.");
   parts.wait = r("requests waiting", "Every Mac's NAS calls in flight, summed. Dashed: their NAS call threads together; past it, calls queue.");
   parts.missed = r("timed out", "Every Mac's NAS calls past their deadline or refused (every thread busy), a minute.");
   parts.budget = r("NAS budget", "The NAS the pool's jobs are weighed to take (filled), against the window the lead paces them within (line), both as shares of what its probes measured it can take. The window doubles each growth step (a minute by default) up to half what was in use at its last cut, then grows a step at a time, while the window is what holds work back and the NAS has room: the disks within the owner's target with the next job (unread, the answers alone say), the answers under the knee and not rising with the load, on fresh readings. It drops to half what's in use as soon as the disks pass the target, the counted Mac's NAS calls miss their deadline, or its answers pass the knee rising with the load (their quicker quarter slower than all but the slowest quarter a step lighter: a load the pool rose to is judged from a span after the rise over a growth step's readings, both the pool's settings), and isn't cut again until what's in use has fallen to it. Small jobs aren't held by it, only by the whole NAS together. Its bounds are the pool's settings (Settings, the pool's box).");
-  parts.answers = r("answers vs best", "How much the NAS slows the counted Mac's answers (each Mac's listing of the project's folder): one more than its answer time less its own best of the last day on its link, over the least best among the Macs answering, since a loaded NAS adds the same milliseconds to every Mac. With two Macs or more answering, the second-highest counts, so one Mac's own slow link doesn't pace the pool; a Mac at home missing its deadlines counts whatever its rank. Dashed: the knee. Answers past it hold the NAS budget's window whatever brought them, and cut it only while they rise with the pool's load; slow answers the pool's load didn't bring (the NAS slow with nothing of ours on it) never cut it.");
+  parts.answers = r("answers vs best", "How much the NAS slows the counted Mac's answers (each Mac's probe on its own ssh to the NAS, a 4 KB read past the NAS's cache every few seconds, the pool's nas-apart-seconds; that probe down or off, its listing of the project's folder on its jobs' SMB session, which its own jobs' traffic stalls: the Mac and its connection said under the chart, and the lead's flags say a probe down): one more than its answer time less its own best of the last day on its link, over the least best among the Macs answering, since a loaded NAS adds the same milliseconds to every Mac. With two Macs or more answering, the second-highest counts, so one Mac's own slow link doesn't pace the pool; a Mac at home missing its deadlines counts whatever its rank. Dashed: the knee. Answers past it hold the NAS budget's window whatever brought them, and cut it only while they rise with the pool's load; slow answers the pool's load didn't bring (the NAS slow with nothing of ours on it) never cut it.");
   parts.disks = r("NAS disks busy", "The busiest disk's busy share, as the lead reads it over SNMP. Dashed: the owner's target; past it the lead cuts the NAS budget's window.");
   parts.bytes = r("data moved", "Bytes a second the pool's jobs read from and wrote to the NAS, stacked. Dashed: the most the lead's probes measured it can take (the best of the last day).");
   parts.creates = r("files created", "New files a second the pool's jobs make on the NAS. Dashed: its measured limit.");
@@ -83,11 +83,11 @@ function paint() {
   const acc = token("--accent"), nr = token("--nas-r"), nw = token("--nas-w"), warn = token("--warn"), bad = token("--bad");
   const at = (k, fresh = 30) => latest(s[k], now, fresh);
 
-  // Response time: the lead's listing.
-  const ms = at("nas_ms");
+  // Response time: the lead's listing on its jobs' session, and its probe's read on its own ssh.
+  const ms = at("nas_ms"), ap = at("nas_apart_ms");
   const mt = v?.mount;
-  draw(parts.resp.c, { ...base, unit: "ms", series: [{ points: s.nas_ms, colour: ms != null && ms > 200 ? warn : acc, label: "answer", band: true }] });
-  words(parts.resp.v, [ms == null ? "no build on the lead now" : fmt(ms, "ms"), [mt?.name, mt?.proto, mt && `${tb(mt.free)} free`].filter(Boolean).join(" · ")],
+  draw(parts.resp.c, { ...base, unit: "ms", series: [{ points: s.nas_ms, colour: ms != null && ms > 200 ? warn : acc, label: "listing, jobs' session", band: true }, { points: s.nas_apart_ms, colour: nr, label: "read, own ssh" }] });
+  words(parts.resp.v, [ms == null ? "no build on the lead now" : `${fmt(ms, "ms")} listing${ap != null ? ` · ${fmt(ap, "ms")} read on its own ssh` : ""}`, [mt?.name, mt?.proto, mt && `${tb(mt.free)} free`].filter(Boolean).join(" · ")],
     ms != null && ms > 1000 ? "bad" : ms != null && ms > 200 ? "warn" : "");
 
   // Requests waiting: the pool's calls in flight, against the most the Macs hold past their
@@ -122,7 +122,9 @@ function paint() {
   const past = (b) => x != null && tu?.[b] != null && x > tu[b];
   draw(parts.answers.c, { ...pool, unit: "×", refs, series: [{ points: s.pool_nas_answer_x, colour: past("slow") ? bad : acc, label: "counted Mac", unit: "×" }] });
   const rising = pr?.rising === true;
-  words(parts.answers.v, [x == null ? "not measured" : `${fmt(x)}× its best${pr?.below != null ? `, ${fmt(pr.below)}× a step lighter` : ""}`, counted ? (counted.missed ? `${counted.mac} missing its deadlines` : `${counted.mac} ${fmt(counted.ms, "ms")}, best ${fmt(counted.floor_ms, "ms")}`) : ""],
+  // (Where the counted Mac answered: its probe's own ssh and how often, or its jobs' SMB session.)
+  const via = counted ? (counted.apart_s ? `on its own ssh, every ${counted.apart_s} s` : "on its jobs' SMB session") : "";
+  words(parts.answers.v, [x == null ? "not measured" : `${fmt(x)}× its best${pr?.below != null ? `, ${fmt(pr.below)}× a step lighter` : ""}${pr?.undecided ? ", undecidable" : ""}`, counted ? (counted.missed ? `${counted.mac} missing its deadlines` : `${counted.mac} ${fmt(counted.ms, "ms")}, best ${fmt(counted.floor_ms, "ms")}, ${via}`) : ""],
     past("slow") && rising ? "bad" : rising || past("slow") ? "warn" : "");
 
   // The disks: the busiest one's share against the owner's target.

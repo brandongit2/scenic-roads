@@ -816,27 +816,44 @@ thousandths:
   read back, files deleted, a folder listed and statted), and takes the best of the last day's
   probes, kept in its store so a restart keeps them.
 - **The pacing** (`nas::Pace`): the leased jobs' weights together are held within a window, not the
-  whole. Every reading (10 s) the lead reads each Mac's NAS answer time: the lower quartile over
-  30 s of its listings of the project folder (made every 5 s while a build runs), cached answers
-  (under 0.5 ms) left out. Each Mac's ratio is its excess over its own floor (its least answer over
+  whole. Every reading (10 s) the lead reads each Mac's NAS answer time, the lower quartile over
+  30 s of its probes while a build runs: its **probe apart** (`agent::apart`), a 4 KB read past the
+  NAS's page cache (O_DIRECT, at a random offset of the largest file in `sources/canopy`) on an ssh
+  of its own to the NAS (the key the app's other ssh calls take, `BatchMode`: never a password),
+  kept open, every `nas-apart-seconds` (5); while that probe is off (0) or down, its listings of
+  the project folder on its jobs' SMB mount (every 5 s), cached answers (under 0.5 ms) left out.
+  Each Mac's ratio is its excess over its own floor (its least answer over
   the last day on that link, never under 2 ms), measured against the least floor among those
   answering; with two Macs or more answering, the second-highest counts, so one Mac's own link never
   paces the pool alone. And each disk's busy share, read from the Synology over SNMPv3
   (`crate::budget::snmp`, keys from `inputs/keys.env`, never on a command line or logged), the
   busiest smoothed.
+- **Why a probe apart** (measured on the mini, 20 Nov, its five jobs running, a probe each second
+  for 10 and 15 minutes): a listing on the jobs' SMB session waits behind their traffic, a median
+  of 73-78 ms and 60-62 % of them over 30 ms in the seconds the session moved 5 MB/s or more (14
+  MB/s on average), 1.7-2.0 ms in the seconds it moved under 0.5 MB/s. On an ssh of its own, the
+  same listing took 1.3-1.8 ms either way, none over 30 ms, but it is answered from the NAS's
+  cache: over 29 half minutes its rank correlation with the disks' busy share was -0.19, where
+  the M4's own listings' was 0.72. The 4 KB direct read follows the disks (0.70; a median of
+  31.7 ms, 5 ms at the least, 43 ms in the seconds the mini's session moved 5 MB/s or more, with
+  the disks busier then). A second SMB session isn't to be had the app's way: on the mini, mounting the share
+  again by the Keychain's other name for it (`mount volume`, the Bonjour name) mounts nothing new,
+  macOS taking it for the share already mounted.
 - **Judging the answers.** How slow the NAS answers says how slow it is, not why: over 19 and 20
   Nov the counted answers were past the knee in 17 % of the readings with the pool's jobs weighing
   under 25 thousandths. A job's weight is its heaviest target's rate, held for its whole run, so
   the answers are judged, as TCP Vegas judges its round trips, against **what the pool's jobs move
   on the NAS as measured** (each Mac's jobs' traffic over the answers' span, carried on its beats,
-  weighed as a job is, `coord::pool_moving`), the counted Mac's own apart: its own jobs' traffic
-  stalls its answers on its own link (the probe waiting out 40-ms delayed acknowledgements on the
-  jobs' SMB session) whatever the NAS's load, so they're judged against the others'. Each ratio is
+  weighed as a job is, `coord::pool_moving`), all of it, the counted Mac's own too, where its
+  answers were taken apart; where they are its listings on the jobs' session, its own apart: its
+  own jobs' traffic stalls those whatever the NAS's load (above), so they're judged against the
+  others'. Each ratio is
   kept with the uses it was read beside for `nas-track-minutes`; a growth cadence's (a minute) are
   judged against those a step lighter and a step heavier.
-  - While the counted Mac's own jobs move a step or more in the cadence, its answers can't tell
-    the NAS from its link: **undecidable** (on 19 and 20 Nov 57.5 % of the readings by the
-    cadence, 34.5 % reading by reading; nearly all the mini's). They never halve the window and
+  - While the counted Mac's own jobs move a step or more in the cadence and its answers are its
+    listings on the jobs' session (the probe apart off or down), they can't tell
+    the NAS from its link: **undecidable** (on 19 and 20 Nov, before the probe, 57.5 % of the
+    readings by the cadence, 34.5 % reading by reading; nearly all the mini's). They never halve the window and
     never let it grow past the knee. While they rise against those a step lighter in all the pool
     moves (its own too) it doesn't grow at all (what keeps the replay at the model's cliff no more
     often than the rule judging against the weight: without it, jobs of 100 on the mini reach it at
@@ -845,7 +862,8 @@ thousandths:
     weight in use read in the last `nas-track-minutes`, before the cadence, with answers under 3
     times their best; never under it, or halved where there's none.
   - Otherwise they are **rising** while their lower quartile is past the upper quartile of those a
-    step lighter, and **not the pool's** while all the pool's jobs move under a step, or their
+    step lighter, and **not the pool's** (never while the counted Mac's own jobs move a step or
+    more, its answers apart or not) while all the pool's jobs move under a step, or their
     median is within the upper quartile of those a step lighter, or those a step heavier were no
     slower. Between the two (the lower quartile past, the median not; a cadence is some three
     spans), neither: past the knee, held.
@@ -880,8 +898,15 @@ thousandths:
   to 300), `nas-cached-ms` (0.5, 0 to 10), `nas-restore-minutes` (30, 0 to 60), `nas-lone-minutes`
   (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240), `nas-young-spans` (20, 5 to 100:
   the spans of its link's history a Mac's floor needs; a Mac whose floor is younger may cut the
-  window, never grow it) and `nas-track-minutes` (10, 2 to 60: how long the answers are kept to
-  judge against).
+  window, never grow it), `nas-track-minutes` (10, 2 to 60: how long the answers are kept to
+  judge against) and `nas-apart-seconds` (5, 0 to 60: how often each Mac's probe apart answers;
+  0, no probe, the answers its listings on its jobs' session alone).
+- **The probe apart down** (its ssh won't start, its key's agent doesn't answer within 60 s, the
+  file to read isn't there, its connection ended): that Mac answers with its listings on its jobs'
+  session, as with the probe off, tries the ssh again a minute on, and the lead flags it
+  (`nas-apart`, §10, Flags: "m6's NAS answers are its listings on its jobs' SMB session: its probe
+  on its own ssh to the NAS is down (…)"). A probe past its deadline counts as the deadline, as a
+  listing does, and its ssh is opened again at the next.
 - **The target** is the owner's: the disks' busy share the pool holds to, `nas-target` (30–95 %),
   set by `scenic nas-target [<percent> | off]` on any Mac; not set, 85 % (`DEFAULT_TARGET_PCT`),
   above the 65–80 % an outside repack alone kept the disks at, so the pool still works beside one.
@@ -906,8 +931,11 @@ thousandths:
 - **Downloads:** a job of a fetching step (kind `Fetch`: the lead's `bld-fetch`, `rail-feeds`,
   `planet-fetch`) counts one, capped pool-wide by the switch's `downloads <n>`.
 - **Seen**: the lead's waiting lines and `scenic status` say the pacing's last reading ("NAS
-  pacing: window 55 % (threshold 5 %), 50 % in use, …: held: the window not what limits"); the
-  build page's NAS tab draws it (§10, Live). An ask granted fewer than it wanted while targets it
+  pacing: window 55 % (threshold 5 %), 50 % in use, …, answers on m6's own ssh to the NAS (every 5
+  s) 1.4× their best …: held: the window not what limits", or "answers on m6's jobs' SMB
+  session …" while its probe is off or down); the build page's NAS tab draws it (§10, Live): the
+  lead's listing and its probe's reads under response time, the counted Mac, its answer, best and
+  connection under answers vs best. An ask granted fewer than it wanted while targets it
   would take wait for the budget says so first in its refusal.
 - **Tested** on a simulated NAS (jobrt's `a_burst_of_nas_heavy_jobs_settles_below_the_knee` and its
   cases: outside loads, restarts, a slow link, lone jobs): held to a fixed whole, a burst sat at the
@@ -949,6 +977,28 @@ thousandths:
   |---|---|---|---|---|---|---|---|
   | the disks at half | 100 (135) | 105 (260) | 145 (295) | 270 (300) | 225 (280) | 15 (135) | 300 (270) |
   | the disks not read | 100 (135) | 105 (260) | 140 (295) | 270 (300) | 225 (280) | 15 (135) | 300 (270) |
+
+  With every Mac's answers taken apart (task #1552, `replay`'s `apart`): the readings hold no
+  probe's answers, so where a Mac's own jobs moved a step or more its answer is modelled as the
+  median of its own recorded answers at that tenth of the disks' busy share while its jobs moved
+  under a step (`calm_ms`: the NAS's load without its own session's stalls). Beside it in
+  brackets, main before the probe (the rule above, `nas-replay-against.py main`) on the same
+  answers, taking them for listings on the jobs' session:
+
+  | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) | undecidable |
+  |---|---|---|---|---|---|---|
+  | the readings as they were | – | 224 (214) | 155 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
+  | jobs of 100, on the mini | 806 (903) | 360 (406) | 47 (14) | 63, 4 (81, 13) | 5, 1 (6, 1) | 0 (5,328) |
+  | jobs of 250, on the mini | 313 (345) | 389 (429) | 67 (36) | 79, 7 (92, 23) | 6, 1 (11, 2) | 0 (5,110) |
+
+  Nothing is undecidable, against 3,105 readings of 5,400 with the answers as recorded (5,288 and
+  5,091 with the jobs on the mini). Judging the mini's own load, it cuts on it: at its floor more
+  often than main on the same answers in the closed loops (47 and 67 readings against 14 and 36),
+  and with jobs of 100 the recorded answers' 37 readings; at the cliff less often (5 and 6
+  readings against 6 and 11, never two in a row, where main reaches it twice in a row with jobs of
+  250), and at the disks' target less often for longer (4 and 7 readings in a row at most against
+  13 and 23). As the readings were, at its floor less often than with the answers as recorded
+  (155 readings against 222).
 
   **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
   those readings (0.046 %).
@@ -1340,6 +1390,9 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
     unsaid. It stands until a Mac with room asks, or the measure or plan changes.
   - *cost-version*: a step whose reruns moved their memory past `needs-off` times without a cost
     version raised (§7.7, A version not raised), one flag per step and side.
+  - *nas-apart*: a Mac whose NAS answers for the pacing are its listings on its jobs' SMB session
+    because its probe on its own ssh is down, with why (§7.7, The probe apart down); none while
+    `nas-apart-seconds` is 0.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (`scenic pool
     set overdue-factor <times>|off` or the build page's Settings), 1.1 to 100; not set, 3
     (`OVERDUE_DEFAULT`, the owner's call).
@@ -1453,7 +1506,8 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
   CPU and memory against the rest of the Mac's, disk writes, thermal state and the sampler's own
   CPU; every 10 s disk, power, the owner's idleness and the build's limits; every 5 s while a build
   runs here, the NAS's answer time (`nas_ms`: a timed listing of the project folder, as a stat
-  would come from the SMB cache).
+  would come from the SMB cache), and every `nas-apart-seconds` the probe apart's
+  (`nas_apart_ms`: a 4 KB read past the NAS's cache on an ssh of its own, §7.7).
   - **The jobs' NAS traffic**: each job process counts what it does where it happens
     (`store::nasio`, whose deltas are also a target's cost measures) in a file of its own mapped
     shared on the Mac's disk (no write call a count), with a ring of the last 32 NAS files it
@@ -1536,7 +1590,7 @@ election, handover or takeover, and no pool switch.
 
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, the NAS pacing's bounds
-(`nas-step` … `nas-young-spans`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
+(`nas-step` … `nas-apart-seconds`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
 §7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
 and `near-slope` (docs/building.md §2; off while not set). A new setting is made only once every
 member's heartbeat shows the app that has it. A role is read as the agent starts (docs/agent-parts.md §9.1);

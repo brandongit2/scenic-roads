@@ -93,6 +93,11 @@
 //!   by the old code's runs; or their inputs moved as much. A flag per step and side: how many targets,
 //!   the one off the most with both peaks, and the Mac of its run. Flagged until the version is
 //!   raised (its costs then of an older way) or those targets run again alike.
+//! - **NAS apart** (`nas-apart`): a Mac whose NAS answers for the lead's pacing are its listings on
+//!   its jobs' SMB session because its probe on its own ssh to the NAS is down
+//!   (crate::coord::Capacity::nas_apart_down, crate::agent::apart), with why: its own jobs'
+//!   traffic then leaves its answers undecidable (docs/pool.md §7.7). Flagged until the probe
+//!   answers again, or the pool's `nas-apart-seconds` is set to 0 (off: no flag).
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -106,7 +111,7 @@ use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
 /// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big",
-/// "cost-version"), the Mac it's about and what it says.
+/// "cost-version", "nas-apart"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -215,7 +220,27 @@ pub fn of(
     v.extend(refused(st, now));
     v.extend(too_big(st));
     v.extend(not_raised(st));
+    v.extend(apart(st));
     v
+}
+
+/// The NAS-apart flags (the module's doc): a Mac answering the NAS's pacing from its jobs' SMB
+/// session because its probe on its own ssh is down (crate::coord::Capacity::nas_apart_down).
+pub fn apart(st: &Status) -> Vec<Flag> {
+    st.capacity
+        .iter()
+        .filter_map(|(n, c)| {
+            let why = c.nas_apart_down.as_deref().filter(|_| c.nas_ms.is_some())?;
+            let mac = crate::paces::mac_of(n);
+            Some(Flag {
+                kind: "nas-apart".into(),
+                mac: mac.to_string(),
+                said: format!(
+                    "{mac}'s NAS answers are its listings on its jobs' SMB session: its probe on its own ssh to the NAS is down ({why}), so while its own jobs move a step or more the pacing can't tell their stalls from the NAS's (undecidable)"
+                ),
+            })
+        })
+        .collect()
 }
 
 /// The cost-version flags (the module's doc): one per step and side of `Status::not_raised`.
@@ -683,6 +708,24 @@ mod tests {
         let f = idle(crate::agent::seam::for_tests(), &st, &own);
         assert_eq!((f.len(), f[0].mac.as_str()), (1, "mini"), "{f:?}");
         assert!(f[0].said.contains("cores: 0 of 8 left"), "{}", f[0].said);
+    }
+
+    /// Task #1552: a Mac answering from its jobs' session because its probe apart is down is
+    /// flagged with why; one answering apart, off, or not answering at all isn't.
+    #[test]
+    fn a_mac_whose_probe_apart_is_down_is_flagged() {
+        use crate::coord::Capacity;
+        let mut st = lead();
+        let down =
+            Capacity { nas_ms: Some(80.0), nas_apart_down: Some("its connection ended".into()), ..Default::default() };
+        let answering = Capacity { nas_ms: Some(12.0), nas_apart_s: 5, ..Default::default() };
+        let quiet = Capacity { nas_apart_down: Some("its connection ended".into()), ..Default::default() };
+        st.capacity = vec![("m6".into(), down), ("m4".into(), answering), ("m1".into(), quiet)];
+        let f = apart(&st);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!((f[0].kind.as_str(), f[0].mac.as_str()), ("nas-apart", "m6"));
+        assert!(f[0].said.contains("down (its connection ended)"), "{}", f[0].said);
+        assert!(of(crate::agent::seam::for_tests(), &st, &[], &[], 3.0, 0).iter().any(|f| f.kind == "nas-apart"));
     }
 
     /// Task #1367: a Mac offered no job says why from the plan's waits, with no room figure: the

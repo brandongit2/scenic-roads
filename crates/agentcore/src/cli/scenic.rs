@@ -359,7 +359,7 @@ pub enum PoolCmd {
     /// NAS pacing's bounds, each `<number>|off` (jobrt::budget::nas::KNOBS: `nas-step`,
     /// `nas-small`, `nas-decrease`, `nas-floor-hours`, `nas-slow`, `nas-grow-seconds`,
     /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`, `nas-lone-minutes`,
-    /// `nas-lone-most-minutes`, `nas-young-spans`, `nas-track-minutes`), and the needs model's
+    /// `nas-lone-most-minutes`, `nas-young-spans`, `nas-track-minutes`, `nas-apart-seconds`), and the needs model's
     /// percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
     /// `needs-mem-pct`, `needs-thread-share`, `needs-runs`, `needs-off`, `needs-relearn`), and the

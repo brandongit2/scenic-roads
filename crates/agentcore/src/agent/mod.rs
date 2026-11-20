@@ -47,6 +47,7 @@ pub mod tiles;
 #[cfg(test)]
 pub mod allocs;
 pub mod answered;
+pub mod apart;
 pub mod asks;
 pub mod backup;
 pub mod beat;
