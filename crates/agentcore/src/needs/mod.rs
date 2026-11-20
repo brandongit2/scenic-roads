@@ -1353,7 +1353,8 @@ mod tests {
                 costs.insert(cost_key("terrain-deep", &format!("10/1/{i}")), c);
             }
             let b = Book::new(crate::agent::seam::for_tests(), &costs);
-            (b.step_thread_mb("terrain-deep"), own_threads(&costs[&cost_key("terrain-deep", "10/1/1")]))
+            // (A thread as its step books one for a target of none of its own: 10/2/1's.)
+            (b.thread_mb("terrain-deep", "10/2/1"), own_threads(&costs[&cost_key("terrain-deep", "10/1/1")]))
         };
         assert_eq!(book(1, Some(3)), (Some(1000), Some(1)), "its peak on 3: booked at 3, its own on 1");
         assert_eq!(book(3, Some(1)), (Some(3000), Some(3)), "grown in a light phase, its peak on 1: at 1");

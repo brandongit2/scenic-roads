@@ -50,12 +50,15 @@ pub const MIN_RUNS: usize = super::MIN_RUNS;
 /// The size every target has: one a target.
 pub const TARGET: &str = "target";
 
-/// The percentile of a step's runs' peaks a move of its targets' memory is weighed against where
-/// none of them said more than one thread (`Model::move_bar_mb`): its lightest quarter's. (Task
-/// #1536's review: at the memory percentile, on the lead's runs of bldtile, tail, terrainsub and
-/// treeblock, a typical target's memory four times over was never flagged, the bar rising with
-/// the reruns.)
-pub const LIGHT_PCT: f64 = 25.0;
+/// The share of a step's heaviest run's peak a move of its targets' memory is weighed against where
+/// none of its runs said more than one thread (`Model::move_bar_mb`): a move whose larger peak is
+/// under a tenth of the step's heaviest job sizes nothing that matters in packing its jobs, and a
+/// move up raises the bar at most to a tenth of itself, so its reruns never hide it. (Task #1536's
+/// reviews: at the memory percentile, near such a step's heaviest, a typical target's memory four
+/// times over on the lead's runs of bldtile, tail, terrainsub and treeblock was never flagged, the
+/// bar rising with the reruns; at the lightest quarter's peak, inputs' 20 to 221 MB targets
+/// rerunning within that spread were, its heaviest 4.6 GB.)
+pub const HEAVY_SHARE: f64 = 0.1;
 
 /// What a run moved on the NAS (or a step's per unit of a size): the bytes it asked of it (read,
 /// whether the NAS or this Mac's page cache answered, written and read back) and its calls.
@@ -735,14 +738,17 @@ impl Model {
     /// `mem_pct` percentile of its runs' peaks over their threads, none scaled, at least the
     /// memory per thread fitted over their threads (`TARGET`'s: every run has it). Where none did
     /// (a run that said none counts as one, its whole peak that thread's, as admission sizes such
-    /// a job: `coord::sched`'s `Sched::thread_mb`), the `LIGHT_PCT` percentile of their peaks: the
-    /// `mem_pct` one is then near its heaviest target's, and a typical target's moving several
-    /// times over stays under it. None where no run measured its memory.
+    /// a job: `coord::sched`'s `Sched::thread_mb`), `HEAVY_SHARE` of their heaviest peak: the
+    /// `mem_pct` percentile is then near its heaviest target's, and a typical target's moving
+    /// several times over stays under it. None where no run measured its memory.
     pub fn move_bar_mb(&self) -> Option<u64> {
         let p = self.by.iter().find(|p| p.size == TARGET)?;
-        let each = p.mem.iter().map(|m| m.2 as f64 / f64::from(m.1.max(1))).collect();
-        let at = if p.mem.iter().any(|m| m.1 > 1) { p.mem_pct } else { LIGHT_PCT };
-        let linear = pct(&sorted(each), at)?;
+        let each: Vec<f64> = p.mem.iter().map(|m| m.2 as f64 / f64::from(m.1.max(1))).collect();
+        let linear = if p.mem.iter().any(|m| m.1 > 1) {
+            pct(&sorted(each), p.mem_pct)?
+        } else {
+            each.into_iter().reduce(f64::max)? * HEAVY_SHARE
+        };
         Some(linear.max(p.mem_per_thread.unwrap_or(0.0)).ceil() as u64)
     }
 

@@ -1262,9 +1262,13 @@ off by more than `needs-off` (3) times, where it matters in packing, is counted:
 of its two peaks is past its step's bar by its runs: what a thread of it holds (their peaks over
 their threads at the memory percentile); where no run recorded more than one thread (a run that
 recorded none counts as one, its whole peak, as admission sizes it: bldtile's, tail's,
-terrainsub's and treeblock's), the lightest quarter's peak (`needs::model::LIGHT_PCT`), as at the
-memory percentile, near such a step's heaviest target, a typical target's memory four times over
-stayed under it, the bar rising with the reruns; a step with
+terrainsub's and treeblock's, inputs'), a tenth of its heaviest run's peak
+(`needs::model::HEAVY_SHARE`): at the memory percentile, near such a step's heaviest, a typical
+target's memory four times over stayed under it, the bar rising with the reruns, and at its
+lightest quarter's peak inputs' small targets rerunning within their 20 to 221 MB were counted. A
+move up raises that bar at most to a tenth of itself; a move down of a target under a tenth of
+its step's heaviest (tail's typical 250 MB, its heaviest 9 GB) counts for nothing, the safe
+side; a step with
 `needs-relearn` (5) or more such on one side, and most of its reruns, is flagged `cost-version`
 (§10, Flags): raise the step's `cost_v`.
 
