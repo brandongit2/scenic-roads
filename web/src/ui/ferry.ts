@@ -3,7 +3,7 @@ import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit'
 import { FERRY_GROUP_COLOURS, FERRY_GROUPS, FERRY_METRICS, HEADWAY_ONLY, SEASONS, UNKNOWN, ferryMetricDef, type FerryColour, type FerryMetric } from '../ferry';
 import type { FerryCoverage } from '../ferries';
 import type { Dist } from '../roads/stats';
-import { ferryFreshLook, lookOfScale, scaleOfLook, type FerryState, type Store } from '../state';
+import { ferryFreshLook, ferryLookIn, lookOfScale, scaleOfLook, type FerryState, type Store } from '../state';
 import { h } from './dom';
 import { ScaleControls } from './scale';
 import { inUse } from './settingprofiles';
@@ -65,8 +65,8 @@ export class FerryCard {
         set: (v) => F({ fitLens: withPair(store.s.ferry.fitLens, store.s.ferry.metric, v, FIT_LEN_DEFAULT) }),
         unit: () => unitOf(store.s.ferry.fitUnits, store.s.ferry.metric), setUnit: (u) => F({ fitUnits: withUnit(store.s.ferry.fitUnits, store.s.ferry.metric, u) }), best: () => 'busiest' },
       measure: 'ferry route length',
-      fadeDefault: () => inUse().ferry.lowFade,
-      spanDefault: () => inUse().ferry.lowSpan,
+      fadeDefault: () => ferryLookIn(inUse(), store.s.ferry.metric).lowFade,
+      spanDefault: () => ferryLookIn(inUse(), store.s.ferry.metric).lowSpan,
       onPreview: (k) => this.onPalettePreview(k),
     });
     this.cov = h('div', { class: 'faint note' });

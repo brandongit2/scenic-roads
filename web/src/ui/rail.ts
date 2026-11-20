@@ -4,7 +4,7 @@ import { RAIL_GROUPS } from '../config';
 import { railPresets } from '../presets';
 import { RAIL_COMPONENTS, RAIL_GROUP_COLOURS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from '../rail';
 import type { Dist } from '../roads/stats';
-import { lookOfScale, railFreshLook, scaleOfLook, type RailState, type Store } from '../state';
+import { lookOfScale, railFreshLook, railLookIn, scaleOfLook, type RailState, type Store } from '../state';
 import { WeightGrid } from './controls';
 import { h } from './dom';
 import { PresetBar } from './presets';
@@ -72,8 +72,8 @@ export class RailCard {
         best: () => ({ freq: 'busiest', viaduct: 'highest', drama: 'highest', curvy: 'twistiest' } as Partial<Record<string, string>>)[store.s.rail.metric] ?? 'best',
       },
       measure: 'rail length',
-      fadeDefault: () => inUse().rail.lowFade,
-      spanDefault: () => inUse().rail.lowSpan,
+      fadeDefault: () => railLookIn(inUse(), store.s.rail.metric).lowFade,
+      spanDefault: () => railLookIn(inUse(), store.s.rail.metric).lowSpan,
       onPreview: (k) => this.onPalettePreview(k),
     });
     this.presetBar = new PresetBar(store, {

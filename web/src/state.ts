@@ -340,15 +340,25 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
   };
 }
 
+/** Rail metric `m`'s look as settings `p` hold it (task #1247: each metric's settings its own): the
+ * shown metric's its scale fields, another's its saved look, one never picked the seed's. A
+ * reset (a double-click on the fade) takes the profile's for the metric shown, not the profile's
+ * own metric's. */
+export function railLookIn(p: AppState, m: RailMetric): MetricLook {
+  if (p.rail.metric === m) return lookOfScale(p.rail);
+  return p.rail.looks[m] ?? railLookIn(seed, m);
+}
+export function ferryLookIn(p: AppState, m: FerryMetric): MetricLook {
+  if (p.ferry.metric === m) return lookOfScale(p.ferry);
+  return p.ferry.looks[m] ?? ferryLookIn(seed, m);
+}
+
 /** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts), and what a
- * link's list of the other metrics' looks is written against (looksField): fixed, whatever the
- * profiles, so that a link reads the same after any profile changes. The ride score: rocket over its
- * top 30 %; sailings a day: oslo over them all; the others viridis. */
-export const railFreshLook = (m: RailMetric): MetricLook =>
-  m === 'rscore' ? { ...freshLook(railMetricDef(m).range, 0.6), palette: 'rocket', fit: [70, 99.8] } : freshLook(railMetricDef(m).range, 0.4);
-export const ferryFreshLook = (m: FerryMetric): MetricLook => (m === 'freq'
-  ? { ...freshLook(ferryMetricDef(m).range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }
-  : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] });
+ * link's list of the other metrics' looks is written against (looksField): the seed's
+ * (default-profile.json holds every metric's), whatever the profiles, so that a link reads the
+ * same after any profile changes. */
+export const railFreshLook = (m: RailMetric): MetricLook => railLookIn(seed, m);
+export const ferryFreshLook = (m: FerryMetric): MetricLook => ferryLookIn(seed, m);
 
 /** The metrics but the one shown, their palettes and percentiles in a link value (rail,
  * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
@@ -378,14 +388,6 @@ function looksOfField<K extends string>(v: string | undefined, shown: K, keys: r
     out[k] = { ...fresh(k), ...(pal ? { palette: pal } : {}), ...(hasFit ? { fit: tail } : {}) };
   }
   return out;
-}
-
-/** A metric's look the first time it is picked. */
-export function freshLook(range: [number, number], lowFade: number): MetricLook {
-  return {
-    palette: 'viridis', fit: [2, 98], equalize: false, lowFade, lowSpan: 0.6, thrOn: false, thrDir: 'above',
-    auto: true, range: [...range], thrValue: +((range[0] + range[1]) / 2).toPrecision(3),
-  };
 }
 
 function validLook(v: unknown): MetricLook | null {
@@ -732,12 +734,15 @@ export class Store {
   }
 }
 
-/** A display type's colours the first time it is picked (the settings hold no look of its own):
- * fixed, as each metric's range is (scenic.ts MODES), whatever the profiles. The scenic metrics:
- * PuBuGn over their top fifth (FIT_DEFAULT); the others viridis over the 1st to 99th percentile. */
-const freshLookOf = (g: ModeGroup): Look => (g === 'scenic'
-  ? { palette: 'pubugn', fit: [...FIT_DEFAULT], equalize: false, lowFade: 0.8, lowSpan: 0.6, thrOn: false, thrDir: 'above' }
-  : { palette: 'viridis', fit: [1, 99], equalize: false, lowFade: 0.7, lowSpan: 0.6, thrOn: false, thrDir: 'above' });
+/** Display type `g`'s colours as settings `p` hold them (task #1247: each its own): the shown
+ * one's the top-level fields, another's its saved look, one never picked the seed's
+ * (default-profile.json holds every display type's), whatever the profiles. A reset (a
+ * double-click on the fade) takes the profile's for the display type shown. */
+export function roadLookIn(p: AppState, g: ModeGroup): Look {
+  if (modeGroup(p.mode) === g) return lookOf(p);
+  return p.looks[g] ?? roadLookIn(seed, g);
+}
+const freshLookOf = (g: ModeGroup): Look => roadLookIn(seed, g);
 
 function lookOf(s: AppState): Look {
   return {

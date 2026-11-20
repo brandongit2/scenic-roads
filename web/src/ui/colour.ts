@@ -4,7 +4,7 @@
 import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
 import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit';
-import type { Store } from '../state';
+import { modeGroup, roadLookIn, type Store } from '../state';
 import { h } from './dom';
 import { WeightGrid } from './controls';
 import { PresetBar } from './presets';
@@ -50,8 +50,8 @@ export class ColourCard {
       },
       noun: 'roads',
       measure: 'road length',
-      fadeDefault: () => inUse().lowFade,
-      spanDefault: () => inUse().lowSpan,
+      fadeDefault: () => roadLookIn(inUse(), modeGroup(store.s.mode)).lowFade,
+      spanDefault: () => roadLookIn(inUse(), modeGroup(store.s.mode)).lowSpan,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
       len: { active: () => isScenic(store.s.mode), get: () => pairOf(store.s.fitLens, store.s.mode, FIT_LEN_DEFAULT),
         set: (v) => store.set({ fitLens: withPair(store.s.fitLens, store.s.mode, v, FIT_LEN_DEFAULT) }),

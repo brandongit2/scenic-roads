@@ -1,6 +1,11 @@
 {
   "mode": "map",
-  "looks": {},
+  "looks": {
+    "elev": {"palette": "viridis", "fit": [1, 99], "equalize": false, "lowFade": 0.7, "lowSpan": 0.6, "thrOn": false, "thrDir": "above"},
+    "grade": {"palette": "viridis", "fit": [1, 99], "equalize": false, "lowFade": 0.7, "lowSpan": 0.6, "thrOn": false, "thrDir": "above"},
+    "relief": {"palette": "viridis", "fit": [1, 99], "equalize": false, "lowFade": 0.7, "lowSpan": 0.6, "thrOn": false, "thrDir": "above"},
+    "scenic": {"palette": "pubugn", "fit": [80, 99.9], "equalize": false, "lowFade": 0.8, "lowSpan": 0.6, "thrOn": false, "thrDir": "above"}
+  },
   "scales": {},
   "palette": "viridis",
   "auto": false,
@@ -276,7 +281,18 @@
     ],
     "colour": "metric",
     "metric": "freq",
-    "looks": {},
+    "looks": {
+      "rscore": {"palette": "rocket", "fit": [70, 99.8], "equalize": false, "lowFade": 0.6, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 100], "thrValue": 50},
+      "elev": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 1500], "thrValue": 750},
+      "grade": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 6], "thrValue": 3},
+      "viaduct": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 60], "thrValue": 30},
+      "view": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 1], "thrValue": 0.5},
+      "water": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 1], "thrValue": 0.5},
+      "vista": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 12], "thrValue": 6},
+      "drama": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 500], "thrValue": 250},
+      "ridge": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [-60, 60], "thrValue": 0},
+      "curvy": {"palette": "viridis", "fit": [2, 98], "equalize": false, "lowFade": 0.4, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [0, 300], "thrValue": 150}
+    },
     "palette": "fire_r",
     "fit": [
       1,
@@ -431,7 +447,9 @@
     ],
     "colour": "metric",
     "metric": "freq",
-    "looks": {},
+    "looks": {
+      "months": {"palette": "viridis", "fit": [0, 100], "equalize": false, "lowFade": 0, "lowSpan": 0.6, "thrOn": false, "thrDir": "above", "auto": true, "range": [1, 12], "thrValue": 6.5}
+    },
     "palette": "oslo",
     "fit": [
       0,

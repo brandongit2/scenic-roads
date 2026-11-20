@@ -257,6 +257,47 @@ for (const b of [base.s, seed]) {
   assert.deepEqual([got.roadLook.widths, got.depth.colours.palette], [p.roadLook.widths, 'quiet']);
 }
 
+// Task #1247: each metric keeps its own colour settings in a profile, so a fade reset (a double-click)
+// takes the profile's for the metric shown, not its saved metric's; a metric the profile never
+// picked is the seed's, which holds every one (default-profile.json). A profile from before (its one
+// set of top-level fields, its saved metric's) loads, and those fields stay that metric's.
+{
+  const RM = (await import('../src/rail.ts')).RAIL_METRICS.map((m: { key: string }) => m.key);
+  const FM = (await import('../src/ferry.ts')).FERRY_METRICS.map((m: { key: string }) => m.key);
+  for (const g of ['elev', 'grade', 'relief', 'scenic', 'map'] as const) assert.ok(st.roadLookIn(seed, g), g);
+  for (const m of RM) assert.equal(st.railLookIn(seed, m).palette.length > 0, true, m);
+  for (const m of FM) assert.equal(st.ferryLookIn(seed, m).palette.length > 0, true, m);
+  // (The seed lists every metric but the one it shows: nothing comes from elsewhere.)
+  assert.deepEqual(Object.keys(seed.looks).sort(), ['elev', 'grade', 'relief', 'scenic']);
+  assert.deepEqual(Object.keys(seed.rail.looks).sort(), RM.filter((m: string) => m !== seed.rail.metric).sort());
+  assert.deepEqual(Object.keys(seed.ferry.looks).sort(), FM.filter((m: string) => m !== seed.ferry.metric).sort());
+  // A profile saved showing the ride score at 0.9 fade, its other metrics not picked yet: shown
+  // sailings a day, its reset is the seed's sailings a day (0.4), not the ride score's 0.9.
+  const prof = structuredClone(seed);
+  prof.rail = { ...prof.rail, metric: 'rscore', looks: {}, lowFade: 0.9, lowSpan: 0.3 };
+  prof.ferry = { ...prof.ferry, metric: 'months', looks: {}, lowFade: 0.95 };
+  prof.mode = 'grade';
+  prof.looks = {};
+  prof.lowFade = 0.15;
+  const saved = fromProfile(profileSettings(prof));
+  assert.deepEqual([st.railLookIn(saved, 'rscore').lowFade, st.railLookIn(saved, 'rscore').lowSpan], [0.9, 0.3]);
+  assert.deepEqual([st.railLookIn(saved, 'freq').lowFade, st.railLookIn(saved, 'freq').lowSpan], [seed.rail.lowFade, seed.rail.lowSpan]);
+  assert.equal(st.ferryLookIn(saved, 'months').lowFade, 0.95);
+  assert.equal(st.ferryLookIn(saved, 'freq').lowFade, seed.ferry.lowFade);
+  assert.equal(st.roadLookIn(saved, 'grade').lowFade, 0.15);
+  assert.equal(st.roadLookIn(saved, 'scenic').lowFade, seed.looks.scenic!.lowFade);
+  // One it picked and left keeps its own: the scenic look at 0.35, then back to grade.
+  const store = new st.Store(structuredClone(saved));
+  store.setMode('score');
+  store.set({ lowFade: 0.35 });
+  store.setMode('grade');
+  assert.equal(st.roadLookIn(store.s, 'scenic').lowFade, 0.35);
+  assert.equal(st.roadLookIn(store.s, 'grade').lowFade, 0.15);
+  // A metric first picked takes the seed's look (rail's ride score: rocket over its top 30 %).
+  assert.deepEqual(st.railFreshLook('rscore'), st.railLookIn(seed, 'rscore'));
+  assert.equal(st.railFreshLook('rscore').palette, 'rocket');
+}
+
 // Links and saves in shapes the app doesn't write (a param it doesn't have, a value with too few
 // fields, a list of another length, a key it doesn't have): each is ignored, whole, and the
 // profile's setting stays; nothing throws and nothing else changes. Over a profile far from the
