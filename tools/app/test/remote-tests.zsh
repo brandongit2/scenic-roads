@@ -17,6 +17,8 @@ eval "$(cd ${0:A:h:h:h:h} && mise env -s zsh 2>/dev/null)" 2>/dev/null
 source ${0:A:h:h:h}/dev/ran.zsh
 tmp=$(ran_dir remote-tests)
 failed=0
+# (A fake agent folder for the functions run here: never this Mac's own, #1570's hold.)
+agent_home=$tmp/agent
 # (No pool here, whatever this Mac's agent runs: the runs' shares the same on any Mac.)
 print -r -- "  9 1 30.0 /usr/bin/true" > $tmp/ps0
 export SCENIC_TESTS_PS=$tmp/ps0
@@ -293,6 +295,19 @@ touch $tmp/pubend; wait $pp $cp
 # (Alone, nothing behind it to free a gone run's slots: its own end frees them all.)
 out=$(run_remote publish "export SCENIC_PUBLISH=1; \$SCENIC_TEST_MAC_ALONE >/dev/null; ls $fb/.slots > $tmp/slotsheld")
 [[ $(<$tmp/slotsheld) == $'0\n1\n2\n3' && -z $(ls $fb/.slots) ]] && ok "publish's run ended: every slot it held freed" || no "publish's run ended: every slot it held freed" "$(<$tmp/slotsheld); $(ls $fb/.slots): $out"
+# (#1570) Its tests' hold, in the agent's folder while its tests run, names its run's process and
+# its tests' threads, and goes as the run ends; by a TERM too.
+ah="$fh/Library/Application Support/scenic/agent"; mkdir -p $ah; rm -f $tmp/{held,pubowner,pubgo}
+out=$(run_remote publish "export SCENIC_PUBLISH=1; t=\$(\$SCENIC_TEST_MAC_ALONE); print \${\${t#*=}%% *} > $tmp/pubthreads; cat \"$ah/test-hold.json\" > $tmp/held; cat $fb/.slots/0/owner > $tmp/pubowner")
+o=$(<$tmp/pubowner)
+[[ $(plutil -extract pid raw -o - $tmp/held 2>/dev/null) == ${o%% *} && $(plutil -extract cores raw -o - $tmp/held 2>/dev/null) == $(<$tmp/pubthreads) && ! -e $ah/test-hold.json ]] \
+  && ok "publish's tests' hold: its run's, its threads, freed at its end" || no "publish's tests' hold: its run's, its threads, freed at its end" "$(cat $tmp/held $tmp/pubthreads 2>&1); $(ls $ah): $out"
+run_remote publish "export SCENIC_PUBLISH=1; \$SCENIC_TEST_MAC_ALONE >/dev/null; touch $tmp/pubgo; sleep 30" >/dev/null 2>&1 &
+pp=$!
+wait_for $tmp/pubgo; held=$([[ -e $ah/test-hold.json ]] && print yes)
+o=$(<$fb/.slots/0/owner); kill -TERM ${o%% *}; wait $pp 2>/dev/null
+[[ $held == yes && ! -e $ah/test-hold.json && -z $(ls $fb/.slots) ]] && ok "publish's tests' hold freed on a TERM" || no "publish's tests' hold freed on a TERM" "${held:-not held}; $(ls $ah) $(ls $fb/.slots)"
+rm -rf $fh/Library
 # Publish's run killed outright mid-wait: its slots are a gone run's, taken by the next run.
 mkdir -p $fb/.slots/3; print -r -- $holdme > $fb/.slots/3/owner; rm -f $tmp/pubgo
 run_remote publish "export SCENIC_PUBLISH=1; touch $tmp/pubgo; \$SCENIC_TEST_MAC_ALONE" >/dev/null 2>&1 &
@@ -315,9 +330,20 @@ rm -rf $fb/.slots
 
 # Publish's wait is bounded (publish_wait): past it, its tests go on, saying what is left.
 mkdir -p $fb/.slots/{0,1}; print -r -- $holdme > $fb/.slots/1/owner
-out=$(wait_alone $fb 1 1 14 "" "me" 2>&1)
-[[ $out == *"went on after"*"slot 1 test"* && ${out##*$'\n'} == "NEXTEST_TEST_THREADS=14 RUST_TEST_THREADS=14 RAYON_NUM_THREADS=2" ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
+out=$(wait_alone $fb 1 1 14 "" "me" "" 2>&1)
+[[ $out == *"went on after"*"slot 1 test"* && $out == *"no agent here: no hold"* && ${out##*$'\n'} == "NEXTEST_TEST_THREADS=14 RUST_TEST_THREADS=14 RAYON_NUM_THREADS=2" ]] && ok "publish's wait bounded, said" || no "publish's wait bounded, said" "$out"
 rm -rf $fb/.slots
+# (#1570) Its tests' threads held from the pool's jobs in the agent's folder: its run's process, the cores.
+mkdir -p $fb/.slots/0 $tmp/agent-w; rm -f $tmp/agent-w/test-hold.json; touch $fb/.slots/0/alone
+out=$(wait_alone $fb 1 1 14 "" "$$ Fri Nov 20 20:00:00 2026 publish" $tmp/agent-w 2>&1)
+[[ $(plutil -extract pid raw -o - $tmp/agent-w/test-hold.json 2>/dev/null) == $$ && $(plutil -extract cores raw -o - $tmp/agent-w/test-hold.json 2>/dev/null) == 14 \
+   && $out == *"14 test threads"*"held from the pool's jobs ($tmp/agent-w/test-hold.json)"* ]] \
+  && ok "publish's tests' threads held from the pool's jobs" || no "publish's tests' threads held from the pool's jobs" "$out; $(cat $tmp/agent-w/test-hold.json 2>&1)"
+(agent_home=$tmp/agent-w; unhold_tests 1)
+[[ -e $tmp/agent-w/test-hold.json ]] && ok "another run's hold left as it is" || no "another run's hold left as it is" "removed"
+(agent_home=$tmp/agent-w; unhold_tests $$)
+[[ ! -e $tmp/agent-w/test-hold.json ]] && ok "a run's own hold freed" || no "a run's own hold freed" "left"
+rm -rf $fb/.slots $tmp/agent-w
 
 # A run on the test Mac itself (no copy): a slot taken, behind publish's run too, freed as it ends.
 mkdir -p $tmp/here; hold_two

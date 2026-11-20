@@ -41,11 +41,19 @@ pub struct Settings {
     pub share: Option<share::Share>,
     /// The memory floor this Mac keeps available (`scenic memory`, the build page).
     pub memory: Option<memfloor::Floor>,
+    /// Publish's tests' hold while it holds (share::hold: its process alive, looked at each look,
+    /// so one whose process is gone ends within `SWEEP`).
+    pub hold: Option<share::Hold>,
 }
 
 impl Settings {
     fn read(home: &Path) -> Settings {
-        Settings { room: room::target(home), share: share::read(home), memory: memfloor::read(home) }
+        Settings {
+            room: room::target(home),
+            share: share::read(home),
+            memory: memfloor::read(home),
+            hold: share::hold(home),
+        }
     }
 }
 
@@ -175,6 +183,15 @@ fn said_settings(was: &Settings, now: &Settings) {
             share::cores(now.share.as_ref(), super::mac_cores()),
             now.share.as_ref().map_or("the default", |s| s.by.as_str())
         );
+    }
+    if now.hold != was.hold {
+        match &now.hold {
+            Some(h) => eprintln!(
+                "agent: publish's tests hold {} cores (process {}): kept free of the jobs, their threads lowered",
+                h.cores, h.pid
+            ),
+            None => eprintln!("agent: publish's tests' hold has ended"),
+        }
     }
     if now.memory.as_ref().map(|m| m.mb) != was.memory.as_ref().map(|m| m.mb) {
         match &now.memory {

@@ -1110,8 +1110,8 @@ before, and on a Mac keeping no live readings):
   outside the build (`others_cores_p`, `others_cores_e`: each kind's busy less the build's jobs'
   CPU there), the owner's load and every other program's taken out as it was. They don't take
   out `kept` again: the owner's own use is in the busy cores already; `kept` is the build's cap
-  apart from it, the cores kept for the owner while they use the Mac (the Mac's less
-  `build_cores_max`). `build`: the cores the
+  apart from it, the cores kept for the owner while they use the Mac or for publish's tests while
+  they hold it (the Mac's less `build_cores_max`). `build`: the cores the
   build's jobs on the Mac kept busy, this one's among them. `mem_gb`, `mem_least_gb`: the memory
   available (`mem_avail_gb`, the memory guard's reading: jobrt::sys::memory_available, the jobs'
   own memory not counted as compressible), its mean and least; `floor_gb`: the memory floor.

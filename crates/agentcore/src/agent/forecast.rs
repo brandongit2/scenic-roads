@@ -1769,7 +1769,7 @@ impl Pool {
                 if let Some(b) = c.best {
                     a.mem_mb = b.mem_mb;
                     (c.mem_mb, c.build_mb, c.cores, c.cores_free) = (b.mem_mb, b.mem_mb, b.cores, b.cores);
-                    (c.in_use, c.kept_cores, c.mem_held_back) = (false, 0, None);
+                    (c.in_use, c.kept_cores, c.test_hold, c.mem_held_back) = (false, 0, None, None);
                 }
             }
             pool.asks.insert(g, a);

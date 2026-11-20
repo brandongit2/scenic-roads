@@ -284,7 +284,7 @@ Mac's **capacity** (`coord::Capacity`): the most its jobs could hold (`limit_mb`
 memory floor), what its jobs hold and may hold for one to start (`build_mb`) and why none may
 (`mem_held_back`), its cores and those the last minute's CPU leaves free (`cores_free`, from CPU
 ticks; the load average, which counts threads waiting on the NAS, only until sampled), its disk free
-less the room target and reservations, the cores its in-use share keeps, power, the NAS's reach and
+less the room target and reservations, the cores it keeps (`kept_cores`: its in-use share's, publish's tests' hold's), power, the NAS's reach and
 answers (§7.7), its running jobs' threads, and its sustained best (§7.2). It rides the ask, not the
 heartbeat, because the coordinator places at ask time and needs measures taken then. The coordinator
 keeps each member's last for two minutes (`CAP_FRESH_S`). A member on another app than the lead's
@@ -336,13 +336,14 @@ store::waits by the wall clock).
   minute.
 
 No fixed share caps or floors a grant: a job's measure decides, within its Mac's cores less the
-in-use share's while the owner uses it (`coord::ask_cores`).
+cores it keeps (the in-use share's while the owner uses it, publish's tests' hold's: `coord::ask_cores`).
 **Past the cores its jobs' threads leave, a Mac climbs one job at a time** (`coord::SETTLE`): an ask
 is granted at most one job that fits only by busy cores, and none until a minute has passed since
 its last grant, or while the cores busy pass its jobs' by more than a core. Cores busy past the
 jobs' by more than a core count as outside load (`outside_cores`, at most half the Mac's), which
 stops further grants but no running job. The agent logs each start:
-`agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the owner)`.
+`agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the owner)` ("for publish's tests" while
+their hold holds).
 
 **Threads controlled live** (`crate::agent::threads`). A running job's threads follow what it keeps
 busy now, not what its step's past runs did: each Mac's agent decides them for its own jobs about
@@ -393,7 +394,8 @@ pyramids-fill don't yet, and a one-target job of theirs keeps its start grant to
     seconds, at their next minute). A Mac with every slot full asks for no work (`takes_more`), so
     after a minute it no longer knows that nothing waits, and it grows no job this way, even on a
     dry queue.
-  - Past the most it may run on (the owner back): cut to that.
+  - Past the most it may run on (the owner back, publish's tests' hold begun): cut to that at once,
+    its minute not waited for (a short window not kept in its step's `Yields`).
   The gap between 0.9 and 0.5 is the hysteresis: a grow that didn't pay is cut back the next
   minute (4 busy of 4, doubled to 8, still 4 busy: back to 6). These figures are the rule's form,
   not limits: the Mac's cores and memory bound a job's threads. The agent logs `agent: <job> on
@@ -411,6 +413,22 @@ pyramids-fill don't yet, and a one-target job of theirs keeps its start grant to
 
 **The in-use share** (`crate::agent::share`): the cores a Mac keeps free of its jobs (by default 2)
 while its owner uses it (active within five minutes). `scenic in-use [--cores <n>] | off` sets it.
+
+**Publish's tests' hold** (`share::Hold`, task #1570): while publish's tests run on the test Mac,
+tools/app/remote-tests.sh writes `test-hold.json` in its agent's folder (`{cores, pid, at}`: their
+test threads, its run's process, when written; tools/dev/testing.md, Tests on the test Mac), and
+the agent keeps those cores free of its jobs as it keeps the in-use share while the owner uses the
+Mac (`share::kept`: the more of the two, one core left to the jobs): its capacity says `in_use`,
+`kept_cores` and `test_hold`, so the lead's grants there take them off (`coord::ask_cores`); a job
+starting there runs on the cores left, and a running job past them is cut to them at once (Threads
+controlled live, above), taken as its next target begins (a live target's or a paced job's within
+seconds). No job is stopped or refused for it. Control reads the file each look (`asks::SWEEP`, 2 s
+at most) and holds it only while its process runs, started by the time it was written (a PID used
+again is another process's): the run's end removes it, by a signal too, and a run killed outright
+leaves a file that holds nothing. Its start and end are logged (`agent: publish's tests hold <n>
+cores (process <pid>) …`, `agent: publish's tests' hold has ended`), the build page's capacity
+table says it in its Use column, and `scenic status`'s capacity line too (`publish's tests hold <n>
+cores (<k> kept from its jobs)`).
 
 **The memory floor** (`crate::agent::memfloor`, `crate::agent::memguard`): the memory a Mac keeps
 available whatever runs on it, as the room target keeps free disk. `scenic memory <GB>`, the build

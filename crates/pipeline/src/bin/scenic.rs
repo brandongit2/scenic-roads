@@ -473,7 +473,11 @@ fn capacity_line(c: &agentcore::coord::Capacity) -> String {
             (false, Some(b)) => format!("on battery ({b} %)"),
             (false, None) => "on battery".to_string(),
         },
-        (if c.in_use { "in use" } else { "idle" }).to_string(),
+        match c.test_hold {
+            Some(n) => format!("publish's tests hold {n} cores ({} kept from its jobs)", c.kept_cores),
+            None if c.in_use => "in use".to_string(),
+            None => "idle".to_string(),
+        },
         (if !c.nas {
             "NAS not reachable"
         } else if c.home {
@@ -1862,6 +1866,22 @@ mod tests {
         assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
         let c = agentcore::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
         assert!(!capacity_line(&c).contains("reserved"));
+    }
+
+    /// Task #1570: publish's tests' hold said on its Mac's line, the owner's use and idleness
+    /// otherwise.
+    #[test]
+    fn the_capacity_line_says_publishs_tests_hold() {
+        let c = agentcore::coord::Capacity {
+            in_use: true,
+            kept_cores: 9,
+            test_hold: Some(9),
+            ..Default::default()
+        };
+        assert!(capacity_line(&c).contains("publish's tests hold 9 cores (9 kept from its jobs)"), "{}", capacity_line(&c));
+        let c = agentcore::coord::Capacity { in_use: true, ..Default::default() };
+        assert!(capacity_line(&c).contains("in use") && !capacity_line(&c).contains("publish"));
+        assert!(capacity_line(&Default::default()).contains("idle"));
     }
 
     /// A region still building in words, as the Regions panel and the menu bar have it (task #258).

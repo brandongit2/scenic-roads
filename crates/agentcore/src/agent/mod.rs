@@ -1600,6 +1600,9 @@ pub struct Agent {
     /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
     /// Mac), read each loop from the agent's folder.
     in_use_share: Option<share::Share>,
+    /// Publish's tests' hold of this Mac while it holds (share::Hold: cores kept free of its jobs as
+    /// the share's are), read each loop from the agent's folder.
+    test_hold: Option<share::Hold>,
     /// The memory floor the owner set on this Mac (memfloor::Floor, `scenic memory`), read each
     /// loop from the agent's folder: None, the Mac's default (`mem_floor_mb`).
     mem_floor: Option<memfloor::Floor>,
@@ -2166,6 +2169,7 @@ impl Agent {
             asked: None,
             room_target: None,
             in_use_share: None,
+            test_hold: None,
             mem_floor: None,
             toward_tried: None,
             toward_left: Default::default(),
@@ -4585,6 +4589,26 @@ impl Agent {
         self.pool.as_ref().map(membership::lock)
     }
 
+    /// The owner's asks and settings as control took them up, each round (crate::agent::asks; in
+    /// line for an agent whose parts don't run): the room target, the in-use share, publish's tests'
+    /// hold, the memory floor.
+    fn take_settings(&mut self) {
+        self.control.look();
+        let set = self.control.settings.get();
+        if set.room.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
+            (self.toward_tried, self.floor_short, self.held_room) = (None, None, None);
+            self.toward_left.set(None);
+        }
+        self.room_target = set.room.clone();
+        self.in_use_share = set.share.clone();
+        self.test_hold = set.hold.clone();
+        self.mem_floor = set.memory.clone();
+        // (A freeing under way frees toward the goal as it is now: lowered or off, it stops.)
+        if self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
+            self.toward_goal.store(self.goal(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// **jobs**' round (docs/agent-parts.md §4.5): the NAS's view, the owner's settings, the running
     /// jobs tended and guarded, the pool's step (the pool's part, until #878), grants from the last
     /// plan and their starts, the caches, and the status published for **beat**. It never plans
@@ -4619,21 +4643,7 @@ impl Agent {
         let lan = root.is_some() && self.mac.lan_mounted();
         let home = cond::home(home, lan);
         self.tend_dsm(home, lan, root.as_ref());
-        // The owner's asks and settings as control took them up (crate::agent::asks; in line for
-        // an agent whose parts don't run): the room target, the in-use share, the memory floor.
-        self.control.look();
-        let set = self.control.settings.get();
-        if set.room.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
-            (self.toward_tried, self.floor_short, self.held_room) = (None, None, None);
-            self.toward_left.set(None);
-        }
-        self.room_target = set.room.clone();
-        self.in_use_share = set.share.clone();
-        self.mem_floor = set.memory.clone();
-        // (A freeing under way frees toward the goal as it is now: lowered or off, it stops.)
-        if self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
-            self.toward_goal.store(self.goal(), std::sync::atomic::Ordering::Relaxed);
-        }
+        self.take_settings();
         let (ac, battery) = self.mac.power();
         let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: self.mac.idle_seconds() };
         self.note_conditions(&c, slept);
@@ -6039,8 +6049,11 @@ impl Agent {
             target_mb: self.floor() >> 20,
             reserved_mb,
             freeable_mb: self.towardable().map(|b| b >> 20),
-            in_use: c.user_active(),
-            kept_cores: share::cores(self.in_use_share.as_ref(), cores),
+            // (Publish's tests' hold kept as the owner's share is: the lead's count of the cores
+            // for its jobs, `sched::ask_cores`, takes either off.)
+            in_use: c.user_active() || self.test_hold.is_some(),
+            kept_cores: self.kept_cores(c),
+            test_hold: self.test_hold.as_ref().map(|h| h.cores),
             ac: c.ac,
             battery: c.battery,
             nas: c.nas,
@@ -7544,8 +7557,9 @@ impl Agent {
             (None, true) => cores.saturating_sub(2).max(1),
             (None, false) => cores,
         };
-        // Within the cores its Mac has less those the in-use share keeps while the owner uses it (one
-        // at least). Those its other jobs were given aren't taken off: its lead packed it beside
+        // Within the cores its Mac has less those it keeps (`kept_cores`: the in-use share's while the
+        // owner uses it, publish's tests' hold's; one at least). Those its other jobs were given
+        // aren't taken off: its lead packed it beside
         // them by the cores each keeps busy (crate::coord::sched's `need_cores`, task #688), so a
         // job waiting on its reads keeps its threads.
         let room = self.threads_room(c);
@@ -7571,13 +7585,14 @@ impl Agent {
         self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!(
-            "agent: starting {}{} ({threads} threads: {} of {cores} cores, {kept} kept for the owner)",
+            "agent: starting {}{} ({threads} threads: {} of {cores} cores, {kept} kept for {})",
             spec.id,
             if k > 0 { format!(" in slot {}", k + 1) } else { String::new() },
             match granted {
                 Some(g) => format!("granted {g}"),
                 None => format!("{wanted} wanted"),
             },
+            if self.test_hold.is_some() { "publish's tests" } else { "the owner" },
         );
         // The lead's jobs hand their saves off as every job does (no job writes the records,
         // docs/pool.md §7.3), note what their z6 tiles cost, and may offer tasks to other workers
@@ -8057,13 +8072,17 @@ impl Agent {
         self.o.home.join(format!("threads{}", slot_suffix(k)))
     }
 
-    /// The most threads a job here may run on now: this Mac's cores less those the in-use share keeps
-    /// while the owner uses it, one at least (a grant's, as it starts, and the live control's,
+    /// The cores this Mac keeps free of its jobs now (share::kept): the in-use share's while the
+    /// owner uses it, publish's tests' hold's while it holds, the more.
+    fn kept_cores(&self, c: &Conditions) -> u32 {
+        share::kept(self.in_use_share.as_ref(), self.test_hold.as_ref(), c.user_active(), mac_cores())
+    }
+
+    /// The most threads a job here may run on now: this Mac's cores less those it keeps
+    /// (`kept_cores`), one at least (a grant's, as it starts, and the live control's,
     /// crate::agent::threads).
     fn threads_room(&self, c: &Conditions) -> usize {
-        let cores = mac_cores() as usize;
-        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
-        cores.saturating_sub(kept).max(1)
+        mac_cores().saturating_sub(self.kept_cores(c)).max(1) as usize
     }
 
     /// Slot `k`'s job watched on its threads (crate::agent::threads::Watch; docs/pool.md §7.1,
@@ -8167,13 +8186,17 @@ impl Agent {
     /// whether nothing waits for this Mac's cores (`nothing_waits`). Each change written to the job's
     /// file (taken as its next target begins, a paced job's within the second) and logged; each job
     /// decided on watched afresh. Its lead hears what each runs on in its capacity (`capacity`).
+    /// A job on more threads than the most now (the owner back, publish's tests' hold begun) is
+    /// cut to it at once, not at its minute's end (task #1570), its short window not kept.
     fn tend_threads(&mut self, c: &Conditions) {
         self.give_back_untaken();
+        let room = self.threads_room(c) as u32;
         let due: Vec<usize> = (0..self.slots.len())
             .filter(|&k| {
                 self.slots[k].running.as_ref().is_some_and(|r| {
-                    r.watch
-                        .is_some_and(|w| w.threads as usize == r.threads && self.watched_for(k, &w) >= threads::EVERY)
+                    r.watch.is_some_and(|w| {
+                        w.threads as usize == r.threads && (w.threads > room || self.watched_for(k, &w) >= threads::EVERY)
+                    })
                 })
             })
             .collect();
@@ -8181,7 +8204,6 @@ impl Agent {
             return;
         }
         let cap = self.capacity(c);
-        let room = self.threads_room(c) as u32;
         let mut free = f64::from(cap.cores_free.saturating_sub(mac_cores().saturating_sub(room)));
         let mut grown: u64 = (0..self.slots.len()).map(|k| self.grown_mb(k)).sum();
         let nothing_waits = self.nothing_waits();
@@ -8201,10 +8223,13 @@ impl Agent {
                 cpu_ms: cpu.saturating_sub(w.cpu_ns) / 1_000_000,
                 waited_ms: waited.saturating_sub(w.waited_ns) / 1_000_000,
             };
-            // (Its window kept by its step, and what a thread more and its last yield by them.)
+            // (Its window kept by its step, a minute's, and what a thread more and its last yield by
+            // them.)
             let step =
                 r.spec.record.as_ref().map(|x| x.step.clone()).or_else(|| step_of(&r.spec.id)).unwrap_or_default();
-            self.yields.saw(&step, &window);
+            if Duration::from_millis(wall_ms) >= threads::EVERY {
+                self.yields.saw(&step, &window);
+            }
             let (next, last) =
                 (self.yields.next(&step, w.threads), self.yields.next(&step, w.threads.saturating_sub(1)));
             let d = threads::decide(
@@ -8735,11 +8760,10 @@ impl Agent {
         if c.idle_s != u64::MAX {
             l.record(live::IDLE, t, c.idle_s as f64);
         }
-        // (The cores the build may use now: all, less those kept for the owner while they use the Mac.)
-        // (As the lead counts them for this Mac's jobs together: coord::sched::ask_cores.)
-        let cores = mac_cores();
-        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores) } else { 0 };
-        l.record_limits(t, cores.saturating_sub(kept).max(1), self.mem_floor_mb(), self.floor(), self.reserved(None));
+        // (The cores the build may use now: all, less those kept for the owner while they use the
+        // Mac or for publish's tests while they hold it: `threads_room`, as the lead counts them for
+        // this Mac's jobs together, coord::sched::ask_cores.)
+        l.record_limits(t, self.threads_room(c) as u32, self.mem_floor_mb(), self.floor(), self.reserved(None));
         if !l.has_net() {
             if let Some(n) = self.proxy.as_ref().and_then(|p| p.net()) {
                 l.set_net(n);
@@ -13487,6 +13511,93 @@ mod tests {
         a.end_lease(k, Outcome::Interrupted, &[], "the test");
         assert_eq!(a.slots[k].thread_mb, (0, 0), "gone with its lease");
         assert!(waiting.is_empty(), "{waiting:?}");
+    }
+
+    /// Task #1570: publish's tests' hold (share::HOLD_FILE in the agent's folder, its process
+    /// alive) is kept as the owner's in-use share is, the owner away: taken up each round
+    /// (`take_settings`), its cores said to the lead (`in_use`, `kept_cores`, `test_hold`), a
+    /// running job on more threads than the cores left cut to them at once (no minute waited), a
+    /// job granted meanwhile started on the cores left, none stopped. Once the hold's process is
+    /// gone (killed outright: its file left), it holds nothing, and the job, every thread busy a
+    /// minute, grows back.
+    #[test]
+    fn publishs_tests_hold_lowers_the_jobs_threads_until_its_process_is_gone() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("nas")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: true,
+        })
+        .unwrap();
+        a.mac = cond::Mac::TEST;
+        a.mem_set = Some((32 << 10, 30 << 10));
+        let cores = mac_cores();
+        assert!(cores >= 5, "a Mac of 5 cores at least ({cores})");
+        let spec = |id: &str| JobSpec {
+            id: format!("inputs {id}"),
+            what: format!("inputs {id}"),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(jobs::Work { step: "inputs".into(), targets: vec![(id.into(), "k".into())] }),
+        };
+        std::fs::create_dir_all(&a.o.home).unwrap();
+        std::fs::create_dir_all(a.nas_counts_path(0)).unwrap();
+        let r = Running::start(spec("regions"), None, 4, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None)
+            .unwrap();
+        let pgid = r.pgid;
+        a.slots[0].running = Some(r);
+        a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
+        a.slots[0].thread_mb = (500, 2);
+        jobrt::control::grant(&a.threads_path(0), 4).unwrap();
+        // (Away: no in-use share kept.)
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        let cpu =
+            |a: &Agent, ns: u64| a.sampler.watch(0, memguard::Watch { pgid, cpu_ns: Some(ns), ..Default::default() });
+        let file = |a: &Agent, k: usize| std::fs::read_to_string(a.threads_path(k)).unwrap().trim().parse::<u32>().unwrap();
+        cpu(&a, 0);
+        a.watch_threads(0);
+        a.take_settings();
+        a.tend_threads(&cond);
+        assert_eq!((file(&a, 0), a.capacity(&cond).in_use), (4, false), "no hold: as it was");
+        // Publish's tests hold all but 2 cores, their run's process alive.
+        let mut run = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let hold = share::Hold { cores: cores - 2, pid: run.id() as i32, at: jobs::now_s() };
+        std::fs::write(a.o.home.join(share::HOLD_FILE), serde_json::to_vec(&hold).unwrap()).unwrap();
+        a.take_settings();
+        let cap = a.capacity(&cond);
+        assert_eq!((cap.in_use, cap.kept_cores, cap.test_hold), (true, cores - 2, Some(cores - 2)), "said to the lead");
+        a.tend_threads(&cond);
+        assert_eq!((file(&a, 0), a.slots[0].running.as_ref().unwrap().threads), (2, 2), "cut at once to the cores left");
+        // A job granted meanwhile starts, on the cores left; neither is stopped.
+        a.start(1, spec("roads"), &cond, None).unwrap();
+        assert_eq!((file(&a, 1), a.slots[1].running.as_ref().unwrap().threads), (2, 2), "started on the cores left");
+        a.watch_threads(0);
+        assert!(
+            a.slots.iter_mut().take(2).all(|s| s.running.as_mut().is_some_and(|r| r.poll().is_ok_and(|e| e.is_none()))),
+            "both running"
+        );
+        // Its run killed outright: its file left, but it holds nothing.
+        run.kill().unwrap();
+        run.wait().unwrap();
+        a.take_settings();
+        assert!(a.o.home.join(share::HOLD_FILE).exists());
+        let cap = a.capacity(&cond);
+        assert_eq!((cap.in_use, cap.kept_cores, cap.test_hold), (false, 0, None), "its process gone");
+        // Every thread busy a minute: grown back.
+        a.slots[0].running.as_mut().unwrap().watch.as_mut().unwrap().since = Instant::now();
+        a.watch_ahead = Duration::from_secs(61);
+        cpu(&a, 2 * 61 * 1_000_000_000);
+        a.tend_threads(&cond);
+        assert_eq!(file(&a, 0), 4, "grown back");
+        for s in a.slots.iter_mut().take(2) {
+            s.running.as_mut().unwrap().stop(Duration::from_secs(5));
+        }
     }
 
     /// Task #1420: a running job's threads follow what it keeps busy, its agent deciding each

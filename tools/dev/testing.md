@@ -628,7 +628,16 @@ are its own for the disk rule and the drop below.
   then prints the test threads its tests take: the cores the pool's jobs leave then, half of them at
   least (the lead counts at most half a Mac's cores as busy outside the pool:
   `coord::sched::outside_cores`), or `publish_threads=` as set; past `publish_wait` (30 min by
-  default) its tests go on beside what is left, saying so. A run can't yield mid-test instead: a
+  default) its tests go on beside what is left, saying so. Those threads are held from the pool's
+  jobs there (#1570): it writes `test-hold.json` in the test Mac's agent's folder (`{cores, pid,
+  at}`, the run's process; none on a Mac with no agent's folder, said), and the agent keeps those
+  cores free of its jobs as it keeps the owner's in-use share (docs/pool.md §7.1, Publish's tests'
+  hold): its jobs' threads lowered to the cores left at once, a job starting there on them, the
+  lead's grants there counting them out, no job stopped or refused. So a test's own threads
+  (RAYON_NUM_THREADS) are two: its share of the cores held is one. The hold goes as the run ends,
+  by a signal too (`free_mine`); a run killed outright leaves a file whose process is gone, which
+  holds nothing. Its line says it ("… N test threads (…), held from the pool's jobs (<file>), 2 a
+  test"). A run can't yield mid-test instead: a
   stopped test's clock goes on, so nextest's bound and the tests' watchdogs fire as it resumes, and
   nextest has no hold between tests its timer doesn't count. Its slots are freed with slot 0 as it
   ends, by a signal too; killed outright, they name a gone process and the next run frees them. The

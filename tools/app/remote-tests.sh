@@ -52,7 +52,8 @@
 # threads (pool_busy); publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH) in a slot of
 # its own besides, which has the test Mac to itself (#1563, reserve_all): while it runs no other run
 # starts, it takes every check slot as it frees, and its tests start once the runs under way have
-# ended (wait_alone, called by its command; slots in ~/scenic-check/.slots, each
+# ended (wait_alone, called by its command), its test threads then held from the pool's jobs there
+# for its run's length (hold_tests, #1570: the agent lowers their threads to the cores left); slots in ~/scenic-check/.slots, each
 # naming its process and its start time; a gone process's slot is freed); the rest wait for one, up
 # to 30 min (behind publish's run, as long as it lasts), then refuse. A run on the test Mac itself
 # (no ssh, no copy: here_on_test_mac) takes a slot too. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
@@ -294,8 +295,8 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
     ( trap - TERM HUP INT EXIT; reserve_all $base $3 "$5" ) </dev/null >/dev/null 2>&1 &
     typeset -g g_reserver=$!
     local w=$base/.slots/0/alone-wait
-    { print -r -- '#!/bin/zsh'; functions loadavg pool_busy publish_share wait_alone
-      print -r -- "wait_alone ${(q)base} $3 $pwait $4 ${(q)pthreads} ${(q)5}"; } > $w
+    { print -r -- '#!/bin/zsh'; functions loadavg pool_busy publish_share hold_tests wait_alone
+      print -r -- "wait_alone ${(q)base} $3 $pwait $4 ${(q)pthreads} ${(q)5} ${(q)agent_home}"; } > $w
     chmod +x $w
     export SCENIC_TEST_MAC_ALONE=$w
     t=$4; how+="; publish's own slot, every check slot taken as it frees (none starts meanwhile), its tests' threads set as they start (publish_wait $(( pwait / 60 )) min)"
@@ -347,8 +348,11 @@ reserve_all() {  # <base> <slots> <owner>
 # tests, so its build goes on beside the runs it waits for. Says what it waits for (each other run,
 # its slot, key and since when) at once and each minute, and how it went; past publish_wait (the
 # capacity file's, 30 min by default) its tests go on beside what is left, saying so. Prints the test
-# threads its tests take (publish_share, the pool's jobs read as the tests start).
-wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empty> <owner>
+# threads its tests take (publish_share, the pool's jobs read as the tests start), and holds those
+# cores for them in the agent's folder (hold_tests, #1570): the pool's jobs there make room, their
+# threads lowered to the cores left. So a test's own threads are two (its share of the cores held:
+# one, two at least).
+wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empty> <owner> <agent's folder>
   local base=$1 t0=$SECONDS said=-60 s o left
   while [[ ! -e $base/.slots/0/alone ]]; do
     left=
@@ -364,9 +368,27 @@ wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empt
   done
   local p=($(pool_busy))
   publish_share $4 ${p[1]} "$5"
-  local each=$(( ($4 - ${p[1]}) / REPLY )); (( each < 2 )) && each=2
-  print -u2 -r -- "remote-tests: the test Mac is publish's after $(( SECONDS - t0 )) s (load $(loadavg); the pool's jobs keep ${p[2]} cores busy, ${p[3]} processes): $REPLY test threads (${reply[1]}), $each a test"
-  print "NEXTEST_TEST_THREADS=$REPLY RUST_TEST_THREADS=$REPLY RAYON_NUM_THREADS=$each"
+  local why=$reply[1] held="no agent here: no hold"
+  hold_tests $7 ${6%% *} $REPLY && held="held from the pool's jobs ($7/test-hold.json)"
+  print -u2 -r -- "remote-tests: the test Mac is publish's after $(( SECONDS - t0 )) s (load $(loadavg); the pool's jobs keep ${p[2]} cores busy, ${p[3]} processes): $REPLY test threads ($why), $held, 2 a test"
+  print "NEXTEST_TEST_THREADS=$REPLY RUST_TEST_THREADS=$REPLY RAYON_NUM_THREADS=2"
+}
+
+# Publish's tests' hold of the test Mac (#1570): <cores> kept free of the pool's jobs there while
+# process <pid> (publish's run) runs, a file in its agent's folder (agentcore's agent::share::hold),
+# which the agent reads each loop and keeps as it keeps the owner's in-use share: its jobs' threads
+# lowered to the cores left, live, and the lead counting those cores out. Written whole (a rename);
+# none without an agent's folder. Freed as the run ends, by a signal too (free_mine, unhold_tests);
+# a run killed outright leaves a hold whose process is gone, which holds nothing (the agent checks
+# the process, started by the time the hold was written, each look).
+hold_tests() {  # <agent's folder> <pid> <cores>: 0 written
+  [[ -d $1 ]] || return 1
+  print -r -- "{\"cores\":$3,\"pid\":$2,\"at\":$(date +%s)}" > $1/test-hold.json.$$ && mv -f $1/test-hold.json.$$ $1/test-hold.json
+}
+unhold_tests() {  # <pid>: the hold freed while it is <pid>'s
+  local f=$agent_home/test-hold.json
+  [[ $(plutil -extract pid raw -o - $f 2>/dev/null) == $1 ]] && rm -f $f
+  return 0
 }
 
 # A slot (remote_main's, and a run on the test Mac itself): publish's run slot 0, any other the
@@ -432,8 +454,9 @@ free_stale_slot() {  # <base> <slot>: frees the slot if its run is gone (0), els
   fi
 }
 
-free_mine() {  # <base> <owner> <its slot's folder>: the slots <owner> holds freed, the check slots publish's run took first
+free_mine() {  # <base> <owner> <its slot's folder>: the slots <owner> holds freed, the check slots publish's run took first, its tests' hold too
   local s
+  unhold_tests ${2%% *}
   for s in $1/.slots/<1->(/N); do
     [[ $s != $3 && $(cat $s/owner 2>/dev/null) == "$2" ]] && rm -rf $s
   done

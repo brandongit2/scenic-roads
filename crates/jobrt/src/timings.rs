@@ -403,8 +403,8 @@ pub struct Supply {
     pub free_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_e: Option<f64>,
-    /// The cores kept for the owner while they use the Mac (the Mac's less those the build may
-    /// use: its cap, apart from the load the owner made).
+    /// The cores kept for the owner while they use the Mac, or for publish's tests while they hold
+    /// it (the Mac's less those the build may use: its cap, apart from the load they made).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<f64>,
     /// The cores the build's jobs on the Mac kept busy (this one's among them).

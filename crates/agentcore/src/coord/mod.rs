@@ -1450,11 +1450,17 @@ pub struct Capacity {
     /// app's, which frees toward no held room: no room held for a job's disk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub freeable_mb: Option<u64>,
-    /// Its owner used it within the last five minutes (cond::AWAY_S).
+    /// Its owner used it within the last five minutes (cond::AWAY_S), or publish's tests hold it
+    /// (`test_hold`): its `kept_cores` kept.
     pub in_use: bool,
-    /// The cores its in-use share keeps free of its jobs while its owner uses it
-    /// (crate::agent::share::cores): left out of its grants' threads while `in_use`.
+    /// The cores it keeps free of its jobs now (crate::agent::share::kept: its in-use share's while
+    /// its owner uses it, publish's tests' hold's, the more): left out of its grants' threads while
+    /// `in_use`.
     pub kept_cores: u32,
+    /// The cores publish's tests hold while they run on it (crate::agent::share::Hold), for the
+    /// build page and `scenic status` to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_hold: Option<u32>,
     /// On mains power, and the battery's charge when it has one.
     pub ac: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

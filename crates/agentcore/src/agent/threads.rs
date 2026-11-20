@@ -25,8 +25,9 @@
 //! - **Threads left idle** (under `IDLE` of them busy): cut to the threads that keep it busy at
 //!   `BUSY`, and one more to overlap its waits, however much it waits: a thread waiting on the NAS
 //!   holds a core it doesn't use and adds to the NAS's load.
-//! - Past the most its Mac lets a job run on now (its cores less the in-use share's while the owner
-//!   uses it): cut to that, whatever it keeps busy.
+//! - Past the most its Mac lets a job run on now (its cores less those it keeps: the in-use share's
+//!   while the owner uses it, publish's tests' hold's, crate::agent::share::kept): cut to that,
+//!   whatever it keeps busy, at once (its agent decides such a job without waiting for its minute).
 //!
 //! The gap between `BUSY` and `IDLE` is the hysteresis: a job cut keeps a thread past what it uses,
 //! so it isn't grown again at once, and a grow that didn't pay is cut back the next minute to what
@@ -96,7 +97,7 @@ impl Window {
 }
 
 /// What a job may grow into on its Mac: the most threads it may run on now (its Mac's cores less
-/// the in-use share's while the owner uses it), the cores free (its cores for jobs less those busy
+/// those it keeps, share::kept), the cores free (its cores for jobs less those busy
 /// over the last minute, less the threads grown already this round), its memory: whether its
 /// Mac admits work at all, the memory (MB) its Mac has for jobs less its jobs' growth so far, what
 /// each thread past `covers` adds to the job's (MB; 0: no figure yet), and the threads its grant's
