@@ -5,10 +5,11 @@
 # `until grep` and wait loops with no deadline, `ln -s` without -n, deletes of the session's
 # shared scratchpad), then
 # tools/dev/git-guard.py (no git write in a checkout that isn't the session's own, #980).
-# A crash of either check blocks, showing its traceback.
+# A crash of git-guard.py blocks, showing its traceback; shell-guard.py fails open (its reason is its
+# stdout alone; a crash of it is a line on stderr, and the command runs).
 set -uo pipefail
 in=$(cat)
-out=$(print -r -- $in | python3 ${0:A:h}/shell-guard.py 2>&1)
+out=$(print -r -- $in | python3 ${0:A:h}/shell-guard.py)
 [[ -z $out ]] && out=$(print -r -- $in | python3 ${0:A:h}/git-guard.py 2>&1)
 [[ -z $out ]] && exit 0
 print -r -- "$out" >&2

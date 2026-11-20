@@ -25,7 +25,16 @@
 # The ln and scratchpad rules read commands (tools/dev/shellwords.py): quoted text, a comment or a
 # heredoc is no command; the scripts of substitutions, sh/bash/zsh -c and eval are read too.
 import fnmatch, json, os, re, sys
-from shellwords import strip_heredocs, segments, substitutions, tokens, command
+
+
+def _fail_open(kind, e, tb):
+    # (A bug here must never block every agent's commands: said on stderr, the command allowed.)
+    print(f"shell-guard.py: not checked ({kind.__name__}: {e})", file=sys.stderr)
+    sys.exit(0)
+
+
+sys.excepthook = _fail_open
+from shellwords import strip_heredocs, segments, substitutions, tokens, command  # noqa: E402
 
 d = json.load(sys.stdin)
 if d.get("tool_name") != "Bash": sys.exit()
@@ -44,19 +53,25 @@ for seg in re.split(r"&&|\|\||;|\||\(|\)|\$\(|`", cmd):
 # A loop is read as the shell reads it (shellwords): words in quotes, a comment or a heredoc fed to a
 # program that isn't a shell are no commands. Each `while`/`until` loop (zsh's short `while c { … }`
 # too, and `for ((;;))`) that sleeps needs a bound in its own condition or body, an inner loop's
-# not counting: a comparison (`[`, `[[`, `test` with -gt/-ge/-lt/-le/-eq/-ne/=/!=, or `(( … ))`) of
-# the clock (`$SECONDS`, `$EPOCHSECONDS`, `$(date …)`, a variable set from those) or of a counter
-# the loop changes by arithmetic (`let`, `(( i++ ))`, `i=$((i+1))`); a PID's wait (`kill -0` as its
-# condition or with `|| break`, `ps -p`, either over ssh); or `timeout` round the whole loop. A loop
+# not counting: a comparison (`[`, `[[`, `test` with -gt/-ge/-lt/-le/-eq/-ne/=/!=, or `(( … ))`),
+# as the condition or, in the body, ending the loop (`&& break`, `exit`, `return`, or an `if`'s in
+# a loop that breaks), of the clock (`$SECONDS`, `$EPOCHSECONDS`, `$(date …)`, a variable set from
+# those, inside `$(( … ))` too) or of a counter the loop changes by arithmetic (`let`, `(( i++ ))`,
+# `i=$((i+1))`, `: $(( n += 1 ))`); a process's wait as the condition (`kill -0`, `ps -p`, a `pgrep`
+# that can't match itself, `ps | grep "[p]at"`, any of them as a command of ssh's remote command)
+# or `kill -0 <pid> || break`, its PID from no `pgrep -f`; or `timeout` round the whole loop. A loop
 # reading lines (`while read`) ends with its input. Read too: the scripts of substitutions, `sh -c`,
 # `eval`, ssh's remote command, a heredoc or here-string fed to a shell (or piped to one), and ssh
-# with no remote command or a shell as it.
+# with no remote command or a shell as it. Real commands and their verdicts: test/wait-loops.tsv.
 SHELLS = ("sh", "bash", "zsh", "dash")
 SSH_TAKES = set("bcDEeFIiJLlmOoopQRSWw")
 # (The words that lead a command: taken off before its own words are read.)
 KEYWORDS = ("then", "else", "elif", "if", "!", "fi", "sudo", "do", "while", "until", "{", "}")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
-HERESTRING = re.compile(r"(?:^|[\s;&|(])(?:sh|bash|zsh|dash)\b[^\n;&|]*?<<<\s*(?:'([^']*)'|\"((?:[^\"\\]|\\.)*)\"|(\S+))")
+HERESTRING = re.compile(r"<<<\s*(?:'([^']*)'|\"((?:[^\"\\]|\\.)*)\"|(\S+))")
+# (A substitution's place in a script: never in a command's own text.)
+PLACE = re.compile("\x00(\\d+)\x00")
+ENDS = re.compile(r"(?:&&|\|\|)\s*(?:\{[^{}]*?)?\b(?:break|exit|return)\b")   # (`&& break`, `&& { echo x; exit 1; }`)
 ARITH = re.compile(r"\(\((.*?)\)\)", re.S)
 PIDWAIT = re.compile(r"\bkill\s+-0\s+[^;&|\n]*\|\|\s*break\b")
 TEST_CMP = ("-gt", "-ge", "-lt", "-le", "-eq", "-ne", "=", "==", "!=")
@@ -100,9 +115,13 @@ def reads_script(w):
     return False
 
 
+def place(k):
+    return "\x00%d\x00" % k
+
+
 def scripts(text, depth=0):
     """The scripts a command line runs, itself first: (script, bounded, its substitutions' bodies),
-    `bounded` when it runs under `timeout`; each substitution in the script is `${SUBSTITUTION<k>}`."""
+    `bounded` when it runs under `timeout`; each substitution in the script is `place(k)`."""
     out = []
     bodies, kept, at = [], [], 0
     for m in HEREDOC.finditer(text):
@@ -114,10 +133,9 @@ def scripts(text, depth=0):
         at = m.end()
     text = "".join(kept) + text[at:]
     for m in HERESTRING.finditer(text):
-        bodies.append(next(g for g in m.groups() if g is not None))
-    text, inner = substitutions(text)
-    n = iter(range(len(inner) + 1))
-    text = re.sub(r"\$\{SUBSTITUTION\}", lambda _: "${SUBSTITUTION%d}" % next(n), text)
+        if reads_script(cmd_words(re.split(r"[\n;&|()]", text[:m.start()])[-1])):
+            bodies.append(next(g for g in m.groups() if g is not None))
+    text, inner = substitutions(text, mark=place)
     out.append((text, False, inner))
     if depth >= 4:
         return out
@@ -130,8 +148,11 @@ def scripts(text, depth=0):
         c0, rest = os.path.basename(w[0]), w[1:]
         timed = c0 in ("timeout", "gtimeout")
         if timed:
-            # (timeout <duration> <command…>: what it runs is bounded.)
-            rest = [r for r in rest if not r.startswith("-")][1:]
+            # (timeout [options] <duration> <command…>: what it runs is bounded.)
+            k = 0
+            while k < len(rest) and rest[k].startswith("-"):
+                k += 2 if rest[k] in ("-k", "-s", "--kill-after", "--signal") else 1
+            rest = rest[k + 1:]
             if not rest: continue
             c0, rest = os.path.basename(rest[0]), rest[1:]
         got = []
@@ -149,10 +170,12 @@ def scripts(text, depth=0):
 
 def loops(text):
     """Each `while`/`until` loop of a script: {kind, cond, body, sleeps, counted}, cond and body its
-    own commands as (assignments, words), an inner loop's apart; `sleeps` when it or a loop inside
-    it sleeps."""
+    own commands as (assignments, words, an `if`'s condition), an inner loop's apart (a command
+    followed by `&& break`, `exit` or `return` ends with the word `__ends__`); `sleeps` when it or a
+    loop inside it sleeps."""
     text = ARITH.sub(lambda m: " __arith__ '" + m.group(1).replace("'", "") + "' ", text)
     text = PIDWAIT.sub(" __pidwait__ ", text)
+    text = ENDS.sub(" __ends__ ;", text)
     out, open_ = [], []
 
     def close():
@@ -161,7 +184,7 @@ def loops(text):
             out.append(f)
 
     for seg in segments(text):
-        w = tokens(seg)
+        w, iff = tokens(seg), False
         while w:
             h, top = w[0], (open_[-1] if open_ else None)
             if h in ("while", "until"):
@@ -196,13 +219,14 @@ def loops(text):
             elif h == "function":
                 w = w[2:]
             elif h in KEYWORDS:
+                iff |= h in ("if", "elif")
                 w = w[1:]
             else:
                 k = next((i for i, x in enumerate(w) if x in ("{", "}")), len(w))
                 sets, c = command(w[:k])
                 w = w[k:]
                 if top and (c or sets):
-                    (top["body"] if top["on"] else top["cond"]).append((sets, c))
+                    (top["body"] if top["on"] else top["cond"]).append((sets, c, iff))
                     if c and os.path.basename(c[0]) == "sleep":
                         for f in open_:
                             f["sleeps"] = True
@@ -211,66 +235,136 @@ def loops(text):
 
 def sub_of(word, subs):
     """The bodies of the substitutions in a word."""
-    return [subs[int(k)] for k in re.findall(r"SUBSTITUTION(\d+)", word) if int(k) < len(subs)]
+    return [subs[int(k)] for k in PLACE.findall(word) if int(k) < len(subs)]
 
 
 def pgrep_f(words):
-    return bool(words) and os.path.basename(words[0]) == "pgrep" and any(re.match(r"^-\w*f", x) for x in words[1:])
+    """Whether a command is `pgrep -f` matching its own shell: not a `[p]attern`, which can't."""
+    if not (words and os.path.basename(words[0]) == "pgrep" and any(re.match(r"^-\w*f", x) for x in words[1:])):
+        return False
+    return not any("[" in x for x in words[1:] if not x.startswith("-"))
 
 
-def finds_by_pgrep(c, subs):
-    """Whether a command is `pgrep -f`, or takes a word from one (`kill -0 $(pgrep -f x)`)."""
-    return pgrep_f(c) or any(pgrep_f(cmd_words(s)) for x in c for b in sub_of(x, subs) for s in segments(b))
-
-
-def pid_wait(c):
-    """Whether a condition waits on a PID: `kill -0`, `ps -p`, or either as ssh's remote command."""
-    c0 = os.path.basename(c[0])
-    if c0 == "ssh" and (r := remote(c[1:])):
-        c, c0 = r.split(), (r.split() or [""])[0]
-    return (c0 == "kill" and "-0" in c) or (c0 == "ps" and any(re.match(r"^-\w*p", x) for x in c[1:]))
-
-
-def bounded(f, subs):
-    """Whether a loop's own condition or body bounds it (the header's list)."""
-    cmds = f["cond"] + f["body"]
-    if f["counted"] or any(c and pid_wait(c) for _, c in f["cond"]) or any(c[:1] == ["__pidwait__"] for _, c in f["body"]):
+def from_pgrep(word, subs, pg_vars):
+    """Whether a word takes its value from `pgrep -f`: a substitution of one, or a variable set so."""
+    if any(pgrep_f(cmd_words(s)) for b in sub_of(word, subs) for s in segments(b)):
         return True
-    clocks = set(CLOCKS) | {"SUBSTITUTION%d" % k for k, b in enumerate(subs) if (b.split() or [""])[0] == "date"}
+    return bool(set(re.findall(r"\$\{?([A-Za-z_]\w*)", word)) & pg_vars)
+
+
+def process_wait(cmds):
+    """Whether a condition's commands wait on a process, which ends when it does: `kill -0` or
+    `ps -p` on its PID, a `pgrep` that can't match its own shell (no -f, or a `[p]attern`), `ps …
+    | grep "[p]attern"`; any of them as a command of ssh's remote command (`ssh m6 'tail … | grep
+    -q x || ! kill -0 N'`)."""
+    flat = []
+    for c in cmds:
+        if c and os.path.basename(c[0]) == "ssh" and (r := remote(c[1:])):
+            flat += [cmd_words(x) for x in segments(r)]
+        else:
+            flat.append(c)
+    flat = [c for c in flat if c]
+    ps = any(os.path.basename(c[0]) == "ps" for c in flat)
+    for c in flat:
+        c0 = os.path.basename(c[0])
+        if (c0 == "kill" and "-0" in c) or (c0 == "ps" and any(re.match(r"^-\w*p", x) for x in c[1:])):
+            return True
+        if c0 == "pgrep" and not pgrep_f(c) or (c0 == "grep" and ps and any(re.search(r"\[\w", x) for x in c[1:] if not x.startswith("-"))):
+            return True
+    return False
+
+
+def sub_names(b, depth=0):
+    """The names a substitution's body reads, for a bound: an arithmetic one's names, a `date`'s
+    clock (`__clock__`), at any depth."""
+    h = b.strip()
+    if (h.split() or [""])[0] == "date":
+        return {"__clock__"}
+    if not h.startswith("(") or depth > 4:
+        return set()
+    t, inner = substitutions(h, mark=place)
+    out = set(re.findall(r"[A-Za-z_]\w*", PLACE.sub(" ", t)))
+    for x in inner:
+        out |= sub_names(x, depth + 1)
+    return out
+
+
+def names(word, subs, bare=False):
+    """The names a word reads: its $variables (with bare, any name: arithmetic's), and its
+    substitutions' (sub_names)."""
+    t = PLACE.sub(" ", word)
+    out = set(re.findall(r"[A-Za-z_]\w*" if bare else r"\$\{?([A-Za-z_]\w*)", t))
+    for b in sub_of(word, subs):
+        out |= sub_names(b)
+    return out
+
+
+MOD = re.compile(r"([A-Za-z_]\w*)\s*(?:\+\+|--|[-+*/%]?=(?!=))|(?:\+\+|--)\s*([A-Za-z_]\w*)")
+
+
+def moved(text):
+    """The names arithmetic text changes (`i++`, `n += 1`, `++n`)."""
+    return {a or b for a, b in MOD.findall(text)}
+
+
+def bounded(f, subs, pid_ok=True):
+    """Whether a loop's own condition or body bounds it (the header's list); without pid_ok, a PID's
+    wait doesn't (its PID came from `pgrep -f`, maybe its own shell's)."""
+    cmds = [(s, c, i, True) for s, c, i in f["cond"]] + [(s, c, i, False) for s, c, i in f["body"]]
+    if f["counted"] or pid_ok and (process_wait([c for _, c, _ in f["cond"]]) or any(c[:1] == ["__pidwait__"] for _, c, _ in f["body"])):
+        return True
+    clocks = set(CLOCKS) | {"__clock__"}
     counters = set()
-    for sets, c in cmds:
+    for sets, c, _, _ in cmds:
         for k, v in sets.items():
-            for b in sub_of(v, subs):
-                h = b.lstrip()
-                if h.startswith("(") or h.split()[:1] == ["expr"]: counters.add(k)
-                if h.split()[:1] == ["date"]: clocks.add(k)
-            if any(re.search(r"\$\{?%s\b" % x, v) for x in CLOCKS): clocks.add(k)
+            if any(b.strip().startswith("(") or b.split()[:1] == ["expr"] for b in sub_of(v, subs)):
+                counters.add(k)
+            if names(v, subs) & clocks:
+                clocks.add(k)
+        for x in list(sets.values()) + c:
+            # (A counter moved inside an arithmetic substitution: `: $(( n += 1 ))`, `$((i++))`.)
+            for b in sub_of(x, subs):
+                if b.strip().startswith("("):
+                    counters |= moved(b)
         if c[:1] == ["let"]:
             counters |= {re.match(r"\W*(\w+)", x).group(1) for x in c[1:] if re.match(r"\W*\w", x)}
         if c[:1] == ["__arith__"] and len(c) > 1:
-            counters |= {a or b for a, b in re.findall(r"(\w+)\s*(?:\+\+|--|[-+*/%]?=(?!=))|(?:\+\+|--)\s*(\w+)", c[1])}
+            counters |= moved(c[1])
     moving = clocks | counters
-    for _, c in cmds:
+    # (A comparison in the body bounds the loop only when it ends it: `&& break`, `exit`, `return`,
+    # or as an `if`'s condition in a loop that breaks.)
+    breaks = any(c and c[0] in ("break", "exit", "return") for _, c, _ in f["body"])
+    for _, c, iff, in_cond in cmds:
         c0 = os.path.basename(c[0]) if c else ""
+        if not (in_cond or "__ends__" in c or (iff and breaks)):
+            continue
         if c0 in ("[", "[[", "test") and any(x in TEST_CMP for x in c):
-            if {n for x in c for n in re.findall(r"\$\{?(\w+)", x)} & moving:
+            if set().union(*(names(x, subs) for x in c)) & moving:
                 return True
         if c0 == "__arith__" and len(c) > 1 and re.search(r"[<>]|[=!]=", c[1]):
-            if set(re.findall(r"[A-Za-z_]\w*", c[1])) & moving:
+            if names(c[1], subs, bare=True) & moving:
                 return True
     return False
 
 
 for script, under_timeout, subs in scripts(cmd):
+    # (Variables set from `pgrep -f`, anywhere in the script: `p=$(pgrep -f x)`.)
+    pg_vars = {k for seg in segments(script) for k, v in command(tokens(seg))[0].items() if from_pgrep(v, subs, set())}
     for f in loops(script):
         first = f["cond"][0][1] if f["cond"] else []
         if first and os.path.basename(first[0]) == "read":
             continue
-        if any(finds_by_pgrep(c, subs) for _, c in f["cond"]) or any(
-                c and os.path.basename(c[0]) == "kill" and finds_by_pgrep(c, subs) for _, c in f["body"]):
+        # (`pgrep -f` in the condition, or inline in a PID it waits on, is refused bounded or not;
+        # a PID from a variable set by one, only in a loop with no bound.)
+        inline = lambda c: pgrep_f(c) or any(from_pgrep(x, subs, set()) for x in c)
+        kills = [c for _, c, _ in f["cond"] + f["body"] if c and os.path.basename(c[0]) == "kill"]
+        if any(inline(c) for _, c, _ in f["cond"]) or any(inline(c) for c in kills):
             block(PGREP)
-        if under_timeout or bounded(f, subs):
+        by_var = any(from_pgrep(x, subs, pg_vars) for c in kills for x in c)
+        if under_timeout or bounded(f, subs, pid_ok=not by_var):
             continue
+        if by_var:
+            block(PGREP)
         if f["kind"] == "until" and first and os.path.basename(first[0]) == "grep":
             block(UNTIL_GREP)
         if f["sleeps"]:

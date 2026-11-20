@@ -253,6 +253,27 @@ for want cmd in \
     print "FAIL ($want): $cmd: $rc $out"; fail=1
   fi
 done
+# The wait-loop corpus (#1525 review 3): real commands of the project's sessions and the reviews'
+# cases, each line's verdict in wait-loops.tsv, run through shell-guard.py itself (eight at once).
+out=$(python3 - $r/tools/dev/shell-guard.py $here/wait-loops.tsv <<'PY'
+import concurrent.futures, json, subprocess, sys
+guard, fixture = sys.argv[1], sys.argv[2]
+rows = [l.rstrip("\n").split("\t", 1) for l in open(fixture) if l.strip() and not l.startswith("#")]
+def run(row):
+    want, c = row[0], json.loads(row[1])
+    r = subprocess.run(["python3", guard], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": c}}), capture_output=True, text=True, timeout=60)
+    got = "crash" if r.stderr.strip() else "refuse" if r.stdout.strip() else "ok"
+    return None if got == want else f"FAIL (corpus, {want}, got {got}): {c[:200]!r} {r.stderr.strip()[-200:]}"
+with concurrent.futures.ThreadPoolExecutor(8) as ex:
+    bad = [b for b in ex.map(run, rows) if b]
+print("\n".join(bad) if bad else f"ok: the wait-loop corpus, {len(rows)} commands")
+PY
+)
+print -r -- $out; [[ $out == ok:* ]] || fail=1
+# A bug in shell-guard.py fails open: a line on stderr, nothing on stdout, exit 0 (the command runs).
+o=$(print -r -- '{not json' | python3 $r/tools/dev/shell-guard.py 2>/dev/null); rc=$?
+e=$(print -r -- '{not json' | python3 $r/tools/dev/shell-guard.py 2>&1 >/dev/null)
+if (( rc == 0 )) && [[ -z $o && $e == "shell-guard.py: not checked"* ]]; then print "ok: shell-guard.py fails open"; else print "FAIL: shell-guard.py on a bug: $rc ($o) ($e)"; fail=1; fi
 # The ln rule (#1004): `ln -s` without -n/-h refused as any command of the line; -sn, -sfn, -sfh
 # pass, and so does `ln -s` in quoted text, a comment or a heredoc.
 for want cmd in \

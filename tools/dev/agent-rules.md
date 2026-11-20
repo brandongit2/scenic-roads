@@ -82,7 +82,8 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
     && break; sleep 20; done`, the same over `ssh`;
   - the Monitor tool, with an until-loop, for a condition.
   Refused: a bare `sleep N` in the foreground (Claude Code); a loop over `pgrep -f`, or on a PID
-  taken from one (it matches its own shell); and any `while`/`until` loop (zsh's `while c { … }`,
+  taken from one inline (`kill -0 $(pgrep -f x)`), or, with no other bound, from a variable set by
+  one (it matches its own shell; a `[p]attern` can't); and any `while`/`until` loop (zsh's `while c { … }`,
   `for ((;;))`) that sleeps, or an `until grep`, with no bound in its own condition or body: on the
   command line, in a substitution, `sh -c`, `eval`, a function, over `ssh`, or in a heredoc or
   here-string fed or piped to a shell (tools/dev/shell-guard.py). A bound elsewhere on the line,
@@ -92,10 +93,13 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   folder, the process): a loop whose log was deleted with its scratch folder never ends (#1361's
   ran for two days). *Enforced* for the deadline: shell-guard.py refuses a loop that sleeps with
   no bound in it. Bounds: a comparison (`[`, `[[`, `test`, `(( … ))`; -lt/-le/-gt/-ge/-eq/-ne,
-  `=`, `!=`) of the clock (`$SECONDS`, `$(date +%s)`) or of a counter the loop changes by
-  arithmetic (`let i++`, `(( i++ ))`, `i=$((i+1))`); a PID's wait as the condition (`kill -0`,
-  `ps -p`, either over ssh) or `kill -0 <pid> || break`; `timeout` round the whole loop
-  (`timeout 600 zsh -c '…'`). A loop reading lines (`while read`) passes.
+  `=`, `!=`), as the loop's condition or ending it (`&& break`, `exit`, `return`, `if …; then
+  break`), of the clock (`$SECONDS`, `$(date +%s)`, also inside `$(( … ))`: `[ $((SECONDS-S))
+  -gt 580 ]`) or of a counter the loop changes by arithmetic (`let i++`, `(( i++ ))`,
+  `i=$((i+1))`); a process's wait as the condition (`kill -0`, `ps -p`, `pgrep -x`, any of them
+  among ssh's remote commands: `until ssh m6 'grep -q done log || ! kill -0 N'`) or `kill -0 <pid>
+  || break`; `timeout` round the whole loop (`timeout 600 zsh -c '…'`). A loop reading lines
+  (`while read`) passes. Real commands and their verdicts: `tools/dev/test/wait-loops.tsv`.
 - **Before reporting, stop every background task of yours still running** (TaskStop, or your
   process's exact PID) and list them in the report.
 
