@@ -498,9 +498,11 @@ test('a link listing no other metric\'s look: the shown one\'s, the others as fi
   rewritten(h, b);
 });
 
-test('the ride score\'s and sailings\' first looks are fixed (rocket, oslo), whatever the seed', () => {
+test('the ride score\'s and sailings\' first looks are the seed\'s (rocket, oslo), whatever the profile', () => {
   assert.deepEqual([st.railFreshLook('rscore').palette, st.railFreshLook('rscore').fit, st.ferryFreshLook('freq').palette], ['rocket', [70, 99.8], 'oslo']);
-  // (the fixture's rail and ferries show them)
+  // (task #1247: the seed holds every metric's; the fixture's rail and ferries show the same looks)
+  assert.deepEqual(st.railFreshLook('rscore'), st.railLookIn(st.seed, 'rscore'));
+  assert.deepEqual(st.ferryFreshLook('freq'), st.ferryLookIn(st.seed, 'freq'));
   assert.deepEqual(st.railFreshLook('rscore'), st.lookOfScale(FX.rail));
   assert.deepEqual(st.ferryFreshLook('freq'), st.lookOfScale(FX.ferry));
   // Untouched and not shown: not in the link.
