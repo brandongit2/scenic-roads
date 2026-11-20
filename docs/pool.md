@@ -922,12 +922,22 @@ thousandths:
   simulation of jobs of 100 asked for 6 h, stalled over 600 in use: 1,827 of 2,160 readings
   stalled, main 53). **Bounded** so: taken back with the weight in use fallen under what the
   misses came at, the window goes back a step under that weight, and misses there or heavier are
-  then the NAS's doing (`State::stall`), cut as any, until the pool has run there a span without
-  missing; so such a stall is taken back once, not once per job. In that simulation, over jobs of
-  450 to 800 s (`a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`): 1,775
-  readings stalled over 600 against main's 1,648 (8 % more: the one take-back each, and where the
-  stalls then fall in the jobs' cycle), 3,667 over 300 against 4,822; with outside stalls of 40 s
-  every 300 s or 120 s, whatever the load, 2,234 and 1,446 jobs started against 661 and 286.
+  then the NAS's doing (`State::stall`), cut as any. Nothing but what tells the two apart
+  disarms it: a miss judged not the NAS's doing a step or more under that weight (an outside
+  stall comes whatever the load, the pool's own at its load); never a while there without a miss,
+  as a stall of the pool's own may take longer than any while to build (forgotten after a clean
+  span, one starting 60 s after the load was taken back once a job: 5,582 readings stalled
+  against main's 1,550). So the first stall at a load costs one episode to learn it, its cut
+  taken back, and none after: one take-back in each run of that simulation, the stall at once or
+  60, 120 or 300 s after the load. A stall on and off (40 s on, 50 off) takes up to three: a
+  take-back in an off spell finds the weight still in use and answering, as an outside stall's
+  end does, and goes all the way back, arming nothing. Over jobs of 450 to 800 s
+  (`a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it`, main 0cba2297c's in
+  brackets), readings stalled over 600: at once 1,775 (1,648), after 60 s 1,596 (1,550), 120 s
+  1,286 (1,088), 300 s 1,275 (1,190), on and off 1,450 (1,225), after 60 s then on and off 1,608
+  (1,551): 3 to 18 % more, the take-back and where the stalls then fall in the jobs' cycle; over
+  300, 3,667 (4,822) and after 60 s 4,710 (5,477). With outside stalls of 40 s every 300 s or
+  120 s, whatever the load, 1,552 and 1,472 jobs started (661 and 286).
   **With room** (the
   answers read, not rising and under the knee, the disks with room for the next job), it grows
   while it's what limits: doubling a minute up to the threshold set at the last cut, then a step a
