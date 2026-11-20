@@ -1789,12 +1789,8 @@ alone for the picks; the model itself `needs::model`, task #1416): only what was
 the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); a run or floor of an
 older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage jobs' before
 their v2; lo's before v1, which held a z3 tile's ways at once) is no target's memory or time
-measure, nor one of the model's runs, and bounds no run of the way it runs now (it packs a cold start, below). A disk floor carries
-no way of its own: it is its target's cost line's (`needs::Book::disk`: one whose target's cost is
-of an older way counts for nothing, nor in the model), and a job's disks come before its costs, so
-the first run of a newer way puts its target's older disk floor away rather than rising from it
-(`Shared::add_disks`), and the step's jobs' disks of the older way with it (`add_job_disk`, their
-90th percentile a floor of every job of the step). A target's memory, disk and time are its own
+measure, nor one of the model's runs, and bounds no run of the way it runs now (it packs a cold
+start, below; disk floors, `disks.json`, carry no version and always count). A target's memory, disk and time are its own
 run's (memory never below its floor; a floor alone counts as its measure); else, a tile target's
 memory, **by its place** (task #931, `needs::Near`; not a `GUESS_FIRST` step's, units' and
 candidates', whose piece's guess no backtest has weighed it against): the most its nearest measured
@@ -2141,9 +2137,7 @@ the target's own run of it, the larger: `needs::Book::older_mem`, task #979; flo
 stay out) or it was offered with (unit's and pois' extract-size guess,
 terrain-hi's bound), times 3/2 (`coord::sched::provisional_mb`), its disk its step's measures'
 (else none); with neither, it has no figure and runs alone (`Sched::no_figure`). That figure only
-packs it: a cold start is never too big, so the older way never holds it off a Mac (lo 3/4/2 after
-task #1507: packed at 26 GB, 3/2 of its old 17.5 GB, so the lead's own jobs end first and it runs
-alone). It stays because a running cold job is no longer offered, and its earlier way's runs are
+packs it: a cold start is never too big, so the older way never holds it off a Mac. It stays because a running cold job is no longer offered, and its earlier way's runs are
 what keeps a figure for it then, so other jobs go beside it; its cores one
 thread (task #896; its agent grows it from there, §7.1, Threads controlled live)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
@@ -2171,20 +2165,22 @@ room-making has done what it can, the disk guard as backstop.
 
 **A version not raised** (task #1507). A cost version is raised by hand with the change that moves
 a step's needs; it can't be derived from the step's key version (`crate::agent::build`'s `*_V`),
-which moves with its outputs: #1182 made lo's z3 tiles the same bytes at a seventh of the memory, so
-its key stayed and its targets weren't run again, and #929 reshaped the terrain with no version
-raised either. Nor from a digest of the step's code (as an inputs unit's checks are, docs/inputs.md):
-the code a step runs reaches most crates, so nearly every release would make every step a cold start. So
-the lead watches for it: a cost taken in place of its target's run before, both of the way the step
-runs now on as many threads, off it by more than the needs model's `off` (`needs-off`, 3) times
-either way, notes that run's peak (`Cost::was_mb`, `coord`'s `moved_from`); a step with
-`needs-relearn` (5) such targets on one side is flagged `cost-version` (§10, Flags;
-`Coordinator::not_raised`) until the version is raised or those targets run again alike. Its
-targets not run since are still sized by the old code's runs, and the flag says so: raise the
-step's `cost_v`. A rerun whose inputs moved its memory that much is flagged alike, so the flag asks
-for a look, not a bump. Measured on the lead's records of 19 Nov, by the release each run's Mac had
-(its history's "agent" events): lo's 14 runs on the releases since #1182 (20261112-2000 on) peaked
-at 24-906 MB, its 37 before at up to 17.5 GB (3/4/2) and 11.9 GB (3/6/3).
+which moves with its outputs, and code can make the same bytes at far less memory, its key unmoved
+and its targets not run again. Nor from a digest of the step's code (as an inputs unit's checks
+are, docs/inputs.md): the code a step runs reaches most crates, so nearly every release would make
+every step a cold start. So the lead watches for it: a cost taken in place of its target's run
+before, both of the way the step runs now on as many threads, notes that run's peak
+(`Cost::was_mb`, `coord`'s `moved_from`). Such a rerun counts where the larger of its two peaks is
+past what a thread of its step adds by the needs model (`needs::Book::thread_mb`, the
+`needs-thread-share` setting): a move under that sizes nothing that matters in packing. One off its
+run before by more than `needs-off` (3) times is moved, on the side it went; a step is flagged
+`cost-version` (§10, Flags; `Coordinator::not_raised`) on a side where the moved are `needs-relearn`
+(5) or more and most of its reruns that count, until the version is raised or those targets run
+again alike. Its targets not run since are still sized by the old code's runs, and the flag says
+so: raise the step's `cost_v`. A rerun whose inputs moved its memory that much is flagged alike, so
+the flag asks for a look, not a bump. Measured on the lead's records of 19 Nov, by the release each
+run's Mac had (its history's "agent" events): lo's 14 runs on the releases since 20261112-2000
+peaked at 24-906 MB, its 37 before at up to 17.5 GB (3/4/2) and 11.9 GB (3/6/3).
 
 Planned: progress of steps other than the OSM pass resumable on its Mac.
 
@@ -3079,7 +3075,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
     Mac with the room asks, or the measure or the plan changes.
   - *cost-version*: a step whose targets' reruns of the way it runs now took more than `needs-off`
     times less (or more) memory than their runs before on as many threads, for `needs-relearn`
-    targets or more on one side (`Coordinator::not_raised`, the status's `not_raised`; task
+    targets or more on one side and most of its reruns whose larger peak is past a thread's
+    memory by its needs model (`Coordinator::not_raised`, the status's `not_raised`; task
     #1507): its code likely moved its memory with no cost version raised, so its targets not run
     since are sized by the old code's runs (§7.7, A version not raised). One flag per step and
     side: how many targets, the one off the most with both peaks, the Mac of its run. It stands

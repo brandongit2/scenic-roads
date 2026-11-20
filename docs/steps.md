@@ -761,8 +761,8 @@ index, so a new release rebuilds every z6 tile.
   list of ways (16 bytes a way) and dots (3/4/2's 8/5: 21 M ways, 3.2 M dots). Measured on the M4 at 8 threads (12
   Nov), peak and drawing time: 3/4/2 17.3 GB, 91 s → 2.3 GB, 88 s (2.2 GB at 2 threads); 3/6/3
   10.9 GB, 48 s → 1.4 GB, 43 s; 3/3/3 1.95 GB, 8 s → 0.41 GB, 8 s. Its disk is the base packs'
-  copies, as pack's (3/6/3: 20.6 GB read). Its cost version is 1 (task #1507): the pool sizes no
-  run by a run of the earlier way (docs/pool.md §7.7). The same bytes, its key unmoved: a z3 tile
+  copies, as pack's (3/6/3: 20.6 GB read). Its cost version is 1 (task #1507): a run of the
+  earlier way bounds no run of it (docs/pool.md §7.7). The same bytes, its key unmoved: a z3 tile
   made before (3/6/3) isn't made again for this.
 - Landmarks, stations, ferries and overlays come from their own jobs, so no road pack depends on
   worldwide rankings.

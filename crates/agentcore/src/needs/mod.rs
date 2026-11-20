@@ -4,12 +4,11 @@
 //! step's needs learned from its runs (`model`, task #1416), or the caller's first guess (the
 //! steps table's, the size its plan offered, a z6 tile's extract-size guess).
 //!
-//! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run, a
-//! floor or a disk floor of an older way of it (a z6 tile's before its v2, whose measures held
-//! malloc's cached freed blocks; lo's before its v1, which held a z3 tile's ways at once) is neither
-//! a measure nor one of the model's runs, and bounds no run of the way it runs now (only a cold
-//! start's packing reads it, `Book::older_mem`, below). A disk floor carries no way of its own: it's
-//! its target's cost line's (`Book::disk`).
+//! Only what was measured the way the step runs now counts (crate::coord::cost_version, its memory
+//! and time): a run or a floor of an older way of it (a z6 tile's before its v2, whose measures held
+//! malloc's cached freed blocks) is neither a measure nor one of the model's runs, and bounds no run
+//! of the way it runs now (only a cold start's packing reads it, `Book::older_mem`, below). Disk
+//! floors carry no version and always count.
 //!
 //! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
 //!   floor alone counts as its measure. Its time on another Mac at that Mac's speed (crate::paces).
@@ -850,16 +849,12 @@ impl<'a> Book<'a> {
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else its step's model's;
-    /// None when none of its step was measured. A disk floor carries no way of its own: one whose
-    /// target's cost line is of an older way (`cost_version`) is that way's and counts for nothing,
-    /// as the model leaves it out. A step reading a shared cache (`CACHES`): its own output alone,
-    /// its disk floor at most its step's model's for it (a measure past it a cache's fill, reserved
-    /// once per Mac apart).
+    /// None when none of its step was measured. A step reading a shared cache (`CACHES`): its own
+    /// output alone, its disk floor at most its step's model's for it (a measure past it a cache's
+    /// fill, reserved once per Mac apart).
     pub fn disk(&self, step: &str, target: &str) -> Option<u64> {
         let key = cost_key(step, target);
-        let v = self.the_plan.cost_version(step);
-        let own =
-            self.disks.and_then(|d| d.get(&key)).copied().filter(|_| self.costs.get(&key).is_none_or(|c| c.v >= v));
+        let own = self.disks.and_then(|d| d.get(&key)).copied();
         if own.is_some() && cache_of(step).is_none() {
             return own;
         }
@@ -1215,7 +1210,7 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
                 worker: None,
                 v: v["v"].as_u64().unwrap_or(0) as u32,
                 sizes,
-                was_mb: None,
+                ..Default::default()
             },
         );
     }
@@ -1235,7 +1230,7 @@ mod tests {
             worker: None,
             v: 0,
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-            was_mb: None,
+            ..Default::default()
         }
     }
 
@@ -1640,11 +1635,11 @@ mod tests {
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
 
-    /// Task #1507: a target whose own run, floor and disk floor are of an older way of its step
-    /// (lo 3/4/2's: 17.5 GB and 35.0 GB, before #1182 drew a z3 tile a tile at a time) is sized by
-    /// the runs of the way it runs now, its siblings', by its own earlier sizes (here scaled up from
-    /// the largest: 90 MB and 1 GB of disk a GiB of its base packs); with none of them, by nothing
-    /// of the older way: a cold start, no disk.
+    /// Task #1507: a target whose own run and floor are of an older way of its step (lo 3/4/2's
+    /// 17.5 GB) is sized by the runs of the way it runs now, its siblings', by its own earlier sizes
+    /// (here scaled up from the largest: 90 MB a GiB of its base packs); with none of them, a cold
+    /// start. Its disk floor carries no version (the cost version is its memory's and time's): its
+    /// own, whatever the way.
     #[test]
     fn a_target_whose_history_predates_its_steps_way_is_sized_by_the_new_ways_runs() {
         let v = cost_version("lo");
@@ -1652,21 +1647,19 @@ mod tests {
         let gib = 1u64 << 30;
         let old = Cost { v: v - 1, ..run("lo", "m1", 17_478, 380, &[("bytes", 23 * gib)]) };
         let mut costs = BTreeMap::from([(cost_key("lo", "3/4/2"), old)]);
-        let mut disks = BTreeMap::from([(cost_key("lo", "3/4/2"), 35_803)]);
+        let disks = BTreeMap::from([(cost_key("lo", "3/4/2"), 35_803)]);
         let floors = BTreeMap::from([(cost_key("lo", "3/4/2"), Floor { mb: 18_000, alone: true, v: v - 1 })]);
         let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), Some(&disks));
         assert_eq!(b.mem("lo", "3/4/2", 0, 0), (0, From::Table), "nothing of the way it runs now: a cold start");
-        assert_eq!(b.disk("lo", "3/4/2"), None, "its disk floor its old run's");
+        assert_eq!(b.disk("lo", "3/4/2"), Some(35_803), "its disk floor counts");
         for i in 1..=10u64 {
             let t = format!("3/{i}/5");
             costs.insert(cost_key("lo", &t), run("lo", "m1", 90 * i, 10 * i, &[("bytes", i * gib)]));
-            disks.insert(cost_key("lo", &t), 1024 * i);
         }
         let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), Some(&disks));
         assert_eq!(b.mem("lo", "3/4/2", 0, 0), (90 * 23, From::Model), "its siblings' runs, scaled to its size");
-        assert_eq!(b.disk("lo", "3/4/2"), Some(1024 * 23));
+        assert_eq!(b.disk("lo", "3/4/2"), Some(35_803));
         assert_eq!(b.own("lo", "3/4/2"), None);
-        assert_eq!(b.disk("lo", "3/1/5"), Some(1024), "a disk floor of the way it runs now is its own");
     }
 
     /// One dense z6 tile measured doesn't set the others': while its model has few runs, a z6

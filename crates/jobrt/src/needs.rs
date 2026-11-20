@@ -114,7 +114,7 @@ pub const KNOBS: [Knob<Tuning>; 7] = [
     },
     Knob {
         name: "needs-off",
-        what: "a run off its prediction by this many times past what its supply explains is flagged",
+        what: "a run off its prediction by this many times past what its supply explains is flagged; a rerun off its run before by this many times in memory, a cost version not raised (the cost-version flag)",
         unit: "×",
         least: 1.5,
         most: 20.0,
@@ -123,7 +123,7 @@ pub const KNOBS: [Knob<Tuning>; 7] = [
     },
     Knob {
         name: "needs-relearn",
-        what: "this many flagged runs in a row on one side: the step learns from the first of them on",
+        what: "this many flagged runs in a row on one side: the step learns from the first of them on; this many reruns off in memory on one side, and most of them, flag a cost version not raised",
         unit: "runs",
         least: 2.0,
         most: 50.0,

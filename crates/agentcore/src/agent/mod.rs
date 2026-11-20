@@ -865,7 +865,7 @@ fn read_costs(p: &Path, job: Option<jobrt::jobid::JobId>) -> Vec<(String, crate:
                     job,
                     v: v["v"].as_u64().unwrap_or(0) as u32,
                     sizes,
-                    was_mb: None,
+                    ..Default::default()
                 },
             ))
         })
@@ -20289,7 +20289,7 @@ mod membership_tests {
             job: None,
             v,
             sizes: sizes.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
-            was_mb: None,
+            ..Default::default()
         };
         let key = |t: &str| crate::coord::cost_key("terrain-deep", t);
         let mut runs: Vec<(String, crate::coord::Cost)> =

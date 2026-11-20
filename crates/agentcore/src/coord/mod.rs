@@ -214,26 +214,19 @@ pub struct Cost {
     pub v: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
-    /// Its target's run before's peak (MB), where that was of the same way of its step (the way it
-    /// runs now) on as many threads and this one's peak is off it by more than the needs model's
-    /// `off` times either way (`moved_from`): a sign its step's code moved its memory with no cost
-    /// version raised (task #1507: #1182's lo), flagged once `relearn` targets show it on one side
-    /// (`Coordinator::not_raised`). Set by the lead as it takes the cost; None on a worker's.
+    /// Its target's run before's peak (MB), where that run was of the same way of its step, the way
+    /// it runs now, on as many threads (`moved_from`): what `Coordinator::not_raised` weighs this
+    /// run's peak against, a step's code moving its memory with no cost version raised showing as
+    /// most of its reruns off their runs before on one side. Set by the lead as it takes the cost;
+    /// None on a worker's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was_mb: Option<u64>,
 }
 
-/// The peak of `kept`, the run before of the target `new` measures (cost key `key`), when it was
-/// of the same way of its step, the way it runs now (`cost_version`), on as many threads (as its
-/// sizes say them; neither a drop), and `new`'s peak is off it by more than `off` times either
-/// way: `Cost::was_mb`.
-fn moved_from(
-    the_plan: &dyn crate::agent::seam::Plan,
-    kept: Option<&Cost>,
-    new: &Cost,
-    key: &str,
-    off: f64,
-) -> Option<u64> {
+/// The peak of `kept`, the run before of the target `new` measures (cost key `key`), when both are
+/// of the way its step runs now (`cost_version`) on as many threads (as their sizes say them) and
+/// neither is a drop: `Cost::was_mb`.
+fn moved_from(the_plan: &dyn crate::agent::seam::Plan, kept: Option<&Cost>, new: &Cost, key: &str) -> Option<u64> {
     let k = kept?;
     let v = the_plan.cost_version(CostKey::parse(key).step);
     let threads = |c: &Cost| c.sizes.get("threads").copied();
@@ -242,20 +235,20 @@ fn moved_from(
         && threads(k) == threads(new)
         && !crate::needs::is_drop(k)
         && !crate::needs::is_drop(new);
-    let (a, b) = (k.peak_mb as f64, new.peak_mb as f64);
-    (same && a > 0.0 && b > 0.0 && (a > b * off || b > a * off)).then_some(k.peak_mb)
+    (same && k.peak_mb > 0 && new.peak_mb > 0).then_some(k.peak_mb)
 }
 
-/// A step whose targets' reruns, of the way it runs now, show its memory moved with no cost version
-/// raised (`Cost::was_mb`; `Coordinator::not_raised`): its way, on which side (`lower`: its runs
-/// took less than their runs before), how many targets, and the one off the most, with its peaks
-/// before and now (MB) and the Mac of its run now.
+/// A step whose reruns of the way it runs now show its memory moved with no cost version raised
+/// (`Coordinator::not_raised`): its way, on which side (`lower`: they took less than their runs
+/// before), how many targets moved so and of how many reruns that count, and the one off the most,
+/// with its peaks before and now (MB) and the Mac of its run now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NotRaised {
     pub step: String,
     pub v: u32,
     pub lower: bool,
     pub targets: usize,
+    pub reruns: usize,
     pub target: String,
     pub was_mb: u64,
     pub now_mb: u64,
@@ -783,20 +776,14 @@ impl Shared {
         self.keep.measures(&self.costs, &self.floors, &self.disks, &self.job_disks, &self.fills);
     }
 
-    /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept, or where
-    /// that one is of an older way of its step (a disk floor carries no way of its own: its
-    /// target's cost line's, which a job's disks come before, crate::needs::Book::disk). One of the
+    /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept. One of the
     /// OSM pass (`osm-pass <date>`) puts the earlier passes' away. True when any changed.
     fn add_disks(&mut self, disks: &[(String, u64)]) -> bool {
         self.needs_rev += 1;
         let mut any = false;
         for (u, mb) in disks {
-            let older = self
-                .costs
-                .get(u)
-                .is_some_and(|c| c.v < self.the_plan.cost_version(crate::agent::memguard::step_of_key(u)));
             // (A target measured at 0 MB keeps its 0: its own measure, not its step's prior.)
-            if !older && self.disks.get(u).is_some_and(|old| old >= mb) {
+            if self.disks.get(u).is_some_and(|old| old >= mb) {
                 continue;
             }
             if u.starts_with("osm-pass ") {
@@ -808,36 +795,16 @@ impl Shared {
         any
     }
 
-    /// The disk a job of `step` took over its run (MB): one of its step's last `JOB_PEAKS`. The
-    /// first of a newer way (its step's costs all of older ways: a job's disks come before its
-    /// costs) puts the older way's away: they bound none of it.
+    /// The disk a job of `step` took over its run (MB): one of its step's last `JOB_PEAKS`.
     fn add_job_disk(&mut self, step: &str, mb: u64) -> bool {
         if step.is_empty() || mb == 0 {
             return false;
-        }
-        if self.step_ran_only_older(step) {
-            self.job_disks.remove(step);
         }
         let v = self.job_disks.entry(step.to_string()).or_default();
         v.push(mb);
         let n = v.len().saturating_sub(JOB_PEAKS);
         v.drain(..n);
         true
-    }
-
-    /// Whether every cost of `step` kept is of an older way than it runs now (`cost_version`), and
-    /// it has one.
-    fn step_ran_only_older(&self, step: &str) -> bool {
-        let v = self.the_plan.cost_version(step);
-        // (A step's costs are under "<step> <target>", a z6 tile's alone: `cost_key`.)
-        let prefix = format!("{step} ");
-        let mut of: Box<dyn Iterator<Item = u32>> = if step == "unit" {
-            Box::new(self.costs.iter().filter(|(k, _)| CostKey::parse(k).step == "unit").map(|(_, c)| c.v))
-        } else {
-            Box::new(self.costs.range(prefix.clone()..).take_while(|(k, _)| k.starts_with(&prefix)).map(|(_, c)| c.v))
-        };
-        let Some(first) = of.next() else { return false };
-        first < v && of.all(|w| w < v)
     }
 
     /// A job of `step` over `targets` took `mb` on the disk over its run: when that's past its
@@ -856,48 +823,62 @@ impl Shared {
     }
 
     /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor;
-    /// one off the run before by more than the needs model's `off` times, the same way of its step,
-    /// noting that run's peak (`Cost::was_mb`).
+    /// a rerun of the same way on as many threads noting its run before's peak (`Cost::was_mb`).
     fn add_costs(&mut self, costs: impl IntoIterator<Item = (String, Cost)>, worker: &str) {
         self.needs_rev += 1;
         for (u, c) in costs {
             self.floors.remove(&u);
-            let was_mb = moved_from(self.the_plan, self.costs.get(&u), &c, &u, self.tuning.off);
+            let was_mb = moved_from(self.the_plan, self.costs.get(&u), &c, &u);
             self.costs.insert(u, Cost { worker: Some(worker.to_string()), was_mb, ..c });
         }
     }
 
-    /// The steps whose memory moved with no cost version raised (`NotRaised`): those with
-    /// `relearn` (the needs model's) targets or more whose costs of the way it runs now note a run
-    /// before off theirs (`Cost::was_mb`) on one side, the side with more first.
+    /// The steps whose memory moved with no cost version raised (`NotRaised`). Each rerun of the way
+    /// its step runs now (`Cost::was_mb`) counts where the larger of its two peaks is past what a
+    /// thread of its step adds to its memory by the needs model (`needs::Book::thread_mb`, at
+    /// least its own peak over its threads): a move smaller than that sizes nothing that matters
+    /// in packing. One off its run before by more than the needs model's `off` times is moved, on
+    /// the side it went; a step is flagged on a side where the moved are `relearn` or more and
+    /// most of the reruns that count.
     fn not_raised(&self) -> Vec<NotRaised> {
+        let book = self.book();
+        let off = self.tuning.off;
         let mut by: BTreeMap<(String, bool), NotRaised> = BTreeMap::new();
         let mut most: BTreeMap<(String, bool), f64> = BTreeMap::new();
+        let mut reruns: BTreeMap<String, usize> = BTreeMap::new();
         for (k, c) in &self.costs {
             let Some(was) = c.was_mb.filter(|&w| w > 0 && c.peak_mb > 0) else { continue };
-            let step = CostKey::parse(k);
-            let v = self.the_plan.cost_version(step.step);
-            if c.v != v {
+            let key = CostKey::parse(k);
+            let v = self.the_plan.cost_version(key.step);
+            if c.v != v || book.thread_mb(key.step, key.target).is_some_and(|t| was.max(c.peak_mb) < t) {
+                continue;
+            }
+            *reruns.entry(key.step.to_string()).or_default() += 1;
+            let ratio = (was as f64 / c.peak_mb as f64).max(c.peak_mb as f64 / was as f64);
+            if ratio <= off {
                 continue;
             }
             let lower = c.peak_mb < was;
-            let key = (step.step.to_string(), lower);
-            let ratio = (was as f64 / c.peak_mb as f64).max(c.peak_mb as f64 / was as f64);
-            let e = by.entry(key.clone()).or_insert_with(|| NotRaised {
-                step: key.0.clone(),
+            let side = (key.step.to_string(), lower);
+            let e = by.entry(side.clone()).or_insert_with(|| NotRaised {
+                step: side.0.clone(),
                 v,
                 lower,
                 ..Default::default()
             });
             e.targets += 1;
-            if most.get(&key).is_none_or(|&m| ratio > m) {
-                most.insert(key, ratio);
-                (e.target, e.was_mb, e.now_mb) = (step.target.to_string(), was, c.peak_mb);
+            if most.get(&side).is_none_or(|&m| ratio > m) {
+                most.insert(side, ratio);
+                (e.target, e.was_mb, e.now_mb) = (key.target.to_string(), was, c.peak_mb);
                 e.mac = c.worker.as_deref().map(|w| crate::paces::mac_of(w).to_string()).unwrap_or_default();
             }
         }
         let relearn = usize::try_from(self.tuning.relearn).unwrap_or(usize::MAX).max(1);
-        let mut out: Vec<NotRaised> = by.into_values().filter(|n| n.targets >= relearn).collect();
+        let mut out: Vec<NotRaised> = by
+            .into_values()
+            .map(|n| NotRaised { reruns: reruns.get(&n.step).copied().unwrap_or(0), ..n })
+            .filter(|n| n.targets >= relearn && 2 * n.targets > n.reruns)
+            .collect();
         out.sort_by(|a, b| a.step.cmp(&b.step).then(b.targets.cmp(&a.targets)));
         out
     }
@@ -5550,19 +5531,6 @@ fn route(
                     }
                     s = shared.lock().unwrap();
                     let by = d.worker.clone();
-                    // (Its disks before its costs, as a lead's own job's: a disk floor its target's
-                    // older way left is put away for this run's, `add_disks`, and its step's jobs'
-                    // disks of an older way, `add_job_disk`.)
-                    let disks: Vec<(String, u64)> = d
-                        .disks
-                        .into_iter()
-                        .filter(|(u, _)| {
-                            lease_targets.iter().any(|t| *u == cost_key(step, &t.0))
-                                || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
-                        })
-                        .collect();
-                    s.add_disks(&disks);
-                    s.add_job_disk(step, d.job_disk_mb);
                     s.add_costs(
                         d.costs
                             .into_iter()
@@ -5577,6 +5545,16 @@ fn route(
                         .filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0)))
                         .collect();
                     s.add_floors(&floors);
+                    let disks: Vec<(String, u64)> = d
+                        .disks
+                        .into_iter()
+                        .filter(|(u, _)| {
+                            lease_targets.iter().any(|t| *u == cost_key(step, &t.0))
+                                || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
+                        })
+                        .collect();
+                    s.add_disks(&disks);
+                    s.add_job_disk(step, d.job_disk_mb);
                     // (A fill only of a job that did all its targets: a paused one's run isn't its fill.)
                     if lease_targets.iter().all(|t| targets.contains(t)) {
                         let ts: Vec<String> = lease_targets.iter().map(|t| t.0.clone()).collect();
@@ -8459,40 +8437,12 @@ mod tests {
         assert_eq!(s.secs_of("terrain-deep", "10/256/352", "m1"), Some(2));
     }
 
-    /// Task #1507: a target whose measures are all of an older way of its step (lo 3/4/2's, before
-    /// #1182: 17.5 GB, a 35.0 GB disk floor, its step's jobs' disks) is a cold start, nothing of
-    /// that way bounding it; its first run of the way it runs now puts the older disk floor and
-    /// jobs' disks away (its disks before its costs, as a job's come), and from then they rise as
-    /// any.
-    #[test]
-    fn an_older_ways_disk_floor_and_jobs_disks_bound_nothing() {
-        let (_d, c, _w) = start();
-        let v = cost_version("lo");
-        let key = cost_key("lo", "3/4/2");
-        c.add_costs(&[(key.clone(), Cost { peak_mb: 17_478, secs: 380, v: v - 1, ..Default::default() })]);
-        c.add_disks(&[(key.clone(), 35_803)]);
-        for _ in 0..3 {
-            c.add_job_disk("lo", 31_000);
-        }
-        assert_eq!(c.measured("lo", "3/4/2"), None, "a cold start");
-        // Its run of the way it runs now: its disks, then its costs.
-        c.add_disks(&[(key.clone(), 20_000)]);
-        c.add_job_disk("lo", 20_000);
-        c.add_costs(&[(key.clone(), Cost { peak_mb: 2300, secs: 300, v, ..Default::default() })]);
-        assert_eq!(c.disks().get(&key), Some(&20_000), "the older way's floor put away");
-        assert_eq!(c.job_disk("lo"), 20_000, "the older way's jobs' disks put away");
-        assert_eq!(c.measured("lo", "3/4/2"), Some(Measured { mem_mb: 2300, disk_mb: 20_000, own: true }));
-        // From then, as any: the floor only rises, the jobs' disks a window.
-        c.add_disks(&[(key.clone(), 15_000)]);
-        c.add_job_disk("lo", 22_000);
-        assert_eq!((c.disks().get(&key), c.job_disk("lo")), (Some(&20_000), 22_000));
-    }
-
-    /// Task #1507: a step whose targets' reruns of the way it runs now (on as many threads) took
-    /// more than `needs-off` times less memory than their runs before, for `needs-relearn`
-    /// targets, is flagged: its code moved with no cost version raised (#1182's lo). A rerun on
-    /// other threads, or within the factor, or of an older way, says nothing; one alike clears its
-    /// target's.
+    /// Task #1507: a step whose reruns of the way it runs now (on as many threads) took more than
+    /// `needs-off` times less memory than their runs before is flagged once `needs-relearn` of its
+    /// targets did and they are most of its reruns that count: its code moved with no cost
+    /// version raised. A rerun on other threads or of an older way notes nothing; one
+    /// within the factor counts among the reruns; one whose larger peak is under what a thread of
+    /// the step adds (the needs model's) doesn't count at all.
     #[test]
     fn memory_moved_with_no_version_raised_is_flagged() {
         let (_d, c, _w) = start();
@@ -8505,16 +8455,17 @@ mod tests {
             sizes: [("threads".to_string(), threads)].into(),
             ..Default::default()
         };
+        let rerun = |t: &str, before: u64, now: u64| {
+            c.add_costs(&[(cost_key("lo", t), run(before, 2))]);
+            c.add_costs(&[(cost_key("lo", t), run(now, 2))]);
+        };
         let n = t.relearn as usize;
         for i in 0..n {
-            let k = cost_key("lo", &format!("3/{i}/1"));
-            c.add_costs(&[(k.clone(), run(12_000, 2))]);
             assert!(c.not_raised().is_empty(), "{i}: not yet");
-            c.add_costs(&[(k, run(900, 2))]);
+            rerun(&format!("3/{i}/1"), 12_000, 900);
         }
-        let k = cost_key("lo", "3/7/7");
-        c.add_costs(&[(k.clone(), run(12_000, 2))]);
-        c.add_costs(&[(k.clone(), run(5_000, 2))]);
+        rerun("3/7/7", 12_000, 5_000);
+        rerun("3/7/4", 30, 3);
         c.add_costs(&[(cost_key("lo", "3/7/6"), run(12_000, 1))]);
         c.add_costs(&[(cost_key("lo", "3/7/6"), run(900, 2))]);
         c.add_costs(&[(cost_key("lo", "3/7/5"), Cost { v: v - 1, ..run(12_000, 2) })]);
@@ -8528,6 +8479,7 @@ mod tests {
                 v,
                 lower: true,
                 targets: n,
+                reruns: n + 1,
                 target: "3/0/1".into(),
                 was_mb: 12_000,
                 now_mb: 900,
@@ -8538,14 +8490,19 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert!(
             f[0].line().starts_with(&format!(
-                "cost-version: lo: {n} targets' reruns at its cost version {v} took far less memory than their runs before (3/0/1 11.7 GB then, 0.9 GB now)"
+                "cost-version: lo: {n} of its {} reruns at its cost version {v} took far less memory than their runs before (3/0/1 11.7 GB then, 0.9 GB now)",
+                n + 1
             )),
             "{}",
             f[0].line()
         );
-        // A rerun alike: its target's sign gone, and the flag with it (one short).
-        c.add_costs(&[(cost_key("lo", "3/0/1"), run(1000, 2))]);
-        assert!(c.not_raised().is_empty());
+        // Not most of the reruns that count: none.
+        for i in 0..n - 2 {
+            rerun(&format!("3/{i}/6"), 12_000, 11_000);
+        }
+        assert_eq!(c.not_raised().len(), 1, "{n} of {}: most", 2 * n - 1);
+        rerun("3/6/6", 12_000, 11_000);
+        assert!(c.not_raised().is_empty(), "half");
     }
 
     #[test]
