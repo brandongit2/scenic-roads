@@ -165,7 +165,12 @@ fn a_shared_edge_through_a_point_more_leaves_no_strip() {
     assert!((sliver * 1e6 - 24.4).abs() < 0.5, "{} m²", sliver * 1e6);
     // A band between two parallels as the sphere has it, whatever its edges' slant.
     // (The 1° slanted band from 58°–59° at 0° to 59°–60° at 1°: R² ∫ sin(59° + λ) − sin(58° + λ) dλ.)
-    let band = Area::from_rings(&[vec![[0, 580_000_000], [10_000_000, 590_000_000], [10_000_000, 600_000_000], [0, 590_000_000]]]);
+    let band = Area::from_rings(&[vec![
+        [0, 580_000_000],
+        [10_000_000, 590_000_000],
+        [10_000_000, 600_000_000],
+        [0, 590_000_000],
+    ]]);
     let r = roadcore::geo::EARTH_R;
     let k = std::f64::consts::PI / 180.0;
     let exact = r * r * (2.0 * (59.0 * k).cos() - (60.0 * k).cos() - (58.0 * k).cos()) / 1e6;
@@ -465,7 +470,11 @@ fn declared_land_stays_through_a_remainder() {
     let rem = "of = \"box:30.0,20.0,33.0,21.0\"\n";
     let out = run(&w, &[PINS, ("p/l.toml", l), ("p/r.toml", r), ("p/cay.geojson", cay), ("p/_remainder.toml", rem)]);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    assert!(at("l", 31.4, 20.5) && at("l", 30.5005, 21.5005), "the remainder's piece and the cay l's: {:?}", out.problems);
+    assert!(
+        at("l", 31.4, 20.5) && at("l", 30.5005, 21.5005),
+        "the remainder's piece and the cay l's: {:?}",
+        out.problems
+    );
 }
 
 /// Folder `files` resolved, then again paused after every piece kept and resumed each time: the
@@ -1432,7 +1441,8 @@ fn water_touching_none_of_its_land_is_an_error() {
     // reach t's.)
     let with = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nland = [\"shape:cay.geojson\"]\nwater = [\"box:1.98,0.0,2.02,0.05\", { buffer = \"osm:4\", by = \"10 km\" }]\n";
     let without = with.replace("land = [\"shape:cay.geojson\"]\n", "");
-    let out = run(&w, &[PINS, RULES, ("s.toml", &without), ("cay.geojson", cay), ("t.toml", t), ("high-seas.toml", HIGH)]);
+    let out =
+        run(&w, &[PINS, RULES, ("s.toml", &without), ("cay.geojson", cay), ("t.toml", t), ("high-seas.toml", HIGH)]);
     assert!(out.problems.len() == 1 && out.problems[0].found[0] == "stray", "{:?}", out.problems);
     let out = run(&w, &[PINS, RULES, ("s.toml", with), ("cay.geojson", cay), ("t.toml", t), ("high-seas.toml", HIGH)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
@@ -1445,7 +1455,8 @@ fn water_touching_none_of_its_land_is_an_error() {
 #[test]
 fn declared_land_is_sourced_and_with_water() {
     let parse = |t: &str| super::file::parse("x.toml", &format!("id = \"x\"\nname = \"X\"\n{t}"));
-    let r = parse("outline = [\"osm:4\"]\nland = [\"shape:c.geojson\", \"osm-way:7\", \"osm:9\"]\nwater = []\n").unwrap();
+    let r =
+        parse("outline = [\"osm:4\"]\nland = [\"shape:c.geojson\", \"osm-way:7\", \"osm:9\"]\nwater = []\n").unwrap();
     assert_eq!(r.land.len(), 3);
     assert!(r.parts_of(false).iter().any(|p| matches!(p, super::file::Part::OsmWay(7))), "read as its outline's are");
     assert_eq!(r.ways(), vec![7]);

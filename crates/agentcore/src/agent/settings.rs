@@ -147,12 +147,7 @@ pub fn set_regions_pieces(home: &Path, what: &str, by: &str) -> Result<Option<ro
     let bytes = (gb(what, "the regions check's pieces")? * (1u64 << 30) as f64) as u64;
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
     if let Ok(n) = store::sys::disk_size(home) {
-        anyhow::ensure!(
-            bytes < n,
-            "a cap of {} is more than this disk holds ({})",
-            room::size(bytes),
-            room::size(n)
-        );
+        anyhow::ensure!(bytes < n, "a cap of {} is more than this disk holds ({})", room::size(bytes), room::size(n));
     }
     let t = room::Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
     store::whole::write(&p, &serde_json::to_vec(&t)?)?;
@@ -526,7 +521,10 @@ mod tests {
         let default = inputs::inputs::regions::kept::KEEP_MB;
         assert_eq!(regions_pieces_mb(h), default, "none set: the default");
         let v = view(h, None);
-        assert_eq!((v["regions_pieces"]["bytes"].as_u64(), v["regions_pieces"]["held"].as_u64()), (Some(default * 1_000_000), Some(0)));
+        assert_eq!(
+            (v["regions_pieces"]["bytes"].as_u64(), v["regions_pieces"]["held"].as_u64()),
+            (Some(default * 1_000_000), Some(0))
+        );
         for bad in ["0.5", "x", "NaN", "-3", "1000000000"] {
             assert!(set_regions_pieces(h, bad, "t").is_err(), "{bad}");
         }
@@ -539,7 +537,11 @@ mod tests {
         std::fs::write(pieces.join("b.piece"), [0u8; 200]).unwrap();
         let v = view(h, None);
         assert_eq!(
-            (v["regions_pieces"]["bytes"].as_u64(), v["regions_pieces"]["held"].as_u64(), v["regions_pieces"]["set"].as_bool()),
+            (
+                v["regions_pieces"]["bytes"].as_u64(),
+                v["regions_pieces"]["held"].as_u64(),
+                v["regions_pieces"]["set"].as_bool()
+            ),
             (Some(2 << 30), Some(500), Some(true))
         );
         assert_eq!(v["regions_pieces"]["by"], "the build page");

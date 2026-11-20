@@ -463,13 +463,7 @@ impl Land {
         ensure!(head.fmt == 1, "land format {}", head.fmt);
         let base = 12 + n as u64;
         let index = head.cells.iter().map(|&(x, y, o, l)| ((x, y), (base + o, l))).collect();
-        Ok(Land::File {
-            f,
-            index,
-            cache: Default::default(),
-            failed: Default::default(),
-            stats: head.stats,
-        })
+        Ok(Land::File { f, index, cache: Default::default(), failed: Default::default(), stats: head.stats })
     }
 
     /// Whether the cell (wrapped column) has any land, without reading it.

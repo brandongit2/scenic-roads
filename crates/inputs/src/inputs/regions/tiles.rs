@@ -1783,7 +1783,8 @@ fn make_land(
             ))
         };
         // (The land it declares, which the coastline lacks: its as it is, outline or not.)
-        let declared = geom::union_all(&r.land.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
+        let declared =
+            geom::union_all(&r.land.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
         if o.is_empty() {
             return Ok((c, declared, o, None));
         }
