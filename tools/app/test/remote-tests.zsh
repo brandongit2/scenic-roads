@@ -136,9 +136,21 @@ cap() { capacity $tmp/capacity $1 $2; print -r -- "$reply[1] $reply[2]" }
 rm -f $tmp/capacity
 [[ $(cap 14 48) == "3 5" && $(cap 10 16) == "1 10" && $(cap 2 4) == "1 2" && $(cap 16 24) == "2 8" ]] \
   && ok "the capacity, from the cores and the memory" || no "the capacity, from the cores and the memory" "$(cap 14 48), $(cap 10 16), $(cap 2 4), $(cap 16 24)"
-print 'slots=2' > $tmp/capacity; a=$(cap 14 48); print 'threads=3\nslots=x' > $tmp/capacity; b=$(cap 14 48)
-capacity $tmp/capacity 14 48
-[[ $a == "2 7" && $b == "3 3" && $reply[3] == "set in $tmp/capacity" ]] && ok "the capacity, as its file sets it" || no "the capacity, as its file sets it" "$a, $b, $reply[3]"
+print 'slots=2' > $tmp/capacity; a=$(cap 14 48)
+print -n 'threads=3' > $tmp/capacity; b=$(cap 14 48)
+[[ $a == "2 7" && $b == "3 3" ]] && ok "the capacity, as its file sets it, a last line without its newline too" || no "the capacity, as its file sets it, a last line without its newline too" "$a, $b"
+print -r -- $'  slots = 2  # two runs\r\n# a comment\n\n threads=4\r' > $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn
+[[ "$reply[1] $reply[2]" == "2 4" && ! -s $tmp/warn ]] && ok "the capacity file: spaces, CRs and comments" || no "the capacity file: spaces, CRs and comments" "$reply[1] $reply[2]: $(<$tmp/warn)"
+print -r -- $'slots=0\nthreads=x\njobs=2\nslots' > $tmp/capacity
+capacity $tmp/capacity 14 48 > $tmp/warn
+w=$(<$tmp/warn)
+[[ "$reply[1] $reply[2]" == "3 5" && $w == *"line 1: slots=0"* && $w == *"line 2: threads=x"* && $w == *"line 3: jobs=2"*unknown* && $w == *"line 4: slots"* && $(wc -l < $tmp/warn) -eq 4 ]] \
+  && ok "the capacity file: each line not read says so, by its value" || no "the capacity file: each line not read says so, by its value" "$reply[1] $reply[2]: $w"
+print 'threads=3' > $tmp/capacity; capacity $tmp/capacity 14 48
+[[ $reply[3] == "slots derived: 14 cores / 4, 48 GB / 12; threads set in $tmp/capacity" ]] && ok "the capacity: the slots' and the threads' sources, each" || no "the capacity: the slots' and the threads' sources, each" "$reply[3]"
+print 'slots=2' > $tmp/capacity; capacity $tmp/capacity 14 48
+[[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
 
 # Ended as a run ends, with a test's server left: it goes first, then the slot.
 rm -rf $fh; mkdir -p $fb; print 'slots=3' > $fb/capacity; hold_two; run_setup e1
@@ -187,13 +199,25 @@ wait $pids
   && ok "runs at once: never two in a folder, none in publish's" || no "runs at once: never two in a folder, none in publish's" "$(cat $tmp/overlap $tmp/folders 2>&1)"
 
 # Publish's run: its own slot, 0, with every core as its test threads; a check's, its share.
+out=$(unset SCENIC_PUBLISH; local_main publish $tmp "touch $tmp/pubran" 2>&1); rc=$?
+[[ $rc == 2 && ! -e $tmp/pubran && $out == *"SCENIC_PUBLISH isn't exported"* ]] && ok "key publish without SCENIC_PUBLISH: refused here" || no "key publish without SCENIC_PUBLISH: refused here" "$rc: $out"
 run_setup publish
-out=$(run_remote publish "print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub")
+rm -f $tmp/pub
+out=$(run_remote publish "print -r -- ran > $tmp/pub")
+[[ ! -e $tmp/pub && $out == *"@@remote-tests-status none"*SCENIC_PUBLISH* ]] && ok "key publish without SCENIC_PUBLISH: not run" || no "key publish without SCENIC_PUBLISH: not run" "$(cat $tmp/pub 2>&1): $out"
+out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_TEST_THREADS > $tmp/pub")
 [[ $(<$tmp/pub) == "*/.build/0/src $(sysctl -n hw.ncpu)" || $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) ]] && [[ $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
   && ok "publish's run: its own slot, every core" || no "publish's run: its own slot, every core" "$(<$tmp/pub): $out"
 out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS > $tmp/chk")
 n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
 [[ $(<$tmp/chk) == $n && $out == *" of 3, $n test threads"* ]] && ok "a check's run: its share of the cores" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+
+# The capacity lowered: the build folders above its slots go, but one in use.
+mkdir -p $fb/.build/{4,5}/target $fb/.slots/4; print -r -- $holdme > $fb/.slots/4/owner
+out=$(run_remote c1 "true")
+[[ ! -e $fb/.build/5 && -d $fb/.build/4 && -d $fb/.build/0 && $out == *"slot 5 on the test Mac (above the test Mac's 3 slots"* ]] \
+  && ok "the capacity lowered: the folders above its slots go, those in use kept" || no "the capacity lowered: the folders above its slots go, those in use kept" "$(ls $fb/.build): $out"
+rm -rf $fb/.slots/4 $fb/.build/4
 
 base=$tmp/scenic-check
 # The slot a key tries first: its last; then the least recently used, those never used before all.

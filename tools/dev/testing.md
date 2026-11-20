@@ -87,17 +87,22 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
 - Of those users, only the files naming what changed (#1539, `tools/dev/rustitems.py`): the changed
-  lines' items by name (a function, a type, an enum's variant, a method as `X::m` or `.m(` beside
-  `X`, a trait's or a trait impl's item by the trait and the type), and the module's items naming
-  them, until none more do (a private helper's change is its callers'). A file in another crate is
-  matched only against what it can see (`pub`, outside `#[cfg(test)]`). A change of comments alone
-  traces no user; a changed line outside every item (an inner attribute, a macro called at the top
-  level) traces every user, as before. A user left out says so in the `# why:` lines ("names …, but
-  none of what changed in it"). Over main's last 40 commits (20 Nov), one at a time: pipeline's
-  `agent::build::` tests ran for 16 of them, not 24; the tests selected went from 28,374 to 21,409,
-  their time (each test's median in publish's runs) from 38,218 s to 24,271 s. Missed, and
-  caught by publish's whole run: a method or field reached through a value whose type the user never
-  names, a method through an alias of its type, a trait method without the trait in scope.
+  lines' items by name (a function, a type, an enum's variant, a trait's or a trait impl's item by
+  the trait and the type), a method by `.m(`, `.m::<` or `::m` whatever type the user names (its
+  value's type may be named nowhere), and the module's items naming them, until none more do (a
+  private helper's change is its callers'). Names in attributes' strings count (`#[serde(default =
+  "f")]` names f). A file in another crate is matched only against what it can see: `pub`, and not
+  under `#[cfg(test)]` (that condition alone; `cfg(any(test, feature = …))` is another crate's
+  too). When in doubt, every user: a changed line outside every item (an inner attribute, a macro
+  called at the top level), a changed macro (`#[macro_export]` ones are other crates' too), or a
+  changed name a macro's definition or call names (the items a macro makes aren't named in the
+  file). A change of comments alone traces no user. A user left out says so in the `# why:` lines
+  ("names …, but none of what changed in it"). Over main's last 40 commits (20 Nov), one at a time:
+  pipeline's `agent::build::` tests ran for 16 of them, not 24; the tests selected went from 28,374
+  to 21,409, their time (each test's median in publish's runs) from 38,218 s to 24,271 s. Missed,
+  and caught by publish's whole run: a field read through a value whose type the user never names,
+  a type reached through an alias of it, a trait method reached without naming the trait, the type
+  or the method (formatting with `{}`).
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so
   `tests::` or `::` alone counts as a bare word. A single `--test`/`--bin` target may take bare names.
 - No full suites from agents or reviewers, and no `--workspace`. Reviewers (in the main checkout)
@@ -585,13 +590,20 @@ are its own for the disk rule and the drop below.
   and nextest versions and whether the NAS is mounted. A stopped run is stopped on the test Mac too.
 - The test Mac's capacity (#1539): as many runs at once as it has slots, the rest queued (30 min, then
   refused), each with its share of the cores as test threads (`NEXTEST_TEST_THREADS` and
-  `RUST_TEST_THREADS`), so the whole stays within its cores. The slots: one per 4 cores and per 12 GB
-  of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots of 5 test threads), or as
-  `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`, either; read
-  by each run as it starts). Publish's run (key `publish`) has a slot of its own besides, slot 0 with
-  its own build folder, and every core: it never waits behind a check and comes first. Each run says
-  its slot, the slots and its threads, and how they were set ("on the test Mac … slot 2 of 3, 5 test
-  threads …; capacity derived: …"); the dev jobs page records them on the run (`slots`, `threads`).
+  `RUST_TEST_THREADS`): the checks' runs together stay within its cores. The slots: one per 4 cores
+  and per 12 GB of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots of 5 test threads), or as
+  `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`, either, each
+  a whole number of 1 or more; spaces, CRs and `#` comments left out; read by each run as it starts,
+  and each line it doesn't take printed with its value). Lowered, the build folders of the slots
+  above go at the next run, those not in use. Publish's run (key `publish`, publish.sh's alone: it
+  is refused without SCENIC_PUBLISH) has a slot of its own besides, slot 0 with its own build folder,
+  and every core: it never waits behind a check and comes first, so while it runs the test Mac takes
+  more than its cores (publish's tests are its last word; the checks' beside it are slower). Each
+  run says its slot, the slots and its threads, and where each was set ("on the test Mac … slot 2 of
+  3, 5 test threads …; capacity: slots derived: …; threads derived: …"); the dev jobs page records
+  them on the run (`slots`, `threads`). The capacity holds only for runs from branches with #1539:
+  the test Mac's side of the script is sent with each run, so a branch not rebased onto it still
+  runs in 3 slots, with nextest's own threads (every core).
   A caller's own `NEXTEST_TEST_THREADS` or `--test-threads` stands. Builds aren't shared out: cargo
   builds with every core, at nice 20 as the tests (a check's compile is most of its time on the test
   Mac, and its tests are what time out). On 20 Nov three runs of 14 test threads each, the plan
@@ -624,7 +636,7 @@ fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 
-The suite runs three at a time on the test Mac at nice 20 and utility priority, beside builds: what takes milliseconds
+The suite runs as many at a time as the test Mac's slots (three on the M4), beside publish's, at nice 20 and utility priority, beside builds: what takes milliseconds
 idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
 that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
 through their dev-dependency on store, `features = ["testkit"]`):
@@ -725,7 +737,8 @@ fails, and is never given more. `cargo test` runs have no such bound.
   A test over every change of a fixture takes a sample of them but before a publish, which runs
   them all (`SCENIC_PUBLISH`, set by publish.sh's run; #1539: pipeline's plan tests over each
   manifest entry changed, removed and added back, `agent::build::tests::Fixture::entries`, one in
-  six), and its own threads stay few (at most 4: nextest already runs a test a thread).
+  six), and its own threads stay few (at most 4: nextest already runs a test a thread), but every
+  core in publish's run, which has every core and waits on its slowest tests.
   Nothing measures a test alone: the budget is held only by the bound, 3 min on the loaded test
   Mac, so a test of 9-16 s alone (the plan tests, 20 Nov) passed every run until the M4's load
   reached 108-229 and they timed out.

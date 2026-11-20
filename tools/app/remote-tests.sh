@@ -49,7 +49,7 @@
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
 # As many runs on the test Mac at once as its capacity's slots (capacity, below: from its cores and memory,
 # or ~/scenic-check/capacity there), each with its share of the cores as test threads; publish's run
-# (key `publish`) in a slot of its own besides, with every core (slots in ~/scenic-check/.slots, each
+# (key `publish`, publish.sh's alone: SCENIC_PUBLISH) in a slot of its own besides, with every core (slots in ~/scenic-check/.slots, each
 # naming its process and its start time; a gone process's slot is freed); the rest wait for one, up
 # to 30 min, then refuse. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
 # is its build folder's lock: freed only once nothing the run started is left, a run killed outright too.
@@ -194,30 +194,41 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
   return 0
 }
 
-# The test Mac's capacity (#1539): how many test runs it takes at once and how many test threads each
-# runs, so the whole stays within its cores (20 Nov: three runs of 14 threads each, their tests'
-# own threads and builds beside, put the M4's load at 108-229 on 14 cores, and tests of 14-17 s
-# alone timed out at 3 min). Derived from its cores and memory: a slot per 4 cores and per 12 GB,
-# the fewer (the M4, 14 cores and 48 GB: 3), each run's test threads its share of the cores,
-# rounded up (5); publish's run has its own slot besides (slot 0, its own build folder: it never
-# waits behind a check) and every core (it comes first). Set otherwise by ~/scenic-check/capacity
-# on the test Mac, lines `slots=<n>` and `threads=<n>` (either), which every run reads as it starts.
-# Each run says its slot, the slots and its threads; the dev jobs page records them. A caller's own
-# NEXTEST_TEST_THREADS (or nextest's --test-threads) is taken as it is. Builds aren't shared out:
-# a run's cargo builds with every core, at nice 20 as its tests (a check's compile is the larger part
-# of its time on the test Mac, a build's load passes, and its tests are what time out).
-capacity() {  # <capacity file> <cores> <memory GB>: reply=(<slots> <test threads a run> <how it's set>)
-  local f=$1 cores=$2 gb=$3 slots threads k v how
+# The test Mac's capacity (#1539): how many checks' runs it takes at once and how many test threads
+# each runs, so together they stay within its cores (20 Nov: three runs of 14 threads each, their
+# tests' own threads and builds beside, put the M4's load at 108-229 on 14 cores, and tests of
+# 14-17 s alone timed out at 3 min). Derived from its cores and memory: a slot per 4 cores and per
+# 12 GB, the fewer (the M4, 14 cores and 48 GB: 3), each run's test threads its share of the cores,
+# rounded up (5). Publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH in its command)
+# has its own slot besides (slot 0, its own build folder: it never waits behind a check) and every
+# core: it comes first, and while it runs the test Mac takes more than its cores. Set otherwise by
+# ~/scenic-check/capacity on the test Mac, lines `slots=<n>` and `threads=<n>` (either, each a whole
+# number of 1 or more; spaces, CRs and `#` comments left out), which every run reads as it starts,
+# printing each line it doesn't take. Each run says its slot, the slots and its threads, and where
+# each was set; the dev jobs page records them. A caller's own NEXTEST_TEST_THREADS (or nextest's
+# --test-threads) is taken as it is. Builds aren't shared out: a run's cargo builds with every core,
+# at nice 20 as its tests (a check's compile is the larger part of its time on the test Mac, a
+# build's load passes, and its tests are what time out).
+capacity() {  # <capacity file> <cores> <memory GB>: reply=(<slots> <test threads a run> <where each was set>)
+  local f=$1 cores=$2 gb=$3 slots threads line k v n=0 from_s from_t
   slots=$(( cores / 4 < gb / 12 ? cores / 4 : gb / 12 )); (( slots < 1 )) && slots=1
-  how="derived: $cores cores / 4, $gb GB / 12"
+  from_s="derived: $cores cores / 4, $gb GB / 12"
   if [[ -r $f ]]; then
-    while IFS='=' read -r k v; do
-      [[ $v == <1-> ]] || continue
-      case $k in slots) slots=$v; how="set in $f" ;; threads) threads=$v; how="set in $f" ;; esac
+    while IFS= read -r line || [[ -n $line ]]; do
+      (( n++ ))
+      line=${${line%%\#*}//$'\r'/}; line=${${line##[[:space:]]#}%%[[:space:]]#}
+      [[ -z $line ]] && continue
+      k=${${line%%=*}%%[[:space:]]#}; v=${${line#*=}##[[:space:]]#}
+      if [[ $line != *=* ]]; then print -r -- "remote-tests: $f line $n: $line isn't <key>=<value>: not read"
+      elif [[ $k != (slots|threads) ]]; then print -r -- "remote-tests: $f line $n: $k=$v: unknown key (slots=, threads=): not read"
+      elif [[ $v != <1-> ]]; then print -r -- "remote-tests: $f line $n: $k=$v isn't a whole number of 1 or more: not read"
+      elif [[ $k == slots ]]; then slots=$(( v )); from_s="set in $f"
+      else threads=$(( v )); from_t="set in $f"
+      fi
     done < $f
   fi
-  : ${threads:=$(( (cores + slots - 1) / slots ))}
-  reply=($slots $threads "$how")
+  [[ -n $threads ]] || { threads=$(( (cores + slots - 1) / slots )); from_t="derived: $cores cores / $slots slots"; }
+  reply=($slots $threads "slots $from_s; threads $from_t")
 }
 
 slot_order() {  # <base> <slots> <key folder>: the slots to try, the key's last, then the least recently used
@@ -249,6 +260,8 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   print "remote-tests: connected to the test Mac"
   none() { print -r -- "@@remote-tests-status none $*"; exit 0; }
   [[ $(cat $dir/.busy/owner 2>/dev/null) == "$owner" ]] || none "the key's lock isn't this run's"
+  # (Slot 0 and every core are publish.sh's run's alone, which exports SCENIC_PUBLISH: sent so.)
+  [[ $key != publish || $cmd == *"export SCENIC_PUBLISH="* ]] || none "key publish is publish.sh's (its own slot and every core): its command exports SCENIC_PUBLISH"
   cd $dir/src 2>/dev/null || none "no tree in $dir"
   [[ -s $dir/files.list ]] || none "no file list in $dir"
   # The copy matches the list: files and symlinks not in it go, then empty folders.
@@ -321,10 +334,12 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   trap on_signal TERM HUP INT
   (( waited )) && print "remote-tests: got a test-Mac slot after ${waited} s"
   touch $dir $dir/stamp
-  # (The folder a run builds in, the same whichever key: its path is in rustc's incremental state.
-  # A key's own build folder and config, from before #969's slots, go.)
+  # (The folder a run builds in, the same whichever key: its path is in rustc's incremental state.)
   local build=$base/.build/$slot
-  rm -rf $dir/target $dir/.cargo $dir/copy
+  # (The capacity lowered: the build folders of the slots above it go, those not in use.)
+  for s in $base/.build/<1->(/N); do
+    (( ${s:t} > slots )) && drop_build $base $s "above the test Mac's $slots slots"
+  done
   make_room $base $key "$origin" "$live" $build
   into_build $dir/src $build/src || none "can't copy the tree into $build"
   print -r -- $slot > $dir/slot
@@ -366,7 +381,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   [[ -f tools/dev/devjob.zsh ]] && { source tools/dev/devjob.zsh && dj_sampling } >/dev/null 2>&1
   # (Its share of the cores, capacity's; the caller's own setting, exported in the command, after.)
   export NEXTEST_TEST_THREADS=$threads RUST_TEST_THREADS=$threads
-  local note="capacity $how"; [[ $key == publish ]] && note+="; publish's own slot, every core"
+  local note="capacity: $how"; [[ $key == publish ]] && note+="; publish's own slot, every core"
   print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot of $slots, $threads test threads, $build; $note)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
   # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
@@ -420,6 +435,7 @@ local_main() {  # <key> <source dir> <command>
   local key=$1 src=${2:A} cmd=$3
   source ${self:h}/test-mac.zsh
   [[ $key == [A-Za-z0-9._-]## && $key != .* ]] || { print "remote-tests: bad key $key"; return 2; }
+  [[ $key != publish || ${(t)SCENIC_PUBLISH} == *export* ]] || { print "remote-tests: key publish is publish.sh's (its own slot on the test Mac and every core): SCENIC_PUBLISH isn't exported"; return 2; }
   ( cd $src && versions "this Mac ($(scutil --get LocalHostName 2>/dev/null))" )
   local why=
   if tests_local; then why=$REPLY
