@@ -307,7 +307,7 @@ function runRelations(key) {
   // (A span pointed at: it, what it's part of and what's part of it.)
   return { on: [...lineage(runTree, s.id)].map((id) => runSegs.get(`s ${id}`)).filter(Boolean), arrows: [] };
 }
-let runTree = null;
+let runTree = null, wentAll = null; // (wentAll: the run whose "Where its time went" shows all its rows)
 function renderRun() {
   if (!runData) return;
   const { run, spans, samples, macs, now } = runData;
@@ -387,7 +387,8 @@ function renderRun() {
   const table = (head, rows) => h("table", null, h("thead", null, h("tr", null, head.map(([t, c]) => h("th", c, t)))), h("tbody", null, rows));
   const cols = h("div", "cols",
     h("div", null, h("h3", null, "Where its time went"),
-      first.length ? table([["", null], ["kind", null], ["took", "num"], ["", null]], went.slice(0, ROWS_SHOWN).map(([s, depth]) => row(s, took(s, now), whole, depth))) : h("div", "empty", "No parts recorded."),
+      first.length ? table([["", null], ["kind", null], ["took", "num"], ["", null]], (wentAll === run.id ? went : went.slice(0, ROWS_SHOWN)).map(([s, depth]) => row(s, took(s, now), whole, depth))) : h("div", "empty", "No parts recorded."),
+      went.length > ROWS_SHOWN && wentAll !== run.id ? h("div", "more", h("button", { type: "button", onclick: () => { wentAll = run.id; renderRun(); } }, `show all ${went.length}`)) : null,
       byKind.size ? [h("h3", { style: { marginTop: "10px" } }, "Time by kind (summed; parallel spans count each)"), table([["kind", null], ["total", "num"]], [...byKind].sort((a, b) => b[1] - a[1]).map(([k, v]) => h("tr", null, h("td", "nm", h("i", { class: "sw", style: { background: colourOf(k), marginRight: "5px" } }), k), h("td", "num", dur(v)))))] : null),
     h("div", null, h("h3", null, "Longest"), longest.length ? table([["", null], ["kind", null], ["took", "num"]], longest.map((s) => row(s, took(s, now)))) : h("div", "empty", "–")),
     h("div", null, h("h3", null, `Failed (${fails.length})`), fails.length ? table([["", null], ["kind", null], ["took", "num"]], fails.slice(0, ROWS_SHOWN).map((s) => row(s, took(s, now)))) : h("div", "empty", "Nothing failed.")));

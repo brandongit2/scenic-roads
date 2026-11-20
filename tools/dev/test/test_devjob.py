@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import devjob  # noqa: E402
 
 T = 1_800_000_000.0
+# (Run under check.sh's recording wrap: the wraps these tests start aren't inside it.)
+os.environ.pop("SCENIC_DEVJOB_IN", None)
 
 
 def lines(text, t0=T, step=1.0):
@@ -128,6 +130,32 @@ progress: 3/3 frozen plans (after the run)
         self.assertEqual(devjob.phase_name("regions-check (the resolve: the land, 3 of 30 regions; alberta, 4 of 9)"), "regions-check (the resolve: the land)")
         self.assertEqual(devjob.phase_name("z6 tiles"), "z6 tiles")
 
+    def test_sources_said_in_parallel_keep_their_own_phases_and_nextests_captured_output_is_none(self):
+        out, _ = devjob.parse(lines("""
+progress: 0/4 guards (fmt)
+progress: 0/3 regions-check (the land)
+progress: 1/4 guards (clippy)
+progress: 1/3 regions-check (the land, 4 of 9)
+progress: 2/3 regions-check (the water)
+        FAIL [   2.000s] pipeline::bin t
+--- STDOUT:              pipeline::bin t ---
+progress: 1/2 frozen plans (plan 1)
+        PASS [   1.000s] pipeline::bin u
+"""), {"progress"}, T, T + 10)
+        got = [(k["name"], k["t0"] - T, k["t1"] - T) for k in out if k["kind"] == "phase"]
+        self.assertEqual(got, [("guards (fmt)", 0, 2), ("regions-check (the land)", 1, 4), ("guards (clippy)", 2, 10), ("regions-check (the water)", 4, 10)],
+                         "each source's phase ends at its own next change; a test's captured output, said after it ended, isn't one")
+        # (A suite's phases end with it, a phase of the same source after it beginning anew.)
+        out, _ = devjob.parse(lines("""
+     Running unittests src/lib.rs (/x/target/debug/deps/agentcore-0123456789abcdef)
+progress: 0/2 frozen plans (plan 1)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 2.00s
+progress: 1/2 frozen plans (plan 1)
+"""), {"tests", "progress"}, T, T + 5)
+        suite = [k for k in out if k["kind"] == "suite"][0]
+        self.assertEqual([(k["name"], k["t0"] - T, k["t1"] - T) for k in suite["kids"] if k["kind"] == "phase"], [("frozen plans (plan 1)", 1, 2)])
+        self.assertEqual([(k["name"], k["t0"] - T, k["t1"] - T) for k in out if k["kind"] == "phase"], [("frozen plans (plan 1)", 3, 5)])
+
 
 class Timings(unittest.TestCase):
     def test_a_reports_compiled_crates_on_the_clock(self):
@@ -224,6 +252,34 @@ class Wrap(unittest.TestCase):
         self.assertEqual({e["op"] == "attr" and e["id"] for e in ev[1:3]}, {job})
         self.assertEqual([(e["kind"], e["mac"]) for e in ev if e["op"] in ("start", "span")], [("tests", "here"), ("run", "there"), ("suite", "there")],
                          "the job on this Mac; the run on the test Mac and its suite on that Mac")
+
+    def test_a_wrap_inside_a_wrap_records_its_phases_once_the_inner_one(self):
+        # (check.sh's `part tests` wraps remote-tests.sh, which wraps its test run.)
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="here")
+            for k in ("SCENIC_DEVJOB", "SCENIC_DEVJOB_PARENT", "SCENIC_DEVJOB_IN"):
+                env.pop(k, None)
+            inner = f"{sys.executable} {devjob.__file__} wrap --kind tests --name inner -- sh -c \"echo 'progress: 0/2 x (a)'; sleep 0.2; echo 'progress: 1/2 x (b)'\""
+            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "outer", "--", "sh", "-c", f"echo 'progress: 0/1 y (alone)'; {inner}"],
+                               env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("progress: 1/2 x (b)", r.stdout, "the output passed on whole")
+            for _ in range(600):
+                try:
+                    with open(os.path.join(d, "sampler.lock")) as f:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            ev = []
+            for f in sorted(os.listdir(d)):
+                if f.startswith(("sending-", "spool")):
+                    with open(os.path.join(d, f)) as o:
+                        ev += [json.loads(x) for x in o if '"sample"' not in x]
+            self.assertFalse([f for f in os.listdir(d) if f.startswith("in-")], "the mark deleted")
+        ids = {e["name"]: e["id"] for e in ev if e["op"] == "start"}
+        got = sorted((e["name"], e["parent"] == ids["inner"]) for e in ev if e["op"] == "span" and e["kind"] == "phase")
+        self.assertEqual(got, [("x (a)", True), ("x (b)", True)], "each phase once, the inner wrap's; the outer leaves the progress out, its own line too")
 
     def test_a_command_that_cant_run_is_127_and_its_span_ended(self):
         with tempfile.TemporaryDirectory() as d:

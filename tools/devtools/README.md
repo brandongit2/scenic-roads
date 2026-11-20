@@ -78,7 +78,8 @@ them.
   shared build folder, `reset` (the units tied to another checkout), `build` and each `crate` compiled
   (cargo's `--timings` report), each test binary run as a `suite`, a `program` run; and in any of
   them, each `phase` the job said in its `progress:` lines (#1538: a long test's own stages, under
-  its suite; guards.sh's checks and the web part's steps in check.sh).
+  its suite; guards.sh's checks and the web part's steps in check.sh), once, by the innermost wrap.
+  "Where its time went" shows its first 150 rows, then a "show all".
 - **Each Mac's load** (1-minute load average), memory free (`kern.memorystatus_level`, %) and swap
   used, every 10 s while any recorded job runs on it (`samples`), and its chip, memory and cores
   (`macs`). The test Mac is sampled during its runs too (remote-tests.sh starts its sampler there).

@@ -11,8 +11,9 @@ network, and nothing is lost while the app is away: what wasn't sent is sent by 
       comes, each line's time noted; its children record under it (SCENIC_DEVJOB_PARENT). After,
       what --parse names is read from the output: cargo's compiles, the test suites and each test
       (cargo test's and nextest's), remote-tests.sh's phases; and, whatever --parse says, the
-      phases the job says in `progress:` lines (`phase`; a test's, with --nocapture, under its
-      suite: a long test read by its own stages). A span's Mac is the one it ran on: the
+      phases the job says in `progress:` lines (`phase`, one open a source; a test's, with
+      --nocapture, under its suite: a long test read by its own stages; inside another wrap, its
+      progress is this one's, the outer leaving it out: SCENIC_DEVJOB_IN). A span's Mac is the one it ran on: the
       run on the test Mac and its compiles, suites and tests are that Mac's (its `ran_on`); the job
       itself is this Mac's, which says the test Mac's name (ran_on) as soon as the run starts there.
   devjob.py sampler      (started by the first live span; one a Mac) every TICK_S: sends the spool,
@@ -192,7 +193,11 @@ RT_HERE = re.compile(r"^remote-tests: running here \((.*)\)$")
 RT_RERUN = "--- remote result discarded, local rerun ---"
 # A job's own word on how far it is (docs/building.md §2, jobrt::jobs::report): `progress: <done>/<total> <unit>`.
 PROGRESS = re.compile(r"^progress: [\d.]+/\d+ (.+?)\s*$")
-WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: |progress: )")
+WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: |progress: |\s*(?:-{3}|─{2,}) ?STD(?:OUT|ERR):)")
+# nextest's captured output of a test (`--- STDOUT: <test> ---`), printed after the test ended, up to
+# its next status line: its progress lines are no phase's.
+NX_BLOCK = re.compile(r"^\s*(?:-{3}|─{2,}) ?STD(?:OUT|ERR):")
+NX_STATUS = re.compile(r"^\s+(?:PASS|FAIL|FLAKY|SLOW|SIG\w*|ABORT|TIMEOUT|LEAK|TRY|START|Summary|Starting|Cancelling)\b")
 
 
 def phase_name(unit):
@@ -205,24 +210,39 @@ def phase_name(unit):
     return name
 
 
-def phases(lines, t_end):
-    """The phases a job said (`progress:` lines): one each time its phase changes, until the next or
-    the end."""
-    out, cur = [], None
+def said(lines):
+    """A job's progress lines, [(time, phase name)], those in nextest's captured output left out."""
+    out, block = [], False
     for t, l in lines:
-        if not (m := PROGRESS.match(l)):
+        if NX_BLOCK.match(l):
+            block = True
+        elif block and not NX_STATUS.match(l):
             continue
-        name = phase_name(m.group(1))
+        else:
+            block = False
+            if m := PROGRESS.match(l):
+                out.append((t, phase_name(m.group(1))))
+    return out
+
+
+def phases(said, t_end):
+    """The phases said ([(time, phase name)]): one open phase per source (the name's words before
+    its "(": `regions-check`, `guards`), so sources said in parallel don't cut each other; each ends
+    at its source's next change, or at t_end."""
+    out, open_ = [], {}
+    for t, name in said:
+        src = name.split("(", 1)[0].strip()
+        cur = open_.get(src)
         if cur is not None and cur["name"] == name:
             continue
         if cur is not None:
             cur["t1"] = t
             out.append(cur)
-        cur = span("phase", name, t, t)
-    if cur is not None:
+        open_[src] = span("phase", name, t, t)
+    for cur in open_.values():
         cur["t1"] = t_end
         out.append(cur)
-    return out
+    return sorted(out, key=lambda s: s["t0"])
 
 
 def span(kind, name, t0, t1, status="ok", **attrs):
@@ -322,16 +342,18 @@ def parse(lines, kinds, t_start, t_end):
         else:
             out.extend(nx.values())
     if "progress" in kinds:
-        # (A phase said inside a test program's run, cargo test's with --nocapture, is that suite's,
-        # ending with it.)
+        # (The phases said inside a test program's run, cargo test's with --nocapture, are that
+        # suite's, ending with it at the latest; the rest the job's.)
         suites = [s for s in out if s["kind"] == "suite"]
-        for p in phases(lines, t_end):
-            home = next((s for s in suites if s["t0"] <= p["t0"] <= s["t1"]), None)
-            if home is not None:
-                p["t1"] = min(p["t1"], home["t1"])
-                home["kids"].append(p)
+        homes = {}
+        for t, name in said(lines):
+            home = next((k for k, s in enumerate(suites) if s["t0"] <= t <= s["t1"]), None)
+            homes.setdefault(home, []).append((t, name))
+        for home, got in homes.items():
+            if home is None:
+                out.extend(phases(got, t_end))
             else:
-                out.append(p)
+                suites[home]["kids"].extend(phases(got, suites[home]["t1"]))
     attrs = {}
     if "remote" in kinds:
         key_wait = slot_wait = on = None
@@ -427,7 +449,16 @@ def wrap(argv):
     t_start = time.time()
     emit({"op": "start", "id": sid, "parent": parent, "kind": kind, "name": name, "mac": m, "t": round(t_start, 3), "attrs": attrs})
     live(sid, os.getpid())
-    env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid)
+    # (A wrap inside this one marks SCENIC_DEVJOB_IN: it records the progress lines it passes on,
+    # nested under its own suites and runs, and this one leaves them out, so a phase is recorded
+    # once: check.sh's `part tests` wraps remote-tests.sh, which wraps its test run.)
+    inner = os.path.join(DIR, f"in-{sid}")
+    if os.environ.get("SCENIC_DEVJOB_IN"):
+        try:
+            open(os.environ["SCENIC_DEVJOB_IN"], "a").close()
+        except OSError:
+            pass
+    env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid, SCENIC_DEVJOB_IN=inner)
     try:
         # (Every file the caller passed on, kept, as a shell does: check.sh's SCENIC_CARGO_SAY names
         # its own fd, and with it closed /dev/fd/<n> opened whatever took its number, a waiting
@@ -474,6 +505,9 @@ def wrap(argv):
     rc = os.waitstatus_to_exitcode(st)
     p.returncode = rc
     t_end = time.time()
+    if os.path.exists(inner):
+        kinds.discard("progress")
+        os.remove(inner)
     if part and kinds:
         s = part.decode("utf-8", "replace")
         if WANT.match(s):
