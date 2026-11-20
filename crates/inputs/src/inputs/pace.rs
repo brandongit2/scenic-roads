@@ -134,6 +134,19 @@ pub fn par_map<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send
     global().par_map(items, f)
 }
 
+/// `f` on each of `items`, in order, in parallel, each item taking no permit of its own: for items
+/// whose work is itself parallel maps (a region's cells), which take theirs, so a large item's
+/// tasks spread over every thread allowed beside the small items'. The item's own work between
+/// them takes a permit (`permit_unless_held`, round it). Inside a task under a permit, one after
+/// another (`par_map`'s way).
+pub fn par_each<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
+    use rayon::prelude::*;
+    if HELD.with(|h| h.get()) > 0 {
+        return items.into_iter().map(f).collect();
+    }
+    items.into_par_iter().map(f).collect()
+}
+
 impl Pace {
     /// `par_map` under this pace's permits: each task takes one as it starts, so an operation under
     /// way follows the file as it changes (more tasks at once after a raise, fewer after a cut, as

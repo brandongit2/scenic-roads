@@ -1,7 +1,8 @@
 //! How far a resolve of the regions is (task #1145): its steps in order (`Step`), each an equal share
-//! of it, and within the one under way its items done of its total (regions, or cells), the item
-//! under way by its own parts done (a region's cells). The resolve counts where it works
-//! (`Progress::begin`, `one`, `item`, `part`); the check's ticker (jobrt::jobs::saying, in
+//! of it, and within the one under way its items done of its total (regions, or cells), the items
+//! under way (several at once where a step takes its regions so) by their own parts done (a
+//! region's cells). The resolve counts where it works (`Progress::begin`, `one_on_drop`, `item`,
+//! `Item::part_on_drop`); the check's ticker (jobrt::jobs::saying, in
 //! crate::inputs::regions's `Regions::resolve`) reads the share and the line every few seconds, so
 //! a check's progress goes on through the long passes (the cover check's cells, the coast's) and
 //! the slow and stuck flags judge it while it works. The share never goes back.
@@ -95,18 +96,30 @@ struct State {
     total: u64,
     done: u64,
     began: Option<Instant>,
-    /// The item under way's parts (0: not counted by parts) and how many are done; its name (a
-    /// region's id, a folder's path; empty: not named) and when it began.
-    parts: u64,
-    parts_done: u64,
-    item: String,
-    item_began: Option<Instant>,
+    /// The named items under way (several at once where a step takes its regions so), the first
+    /// begun first.
+    under: Vec<Under>,
+    /// The next item's key.
+    next: u64,
     /// The most `share` has said.
     best: f64,
     /// Each step ended: its items done and its total as it ended, and its wall time.
     steps: Vec<Took>,
     /// Each named item done: its step, its name and its wall time.
     items: Vec<(Step, String, f64)>,
+}
+
+/// An item under way (`Progress::item`): its key, its step, its name (a region's id, a folder's
+/// path), the step's items it counts as, its parts (0: not counted by parts) and how many are done,
+/// and when it began.
+struct Under {
+    key: u64,
+    step: Step,
+    name: String,
+    counts: u64,
+    parts: u64,
+    parts_done: u64,
+    began: Instant,
 }
 
 /// A step's time (`Progress::steps`): its items done of its total, and its wall time, s.
@@ -155,73 +168,95 @@ impl Progress {
                 s.steps.push(ended);
             }
             (s.step, s.total, s.done, s.began) = (Some(step), total as u64, 0, Some(Instant::now()));
-            (s.parts, s.parts_done, s.item, s.item_began) = (0, 0, String::new(), None);
+            s.under.clear();
         }
         self.say();
     }
 
-    /// An item of the step under way done (a named one's time kept).
+    /// An item of the step under way done, not named.
     fn one(&self) {
         let mut s = self.state();
         s.done = (s.done + 1).min(s.total);
-        if let (Some(step), Some(t)) = (s.step, s.item_began.take()) {
-            let name = std::mem::take(&mut s.item);
-            if !name.is_empty() {
-                s.items.push((step, name, t.elapsed().as_secs_f64()));
-            }
-        }
-        (s.parts, s.parts_done) = (0, 0);
     }
 
-    /// An item of the step under way, done as the guard drops (however its work ends: an early
-    /// return, a `?`).
+    /// An item of the step under way, not named, done as the guard drops (however its work ends:
+    /// an early return, a `?`).
     pub fn one_on_drop(&self) -> Done<'_> {
-        Done(self, false)
+        Done(self, None)
     }
 
-    /// A part of the item under way, done as the guard drops (`one_on_drop`'s way).
+    /// A part of the step's one named item under way, done as the guard drops: what a pass that
+    /// isn't by region counts by (the hand-outs' unions).
     pub fn part_on_drop(&self) -> Done<'_> {
-        Done(self, true)
+        Done(self, Some(u64::MAX))
     }
 
-    /// The step's next item, `name` (a region's id; its line says it, and its time is kept), is
-    /// under way, in `parts` parts (`part`).
-    pub fn item(&self, parts: usize, name: &str) {
-        let mut s = self.state();
-        (s.parts, s.parts_done) = (parts as u64, 0);
-        (s.item, s.item_began) = (name.to_string(), Some(Instant::now()));
+    /// The step's item `name` (a region's id, a folder's path; its line says it, and its time is
+    /// kept) under way, beside any others; done, its time kept, as the guard drops. Its parts:
+    /// `Item::parts`, each done by `Item::part_on_drop`.
+    pub fn item(&self, name: &str) -> Item<'_> {
+        self.items(name, 1)
     }
 
-    /// A part of the item under way done.
-    fn part(&self) {
+    /// `item` counting as `counts` of the step's items (a run of regions taken together).
+    pub fn items(&self, name: &str, counts: usize) -> Item<'_> {
         let mut s = self.state();
-        s.parts_done = (s.parts_done + 1).min(s.parts);
+        let (key, step) = (s.next, s.step.unwrap_or(Step::Plain));
+        s.next += 1;
+        s.under.push(Under {
+            key,
+            step,
+            name: name.to_string(),
+            counts: counts as u64,
+            parts: 0,
+            parts_done: 0,
+            began: Instant::now(),
+        });
+        Item(self, key)
+    }
+
+    /// A part of the item `key` (`u64::MAX`: the first under way) done.
+    fn part(&self, key: u64) {
+        let mut s = self.state();
+        if let Some(u) = s.under.iter_mut().find(|u| u.key == key || key == u64::MAX) {
+            u.parts_done = (u.parts_done + 1).min(u.parts);
+        }
     }
 
     /// How far the resolve is, 0 to 1: its steps before the one under way, and that one's items
-    /// done (the one under way by its parts). Never less than it said before.
+    /// done (those under way by their parts). Never less than it said before.
     pub fn share(&self) -> f64 {
         let mut s = self.state();
         let Some(step) = s.step else { return s.best };
-        let item = if s.parts > 0 { s.parts_done as f64 / s.parts as f64 } else { 0.0 };
-        let within = if s.total > 0 { ((s.done as f64 + item) / s.total as f64).min(1.0) } else { 1.0 };
+        let parts: f64 = s
+            .under
+            .iter()
+            .filter(|u| u.parts > 0)
+            .map(|u| u.counts as f64 * u.parts_done as f64 / u.parts as f64)
+            .sum();
+        let within = if s.total > 0 { ((s.done as f64 + parts) / s.total as f64).min(1.0) } else { 1.0 };
         let share = (step.index() as f64 + within) / Step::ALL.len() as f64;
         s.best = s.best.max(share);
         s.best
     }
 
     /// What's under way, for the progress line: `the cover check, 5200 of 16200 cells`, the item
-    /// under way named, by its parts (`the land, 12 of 300 regions; alberta, 40 of 120`); empty
-    /// before a step begins.
+    /// under way longest named, by its parts, and how many more are (`the land, 12 of 300 regions;
+    /// alberta, 40 of 120; 3 more`); empty before a step begins.
     pub fn line(&self) -> String {
         let s = self.state();
         let Some(step) = s.step else { return String::new() };
         let (what, items) = step.said();
         let mut l = format!("{what}, {} of {} {items}", s.done, s.total);
-        if !s.item.is_empty() {
-            l += &format!("; {}", s.item);
-            if s.parts > 0 {
-                l += &format!(", {} of {}", s.parts_done, s.parts);
+        let mut named = s.under.iter().filter(|u| !u.name.is_empty());
+        if let Some(u) = named.next() {
+            l += &format!("; {}", u.name);
+            if u.parts > 0 {
+                l += &format!(", {} of {}", u.parts_done, u.parts);
+            }
+            let more = named.count();
+            if more > 0 {
+                l += &format!("; {more} more");
             }
         }
         l
@@ -248,15 +283,47 @@ impl Progress {
     }
 }
 
-/// An item (or a part: true) counted done as it drops (`Progress::one_on_drop`).
-pub struct Done<'a>(&'a Progress, bool);
+/// An item not named (None), or a part of one under way (its key), counted done as it drops
+/// (`Progress::one_on_drop`, `Item::part_on_drop`).
+pub struct Done<'a>(&'a Progress, Option<u64>);
 
 impl Drop for Done<'_> {
     fn drop(&mut self) {
-        if self.1 {
-            self.0.part();
-        } else {
-            self.0.one();
+        match self.1 {
+            Some(key) => self.0.part(key),
+            None => self.0.one(),
+        }
+    }
+}
+
+/// A named item under way (`Progress::item`), done as it drops: counted, its time kept.
+pub struct Item<'a>(&'a Progress, u64);
+
+impl Item<'_> {
+    /// It goes in `n` parts (`part_on_drop`).
+    pub fn parts(&self, n: usize) {
+        let mut s = self.0.state();
+        if let Some(u) = s.under.iter_mut().find(|u| u.key == self.1) {
+            (u.parts, u.parts_done) = (n as u64, 0);
+        }
+    }
+
+    /// One of its parts, done as the guard drops.
+    pub fn part_on_drop(&self) -> Done<'_> {
+        Done(self.0, Some(self.1))
+    }
+}
+
+impl Drop for Item<'_> {
+    fn drop(&mut self) {
+        let mut s = self.0.state();
+        let Some(k) = s.under.iter().position(|u| u.key == self.1) else { return };
+        let u = s.under.remove(k);
+        if s.step == Some(u.step) {
+            s.done = (s.done + u.counts).min(s.total);
+            if !u.name.is_empty() {
+                s.items.push((u.step, u.name, u.began.elapsed().as_secs_f64()));
+            }
         }
     }
 }
@@ -280,17 +347,17 @@ mod tests {
         assert_eq!(p.line(), "the regions without water, 2 of 4 regions");
         // The land: a region of 4 cells under way, 2 done.
         p.begin(Step::Land, 2);
-        p.item(4, "alberta");
-        p.part();
-        p.part();
+        let alberta = p.item("alberta");
+        alberta.parts(4);
+        drop(alberta.part_on_drop());
+        drop(alberta.part_on_drop());
         assert!((p.share() - (1.0 + 0.25) / n).abs() < 1e-12);
         assert_eq!(p.line(), "the land, 0 of 2 regions; alberta, 2 of 4");
-        p.one();
+        drop(alberta);
         assert!((p.share() - 1.5 / n).abs() < 1e-12, "the region done: its parts no longer counted");
         assert_eq!(p.line(), "the land, 1 of 2 regions", "the item done: no longer named");
         // An item not named isn't kept.
-        p.item(3, "");
-        p.one();
+        drop(p.item(""));
         // Steps passed over count as done; one begun again, or before, begins nothing.
         p.begin(Step::Cover, 16_200);
         let at = p.share();
@@ -315,5 +382,36 @@ mod tests {
         assert!(p.steps().iter().all(|t| t.secs >= 0.0));
         let slow = p.slowest(5);
         assert_eq!(slow.iter().map(|(s, n, _)| (*s, n.as_str())).collect::<Vec<_>>(), [(Step::Land, "alberta")]);
+    }
+
+    /// Items under way at once: each counted by its own parts, the first begun named with how many
+    /// more are, each timed as it ends; a run counting as several items counts them all.
+    #[test]
+    fn items_under_way_at_once_count_apart() {
+        let p = Progress::default();
+        let n = Step::ALL.len() as f64;
+        p.begin(Step::Water, 4);
+        let (a, b) = (p.item("iceland"), p.item("faroe-islands"));
+        a.parts(2);
+        b.parts(4);
+        drop(b.part_on_drop());
+        drop(b.part_on_drop());
+        assert_eq!(p.line(), "the water, 0 of 4 regions; iceland, 0 of 2; 1 more");
+        assert!((p.share() - (3.0 + 0.5 / 4.0) / n).abs() < 1e-12);
+        drop(a);
+        assert_eq!(p.line(), "the water, 1 of 4 regions; faroe-islands, 2 of 4");
+        let run = p.items("x, y", 2);
+        drop(b);
+        drop(run);
+        assert_eq!(p.line(), "the water, 4 of 4 regions");
+        let mut slow: Vec<String> = p.slowest(5).into_iter().map(|(_, n, _)| n).collect();
+        slow.sort();
+        assert_eq!(slow, ["faroe-islands", "iceland", "x, y"]);
+        // An item of a step ended before it is counted in neither.
+        let late = p.item("late");
+        p.begin(Step::Lakes, 3);
+        drop(late);
+        assert_eq!(p.line(), "the lakes, 0 of 3 cells");
+        assert_eq!(p.slowest(5).len(), 3);
     }
 }

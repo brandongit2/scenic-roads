@@ -841,7 +841,8 @@ Mac's server (§6.1.9).
   outcome itself) and the datasets, read only once a region in the folder names them (the
   coastline's land by cell where asked, §6.1.7).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
-  read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve their land and water one at a time, their cells several at once (regions without
+  read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve their land several at once (those of a wave, by what outlines name, each its cells
+  several at once) and their water one at a time, its cells several at once (regions without
   water: as many at once as the check is allowed threads, §4.3); their hand-outs go a run at a time, the run's
   stretches several at once (§6.1.3 "Land and water"). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
@@ -866,8 +867,10 @@ Mac's server (§6.1.9).
   its total within it; as each step begins and every 5 s (`jobrt::jobs::saying`) the share goes out
   as the check's stage under way, what's under way in its line (`1.642/6 inputs check (the candidate
   checked whole: the cover check, 5200 of 16200 cells)`), the item under way named where the step
-  takes one region or folder at a time, by its cells (`the land, 12 of 300 regions; alberta, 40 of
-  120`), so the slow and stuck flags judge it while it works. The share never goes back. Each
+  takes its regions or folders by name, by its cells (`the water, 12 of 300 regions; alberta, 40 of
+  120`; where several are under way at once, the land's, the first begun and how many more:
+  `the land, 12 of 300 regions; alberta, 40 of 120; 3 more`), each counted by its own cells, so the
+  slow and stuck flags judge it while it works. The share never goes back. Each
   step's wall time is kept, and each named item's (task #1523): a scratch check's report says them
   (`steps`, `slowest`). (Planned, #1167: the steps are equal shares whatever they take, so the slow
   flag's rate in a long one, the cover check, is under the check's average.)

@@ -408,9 +408,9 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
     let mut files = all();
     files.retain(|f| f.0 != "far.toml" && f.0 != "_rules.toml");
     files.push(("old.toml", old));
-    // (Old's resolution and the regions with water's lands and waters: 12 pieces, a run keeping
-    // one each, as the last run, keeping none, didn't stop.)
-    assert_eq!(paused_at_every_piece(&w, &files), 12, "a stop after each piece");
+    // (Old's resolution and the regions with water's lands and waters: 12 pieces, each made once
+    // over the runs, the last, making none, not stopped.)
+    assert_eq!(paused_at_every_piece(&w, &files), 12, "each piece made once");
 }
 
 /// A folder's remainder is a piece of its own (#1448 review): paused after it, a check takes it
@@ -431,7 +431,8 @@ fn a_remainder_is_kept_as_a_piece() {
 }
 
 /// Folder `files` resolved, then again paused after every piece kept and resumed each time: the
-/// same outcome as one never paused; how many pauses it took.
+/// same outcome as one never paused; how many pieces the runs made (a run making several side by
+/// side, the land's regions, before its pause stops the rest: each made once, never again).
 fn paused_at_every_piece(w: &World, files: &[(&str, &str)]) -> usize {
     use jobrt::resume_log::STOP_AFTER;
     let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
@@ -456,16 +457,16 @@ fn paused_at_every_piece(w: &World, files: &[(&str, &str)]) -> usize {
     let fresh = with(None);
     assert!(fresh.problems.is_empty(), "{:?}", fresh.problems);
     let d = tempfile::tempdir().unwrap();
-    let mut stops = 0;
+    let mut pieces = 0;
     let resumed = loop {
         let kept = super::kept::Kept::default();
         STOP_AFTER.set(Some(1));
         kept.open(d.path(), "a", true);
         let out = with(Some(&kept));
+        pieces += kept.made_here();
         match kept.stopped() {
             Err(e) => {
                 assert!(jobrt::control::is_paused(&e), "{e:#}");
-                stops += 1;
             }
             Ok(()) => break out,
         }
@@ -474,7 +475,7 @@ fn paused_at_every_piece(w: &World, files: &[(&str, &str)]) -> usize {
     assert_eq!(resumed.problems, fresh.problems);
     assert_eq!(resumed.needs, fresh.needs);
     assert_eq!(resumed.keys, fresh.keys);
-    stops
+    pieces
 }
 
 #[test]

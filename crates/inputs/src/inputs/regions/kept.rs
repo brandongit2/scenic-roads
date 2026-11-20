@@ -116,6 +116,12 @@ impl Kept {
         Some(v)
     }
 
+    /// Tests: the pieces this run made (not those it took back).
+    #[cfg(test)]
+    pub fn made_here(&self) -> usize {
+        self.made.lock().unwrap().len()
+    }
+
     /// The pause a piece kept met, if one did: the check stops with it.
     pub fn stopped(&self) -> Result<()> {
         match self.stop.lock().unwrap().take() {
