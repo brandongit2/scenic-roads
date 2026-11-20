@@ -198,7 +198,14 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   around board.py); and a small task in flight in no batch (one marked small while under way; a
   waiting one isn't flagged).
 
+## Review
+
+- **The reviewer's standing checklist is `tools/dev/review-checklist.md`.** A builder's last step
+  before reporting is a pass through it over its own diff (`git diff main...HEAD`), fixing what it
+  finds; a reviewer reviews against the same list, plus what the brief asks. Briefs need not
+  repeat it.
+
 ## Your report
 
 - The branch and sha, what changed, what you cut, the check.sh PASS line, what is left or
-  untested, and the background tasks you stopped.
+  untested, the background tasks you stopped, and what your pass through the checklist found.
