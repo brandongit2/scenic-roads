@@ -869,6 +869,13 @@ impl TerrainTiles {
         Ok(v)
     }
 
+    /// `memo`'s value for `key`, when kept from `from`; nothing made or kept (a shadow plan's
+    /// read: build::KeyMemo::shadow).
+    pub fn memo_found(&self, key: &str, from: &str) -> Option<String> {
+        let memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        memo.get(key).filter(|(f, _)| f == from).map(|(_, v)| v.text())
+    }
+
     /// Holds a pack's tiles as given (tests: no pack to read).
     #[cfg(test)]
     pub fn hold(&mut self, content: &str, tiles: impl IntoIterator<Item = Tile>) {

@@ -1231,6 +1231,15 @@ fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
             None => format!("{}\ngeoid unread", terrain::terrain_resume::inputs(m, &[]).join("\n")),
         },
     ]);
+    // (A shadow plan's targets are its own: read where the plan keeps them, never kept there, its
+    // keys being what it checks. The terrain's and slope's keys served by them aren't derived:
+    // docs/incremental-planning.md §4.1.)
+    if x.memo.is_some_and(KeyMemo::shadow) {
+        return match tiles.memo_found("terrain-targets", &from).map(|json| serde_json::from_str(&json)) {
+            Some(Ok(t)) => t,
+            _ => terrain_slope_targets_made(x),
+        };
+    }
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
         let t = terrain_slope_targets_made(x);
@@ -2067,7 +2076,7 @@ pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
 
 /// What a key is worked out from (crate::agent::steps::key): the planner's arguments. The manifest
 /// and the inputs are read through views (buildstore::reads::Reads), recording what each key reads
-/// when its memo records (`KeyMemo::recording`).
+/// when its memo is a shadow plan's (`KeyMemo::after`).
 #[derive(Clone, Copy)]
 pub struct KeyCtx<'a> {
     pub cov: &'a Coverage,
@@ -2090,18 +2099,22 @@ pub struct KeyCtx<'a> {
 /// first given with (`KeyCtx::stamp`, kept as `stamp`): a context made again from what was read
 /// again (the Planner's later readers in the round, a lease change's `refilter`) takes it only while
 /// that reads the same; otherwise its keys are worked out afresh, never one of another context.
-/// One made `recording` keeps what each key read (docs/incremental-planning.md §4.1, step 3).
+/// A shadow plan's (`after`, docs/incremental-planning.md §4.1, step 4) records what each key read,
+/// and starts with the keys of the shadow plan before that the diff since doesn't move.
 #[derive(Default)]
 pub struct KeyMemo {
     /// Each key, and its node in `rec` when recorded.
     keys: std::cell::RefCell<std::collections::HashMap<(String, String), (Option<String>, Option<u32>)>>,
     terrain: std::cell::OnceCell<TerrainTargets>,
     stamp: std::cell::Cell<Option<u64>>,
+    /// A shadow plan's: what its keys read. What it works out from its keys stays its own, never
+    /// kept where the plan's would find it (`TerrainTiles::memo`'s terrain targets).
     rec: Option<Recorder>,
 }
 
-/// The keys a recording memo derived (`KeyMemo::read_sets`): each key by (step, target), its node in
-/// `graph`, what it read.
+/// The keys a shadow plan's memo holds (`KeyMemo::read_sets`): each key by (step, target), its node
+/// in `graph`, what it read.
+#[derive(Clone)]
 pub struct ReadSets {
     pub keys: std::collections::HashMap<(String, String), (Option<String>, u32)>,
     pub graph: buildstore::reads::Graph,
@@ -2128,10 +2141,41 @@ pub fn context_rest(cov: &Coverage, date: &str, reach: Option<&str>) -> u64 {
     h.finish()
 }
 
+/// The keys a shadow plan's memo let go of the plan before's (`KeyMemo::after`), with what each
+/// was: moved by the diff, unknown, or reading one that was.
+pub type LetGo = Vec<((String, String), Option<String>)>;
+
 impl KeyMemo {
-    /// A memo keeping what each key derived with it read.
-    pub fn recording() -> KeyMemo {
-        KeyMemo { rec: Some(Recorder::default()), ..Default::default() }
+    /// A shadow plan's memo (theplan, docs/incremental-planning.md step 4), recording what each key
+    /// derived with it reads: holding the keys of `kept` (the shadow plan before's) that the diff
+    /// `d` since doesn't move (`Graph::moved`), each as derived then; none when `all` (the
+    /// context's rest changed: `context_rest`), nor one that came out unknown, nor one reading it.
+    /// Those let go, with what they were.
+    pub fn after(kept: Option<ReadSets>, d: &buildstore::reads::Diff, all: bool) -> (KeyMemo, LetGo) {
+        let Some(ReadSets { keys, graph }) = kept else {
+            return (KeyMemo { rec: Some(Recorder::default()), ..Default::default() }, Vec::new());
+        };
+        let gone = if all {
+            vec![true; graph.size().nodes]
+        } else {
+            let unknown: Vec<u32> = keys.values().filter(|(k, _)| k.is_none()).map(|&(_, n)| n).collect();
+            graph.moved(d, &unknown)
+        };
+        let (mut held, mut let_go) = (std::collections::HashMap::with_capacity(keys.len()), Vec::new());
+        for (id, (k, n)) in keys {
+            if gone[n as usize] {
+                let_go.push((id, k));
+            } else {
+                held.insert(id, (k, Some(n)));
+            }
+        }
+        let rec = Recorder::after(graph, gone);
+        (KeyMemo { keys: held.into(), rec: Some(rec), ..Default::default() }, let_go)
+    }
+
+    /// Whether it's a shadow plan's (`after`).
+    pub fn shadow(&self) -> bool {
+        self.rec.is_some()
     }
 
     /// Target `t`'s key of `step` as derived before, else `derive`d now and kept (not borrowed
@@ -2160,16 +2204,30 @@ impl KeyMemo {
         self.stamp.get().is_none_or(|s| s == x.stamp())
     }
 
-    /// Target `t`'s key of `step`, when derived (Some(None): one that couldn't be worked out).
-    pub fn derived(&self, step: &str, t: &str) -> Option<Option<String>> {
-        self.keys.borrow().get(&(step.to_string(), t.to_string())).map(|(k, _)| k.clone())
+    /// Its keys by (step, target) (None: one that couldn't be worked out).
+    pub fn keys(&self) -> std::collections::HashMap<(String, String), Option<String>> {
+        self.keys.borrow().iter().map(|(id, (k, _))| (id.clone(), k.clone())).collect()
     }
 
-    /// The keys derived and what each read, when recording.
+    /// `f` of each key it holds by (step, target) (None: unknown), and whether it was kept from
+    /// the plan before (`after`) rather than derived with it.
+    pub fn each(&self, mut f: impl FnMut(&(String, String), &Option<String>, bool)) {
+        let first = self.rec.as_ref().map_or(0, Recorder::first);
+        for (id, (k, n)) in self.keys.borrow().iter() {
+            f(id, k, n.is_some_and(|n| n < first));
+        }
+    }
+
+    /// Its keys and what each read, when a shadow plan's.
     pub fn read_sets(self) -> Option<ReadSets> {
-        let rec = self.rec?;
-        let keys = self.keys.into_inner().into_iter().filter_map(|(id, (k, n))| Some((id, (k, n?)))).collect();
-        Some(ReadSets { keys, graph: rec.graph() })
+        let (graph, renumber) = self.rec?.renumbered();
+        let keys = self
+            .keys
+            .into_inner()
+            .into_iter()
+            .filter_map(|(id, (k, n))| Some((id, (k, renumber[n? as usize]))))
+            .collect();
+        Some(ReadSets { keys, graph })
     }
 }
 
@@ -6803,7 +6861,7 @@ mod tests {
         /// For each of `steps`, every target's key (`step_keys_all`; None: unknown) in this build
         /// with manifest `m`, `inputs`, reaches `reach` and terrain `tiles`, derived with one memo
         /// as a plan's (`keys`), after the plan's warm passes (`plan_with`: their memos in `tiles`
-        /// the keys find), recording (`KeyMemo::recording`) or not: by (step, target), with what
+        /// the keys find), recording (a shadow plan's, `KeyMemo::after`) or not: by (step, target), with what
         /// each read when recorded, and the terrain's load state then (`TerrainTiles::load_state`).
         #[allow(clippy::too_many_arguments)]
         fn derived(
@@ -6815,7 +6873,7 @@ mod tests {
             tiles: &TerrainTiles,
             recording: bool,
         ) -> (BTreeMap<(String, String), Option<String>>, Option<ReadSets>, u64) {
-            let memo = if recording { KeyMemo::recording() } else { KeyMemo::default() };
+            let memo = if recording { KeyMemo::after(None, &Default::default(), false).0 } else { KeyMemo::default() };
             let x = KeyCtx::new(&self.c, "d", m, inputs, reach, tiles).memo(&memo);
             crate::agent::idents::warm_asked(&x);
             crate::agent::idents::warm_lakes(&x);
@@ -7264,7 +7322,7 @@ mod tests {
                                     load: load1 != load2,
                                 };
                                 let every = rest(m1, *r1) != rest(m2, *r2);
-                                let moved = sets.graph.moved(&d);
+                                let moved = sets.graph.moved(&d, &[]);
                                 for (id, k) in &before {
                                     // (A key unknown after: changed too, as the plan's diff has
                                     // it; a target no longer listed: none to compare.)
@@ -7298,6 +7356,192 @@ mod tests {
         assert!(checked > 10_000, "{checked}");
     }
 
+    /// docs/incremental-planning.md §6 (task #880 step 4): a plan made incrementally after a change
+    /// (a shadow plan's memo, `KeyMemo::after`, holding the keys of the shadow plan before that the
+    /// diff doesn't move) is the full plan of the changed state, key by key and `Planned` whole: in
+    /// fixture `f`, each manifest entry changed, removed and added alone, each input changed, and
+    /// the reaches gone with their entry the same. Each plan on terrain of its own (no memo of
+    /// another's found: the incremental plan works out the terrain's targets from its keys); or
+    /// `as_on_the_lead`, the incremental plan after the full one on the same terrain (the warm
+    /// passes' memos and the terrain's targets found: the terrain's and slope's keys they serve
+    /// aren't derived, so not compared). How many changes, and how many keys the incremental plans
+    /// kept in all.
+    fn incremental_is_full(f: &Fixture, as_on_the_lead: bool) -> (usize, usize) {
+        use buildstore::reads::{Changes, Diff};
+        type State = (BTreeMap<String, String>, BTreeMap<String, String>, bool);
+        let c = &f.c;
+        let each = c.by_region();
+        let reached = f.reach.is_some();
+        let reaches = |on: bool| f.reach.as_ref().filter(|_| on);
+        let rest = |(m, _, on): &State| {
+            context_rest(c, "d", reaches(*on).map(|_| m.get(&roads::reach::logical("d")).map_or("", String::as_str)))
+        };
+        let (on_map, served) = (BTreeMap::new(), BTreeMap::new());
+        let publish = Publish {
+            each: &each,
+            on_map: &on_map,
+            served: &served,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+        };
+        let plan = |memo: &KeyMemo, (m, i, on): &State, tiles: &TerrainTiles| {
+            super::plan_with(memo, c, "d", m, &Keys::default(), i, reaches(*on), tiles, publish)
+        };
+        // (A shadow plan of `s` going on from `kept`: its result and keys, what they read, and how
+        // many it kept.)
+        let shadow = |kept: Option<(ReadSets, &State)>, s: &State, tiles: &TerrainTiles| {
+            let (d, every, kept) = match kept {
+                Some((sets, before)) => {
+                    let d = Diff {
+                        manifest: Changes::of(&before.0, &s.0),
+                        inputs: Changes::of(&before.1, &s.1),
+                        load: (f.tiles)(&before.0).load_state() != tiles.load_state(),
+                    };
+                    (d, rest(before) != rest(s), Some(sets))
+                }
+                None => (Diff::default(), false, None),
+            };
+            let (memo, _) = KeyMemo::after(kept, &d, every);
+            let p = plan(&memo, s, tiles);
+            let mut kept = 0;
+            memo.each(|_, _, was_kept| kept += usize::from(was_kept));
+            (p, memo.keys(), memo.read_sets().unwrap(), kept)
+        };
+        let full = |s: &State, tiles: &TerrainTiles| {
+            let memo = KeyMemo::default();
+            let p = plan(&memo, s, tiles);
+            (p, memo.keys())
+        };
+        let base: State = (f.m.clone(), f.inputs.clone(), reached);
+        let (_, _, base_sets, _) = shadow(None, &base, &(f.tiles)(&base.0));
+        let base_full = full(&base, &(f.tiles)(&base.0));
+        // (A change: what, the state before and after; whether `after` is the build without an
+        // entry, whose first shadow plan derives every key as a full plan does and is taken for
+        // its full plan, and is the state before its entry's adding.)
+        let mut cases: Vec<(String, State, State, bool)> = Vec::new();
+        for (l, m, i) in f.one_changed() {
+            cases.push((l, base.clone(), (m, i, reached), false));
+        }
+        for l in f.m.keys() {
+            let mut less = f.m.clone();
+            less.remove(l);
+            cases.push((format!("{l} removed, then added"), base.clone(), (less, f.inputs.clone(), reached), true));
+        }
+        if reached {
+            cases.push(("the reaches gone".into(), base.clone(), (f.m.clone(), f.inputs.clone(), false), false));
+        }
+        // (On threads of their own, as `a_key_names_exactly_its_reads`.)
+        let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let kept = std::thread::scope(|s| {
+            let hs: Vec<_> = cases
+                .chunks(cases.len().div_ceil(n).max(1))
+                .map(|some| {
+                    let (base, base_sets, base_full) = (&base, &base_sets, &base_full);
+                    let (shadow, full) = (&shadow, &full);
+                    s.spawn(move || {
+                        let mut kept = 0;
+                        for (what, before, after, less) in some {
+                            // (Each change, and for an entry removed its adding back after.)
+                            let less_first = less.then(|| shadow(None, after, &(f.tiles)(&after.0)));
+                            let mut steps = vec![(before, after, base_sets.clone())];
+                            if let Some((_, _, sets, _)) = &less_first {
+                                steps.push((after, base, sets.clone()));
+                            }
+                            for (before, after, sets) in steps {
+                                let ((ours, our_keys, _, held), (theirs, their_keys)) = if as_on_the_lead {
+                                    let tiles = (f.tiles)(&after.0);
+                                    let theirs = full(after, &tiles);
+                                    (shadow(Some((sets, before)), after, &tiles), theirs)
+                                } else {
+                                    let theirs = match &less_first {
+                                        _ if after == base => base_full.clone(),
+                                        Some((p, keys, _, _)) => (p.clone(), keys.clone()),
+                                        None => full(after, &(f.tiles)(&after.0)),
+                                    };
+                                    (shadow(Some((sets, before)), after, &(f.tiles)(&after.0)), theirs)
+                                };
+                                for (id, k) in &their_keys {
+                                    let ok = match our_keys.get(id) {
+                                        Some(ours) => ours == k,
+                                        None => as_on_the_lead,
+                                    };
+                                    assert!(
+                                        ok,
+                                        "{} {} {}: {what}: the incremental plan's key {:?} isn't the full plan's {k:?}",
+                                        f.name,
+                                        id.0,
+                                        id.1,
+                                        our_keys.get(id)
+                                    );
+                                }
+                                if ours != theirs {
+                                    let (a, b) = (format!("{ours:#?}"), format!("{theirs:#?}"));
+                                    let at = a.lines().zip(b.lines()).position(|(x, y)| x != y);
+                                    let line = |s: &str| at.and_then(|i| s.lines().nth(i)).unwrap_or("").to_string();
+                                    panic!(
+                                        "{}: {what}: the incremental plan isn't the full plan, from {:?} against {:?}",
+                                        f.name,
+                                        line(&a),
+                                        line(&b)
+                                    );
+                                }
+                                kept += held;
+                            }
+                        }
+                        kept
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        (cases.len(), kept)
+    }
+
+    /// `incremental_is_full` in the fixtures named `names` (`as_on_the_lead` or not): at least
+    /// `least` keys kept in all, so the plans were made incrementally.
+    fn incremental_is_full_in(names: &[&str], as_on_the_lead: bool, least: usize) {
+        let all = if names == ["held"] { vec![held_fixture()] } else { fixtures() };
+        let mut kept = 0;
+        for f in all.iter().filter(|f| names.contains(&f.name)) {
+            let t = std::time::Instant::now();
+            let (n, k) = incremental_is_full(f, as_on_the_lead);
+            eprintln!("{}: {n} changes, {k} keys kept, in {:.1} s", f.name, t.elapsed().as_secs_f64());
+            kept += k;
+        }
+        assert!(kept >= least, "{kept} keys kept: the plans were made incrementally");
+    }
+
+    /// `incremental_is_full`, a test per fixture or two (each fixture's two hundred changes are
+    /// seconds of plans).
+    #[test]
+    fn an_incremental_plan_is_the_full_plan() {
+        incremental_is_full_in(&["deep"], false, 10_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_is_the_full_plan_built() {
+        incremental_is_full_in(&["built", "pole"], false, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_is_the_full_plan_on_water() {
+        incremental_is_full_in(&["water", "pyramids", "depth"], false, 5_000);
+    }
+
+    /// In the build holding its declarations and coverage records as a load does
+    /// (`held_fixture`): each plan on terrain of its own, then as on the lead.
+    #[test]
+    fn an_incremental_plan_on_held_terrain_is_the_full_plan() {
+        incremental_is_full_in(&["held"], false, 5_000);
+    }
+
+    #[test]
+    fn an_incremental_plan_on_the_lead_is_the_full_plan() {
+        incremental_is_full_in(&["held"], true, 5_000);
+    }
+
     /// The declared elevation datasets are held by the geoid sources too, which converted their
     /// heights (`TerrainTiles::load_elevation`): reading them reads the accepted sources, so a key
     /// naming a converted dataset moves when only the sources' entry changes (task #1076 review).
@@ -7321,7 +7565,7 @@ mod tests {
         let mut m2 = m.clone();
         m2.insert(su.clone(), "sources/inputs/sources/@index.7e7e7e7e7e7e7e7e.json".into());
         let d = Diff { manifest: Changes::of(&m, &m2), ..Default::default() };
-        assert!(rec.graph().moved(&d)[n], "a change of the sources alone moves it");
+        assert!(rec.graph().moved(&d, &[])[n], "a change of the sources alone moves it");
     }
 
     /// Task #668: the polar caps' points (`polar-points`) are a step of their own, keyed by the

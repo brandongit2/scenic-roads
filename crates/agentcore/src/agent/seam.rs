@@ -360,11 +360,12 @@ pub trait Plan: Send + Sync {
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String>;
 }
 
-/// What a plan's round is asked by: the coverage, the pass, the records and the keys' inputs.
+/// What a plan's round is asked by: the coverage (`covs.all`; each region's, `Publish::each`), the
+/// pass, the records and the keys' inputs.
 #[derive(Clone, Copy)]
 pub struct Round<'a> {
     pub root: &'a NasRoot,
-    pub cov: &'a Coverage,
+    pub covs: &'a std::sync::Arc<super::Coverages>,
     pub date: &'a str,
     pub manifest: &'a BTreeMap<String, String>,
     pub inputs: &'a BTreeMap<String, String>,
@@ -382,42 +383,34 @@ pub struct PassAsk<'a> {
 /// Each region's steps, by region and step: its targets done of all (`PlanHeld::region_counts`).
 pub type RegionCounts = BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>;
 
-/// What the last plan's diff would have kept of the round before's keys, by what each read
-/// (docs/incremental-planning.md step 3, in shadow: the plan is made whole all the same), against
-/// how they came out (`PlanHeld::shadow`). `said`: the line the agent's log has of it. For the
-/// tests, the keys the diff would have kept that came out changed (a read the recording missed),
-/// and those it moved that came out the same (a read that changed under a key it didn't move),
-/// "<step> <target>" each; apart from these, those moved by their own coverage record put
-/// (`own_record`: a target's first run records what it asked, buildstore::asked, which its key
-/// reads: the same key, read again).
+/// A plan's shadow (docs/incremental-planning.md step 4): the plan made again beside it, on a
+/// worker of the planner's own, incrementally (the keys of the shadow before that the diff since
+/// doesn't move kept, the rest derived), and compared with it (`PlanHeld::shadow`). `said`: the
+/// agent's log line of it. For the tests: each difference ("<step> <target> …" for a key, "the
+/// plan …" for the `Planned`), and how many keys it kept and derived.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shadow {
     pub said: String,
     #[cfg(any(test, feature = "testkit"))]
-    pub kept_changed: Vec<String>,
+    pub differs: Vec<String>,
     #[cfg(any(test, feature = "testkit"))]
-    pub moved_unchanged: Vec<String>,
+    pub kept: usize,
     #[cfg(any(test, feature = "testkit"))]
-    pub own_record: Vec<String>,
+    pub derived: usize,
 }
 
 impl Shadow {
-    /// The line `said`, with its lists kept for the tests alone.
+    /// The line `said`, with what the tests read kept for them alone.
     #[cfg_attr(not(any(test, feature = "testkit")), allow(unused_variables))]
-    pub fn new(
-        said: String,
-        kept_changed: Vec<String>,
-        moved_unchanged: Vec<String>,
-        own_record: Vec<String>,
-    ) -> Shadow {
+    pub fn new(said: String, differs: Vec<String>, kept: usize, derived: usize) -> Shadow {
         Shadow {
             said,
             #[cfg(any(test, feature = "testkit"))]
-            kept_changed,
+            differs,
             #[cfg(any(test, feature = "testkit"))]
-            moved_unchanged,
+            kept,
             #[cfg(any(test, feature = "testkit"))]
-            own_record,
+            derived,
         }
     }
 }
@@ -446,8 +439,8 @@ pub trait PlanHeld: Send {
     /// The plan of this round, with the depth's targets for GC. `refilter`: the kept plan again,
     /// while its keys' context reads the same, instead of planning.
     fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<super::gc::DepthKeep>);
-    /// What the last plan's diff would have kept of the keys before it (`Shadow`), for the tests;
-    /// None before a second plan. A filtering again derives no keys: the plan before's still.
+    /// The last plan's shadow (`Shadow`), for the tests, once its worker has made it (waited for);
+    /// None before a plan. A filtering again plans nothing: the plan before's still.
     #[cfg(any(test, feature = "testkit"))]
     fn shadow(&self) -> Option<Shadow> {
         None
@@ -482,10 +475,10 @@ pub trait PlanHeld: Send {
     /// the plan without them.)
     #[cfg(any(test, feature = "testkit"))]
     fn keep_for_test(&self, _p: Planned) {}
-    /// Whether the plans' keys record what they read (they do: `shadow`; off, for a test measuring
-    /// what recording costs).
+    /// Whether each plan has its shadow made (it has: `shadow`; off, for a test measuring what the
+    /// shadow costs the plan).
     #[cfg(any(test, feature = "testkit"))]
-    fn record_for_test(&self, _on: bool) {}
+    fn shadow_for_test(&self, _on: bool) {}
 }
 
 impl std::fmt::Debug for dyn Plan {

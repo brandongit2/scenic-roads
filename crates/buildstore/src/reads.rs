@@ -218,6 +218,9 @@ struct Rec {
     /// The derivations under way, innermost last.
     stack: Vec<Node>,
     nodes: Vec<Node>,
+    /// The keys kept from a plan before (`Recorder::after`): their graph, and each node let go or
+    /// not. The nodes recorded now are numbered after its.
+    base: Option<(Graph, Vec<bool>)>,
 }
 
 /// A key's reads (`Kind` on top, then the name's hash: `hashed`), and the nodes of the keys read
@@ -264,7 +267,7 @@ impl Recorder {
         n.reads.shrink_to_fit();
         n.kids.sort_unstable();
         n.kids.dedup();
-        let id = r.nodes.len() as u32;
+        let id = (r.base.as_ref().map_or(0, |(g, _)| g.nodes) + r.nodes.len()) as u32;
         r.nodes.push(n);
         if let Some(p) = r.stack.last_mut() {
             p.kids.push(id);
@@ -281,6 +284,28 @@ impl Recorder {
 
     /// The reads recorded, with their reverse index.
     pub fn graph(self) -> Graph {
+        self.renumbered().0
+    }
+
+    /// A recorder going on from the keys of graph `g` (theplan's shadow plan,
+    /// docs/incremental-planning.md step 4): its nodes kept but those `gone` names
+    /// (`Graph::moved`), each found by its id as before (`found`); the nodes recorded now numbered
+    /// after them.
+    pub fn after(g: Graph, gone: Vec<bool>) -> Recorder {
+        assert_eq!(g.nodes, gone.len(), "each node let go or kept");
+        Recorder(RefCell::new(Rec { preds: g.preds.clone(), base: Some((g, gone)), ..Default::default() }))
+    }
+
+    /// The first node id it records under: the number of nodes of the graph it went on from
+    /// (`after`), let go or not.
+    pub fn first(&self) -> u32 {
+        self.0.borrow().base.as_ref().map_or(0, |(g, _)| g.nodes as u32)
+    }
+
+    /// The reads recorded and those kept (`after`), with their reverse index, the nodes numbered
+    /// anew without those let go; and each node's id as it was (the kept graph's, then those
+    /// recorded) to its new one (`u32::MAX`: let go).
+    pub fn renumbered(self) -> (Graph, Vec<u32>) {
         Graph::of(self.0.into_inner())
     }
 }
@@ -288,6 +313,7 @@ impl Recorder {
 /// What each key of a plan read (`Recorder::graph`), as the reverse index alone: (read, node) by
 /// read, (kid, reader) by kid. A node's own reads aren't kept apart (the diff asks only who read
 /// what changed).
+#[derive(Clone)]
 pub struct Graph {
     preds: Vec<fn(&str, bool) -> bool>,
     nodes: usize,
@@ -312,23 +338,46 @@ pub struct Size {
 }
 
 impl Graph {
-    fn of(r: Rec) -> Graph {
+    fn of(r: Rec) -> (Graph, Vec<u32>) {
         assert!(r.stack.is_empty(), "a derivation left unended");
+        let (mut by_read, mut parents, kept, gone) = match r.base {
+            Some((g, gone)) => (g.by_read, g.parents, g.nodes, gone),
+            None => (Vec::new(), Vec::new(), 0, Vec::new()),
+        };
+        let mut renumber = vec![u32::MAX; kept + r.nodes.len()];
+        let mut nodes = 0u32;
+        for (i, n) in renumber.iter_mut().enumerate() {
+            if i >= kept || !gone[i] {
+                *n = nodes;
+                nodes += 1;
+            }
+        }
+        // (The kept graph's pairs naming a node let go dropped, the rest renumbered, in place.)
+        by_read.retain_mut(|(_, n)| {
+            *n = renumber[*n as usize];
+            *n != u32::MAX
+        });
+        parents.retain_mut(|(k, p)| {
+            (*k, *p) = (renumber[*k as usize], renumber[*p as usize]);
+            *k != u32::MAX && *p != u32::MAX
+        });
         let n: usize = r.nodes.iter().map(|n| n.reads.len()).sum();
         let held: usize = std::mem::size_of::<Node>() * r.nodes.capacity()
             + r.nodes.iter().map(|n| 8 * n.reads.capacity() + 4 * n.kids.capacity()).sum::<usize>();
-        let nodes = r.nodes.len();
-        let mut by_read = Vec::with_capacity(n);
-        let mut parents: Vec<(u32, u32)> = Vec::new();
+        by_read.reserve(n);
         for (i, n) in r.nodes.into_iter().enumerate() {
-            by_read.extend(n.reads.iter().map(|&x| (x, i as u32)));
-            parents.extend(n.kids.iter().map(|&k| (k, i as u32)));
+            let id = renumber[kept + i];
+            by_read.extend(n.reads.iter().map(|&x| (x, id)));
+            // (A key found inside it is one its memo holds: never one let go.)
+            parents.extend(n.kids.iter().map(|&k| (renumber[k as usize], id)));
         }
+        assert!(parents.iter().all(|&(k, _)| k != u32::MAX), "a key let go found inside one recorded");
         let peak = held + 16 * by_read.capacity() + 8 * parents.capacity();
         by_read.sort_unstable();
+        by_read.shrink_to_fit();
         parents.sort_unstable();
         parents.shrink_to_fit();
-        Graph { preds: r.preds, nodes, by_read, parents, peak }
+        (Graph { preds: r.preds, nodes: nodes as usize, by_read, parents, peak }, renumber)
     }
 
     /// Its size and the bytes it holds.
@@ -350,12 +399,19 @@ impl Graph {
         self.by_read[i..].iter().take_while(move |&&(r, _)| r == read).map(|&(_, n)| n)
     }
 
-    /// Which nodes `d` moves: those that read something it changed, and those that read a node it
-    /// moves (a key found inside them). Each node's, by node id.
-    pub fn moved(&self, d: &Diff) -> Vec<bool> {
+    /// Which nodes `d` moves: those that read something it changed, those `also` names (keys that
+    /// came out unknown: never kept), and those that read a node it moves (a key found inside
+    /// them). Each node's, by node id.
+    pub fn moved(&self, d: &Diff, also: &[u32]) -> Vec<bool> {
         let n = self.nodes;
         let mut moved = vec![false; n];
         let mut todo: Vec<u32> = Vec::new();
+        for &i in also {
+            if !moved[i as usize] {
+                moved[i as usize] = true;
+                todo.push(i);
+            }
+        }
         let hit = |read: u64, moved: &mut Vec<bool>, todo: &mut Vec<u32>| {
             for i in self.readers(read) {
                 if !moved[i as usize] {
@@ -560,7 +616,7 @@ mod tests {
         assert!(reads_of(&g, none).is_empty());
         let moved = |new: &Map| {
             let d = Diff { manifest: Changes::of(&m, new), ..Default::default() };
-            let mv = g.moved(&d);
+            let mv = g.moved(&d, &[]);
             [entry, absent, has, prefix, set, held, outer, none].map(|n| mv[n as usize])
         };
         let mut n = m.clone();
@@ -594,9 +650,9 @@ mod tests {
         assert_eq!(reads_of(&g, n as u32), [format!("in {}", read("entry", "k"))]);
         let changed = map(&[("k", "2")]);
         let d = Diff { manifest: Changes::of(&m, &changed), ..Default::default() };
-        assert!(!g.moved(&d)[n]);
+        assert!(!g.moved(&d, &[])[n]);
         let d = Diff { inputs: Changes::of(&i, &changed), ..Default::default() };
-        assert!(g.moved(&d)[n]);
+        assert!(g.moved(&d, &[])[n]);
     }
 
     /// The map whole and the load state are reads too: any change moves the first, a change of
@@ -614,8 +670,64 @@ mod tests {
         let load = rec.end() as usize;
         let g = rec.graph();
         let d = Diff { manifest: Changes::of(&m, &map(&[("b", "1")])), ..Default::default() };
-        assert_eq!((g.moved(&d)[whole], g.moved(&d)[load]), (true, false));
+        assert_eq!((g.moved(&d, &[])[whole], g.moved(&d, &[])[load]), (true, false));
         let d = Diff { load: true, ..Default::default() };
-        assert_eq!((g.moved(&d)[whole], g.moved(&d)[load]), (false, true));
+        assert_eq!((g.moved(&d, &[])[whole], g.moved(&d, &[])[load]), (false, true));
+    }
+
+    /// A recorder going on from a kept graph (`Recorder::after`, step 4): the nodes let go are
+    /// gone with their reads and edges, a node `also` names moves its readers, the kept ones read
+    /// as before under their new ids, a kept key found inside a new one moves it, and the new
+    /// nodes are numbered after the kept graph's.
+    #[test]
+    fn a_kept_graph_goes_on_without_what_moved() {
+        let m = map(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let rec = Recorder::default();
+        let v = Reads::plain(&m).recording(&rec);
+        let key = |rec: &Recorder, f: &dyn Fn()| {
+            rec.begin();
+            f();
+            rec.end()
+        };
+        let a = key(&rec, &|| {
+            let _ = v.get("a");
+        });
+        let b = key(&rec, &|| {
+            let _ = v.get("b");
+        });
+        rec.begin();
+        rec.found(b);
+        assert_eq!(rec.end(), 2, "the key b was found in");
+        let g = rec.graph();
+        assert_eq!(g.size().nodes, 3);
+        // (b unknown: let go, its reader with it.)
+        let gone = g.moved(&Diff::default(), &[b]);
+        assert_eq!(gone, [false, true, true]);
+        let rec = Recorder::after(g, gone);
+        assert_eq!(rec.first(), 3);
+        let v = Reads::plain(&m).recording(&rec);
+        let c = key(&rec, &|| {
+            let _ = v.get("c");
+        });
+        let reads_a = {
+            rec.begin();
+            rec.found(a);
+            rec.end()
+        };
+        assert_eq!((c, reads_a), (3, 4));
+        let (g, renumber) = rec.renumbered();
+        assert_eq!(renumber, [0, u32::MAX, u32::MAX, 1, 2]);
+        assert_eq!(g.size().nodes, 3);
+        assert_eq!(reads_of(&g, 0), [read("entry", "a")]);
+        assert_eq!(reads_of(&g, 1), [read("entry", "c")]);
+        assert_eq!((g.size().reads, g.size().edges), (2, 1), "b's reads and its reader's edge let go");
+        let changed = |l: &str| {
+            let mut n = m.clone();
+            n.insert(l.into(), "9".into());
+            g.moved(&Diff { manifest: Changes::of(&m, &n), ..Default::default() }, &[])
+        };
+        assert_eq!(changed("a"), [true, false, true], "a's change moves a and the key it was found in");
+        assert_eq!(changed("c"), [false, true, false]);
+        assert_eq!(changed("b"), [false, false, false], "b let go: none reads it now");
     }
 }

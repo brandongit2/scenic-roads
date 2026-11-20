@@ -239,8 +239,11 @@ impl Phases {
 
     /// The part enters phase `name` ("": none, its work over): the one that ends is logged if it
     /// took `SLOW_PHASE` or more (but `WAIT`); it, and how long it took. A mutex held only to swap
-    /// the phase.
+    /// the phase. Nothing on a thread `unphased`.
     pub fn enter(&self, name: &'static str) -> Option<(&'static str, Duration)> {
+        if UNPHASED.with(std::cell::Cell::get) {
+            return None;
+        }
         let next = (!name.is_empty()).then(|| (name, std::time::Instant::now()));
         let was = std::mem::replace(&mut *self.now.lock().unwrap_or_else(|e| e.into_inner()), next)?;
         let took = was.1.elapsed();
@@ -254,6 +257,17 @@ impl Phases {
     pub fn now(&self) -> Option<&'static str> {
         self.now.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, _)| n)
     }
+}
+
+thread_local! {
+    /// This thread's phases are no part's (`unphased`).
+    static UNPHASED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread runs a part's code beside the part, its phases not the part's: they go nowhere
+/// (the plan's shadow, which plans as the plan does on a worker of its own: pipeline's theplan).
+pub fn unphased() {
+    UNPHASED.with(|u| u.set(true));
 }
 
 /// The loop's phases (`phase`).

@@ -13,10 +13,12 @@ use agentcore::agent::seam::{
 };
 use agentcore::pool::records::Keys;
 use roads::reach::Reaches;
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use store::nasfs::{NasPath, NasRoot};
 
 /// The plan, as the runtime holds it.
@@ -197,8 +199,8 @@ impl Plan for ThePlan {
             reach_now: RefCell::default(),
             kept: RefCell::default(),
             memo: RefCell::default(),
-            read_sets: RefCell::default(),
-            recording: std::cell::Cell::new(true),
+            shadow: RefCell::default(),
+            shadowing: Cell::new(true),
         })
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -344,15 +346,15 @@ struct Held {
     /// The plan's keys, handed on to what derives keys of the same context this round, and kept with
     /// the plan. It's taken again only while its context reads the same (`KeyMemo::serves`): a pass
     /// newly on the NAS, or an index read that couldn't be before, and `build::plan` is made again.
-    /// Recording what each key reads (`KeyMemo::recording`), for `read_sets`.
     memo: RefCell<Option<KeyMemo>>,
-    /// The read sets, in shadow (docs/incremental-planning.md step 3).
-    read_sets: RefCell<ReadSetsHeld>,
-    /// Whether the plans' keys record what they read (off only in a test of what that costs).
-    recording: std::cell::Cell<bool>,
+    /// The plans' shadow (docs/incremental-planning.md step 4): its worker, started with the first
+    /// plan.
+    shadow: RefCell<Option<Shadowing>>,
+    /// Whether each plan has its shadow made (off only in a test of what it costs).
+    shadowing: Cell<bool>,
 }
 
-/// What a plan's keys read their context as, for the next plan's diff: the manifest and the
+/// What a shadow plan's keys read their context as, for the next one's diff: the manifest and the
 /// planner's inputs as its round read them, the rest of its context as one digest
 /// (`build::context_rest` of the reaches the plan's keys read: what changing moves every key) and
 /// what of the terrain's state the entries don't show (`TerrainTiles::load_state`).
@@ -364,11 +366,6 @@ struct Context {
 }
 
 impl Context {
-    fn of(r: &Round, reach: Option<&str>, load: u64) -> Context {
-        let rest = build::context_rest(r.cov, r.date, reach);
-        Context { manifest: r.manifest.clone(), inputs: r.inputs.clone(), rest, load }
-    }
-
     /// The bytes it holds, about: each entry's two strings and its slot.
     fn bytes(&self) -> usize {
         [&self.manifest, &self.inputs]
@@ -379,83 +376,208 @@ impl Context {
     }
 }
 
-/// The read sets in shadow (docs/incremental-planning.md step 3): the context of the last plan made
-/// (`round`, while its keys serve its round); once the next starts, its round's keys and what each
-/// read (`last`, `KeyMemo::read_sets`: the reverse index built), until that plan's diff tells which
-/// it would have kept (logged; for the tests, `said`); then let go.
-#[derive(Default)]
-struct ReadSetsHeld {
-    round: Option<Context>,
-    last: Option<(Context, build::ReadSets, std::time::Duration)>,
-    #[cfg(test)]
-    said: Option<Shadow>,
+/// What a plan's shadow is made from (docs/incremental-planning.md §6, step 4): a copy of the
+/// plan's round as the plan read it, and what the plan made of it. Copied on the plan's thread
+/// (its manifest, inputs and done keys, its result and keys: tens of milliseconds); the terrain's
+/// indexes and memos, the reaches and the coverages are shared, not copied.
+struct Ask {
+    /// The plan's number among those shadowed (`Shadowing::asked`).
+    n: u64,
+    covs: Arc<agentcore::agent::Coverages>,
+    date: String,
+    manifest: BTreeMap<String, String>,
+    inputs: BTreeMap<String, String>,
+    done: Keys,
+    /// The reaches the plan's keys read, by what they were read from.
+    reach: Option<(String, Arc<Reaches>)>,
+    tiles: TerrainTiles,
+    on_map: BTreeMap<String, bool>,
+    served: BTreeMap<String, String>,
+    since_catalogue: Option<u64>,
+    held_for: Option<u64>,
+    held: bool,
+    way: agentcore::agent::publish::Publishing,
+    /// The plan: its result, its keys, and its thread's CPU time and the wall time it took.
+    planned: Planned,
+    keys: HashMap<(String, String), Option<String>>,
+    cpu: Duration,
+    wall: Duration,
 }
 
-/// How many of the keys `say` names it lists by name.
+impl Ask {
+    /// The publishing it plans by, as the plan's (`Publish::each` is the coverages' own).
+    fn publish(&self) -> Publish<'_> {
+        Publish {
+            each: &self.covs.each,
+            on_map: &self.on_map,
+            served: &self.served,
+            since_catalogue: self.since_catalogue,
+            held_for: self.held_for,
+            held: self.held,
+            way: self.way,
+        }
+    }
+}
+
+/// The plans' shadow (docs/incremental-planning.md §6, step 4): a worker, a thread of the plan
+/// part's own at the utility QoS, taking each plan's `Ask` (the latest: those it had no time for
+/// are skipped, the diff then spanning them) and holding what its shadow plans kept (`Kept`),
+/// none of it shared with the plan. Its line and any difference are logged.
+struct Shadowing {
+    asks: Sender<Ask>,
+    /// How many plans it was asked to shadow.
+    asked: u64,
+    #[cfg(test)]
+    said: std::sync::mpsc::Receiver<(u64, Shadow)>,
+    #[cfg(test)]
+    last: (u64, Option<Shadow>),
+}
+
+/// What a shadow plan keeps for the next (its worker's): the context its keys read and the keys
+/// with what each read.
+struct Kept {
+    at: Context,
+    sets: build::ReadSets,
+}
+
+impl Shadowing {
+    /// Its worker started; None, said, when no thread can be.
+    fn start() -> Option<Shadowing> {
+        let (asks, taken) = channel::<Ask>();
+        #[cfg(test)]
+        let (say, said) = channel();
+        let run = move || {
+            nasread::unphased();
+            agentcore::agent::forecast::low_priority();
+            let mut kept: Option<Kept> = None;
+            while let Ok(mut ask) = taken.recv() {
+                let mut skipped = 0;
+                while let Ok(next) = taken.try_recv() {
+                    (ask, skipped) = (next, skipped + 1);
+                }
+                let n = ask.n;
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shadow(&mut kept, ask, skipped)));
+                let s = match made {
+                    Ok(s) => s,
+                    Err(e) => {
+                        kept = None;
+                        let why = e
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
+                        let said = format!(
+                            "plan shadow {n}: panicked ({}); the next derives every key",
+                            why.unwrap_or_default()
+                        );
+                        Shadow::new(said.clone(), vec![said], 0, 0)
+                    }
+                };
+                eprintln!("agent: {}", s.said);
+                #[cfg(test)]
+                let _ = say.send((n, s));
+            }
+        };
+        match std::thread::Builder::new().name("plan shadow".into()).spawn(run) {
+            Ok(_) => Some(Shadowing {
+                asks,
+                asked: 0,
+                #[cfg(test)]
+                said,
+                #[cfg(test)]
+                last: (0, None),
+            }),
+            Err(e) => {
+                eprintln!("agent: the plan's shadow has no thread now ({e}); tried again with the next plan");
+                None
+            }
+        }
+    }
+}
+
+/// How many of the differing keys a shadow's lines say what changed in (`key_lines_apart`); the rest
+/// are named.
 const SAID_KEYS: usize = 5;
 
-impl ReadSetsHeld {
-    /// The round's keys (`memo`) let go: what they read kept, with its reverse index.
-    fn let_go(&mut self, memo: Option<KeyMemo>) {
-        self.last = None;
-        let (Some(memo), Some(at)) = (memo, self.round.take()) else { return };
-        let t = std::time::Instant::now();
-        self.last = memo.read_sets().map(|s| (at, s, t.elapsed()));
-    }
-
-    /// A plan of context `now` made with `memo`: of the round before's keys, those its diff would
-    /// have kept, against what came out (`Shadow`), logged; `now` kept for the next.
-    fn planned(&mut self, now: Context, memo: &KeyMemo) {
-        let said = self.last.take().map(|(at, sets, built)| compare(&at, &sets, built, &now, memo));
-        if let Some(s) = &said {
-            eprintln!("agent: {}", s.said);
-        }
-        #[cfg(test)]
-        {
-            self.said = said;
-        }
-        self.round = Some(now);
-    }
-}
-
-/// Of the keys `sets` read in context `at`, those the diff to `now` would have kept, against how
-/// `memo` (the plan of `now`) has them. The rest of the context changed (`Context::rest`), none
-/// would be.
-fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now: &Context, memo: &KeyMemo) -> Shadow {
+/// The plan of `ask` made again incrementally: the keys of `kept` (the shadow before's, taken) that
+/// the diff since doesn't move kept, the rest derived (`KeyMemo::after`); compared with the plan's,
+/// key by key and `Planned` whole. Its own keys left in `kept` for the next, but after a
+/// difference: then none, and the next derives every key (the state rebuilt, as the plan's own).
+/// Its line (`Shadow::said`), then a line for each key that differs: by step and target, its key
+/// and the plan's, kept or derived, and for the first few the lines of what it reads that changed
+/// since it was kept.
+fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
     use buildstore::reads::{Changes, Diff};
-    let t = std::time::Instant::now();
-    let d = Diff {
-        manifest: Changes::of(&at.manifest, &now.manifest),
-        inputs: Changes::of(&at.inputs, &now.inputs),
-        load: at.load != now.load,
-    };
-    let all = at.rest != now.rest;
-    let moved = sets.graph.moved(&d);
-    let diffed = t.elapsed();
-    let (mut keep, mut asked, mut same) = (0, 0, 0);
-    let (mut kept_changed, mut moved_unchanged, mut own_record) = (Vec::new(), Vec::new(), Vec::new());
-    // (The records added or changed: a target's own, its run's, moves its key, which reads it.)
-    let changed: std::collections::HashSet<&str> = d.manifest.names.iter().map(|(l, _)| l.as_str()).collect();
-    for ((step, target), (k, node)) in &sets.keys {
-        let kept = !all && !moved[*node as usize] && k.is_some();
-        keep += usize::from(kept);
-        let Some(again) = memo.derived(step, target) else { continue };
-        asked += 1;
-        let unchanged = k.is_some() && *k == again;
-        same += usize::from(unchanged);
-        match (kept, unchanged) {
-            (true, false) => kept_changed.push(format!("{step} {target}")),
-            (false, true) if changed.contains(buildstore::asked::target_logical(step, target).as_str()) => {
-                own_record.push(format!("{step} {target}"))
-            }
-            (false, true) => moved_unchanged.push(format!("{step} {target}")),
+    let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
+    let reach = ask.reach.as_ref().map(|(_, r)| &**r);
+    let rest = build::context_rest(&ask.covs.all, &ask.date, ask.reach.as_ref().map(|(c, _)| c.as_str()));
+    let load = ask.tiles.load_state();
+    let (at, sets) = kept.take().map(|k| (k.at, k.sets)).unzip();
+    let d = at.as_ref().map_or_else(Diff::default, |at| Diff {
+        manifest: Changes::of(&at.manifest, &ask.manifest),
+        inputs: Changes::of(&at.inputs, &ask.inputs),
+        load: at.load != load,
+    });
+    let all = at.as_ref().is_some_and(|at| at.rest != rest);
+    let had = sets.as_ref().map(|s| s.keys.len());
+    let (memo, let_go) = KeyMemo::after(sets, &d, all);
+    let planned = build::plan_with(
+        &memo,
+        &ask.covs.all,
+        &ask.date,
+        &ask.manifest,
+        &ask.done,
+        &ask.inputs,
+        reach,
+        &ask.tiles,
+        ask.publish(),
+    );
+    let (wall, cpu) = (t.elapsed(), Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu)));
+    // (Each key against the plan's: kept, or derived here.)
+    let (mut kept_n, mut derived_n) = (0, 0);
+    let mut apart: Vec<(String, String, Option<String>, Option<String>, bool)> = Vec::new();
+    memo.each(|(step, t), k, was_kept| {
+        if was_kept {
+            kept_n += 1;
+        } else {
+            derived_n += 1;
+        }
+        match ask.keys.get(&(step.clone(), t.clone())) {
+            Some(theirs) if theirs != k => apart.push((step.clone(), t.clone(), k.clone(), theirs.clone(), was_kept)),
             _ => {}
         }
+    });
+    apart.sort_unstable();
+    // (The keys the diff let go that the plan has as they were: a read moved under a key not naming
+    // it so, or a target's own coverage record put, which its key reads: buildstore::asked.)
+    let changed: std::collections::HashSet<&str> = d.manifest.names.iter().map(|(l, _)| l.as_str()).collect();
+    let (mut moved_same, mut own_record) = (Vec::new(), Vec::new());
+    for ((step, t), was) in &let_go {
+        if was.is_some() && ask.keys.get(&(step.clone(), t.clone())) == Some(was) {
+            if changed.contains(buildstore::asked::target_logical(step, t).as_str()) {
+                own_record.push(format!("{step} {t}"));
+            } else {
+                moved_same.push(format!("{step} {t}"));
+            }
+        }
     }
-    kept_changed.sort_unstable();
-    moved_unchanged.sort_unstable();
+    moved_same.sort_unstable();
     own_record.sort_unstable();
-    let size = sets.graph.size();
+    let plan_apart = (planned != ask.planned).then(|| first_difference(&planned, &ask.planned));
+    let mut lines: Vec<String> = Vec::new();
+    for (i, (step, t, ours, theirs, was_kept)) in apart.iter().enumerate() {
+        let how = if *was_kept { "kept" } else { "derived" };
+        let mut l = format!("plan shadow {}: {step} {t} {how} as {ours:?}, the plan's {theirs:?}", ask.n);
+        if *was_kept && i < SAID_KEYS {
+            if let Some(at) = &at {
+                l.push_str(&key_lines_apart(step, t, at, &ask));
+            }
+        }
+        lines.push(l);
+    }
+    if let Some(p) = &plan_apart {
+        lines.push(format!("plan shadow {}: the plan {p}", ask.n));
+    }
+    let clean = lines.is_empty();
     let by_step = |v: &[String]| -> String {
         let mut n: BTreeMap<&str, usize> = BTreeMap::new();
         for k in v {
@@ -463,39 +585,158 @@ fn compare(at: &Context, sets: &build::ReadSets, built: std::time::Duration, now
         }
         let steps: Vec<String> = n.iter().map(|(s, c)| format!("{s} {c}")).collect();
         let named: Vec<&str> = v.iter().take(SAID_KEYS).map(String::as_str).collect();
-        format!("{} ({}: {})", v.len(), steps.join(", "), named.join(", "))
+        if v.is_empty() {
+            "0".into()
+        } else {
+            format!("{} ({}: {})", v.len(), steps.join(", "), named.join(", "))
+        }
+    };
+    let before = match (had, all) {
+        (None, _) => "no shadow before it: every key derived".to_string(),
+        (Some(h), true) => format!("the coverage, pass or reaches changed: none of the shadow before's {h} keys kept"),
+        (Some(h), false) => format!(
+            "of the shadow before's {h} keys, the diff ({} entries, {} inputs{}) kept {kept_n}",
+            d.manifest.names.len(),
+            d.inputs.names.len(),
+            if d.load { ", the load" } else { "" },
+        ),
+    };
+    let summary = if clean {
+        "the same as the plan, key by key and whole".to_string()
+    } else {
+        let keys = apart.iter().filter(|a| a.4).count();
+        format!(
+            "DIFFERS from the plan: {keys} kept keys, {} derived{}",
+            apart.len() - keys,
+            if plan_apart.is_some() { ", the plan" } else { "" }
+        )
+    };
+    let (n, plan_cpu, plan_wall) = (ask.n, ask.cpu, ask.wall);
+    // (Kept for the next as the round read it: its manifest and inputs not copied again.)
+    let Ask { manifest, inputs, .. } = ask;
+    *kept = if clean {
+        memo.read_sets().map(|sets| Kept { at: Context { manifest, inputs, rest, load }, sets })
+    } else {
+        None
+    };
+    let holds = match kept.as_ref() {
+        Some(k) => {
+            let size = k.sets.graph.size();
+            format!(
+                "it keeps {} keys and {} reads, {:.1} MB (the keys {:.1}, their reverse index {:.1}, at most {:.1} as it was made, their context {:.1})",
+                k.sets.keys.len(),
+                size.reads,
+                (k.sets.bytes() + size.bytes + k.at.bytes()) as f64 / 1e6,
+                k.sets.bytes() as f64 / 1e6,
+                size.bytes as f64 / 1e6,
+                size.peak as f64 / 1e6,
+                k.at.bytes() as f64 / 1e6,
+            )
+        }
+        None => "it keeps nothing: the next derives every key".to_string(),
     };
     let said = format!(
         concat!(
-            "read sets (shadow): the round before's {} keys made {} reads ({} told apart, {} kids), its reverse ",
-            "index {:.1} MB (at most {:.1} MB as it was built), in {} ms; the keys {:.1} MB, their context ",
-            "{:.1} MB, now's {:.1} MB; the diff ({} entries, {} inputs{}{}) in {} ms would keep {}; ",
-            "of the {} derived again, {} unchanged; kept but changed {}; moved but unchanged {}, and by their ",
-            "own coverage record put {}"
+            "plan shadow {} (docs/incremental-planning.md step 4): {}; {}, {} derived, moved but the same {}, ",
+            "and by their own coverage record put {}; {:.1} s CPU in {:.1} s against the plan's {:.1} s in {:.1} s{}; {}"
         ),
-        size.nodes,
-        size.reads,
-        size.distinct,
-        size.edges,
-        size.bytes as f64 / 1e6,
-        size.peak as f64 / 1e6,
-        built.as_millis(),
-        sets.bytes() as f64 / 1e6,
-        at.bytes() as f64 / 1e6,
-        now.bytes() as f64 / 1e6,
-        d.manifest.names.len(),
-        d.inputs.names.len(),
-        if d.load { ", the load" } else { "" },
-        if all { ", the coverage, pass or reaches: all moved" } else { "" },
-        diffed.as_millis(),
-        keep,
-        asked,
-        same,
-        by_step(&kept_changed),
-        by_step(&moved_unchanged),
+        n,
+        summary,
+        before,
+        derived_n,
+        by_step(&moved_same),
         by_step(&own_record),
+        cpu.as_secs_f64(),
+        wall.as_secs_f64(),
+        plan_cpu.as_secs_f64(),
+        plan_wall.as_secs_f64(),
+        if skipped > 0 { format!(", {skipped} plans before it skipped") } else { String::new() },
+        holds,
     );
-    Shadow::new(said, kept_changed, moved_unchanged, own_record)
+    for l in &lines {
+        eprintln!("agent: {l}");
+    }
+    Shadow::new(said, lines, kept_n, derived_n)
+}
+
+/// What target `t`'s key of `step` reads that changed since it was kept: its key lines now
+/// against those of the context it was kept in (`at`'s manifest and inputs, the rest as now),
+/// the lines of either side alone, a few of each.
+fn key_lines_apart(step: &str, t: &str, at: &Context, ask: &Ask) -> String {
+    let reach = ask.reach.as_ref().map(|(_, r)| &**r);
+    let lines = |m, i| {
+        let x = KeyCtx::new(&ask.covs.all, &ask.date, m, i, reach, &ask.tiles);
+        super::steps::key_lines(step, t, &x).unwrap_or_default()
+    };
+    let (now, then) = (lines(&ask.manifest, &ask.inputs), lines(&at.manifest, &at.inputs));
+    let (a, b): (std::collections::HashSet<&String>, std::collections::HashSet<&String>) =
+        (now.iter().collect(), then.iter().collect());
+    let only = |v: &[String], other: &std::collections::HashSet<&String>, sign: &str| -> (usize, Vec<String>) {
+        let o: Vec<&String> = v.iter().filter(|l| !other.contains(l)).collect();
+        (o.len(), o.iter().take(3).map(|l| format!("{sign} {l}")).collect())
+    };
+    let ((na, sa), (nb, sb)) = (only(&now, &b, "+"), only(&then, &a, "-"));
+    format!(
+        "; its key lines ({} now): {na} now alone, {nb} then alone{}",
+        now.len(),
+        sa.iter().chain(&sb).map(|l| format!("; {l}")).collect::<String>()
+    )
+}
+
+/// Where plan `a` first differs from `b`: the field, and each around the first character apart.
+fn first_difference(a: &Planned, b: &Planned) -> String {
+    let Planned {
+        work,
+        ready,
+        building,
+        regions,
+        drops,
+        low,
+        catalogue_held,
+        catalogue_due,
+        unknown,
+        backfill,
+        publishing,
+        idle,
+        left,
+        held,
+        checklist,
+        built,
+    } = a;
+    let apart = |what: &str, a: String, b: String| -> String {
+        let i =
+            a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y).map_or(a.len().min(b.len()), |((i, _), _)| i);
+        let around = |s: &str| -> String {
+            s.chars().skip(s[..i.min(s.len())].chars().count().saturating_sub(60)).take(160).collect()
+        };
+        format!("differs in its {what}: …{}… against the plan's …{}…", around(&a), around(&b))
+    };
+    macro_rules! field {
+        ($($f:ident),*) => {
+            $(if *$f != b.$f {
+                return apart(stringify!($f), format!("{:?}", $f), format!("{:?}", b.$f));
+            })*
+        };
+    }
+    field!(
+        work,
+        ready,
+        building,
+        regions,
+        drops,
+        low,
+        catalogue_held,
+        catalogue_due,
+        unknown,
+        backfill,
+        publishing,
+        idle,
+        left,
+        held,
+        checklist,
+        built
+    );
+    "differs".to_string()
 }
 
 impl Held {
@@ -545,10 +786,55 @@ impl Held {
         let reach = self.reach_now.borrow().clone();
         let tiles = self.terrain_tiles(r.root, r.manifest);
         let memo = self.memo.borrow();
-        let x = KeyCtx::new(r.cov, r.date, r.manifest, r.inputs, reach.as_ref().map(|(_, r)| &**r), &tiles);
+        let x = KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_ref().map(|(_, r)| &**r), &tiles);
         match memo.as_ref() {
             Some(m) => f(&x.memo(m)),
             None => f(&x),
+        }
+    }
+
+    /// The plan just made (`planned`, with `memo`, on `tiles`, in `made`: its wall time and its
+    /// thread's CPU time) handed to its shadow, with a copy of its round.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_shadow(
+        &self,
+        r: &Round,
+        publish: Publish,
+        tiles: &TerrainTiles,
+        planned: &Planned,
+        memo: &KeyMemo,
+        made: (Duration, Duration),
+    ) {
+        let mut s = self.shadow.borrow_mut();
+        if s.is_none() {
+            *s = Shadowing::start();
+        }
+        let Some(sh) = s.as_mut() else { return };
+        debug_assert!(std::ptr::eq(publish.each, &r.covs.each[..]), "the plan publishes by the coverages' regions");
+        sh.asked += 1;
+        let ask = Ask {
+            n: sh.asked,
+            covs: r.covs.clone(),
+            date: r.date.to_string(),
+            manifest: r.manifest.clone(),
+            inputs: r.inputs.clone(),
+            done: r.done.clone(),
+            reach: self.reach_now.borrow().clone(),
+            tiles: tiles.clone(),
+            on_map: publish.on_map.clone(),
+            served: publish.served.clone(),
+            since_catalogue: publish.since_catalogue,
+            held_for: publish.held_for,
+            held: publish.held,
+            way: publish.way,
+            planned: planned.clone(),
+            keys: memo.keys(),
+            wall: made.0,
+            cpu: made.1,
+        };
+        if sh.asks.send(ask).is_err() {
+            eprintln!("agent: the plan's shadow's worker is gone; started again with the next plan");
+            *s = None;
         }
     }
 }
@@ -556,8 +842,7 @@ impl Held {
 impl PlanHeld for Held {
     fn let_go(&self) {
         self.kept.borrow_mut().take();
-        let memo = self.memo.borrow_mut().take();
-        self.read_sets.borrow_mut().let_go(memo);
+        self.memo.borrow_mut().take();
     }
     fn has_kept(&self) -> bool {
         self.kept.borrow().is_some()
@@ -586,31 +871,26 @@ impl PlanHeld for Held {
     fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<agentcore::agent::gc::DepthKeep>) {
         let reach_now = self.reach_now.borrow().clone();
         let reach = reach_now.as_ref().map(|(_, r)| &**r);
+        let cov = &r.covs.all;
         let reused = if refilter { self.kept.borrow_mut().take().zip(self.memo.borrow_mut().take()) } else { None };
         let reused = reused.filter(|(_, memo)| {
-            memo.serves(&KeyCtx::new(
-                r.cov,
-                r.date,
-                r.manifest,
-                r.inputs,
-                reach,
-                &self.terrain_tiles(r.root, r.manifest),
-            ))
+            memo.serves(&KeyCtx::new(cov, r.date, r.manifest, r.inputs, reach, &self.terrain_tiles(r.root, r.manifest)))
         });
         let depth =
-            build::depth_kept(r.cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, jobrt::jobs::now_s());
+            build::depth_kept(cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, jobrt::jobs::now_s());
         let (planned, memo) = match reused {
             Some(k) => k,
             None => {
-                let memo = if self.recording.get() { KeyMemo::recording() } else { KeyMemo::default() };
+                let memo = KeyMemo::default();
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
-                let p = build::plan_with(&memo, r.cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
-                nasread::PLAN.enter("the read sets");
-                // (The reaches as the plan's keys read them: none while the reach job is due, the
-                // last read still cached.)
-                let at = reach_now.as_ref().map(|(c, _)| c.as_str());
-                self.read_sets.borrow_mut().planned(Context::of(r, at, tiles.load_state()), &memo);
+                let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
+                let p = build::plan_with(&memo, cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
+                if self.shadowing.get() {
+                    let cpu = Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu));
+                    nasread::PLAN.enter("its shadow's copy");
+                    self.ask_shadow(r, publish, &tiles, &p, &memo, (t.elapsed(), cpu));
+                }
                 drop(tiles);
                 (p, memo)
             }
@@ -621,7 +901,15 @@ impl PlanHeld for Held {
     }
     #[cfg(test)]
     fn shadow(&self) -> Option<Shadow> {
-        self.read_sets.borrow().said.clone()
+        let mut s = self.shadow.borrow_mut();
+        let s = s.as_mut()?;
+        while s.last.0 < s.asked {
+            match s.said.recv() {
+                Ok((n, said)) => s.last = (n, Some(said)),
+                Err(_) => break,
+            }
+        }
+        s.last.1.clone()
     }
     fn heritage_waits(&self, r: &Round) -> Option<String> {
         self.with_keys(r, build::heritage_awaits_acceptance)
@@ -668,8 +956,8 @@ impl PlanHeld for Held {
         })
     }
     #[cfg(test)]
-    fn record_for_test(&self, on: bool) {
-        self.recording.set(on);
+    fn shadow_for_test(&self, on: bool) {
+        self.shadowing.set(on);
     }
     #[cfg(test)]
     fn keep_for_test(&self, p: Planned) {

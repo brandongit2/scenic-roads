@@ -1946,7 +1946,7 @@ impl Planner {
         drop(map);
         // (The plan, or on a lease change's filtering again the last result and its keys, `build::plan`
         // not made; its keys handed on to what derives keys of the same context below.)
-        let round = seam::Round { root, cov, date, manifest: &manifest, inputs: &inputs, done: &done };
+        let round = seam::Round { root, covs: &covs, date, manifest: &manifest, inputs: &inputs, done: &done };
         let publish = seam::Publish {
             each: &covs.each,
             on_map: &on_map,
@@ -4301,21 +4301,20 @@ mod tests {
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();
     }
 
-    /// The keys' read sets in shadow (task #880 step 3, docs/incremental-planning.md §6), on recorded
-    /// states: two frozen copies of the lead's state minutes apart (`SCENIC_FROZEN_ROOT`, then
+    /// The plans' shadow (task #880 step 4, docs/incremental-planning.md §6), on recorded states:
+    /// two frozen copies of the lead's state minutes apart (`SCENIC_FROZEN_ROOT`, then
     /// `SCENIC_FROZEN_ROOT_B`), sandboxed alike (`sandboxed`, `SCENIC_FROZEN_HOME`,
-    /// `SCENIC_FROZEN_APP`), planned as the lead plans. A plan of the first, its keys recording what
-    /// they read; then a plan of the second: of the first's keys derived again, those its diff would
-    /// keep (`PlanHeld::shadow`) are those that came out unchanged. Then the second again, its keys
-    /// not recorded, and again recorded: what recording costs, in time and in bytes asked for and
-    /// held (`allocs`); and once more, its diff from the same state keeping every key. The shadow's
-    /// lines, the times and each key kept but changed (`kept-changed`) or moved but unchanged
-    /// (`moved-unchanged`; moved by its own coverage record put, `own record put`: the same key
-    /// read again, as designed) to `SCENIC_FROZEN_OUT`; any kept but changed or moved but unchanged
-    /// fails it.
+    /// `SCENIC_FROZEN_APP`), planned as the lead plans, each plan's shadow waited for: the first
+    /// state (its shadow deriving every key), the second (its shadow keeping the first's keys the
+    /// diff doesn't move), the second again (keeping all). Each shadow the same as its plan, key
+    /// by key and whole. Then what the shadow costs the plan: the second state planned with no
+    /// shadow, then planned with it twice in a row, unwaited (the second plan beside the first's
+    /// shadow, as on the lead when plans come close): each plan's time, the bytes asked for and the
+    /// most held at once (`allocs`: every thread's). The shadows' lines and the times to
+    /// `SCENIC_FROZEN_OUT`, each difference on a line of its own (`differs …`), which fails it.
     #[test]
     #[ignore]
-    fn frozen_read_sets_keep_the_unchanged_keys() {
+    fn frozen_shadow_plans_agree() {
         use crate::agent::allocs;
         let (Ok(root), Ok(root_b), Ok(home), Ok(out)) = (
             std::env::var("SCENIC_FROZEN_ROOT"),
@@ -4326,9 +4325,9 @@ mod tests {
             return;
         };
         let b = frozen_root(&root_b);
-        let Some(real) = sandboxed(&root, "frozen_read_sets_keep_the_unchanged_keys", &out) else {
+        let Some(real) = sandboxed(&root, "frozen_shadow_plans_agree", &out) else {
             let lines = std::fs::read_to_string(&out).unwrap();
-            assert!(!lines.lines().any(|l| l.starts_with("kept-changed") || l.starts_with("moved-unchanged")), "{out}");
+            assert!(!lines.lines().any(|l| l.starts_with("differs")), "{out}");
             return;
         };
         allocs::counting();
@@ -4356,7 +4355,7 @@ mod tests {
             }),
         ));
         let mut lines = Vec::new();
-        let mut say = |l: String| {
+        let say = |lines: &mut Vec<String>, l: String| {
             eprintln!("frozen: {l}");
             lines.push(l);
         };
@@ -4368,7 +4367,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(500));
             }
         };
-        // (A plan: its time, the bytes it asked for and the most it held at once.)
+        // (A plan: its time, the bytes it asked for and the most held at once.)
         let plan = |p: &Planner, root: &store::nasfs::NasRoot| {
             allocs::climb();
             let (t, a) = (Instant::now(), allocs::asked());
@@ -4378,34 +4377,45 @@ mod tests {
             nasread::PLAN.enter("");
             let (took, b, (most, _)) = (t.elapsed(), allocs::asked(), allocs::climb());
             format!(
-                "{:.1} s, asked for {} MB in {} blocks, at most {} MB more live; footprint {} MB",
+                "{:.1} s, asked for {} MB in {} blocks, at most {} MB more live; footprint {} MB (peak {})",
                 took.as_secs_f64(),
                 (b.0 - a.0) >> 20,
                 b.1 - a.1,
                 most >> 20,
-                allocs::Memory::now().footprint >> 20
+                allocs::Memory::now().footprint >> 20,
+                allocs::Memory::now().peak >> 20
             )
         };
+        // (The last plan's shadow waited for: its line, and each difference.)
+        let shadow = |p: &Planner, what: &str, lines: &mut Vec<String>| -> usize {
+            allocs::climb();
+            let t = Instant::now();
+            let s = p.held_plan.shadow().expect("a plan's shadow");
+            let (most, _) = allocs::climb();
+            let waited = t.elapsed().as_secs_f64();
+            say(lines, format!("{what}'s shadow waited for {waited:.1} s, at most {} MB more live", most >> 20));
+            say(lines, s.said.clone());
+            for d in &s.differs {
+                say(lines, format!("differs ({what}) {d}"));
+            }
+            s.kept
+        };
         coverage(&p, &root);
-        say(format!("the first state, first plan: {}", plan(&p, &root)));
-        assert!(p.held_plan.shadow().is_none(), "no plan before the first");
+        say(&mut lines, format!("the first state: {}", plan(&p, &root)));
+        shadow(&p, "the first state", &mut lines);
         coverage(&p, &root_b);
-        say(format!("the second state: {}", plan(&p, &root_b)));
-        let s = p.held_plan.shadow().expect("the first plan's keys diffed");
-        say(s.said.clone());
-        let mut bad: Vec<String> = s.kept_changed.iter().map(|k| format!("kept-changed {k}")).collect();
-        bad.extend(s.moved_unchanged.iter().map(|k| format!("moved-unchanged {k}")));
-        bad.extend(s.own_record.iter().map(|k| format!("own record put {k}")));
-        p.held_plan.record_for_test(false);
-        say(format!("the second again, not recording: {}", plan(&p, &root_b)));
-        p.held_plan.record_for_test(true);
-        say(format!("the second again, recording: {}", plan(&p, &root_b)));
-        say(format!("the second again, recording, its diff from itself: {}", plan(&p, &root_b)));
-        let s = p.held_plan.shadow().expect("the plan before's keys diffed");
-        say(s.said.clone());
-        bad.extend(s.kept_changed.iter().map(|k| format!("kept-changed (the same state) {k}")));
-        bad.extend(s.moved_unchanged.iter().map(|k| format!("moved-unchanged (the same state) {k}")));
-        lines.extend(bad);
+        say(&mut lines, format!("the second state: {}", plan(&p, &root_b)));
+        if shadow(&p, "the second state", &mut lines) == 0 {
+            say(&mut lines, "differs: the second state's shadow kept none of the first's keys".into());
+        }
+        say(&mut lines, format!("the second again: {}", plan(&p, &root_b)));
+        shadow(&p, "the second again", &mut lines);
+        p.held_plan.shadow_for_test(false);
+        say(&mut lines, format!("the second, no shadow: {}", plan(&p, &root_b)));
+        p.held_plan.shadow_for_test(true);
+        say(&mut lines, format!("the second, its shadow beside the next: {}", plan(&p, &root_b)));
+        say(&mut lines, format!("the second again, beside the shadow before: {}", plan(&p, &root_b)));
+        shadow(&p, "the last", &mut lines);
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();
     }
 
@@ -4476,6 +4486,11 @@ mod tests {
             Default::default(),
         );
         let made = p.out_rx.take().unwrap();
+        // (`SCENIC_FROZEN_NO_SHADOW`: the plans without their shadow, docs/incremental-planning.md
+        // step 4; with it, each plan's shadow runs beside the plans after it, as on the lead.)
+        if std::env::var_os("SCENIC_FROZEN_NO_SHADOW").is_some() {
+            p.held_plan.shadow_for_test(false);
+        }
         let mb = |b: u64| b >> 20;
         let mut lines = Vec::new();
         let mut say = |l: String| {
