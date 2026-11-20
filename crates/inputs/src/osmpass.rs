@@ -1842,8 +1842,9 @@ mod tests {
         let got = unit_links_of(&root.join("6-1-1.osm.pbf"), |_| Ok(UnitLinks { ways: vec![(7, 1.0)], pairs: vec![] }))
             .unwrap();
         assert_eq!(got.ways, [(7, 1.0)]);
-        assert_eq!(get(Count::ReadBytes) + own_held() - asked, u64::from(EXTRACT.reads) * 100_000);
-        assert_eq!(get(Count::Files) - files, u64::from(EXTRACT.opens));
+        // (Three passes, each opening it: the program's own, tools/extract.rs's test holds the constant to them.)
+        assert_eq!(get(Count::ReadBytes) + own_held() - asked, 3 * 100_000);
+        assert_eq!(get(Count::Files) - files, 3);
     }
 
     /// The ways a ferries piece holds among some ids, read where it lies by osmium: found, and the
