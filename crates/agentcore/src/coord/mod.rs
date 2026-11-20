@@ -264,15 +264,8 @@ fn is_zero64(v: &u64) -> bool {
 }
 
 /// The way a step runs now, as far as its memory and time go (its row's `cost_v`,
-/// crate::agent::steps::Step): a cost measured another way says nothing of what a run takes now
-/// (terrain 2 and slope 2: each z6 tile's pack written as it's made, where they held their whole z3
-/// tile's; tree cover 2: a z6 tile a run, where 1 was a z3 tile's whole run with the trees program,
-/// and before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB
-/// together; terrain 3 and slope 3: a z6 tile a run, their assemblies 1; terrain 4: a z6 tile's
-/// tiles made a group of z8 subtrees at a time; 5: its deep levels too, task #633; terrain-hi 6 and
-/// slope-hi 4: named so, their deep levels their own steps', task #639; terrain-hi 7 and terrain-lo
-/// 2: the pool's base tiles sampled up to 4 chunks at once, terrain::terrain_base::sampling_mb, task
-/// #695). A task's kind, or a step the table doesn't know: 0.
+/// crate::agent::steps::Step): a cost measured another way says nothing of what a run takes now.
+/// A task's kind, or a step the table doesn't know: 0.
 #[cfg(test)]
 pub fn cost_version(step: &str) -> u32 {
     crate::agent::seam::for_tests().cost_version(step)
@@ -9067,7 +9060,7 @@ mod tests {
     #[test]
     fn a_floor_of_before_a_steps_fix_neither_holds_nor_sizes_it() {
         let (_d, c, _w) = start();
-        assert_eq!(cost_version("bld-fetch"), 1);
+        assert!(cost_version("bld-fetch") > 0);
         c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
         assert_eq!(c.holding_floor("bld-fetch", "6/1/1"), None);
         assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));

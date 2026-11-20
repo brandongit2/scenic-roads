@@ -18275,14 +18275,12 @@ mod tests {
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
         // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
-        assert_eq!(
-            [
-                secs_key(crate::agent::seam::for_tests(), "trees"),
-                secs_key(crate::agent::seam::for_tests(), "trees-lo"),
-                secs_key(crate::agent::seam::for_tests(), "unit")
-            ],
-            ["trees v3", "trees-lo v1", "unit v3"]
-        );
+        for s in ["trees", "trees-lo", "unit"] {
+            let v = crate::coord::cost_version(s);
+            assert!(v > 0, "{s}");
+            assert_eq!(secs_key(crate::agent::seam::for_tests(), s), format!("{s} v{v}"));
+        }
+        assert_eq!(secs_key(crate::agent::seam::for_tests(), "pack"), "pack", "a step of way 0: its name alone");
     }
 
     #[test]

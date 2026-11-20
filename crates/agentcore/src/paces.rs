@@ -180,7 +180,7 @@ mod tests {
             targets: vec![target.into()],
             secs: Some(secs),
             ok: Some(true),
-            v: Some(1),
+            v: Some(crate::coord::cost_version(step)),
             ..Event::new("done")
         }
     }
@@ -224,7 +224,7 @@ mod tests {
         let c = |worker: &str, secs: u64| crate::coord::Cost {
             secs,
             worker: Some(worker.into()),
-            v: 1,
+            v: crate::coord::cost_version("slope-deep"),
             ..Default::default()
         };
         let costs: BTreeMap<String, crate::coord::Cost> = [
@@ -246,7 +246,7 @@ mod tests {
             many(20, "m1 #3", &["10/0/3"], 58.0),
             many(30, "m1", &["10/0/2", "10/0/3"], 62.0),
             many(40, "m1", &["10/0/1", "10/0/4"], 500.0),
-            Event { v: Some(2), ..many(50, "m1", &["10/0/1"], 500.0) },
+            Event { v: Some(crate::coord::cost_version("slope-deep") + 1), ..many(50, "m1", &["10/0/1"], 500.0) },
             // (Task #927 review: a job of a way older than the step's now, its record of that way
             // too (slope-deep's before task #929's merge), and one that doesn't say its way.)
             Event { v: Some(0), ..many(60, "m1", &["10/0/5"], 500.0) },
