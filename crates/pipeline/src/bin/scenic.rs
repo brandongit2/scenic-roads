@@ -2076,13 +2076,26 @@ fn forecast_check(
     let days = now.saturating_sub(from) / 86_400 + 2;
     // (The NAS's archive, and the lead's own: this Mac's coordinator's file, else asked of the lead.)
     let own = app_home().join("agent/coord/history.jsonl");
+    let t = std::time::Instant::now();
     let events = fccheck::dedup(agentcore::pubtimes::load_history(Some(&root), Some(&own), days));
+    let history_s = t.elapsed().as_secs_f64();
     if let Some(split) = replay {
+        let t = std::time::Instant::now();
         let inputs = fccheck::inputs(&root, from, to);
+        let read_s = t.elapsed().as_secs_f64();
         anyhow::ensure!(!inputs.is_empty(), "no forecast input recorded in the span");
         let last = inputs.iter().map(|i| i.at).max().unwrap_or(to);
         let split = at(&split, last.saturating_sub(86_400))?;
+        let t = std::time::Instant::now();
         let b = fccheck::backtest(pipeline::agent::theplan::the_plan(), &inputs, &events, from, to, split);
+        // (Where its time went, task #1527: on stderr, the report on stdout as it was.)
+        eprintln!(
+            "forecast-check: {} inputs, {:.1} s: the history read {history_s:.1} s, the inputs read {read_s:.1} s, the backtest {:.1} s: {}",
+            inputs.len(),
+            history_s + read_s + t.elapsed().as_secs_f64(),
+            t.elapsed().as_secs_f64(),
+            b.spent.text()
+        );
         if json {
             println!("{}", serde_json::to_string_pretty(&b)?);
         } else {

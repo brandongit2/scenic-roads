@@ -345,14 +345,26 @@ pub fn dedup(mut events: Vec<Event>) -> Vec<Event> {
 
 /// The forecast inputs made from `from` to `to`, in time order: the archive's (crate::agent::fcinputs),
 /// and the terms' (`state/build/term/<E>/forecast-input.json`, each term's last: docs/pool.md §10,
-/// written before the archive while a member read the page's files on the NAS) at times it hasn't.
-/// One that doesn't read is skipped, said.
+/// written before the archive while a member read the page's files on the NAS) at times it hasn't,
+/// a term's file last written before `from` not read. One that doesn't read is skipped, said.
 pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
     let mut out = super::fcinputs::read(root, from, to);
     let archived: std::collections::BTreeSet<u64> = out.iter().map(|i| i.at).collect();
     for t in root.join("state/build/term").read_dir().unwrap_or_default() {
         let Some(term) = t.path.file_name().and_then(|n| n.parse().ok()) else { continue };
-        let Ok(b) = t.path.join("forecast-input.json").read() else { continue };
+        let f = t.path.join("forecast-input.json");
+        // (An input is written once made, so a file last written before `from` holds none in the
+        // span: not read. Task #1527: the 352 terms' files, 276 MB, were most of a backtest's time,
+        // read on every run for spans after them all.)
+        let written = f
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+        if written.is_some_and(|w| w.as_secs() < from) {
+            continue;
+        }
+        let Ok(b) = f.read() else { continue };
         match Input::of_bytes(term, b) {
             Ok(i) if (from..to).contains(&i.at) && !archived.contains(&i.at) => out.push(i),
             Ok(_) => {}
@@ -380,11 +392,13 @@ pub fn replay(
     inputs: &[Input],
     events: &[Event],
     code: u32,
+    spent: &mut Spent,
 ) -> Vec<Entry> {
     let mut rooms = Rooms::default();
     let mut out = Vec::new();
     for i in inputs {
-        let mut r = match i.record() {
+        spent.decodes += 1;
+        let mut r = match timed(&mut spent.decoded_s, || i.record()) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("forecast-check: the input of term {} at {}: {e:#}", i.term, i.at);
@@ -392,15 +406,18 @@ pub fn replay(
             }
         };
         let inp = &mut r.input;
-        inp.code = code;
-        rooms.note(the_plan, inp);
-        rooms.set(inp);
-        unhold(inp);
-        inp.paused = forecast::paused(events, inp.now);
-        repace(the_plan, inp, events);
-        inp.needs_pace = forecast::needs_pace(events, inp.now);
-        forecast::lease_busy(the_plan, inp);
-        let f = r.forecast(the_plan);
+        timed(&mut spent.prepared_s, || {
+            inp.code = code;
+            rooms.note(the_plan, inp);
+            rooms.set(inp);
+            unhold(inp);
+            inp.paused = forecast::paused(events, inp.now);
+            repace(the_plan, inp, events);
+            inp.needs_pace = forecast::needs_pace(events, inp.now);
+            forecast::lease_busy(the_plan, inp);
+        });
+        spent.forecasts += 1;
+        let f = timed(&mut spent.forecast_s, || r.forecast(the_plan));
         let mut e = Entry::of(&r, &f, "replay");
         e.code = code;
         out.push(e);
@@ -552,6 +569,49 @@ pub struct Backtest {
     pub test: [Report; 2],
     /// The jobs' lengths against what the scheduler sized them to (`batches`), over the whole span.
     pub batches: Vec<Batches>,
+    /// Where its time went (task #1527).
+    pub spent: Spent,
+}
+
+/// Where a backtest's time went, wall seconds (task #1527): the inputs decoded (each record read
+/// from its frame), each made ready to rerun (its rooms, holds, pause, paces and leases from the
+/// history), the forecasts themselves, their check against the history, and the jobs' lengths
+/// (`batches`, its decodes apart).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Spent {
+    pub decoded_s: f64,
+    pub decodes: u64,
+    pub prepared_s: f64,
+    pub forecast_s: f64,
+    pub forecasts: u64,
+    pub checked_s: f64,
+    pub batches_s: f64,
+    pub batches_decoded_s: f64,
+}
+
+impl Spent {
+    /// As a line: `decoded 40 s (96 records), prepared 3 s, …`.
+    pub fn text(&self) -> String {
+        format!(
+            "decoded {:.1} s ({} records), made ready {:.1} s, forecast {:.1} s ({} forecasts), checked {:.1} s, the jobs' lengths {:.1} s (decoding {:.1} s of it)",
+            self.decoded_s,
+            self.decodes,
+            self.prepared_s,
+            self.forecast_s,
+            self.forecasts,
+            self.checked_s,
+            self.batches_s,
+            self.batches_decoded_s
+        )
+    }
+}
+
+/// `f`'s result and its wall seconds added to `to`.
+fn timed<T>(to: &mut f64, f: impl FnOnce() -> T) -> T {
+    let t = std::time::Instant::now();
+    let v = f();
+    *to += t.elapsed().as_secs_f64();
+    v
 }
 
 /// A step's jobs on a Mac (`batches`): each one's time over the time the scheduler sizes it to
@@ -593,6 +653,7 @@ pub fn batches(
     events: &[Event],
     from: u64,
     to: u64,
+    decoded_s: &mut f64,
 ) -> Vec<Batches> {
     use crate::coord::sched::{Clock, Sched};
     let jobs: Vec<Actual> = actuals(events)
@@ -606,7 +667,7 @@ pub fn batches(
         if ours.is_empty() {
             continue;
         }
-        let Ok(r) = i.record() else { continue };
+        let Ok(r) = timed(decoded_s, || i.record()) else { continue };
         let Some(mut st) = r.input.sched.clone() else { continue };
         st.paces = st.paces.clone().with_starts(the_plan, events, &st.costs, i.at);
         let s = Sched::from_state(
@@ -649,19 +710,22 @@ pub fn backtest(
     // (One code after the other: side by side, the M1's replay of 60 inputs peaked at a 4.7 GB
     // footprint, task #988; each forecast's three runs go side by side already.)
     // (The code before with no way of its own runs as this one: old is new's run, not rerun.)
-    let new = replay(the_plan, inputs, events, forecast::VERSION);
-    let old =
-        if forecast::BEFORE_HAS_PATH { replay(the_plan, inputs, events, forecast::VERSION - 1) } else { new.clone() };
+    let mut spent = Spent::default();
+    let new = replay(the_plan, inputs, events, forecast::VERSION, &mut spent);
+    let old = if forecast::BEFORE_HAS_PATH {
+        replay(the_plan, inputs, events, forecast::VERSION - 1, &mut spent)
+    } else {
+        new.clone()
+    };
     let part =
         |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
     let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
-    Backtest {
-        split,
-        old_is_new: !forecast::BEFORE_HAS_PATH,
-        train: [rep(&old, false), rep(&new, false)],
-        test: [rep(&old, true), rep(&new, true)],
-        batches: batches(the_plan, inputs, events, from, to),
-    }
+    let (train, test) =
+        timed(&mut spent.checked_s, || ([rep(&old, false), rep(&new, false)], [rep(&old, true), rep(&new, true)]));
+    let mut decoded = 0.0;
+    let batches = timed(&mut spent.batches_s, || batches(the_plan, inputs, events, from, to, &mut decoded));
+    spent.batches_decoded_s = decoded;
+    Backtest { split, old_is_new: !forecast::BEFORE_HAS_PATH, train, test, batches, spent }
 }
 
 /// The backtest as text: for the test set, then the train set, the end's and the start's errors
@@ -1082,12 +1146,18 @@ mod tests {
             (es[1].code, p[0].until - p[0].from)
         };
         let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
-        assert_eq!(span(&replay(crate::agent::seam::for_tests(), &records, &es, old)), (old, 600));
-        assert_eq!(span(&replay(crate::agent::seam::for_tests(), &records, &es, new)), (new, 600));
+        assert_eq!(
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, old, &mut Spent::default())),
+            (old, 600)
+        );
+        assert_eq!(
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, new, &mut Spent::default())),
+            (new, 600)
+        );
         // Paused by then (the history's pause, for every code): nothing placed.
         let mut paused = es.clone();
         paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new);
+        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new, &mut Spent::default());
         assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
         assert_eq!(replayed[0].placed().len(), 3);
         // The backtest: the second record the test set's.
