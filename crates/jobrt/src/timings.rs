@@ -2248,7 +2248,7 @@ pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&s
 pub const SHARES_RUNS: usize = 10;
 
 /// A step's phases as shares of its runs, the mean over its last `SHARES_RUNS` runs that ended
-/// well and passed the plausibility checks (`implausible`; docs/pool.md §10, the steps): the lead's, published in its status, so every page shows the
+/// well and passed the plausibility checks (`implausible`; docs/formats.md, Timings: `implausible`; docs/pool.md §10, Phase shares): the lead's, published in its status, so every page shows the
 /// same measured split.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseShares {

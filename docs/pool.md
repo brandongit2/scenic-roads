@@ -282,12 +282,12 @@ member over HTTP (`/work/ask`), the lead in process (`Coordinator::ask_own`). An
 Mac's **capacity** (`coord::Capacity`): the most its jobs could hold (`limit_mb`: memory less the
 memory floor), what its jobs hold and may hold for one to start (`build_mb`) and why none may
 (`mem_held_back`), its cores and those the last minute's CPU leaves free (`cores_free`, from CPU
-ticks; the load average, which counts threads waiting on the NAS, only until sampled), its disk
-free less the room target and reservations, the cores its in-use share keeps, power, the NAS's reach and answers
-(§7.7), its running jobs' threads, and its sustained best (§7.2). It rides the ask, not the
-heartbeat, because the coordinator places at ask time and needs measures taken then. The
-coordinator keeps each member's last for two minutes (`CAP_FRESH_S`). A member on another app than
-the lead's gets nothing (409) until they match (docs/building.md §2, The same app).
+ticks; the load average, which counts threads waiting on the NAS, only until sampled), its disk free
+less the room target and reservations, the cores its in-use share keeps, power, the NAS's reach and
+answers (§7.7), its running jobs' threads, and its sustained best (§7.2). It rides the ask, not the
+heartbeat, because the coordinator places at ask time and needs measures taken then. The coordinator
+keeps each member's last for two minutes (`CAP_FRESH_S`). A member on another app than the lead's
+gets nothing (409) until they match (docs/building.md §2, The same app).
 
 **Disk reservations.** Each grant carries the disk its job is measured to take (`Grant::disk_mb`:
 its targets' disk floors summed, or the 90th percentile of its step's last 20 jobs, the larger; a
@@ -314,32 +314,34 @@ is counted free twice. There is no fixed reserve: the room target is the only fl
   says each member's disk as `coord::disk_words` does ("49 GB free · 20 GB for jobs (20 GB room
   target, 9 GB reserved by its jobs)"). The disk guard is the backstop (§7.7).
 
-**Threads granted.** Each grant carries the worker threads its job runs with (`Grant::threads`,
-set as `RAYON_NUM_THREADS`); cost records keep the threads, the CPU time (`cpu_ms`), the time the
+**Threads granted.** Each grant carries the worker threads its job runs with (`Grant::threads`, set
+as `RAYON_NUM_THREADS`); cost records keep the threads, the CPU time (`cpu_ms`), the time the
 process was stopped (`paused_ms`) and the wall time it waited on the NAS or network (`nas_net_ms`,
-store::waits by the wall clock). **A job starts on the threads its measure gives it, and its agent
-controls them from there** (Threads controlled live, below). From a target's runs, its measured
-cores are two figures (`needs::Book::cores`):
+store::waits by the wall clock).
+**A job starts on the threads its measure gives it, and its agent controls them from there**
+(Threads controlled live, below). From a target's runs, its measured cores are two figures
+(`needs::Book::cores`):
 
 - its **grant**: the cores its runs kept busy (CPU time over wall time, waits and all), to the
   nearest whole, plus one thread to overlap its waits or to climb by. A job waiting on the NAS
   settles where a run measures the same and never climbs; one its threads held climbs a thread a
-  run, capped at the Mac's cores. A target not run the way it runs now takes its **step's
-  parallelism** (`needs::model::Par`, §7.7, What a step needs).
-- its **busy** cores, that CPU time over the time it ran, to a tenth of a core. **A job counts for
-  its busy cores** in packing (`Sched::need_cores`), not its threads, so jobs waiting on reads go
-  side by side until memory, disk or the NAS budget is full. **A running job counts for what it
-  keeps busy now** (`sched::busy_now`): once it has ended a target or run past its predicted time,
-  the more of its CPU since its first beat and over its last minute.
+  run, capped at the Mac's cores. A target not run the way it runs now takes its
+  **step's parallelism** (`needs::model::Par`, §7.7, What a step needs).
+- its **busy** cores, that CPU time over the time it ran, to a tenth of a core.
+  **A job counts for its busy cores** in packing (`Sched::need_cores`), not its threads, so jobs
+  waiting on reads go side by side until memory, disk or the NAS budget is full.
+  **A running job counts for what it keeps busy now** (`sched::busy_now`): once it has ended a
+  target or run past its predicted time, the more of its CPU since its first beat and over its last
+  minute.
 
 No fixed share caps or floors a grant: a job's measure decides, within its Mac's cores less the
-in-use share's while the owner uses it (`coord::ask_cores`). **Past the cores its jobs' threads
-leave, a Mac climbs one job at a time** (`coord::SETTLE`): an ask is granted at most one job that
-fits only by busy cores, and none until a minute has passed since its last grant, or while the
-cores busy pass its jobs' by more than a core. Cores busy past the jobs' by more than a core count
-as outside load (`outside_cores`, at most half the Mac's), which stops further grants but no
-running job. The agent logs each start: `agent: starting <job> (<n> threads: granted <g> of <c>
-cores, <k> kept for the owner)`.
+in-use share's while the owner uses it (`coord::ask_cores`).
+**Past the cores its jobs' threads leave, a Mac climbs one job at a time** (`coord::SETTLE`): an ask
+is granted at most one job that fits only by busy cores, and none until a minute has passed since
+its last grant, or while the cores busy pass its jobs' by more than a core. Cores busy past the
+jobs' by more than a core count as outside load (`outside_cores`, at most half the Mac's), which
+stops further grants but no running job. The agent logs each start:
+`agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the owner)`.
 
 **Threads controlled live** (`crate::agent::threads`). A running job's threads follow what it keeps
 busy now, not what its step's past runs did: each Mac's agent decides them for its own jobs about
@@ -478,17 +480,20 @@ value held continuously for 30 minutes over the last 48 hours (the owner's figur
 for jobs and its cores not used outside the build, from its live store's minute ring
 (`live::Store::best`, carried as `Capacity::best`). The live coordinator never reads it. No use of
 the owner's or passing load is foreseen: the build page says the finish is a best case. The NAS
-budget's window is held as recorded while the jobs out at the record run. The forecast's **live
-error** (`forecast::pace`): the oldest forecast of the last 1–6 h against the targets done since,
-shown marked rough, not applied.
+budget's window is held as recorded while the jobs out at the record run. The forecast's
+**live error** (`forecast::pace`): the oldest forecast of the last 1–6 h against the targets done
+since, shown marked rough, not applied.
 
 **A Mac granted fewer** than the forecast foresaw is said with what the lead answered its asks
 (`Coordinator::answers`: the last hour's asks, wanted and granted, and the rule that held each back,
 `sched::Rule`). Rules that decide by live state the forecast can't know say so (`Rule::live`: the
-memory guard, cores busy outside the pool, the NAS pacing). For example: `agent: the grants departed
-from the forecast: m4: 0 job(s) of unit granted, the forecast's 3; its 3 ask(s) since wanted 5
-job(s) and got 0, 2 offered unit; held back by memory ×2 (live: …), cores ×1; the last: cores: 0.5 of
-8 left, a job of unit takes 1.0`.
+memory guard, cores busy outside the pool, the NAS pacing). For example:
+
+```text
+agent: the grants departed from the forecast: m4: 0 job(s) of unit granted, the forecast's 3;
+its 3 ask(s) since wanted 5 job(s) and got 0, 2 offered unit; held back by memory ×2 (live: …),
+cores ×1; the last: cores: 0.5 of 8 left, a job of unit takes 1.0
+```
 
 - **Every step to every member** (`crate::agent::every`): all but the lead's own steps
   (`every::LEAD_ONLY`: map updates, prunes, `bld-fetch`, the answer-keeping steps, the worldwide
@@ -506,20 +511,20 @@ job(s) and got 0, 2 offered unit; held back by memory ×2 (live: …), cores ×1
   start (`want`); the coordinator grants up to that many in one answer, each its own lease, packed
   in plan order into the ask's room: each must fit by its measures (memory, disk, busy cores) or a
   cold start's provisional need (§7.7), within what's left of the ask's memory (§7.1, The memory
-  floor), disk, and cores (less the in-use share's and the cores busy outside the pool, at most
-  half the Mac's), less the needs of every job it holds and those granted with it. The room left is
-  never more than what its jobs hold now leaves. A lease counts until it ends or lapses. **Room held
-  for a big job**: the first offer refused for its room alone, one that would fit once the Mac's
-  jobs end, has that room held, so small jobs filling each slot as it opens don't starve it. While
-  it waits a later job still goes when it fits beside it, or, measured, when it ends (at its runs'
-  high percentile) before the jobs waited for are expected to end (backfilling). A job's expected
-  end (`Sched::run_end`) is its measured time less what it ran; else its progress's estimate
-  (`Live::left_s`), discounted at a low percentile of how such estimates ended for its step; else,
-  past its measured time, its slowest target's high percentile; else none. So a hold never idles a
-  Mac for as long as its jobs last, and never waits for a long job while a shorter one frees its
-  room. The refusal names the target held for, the jobs it waits for and which end it took. Each
-  job is as many targets as fit the batch length on its Mac (§7.7, Batch length). Each slot past the
-  first two is made as jobs are granted and dropped once empty; each has its own files
+  floor), disk, and cores (less the in-use share's and the cores busy outside the pool, at most half
+  the Mac's), less the needs of every job it holds and those granted with it. The room left is never
+  more than what its jobs hold now leaves. A lease counts until it ends or lapses.
+  **Room held for a big job**: the first offer refused for its room alone, one that would fit once
+  the Mac's jobs end, has that room held, so small jobs filling each slot as it opens don't starve
+  it. While it waits a later job still goes when it fits beside it, or, measured, when it ends (at
+  its runs' high percentile) before the jobs waited for are expected to end (backfilling). A job's
+  expected end (`Sched::run_end`) is its measured time less what it ran; else its progress's
+  estimate (`Live::left_s`), discounted at a low percentile of how such estimates ended for its
+  step; else, past its measured time, its slowest target's high percentile; else none. So a hold
+  never idles a Mac for as long as its jobs last, and never waits for a long job while a shorter one
+  frees its room. The refusal names the target held for, the jobs it waits for and which end it
+  took. Each job is as many targets as fit the batch length on its Mac (§7.7, Batch length). Each
+  slot past the first two is made as jobs are granted and dropped once empty; each has its own files
   (`job-<k>.json`, `costs-<k>.jsonl`, …), scratch folder and worker name (`<host> #<k>`).
 - **Order and locality:** a Mac gets a contiguous run of plan targets. Every ask tries the offers in
   plan order. The plan lists each region's work, then the ready work of the steps reading it, each
@@ -665,11 +670,11 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
 
 ### 7.5 The coordinator across restarts
 
-- **Its state** is in the pool's store on the lead's disk (`crate::pool::store`, docs/coordination.md
-  §4): each change in the store's log, fsynced before the request that made it is answered (a grant
-  is never answered before it's durable). A restart opens the store, its leases back unconfirmed.
-  A lapsed lease stays in the table (a member's word may hold it again) until its target is granted
-  again.
+- **Its state** is in the pool's store on the lead's disk (`crate::pool::store`,
+  docs/coordination.md §4): each change in the store's log, fsynced before the request that made it
+  is answered (a grant is never answered before it's durable). A restart opens the store, its leases
+  back unconfirmed. A lapsed lease stays in the table (a member's word may hold it again) until its
+  target is granted again.
 - **Job ids** (jobrt::jobid, docs/formats.md, Job ids): each job run is named by the lease it was
   first granted under, `<epoch>-<n>`: what its spans are kept by (`GET /api/job/<id>`) and what its
   page on the build page is keyed by. Never given twice: each start of the store leads an epoch past
@@ -708,22 +713,23 @@ Jobs call the lead through one interface resolved again each call (`crate::agent
 owner's move of the lead. A job's tasks are offered through its own Mac's coordinator or broker.
 A process's parts are its role's, read as it starts (docs/roles.md §1); a change of the declaration
 naming another role restarts the agent, its jobs handed over to the next process. A lead whose
-update waits on its jobs restarts at a safe point like any member (docs/building.md §2).
+update waits on its jobs keeps the lead and restarts at a safe point like any member
+(docs/building.md §2, A newly installed app).
 
 **A lease names its slot** (`Lease::slot`, from the lead's loop or a member's beats), so the
 forecast puts it on that slot's lane.
 
 **The lead's running jobs' leases never lapse**: each loop the agent says which leases its slots
 run jobs under (`Coordinator::keep_own`), and those are live past `coord::TTL` (10 min), beats or
-not, so a loop stuck on a slow NAS no longer kills its own running jobs. A lease whose job ended
+not, so a loop stuck on a slow NAS never kills its own running jobs. A lease whose job ended
 without giving it back leaves the set at the next loop and lapses as any. A live job of no targets
 holds its whole step: no other lease of the step is held beside it.
 
 ### 7.7 What a step needs, by structure
 
-Rule: nothing depends on a hand-kept figure. A step's needs are **measured** per target, **enforced
-where the resource is used**, or **derived from the code**. A wrong declaration may cost speed,
-never correctness, politeness or work.
+Rule: nothing depends on a hand-kept figure. A step's needs are **measured** per target,
+**enforced where the resource is used**, or **derived from the code**. A wrong declaration may cost
+speed, never correctness, politeness or work.
 
 | Need | How |
 | --- | --- |
@@ -798,7 +804,9 @@ thousandths:
   `nas-decrease` (0.5, 0.1 to 0.9), `nas-floor-hours` (24, 1 to 24), `nas-slow` (3, 1.5 to 10),
   `nas-grow-seconds` (60, 10 to 600), `nas-read-seconds` (10, 2 to 60), `nas-span-seconds` (30, 10
   to 300), `nas-cached-ms` (0.5, 0 to 10), `nas-restore-minutes` (30, 0 to 60), `nas-lone-minutes`
-  (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240) and `nas-young-spans` (20, 5 to 100).
+  (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240) and `nas-young-spans` (20, 5 to 100:
+  the spans of its link's history a Mac's floor needs; a Mac whose floor is younger may cut the
+  window, never grow it).
 - **The target** is the owner's: the disks' busy share the pool holds to, `nas-target` (30–95 %),
   set by `scenic nas-target [<percent> | off]` on any Mac; not set, 85 % (`DEFAULT_TARGET_PCT`),
   above the 65–80 % an outside repack alone kept the disks at, so the pool still works beside one.
@@ -830,20 +838,21 @@ thousandths:
   cases: outside loads, restarts, a slow link, lone jobs): held to a fixed whole, a burst sat at the
   cliff 1,475 s of 1,500; paced, never past the knee. **Replayed** on the lead's readings of 19 Nov
   (`the_readings_of_19_nov_grow_on_the_idle_nas_and_cut_at_its_load`): on the idle NAS the window
-  grew to a median 31 % (the rule before held it at 12 %) and cut 10 times against 109, never at
-  the cliff. **Assumed:** a job adds a tenth of its weight to the disks' busy share (measured over
-  19 Nov: 0.029 % a thousandth, so the tenth is the larger).
+  grew to a median 31 % and cut 10 times, never at the cliff, where a rule growing only within 1.25
+  times a day's best answer holds it at 12 % and cuts 109 times. **Assumed:** a job adds a tenth of
+  its weight to the disks' busy share (measured over 19 Nov: 0.029 % a thousandth, so the tenth is
+  the larger).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and
 floors of an older way are no measure (disk floors carry no version and always count). A target's
 memory, disk and time are its own run's (memory never below its floor). Else a tile target's memory
-**by its place** (`needs::Near`): the most its nearest measured targets of the step took (rings
-outward until they hold 5 runs, `NEAR_RUNS`, or 8 rings), × 1.1, where that is judged good on the
-step's own measures (at most 5 % predicted under, a median error at most 50 %): what a target holds
-is its place's, whichever Mac runs it. Else, for z6 tiles and landmark candidates while their step
-has under `MIN_RUNS` (10) runs, their extract-size guess; else **its step's needs** (below); else a
-cold start.
+(not unit's or pois', whose guess comes first: `GUESS_FIRST`) **by its place** (`needs::Near`): the
+most its nearest measured targets of the step took (rings outward until they hold 5 runs,
+`NEAR_RUNS`, or 8 rings), × 1.1, where that is judged good on the step's own measures (at most 5 %
+predicted under, a median error at most 50 %): what a target holds is its place's, whichever Mac
+runs it. Else, for z6 tiles and landmark candidates while their step has under `MIN_RUNS` (10) runs,
+their extract-size guess; else **its step's needs** (below); else a cold start.
 
 **What a step needs** (`needs::model::Model`): what a target needs apart from what its Mac supplied,
 by the size of its input, so a prediction is its needs over a Mac's supply and crowding is an input,
@@ -941,28 +950,28 @@ figure over its time; waited: hours waited for room past their grants.
 At the defaults the jobs waited 3 % less for room than before and took 39 % as much past their
 figures; no step had more jobs past it, and in none did the jobs together pass a Mac's room.
 
-**Each Mac's speed** (`crate::paces`): each Mac's time against the lead's, from the lead's speed over
-its own on its performance cores (`jobrt::timings::Speeds`, §10, Each Mac's speed); a Mac not
+**Each Mac's speed** (`crate::paces`): each Mac's time against the lead's, from the lead's speed
+over its own on its performance cores (`jobrt::timings::Speeds`, §10, Each Mac's speed); a Mac not
 measured is taken at the lead's. The model reads every run at the lead's pace and predicts for a
-worker at its Mac's (`Book::secs_for`, `nas_for`), in the cost book, the scheduler, the forecast
-and the plan's lanes alike.
+worker at its Mac's (`Book::secs_for`, `nas_for`), in the cost book, the scheduler, the forecast and
+the plan's lanes alike.
 
 **Batch length** (`Sched::batch_len`): a job of a shared step takes its targets in plan order (its
-first whatever its time) while their predicted time on the asking Mac stays within the batch
-length: the pool's setting `batch-minutes` (`scenic pool set batch-minutes <minutes>|off` or the
-build page's Settings; a minute to a day; not set, 15, `coord::JOB_S`, the owner's choice). At
+first whatever its time) while their predicted time on the asking Mac stays within the batch length:
+the pool's setting `batch-minutes` (`scenic pool set batch-minutes <minutes>|off` or the build
+page's Settings; a minute to a day; not set, 15, `coord::JOB_S`, the owner's choice). At
 slope-deep's 5 to 12 s of start a job, a quarter hour spends about 1 % of a job on its start; a
-longer batch saves little and holds more targets behind one lease when its Mac pauses or goes
-away. A job's time is its Mac's jobs' start at the step (`Paces::with_starts`: the median of a job's
-time past its targets' runs) plus each target's time on that Mac at the threads it would be granted:
-its own run (on its Mac as it ran; another Mac's by the two Macs' speeds, twice its time where a
-speed isn't measured), else its step's model. A target's own run is read by one rule everywhere it's
-read (`needs::own`). The grant's log line and the history's lease event say what it was sized to and
-how ("sized to 14.8 min at its Mac's speed"), and placement's why; the job's page shows them. The
+longer batch saves little and holds more targets behind one lease when its Mac pauses or goes away.
+A job's time is its Mac's jobs' start at the step (`Paces::with_starts`: the median of a job's time
+past its targets' runs) plus each target's time on that Mac at the threads it would be granted: its
+own run (on its Mac as it ran; another Mac's by the two Macs' speeds, twice its time where a speed
+isn't measured), else its step's model. A target's own run is read by one rule everywhere it's read
+(`needs::own`). The grant's log line and the history's lease event say what it was sized to and how
+("sized to 14.8 min at its Mac's speed"), and placement's why; the job's page shows them. The
 forecast offers an ask at most the first 64 ready targets of a step (`forecast::OFFER_MAX`) where
-the live coordinator grants up to 256 (`JOB_MAX`): a longer run of tiny targets is one job live
-and several in the forecast. 64 keeps the forecast's CPU in its budget (256 took 463 s of CPU on
-the live-scale test against 135). `scenic forecast-check --replay`'s last table holds each job's time
+the live coordinator grants up to 256 (`JOB_MAX`): a longer run of tiny targets is one job live and
+several in the forecast. 64 keeps the forecast's CPU in its budget (256 took 463 s of CPU on the
+live-scale test against 135). `scenic forecast-check --replay`'s last table holds each job's time
 against what it was sized to, by step and Mac.
 
 **A cold start** (no target of its step measured the way it runs now) is packed by its
@@ -1021,8 +1030,8 @@ one granted from meanwhile.
 
 ### 7.9 The forecasts' archive
 
-Every forecast the lead makes is kept, so its times can be held to what happened (`agent::fcarchive`;
-the record in docs/formats.md, The forecasts' archive):
+Every forecast the lead makes is kept, so its times can be held to what happened
+(`agent::fcarchive`; the record in docs/formats.md, The forecasts' archive):
 
 - **What:** a line per forecast: when it was made and its finish, every target it placed (lane,
   step, target, from and until), and what shaped it: each lane, each Mac's room and conditions,
@@ -1058,13 +1067,14 @@ the forecast's whole input (`forecast::Record`, §10), at most one every 15 minu
 matching stores an input mostly as what changed: ~23 MB a day). Kept 7 days (`fcinputs::KEEP_S`).
 Inputs before it are the old terms' `state/build/term/<E>/forecast-input.json` (to 31 Oct).
 
-**The backtest** (`--replay`, `fccheck::backtest`): each input in the span is rerun twice, as the code
-before made it (old) and as the code is (new), each archived and checked as above. Where the app
-keeps no path for the code before (`forecast::BEFORE_HAS_PATH`, true of codes 9 and 10), old is
-new and the report says so; the code before is then measured by an earlier app's replay. The inputs
-from `--split` on (default a day before the last) are the test set, scored apart from those before
-(train): what the model was chosen on is never what it's scored on. Run it on a copy of
-`state/coord` and `state/build/term` (`--root`), or on the NAS (reads only).
+**The backtest** (`--replay`, `fccheck::backtest`): each input in the span is rerun twice, as the
+code before made it (old) and as the code is (new), each archived and checked as above.
+`forecast::BEFORE_HAS_PATH` is false: the app keeps no path for the code before (codes 9 and 10
+replaced their predecessors' ways), so old is new and the report says so; the code before is then
+measured by an earlier app's replay. The inputs from `--split` on (default a day before the last)
+are the test set, scored apart from those before (train): what the model was chosen on is never what
+it's scored on. Run it on a copy of `state/coord` and `state/build/term` (`--root`), or on the NAS
+(reads only).
 
 **The run as it is** (code 10): the forecast packs with the live scheduler (§7.2, One scheduler),
 each Mac at its sustained best, a target waiting through the plan's waits, the NAS window as
@@ -1074,9 +1084,12 @@ targets' needs less how long it has run (`forecast::lease_busy`); each step's pa
 (`forecast::needs_pace`: its jobs of the last 12 h over what their grants were sized to, said only
 for a step quicker than its needs, never under a quarter); placement where it finishes soonest; and
 the room held for a waiting job timed as the live scheduler times it, by each lease's time left by
-its progress and the discounts the lead took (`Leased::left_s`, `State::lefts`), both in the record.
+its progress and the discounts the lead took (`Leased::left_s`, `State::lefts`), both in the record;
+a record from before code 10 has neither, so its leases end by their measured times and slower runs
+alone. Code 10 changed only that timing and wasn't scored on its own.
 
-Scored on test (17 to 19 Nov, 135 inputs, ~32,200 samples), code 9 against the app before (code 8):
+The score as code 9 came in, on test (17 to 19 Nov, 135 inputs, ~32,200 samples), against the app
+before it (code 8):
 
 | test (minutes: bias, median / p90 of the absolute error) | code 8 | code 9 |
 | --- | --- | --- |
@@ -1093,14 +1106,14 @@ next, not how fast a Mac runs them (the run's own error stays under 10 min at p9
 the lanes' time in a forecast's first hour goes to work its input didn't hold yet (the plan's work
 to come), and the far horizons stay late: work the pool did in a day was placed later.
 
-**Where the forecast's time goes**: a run asks the scheduler some 50,000 times, 88 % refused (an idle
-lane asks again at every item's end). So the cost book keeps each step's model, each target's
+**Where the forecast's time goes**: a run asks the scheduler some 50,000 times, 88 % refused (an
+idle lane asks again at every item's end). So the cost book keeps each step's model, each target's
 source's time and NAS rate; the scheduler keeps each leased job's weight, need and time and, within
 one `pack`, the NAS sums; the run keeps each Mac's offers until the ready work changes; maps use
 FxHash. Every answer is the same bytes as computed afresh. On 7 Nov's input (19,365 items, 30 lanes)
-a run without a budget took 23 s of wall where it had taken 607 s; over 64 inputs no run is cut at
-`BUDGET` (the slowest a median 6.5 s, at most 12.3 s). The listing of the work, once for the three
-runs and outside the budget, takes a median 13 s.
+a run without a budget takes 23 s of wall (607 s looking each up again at every ask); over 64 inputs
+no run is cut at `BUDGET` (the slowest a median 6.5 s, at most 12.3 s). The listing of the work,
+once for the three runs and outside the budget, takes a median 13 s.
 
 ## 8. Tasks
 
@@ -1261,16 +1274,16 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
   its new name by step (`jobrt::phase_names`), and each line of the page's phase descriptions is of
   a phase some step emits (crates/jobrt/tests/phase_names.rs).
 - **Each Mac's jobs** (the build page's machines, `scenic status`): a block per Mac, the lead's
-  first (with its ramp, §7.1): its capacity as last heard (memory against its floor, cores, disk);
-  a block per running job by its real slot; and (`scenic status` alone) why nothing more runs: the
+  first (with its ramp, §7.1): its capacity as last heard (memory against its floor, cores, disk); a
+  block per running job by its real slot; and (`scenic status` alone) why nothing more runs: the
   packing's refusal of its last ask (`Coordinator::refusals_with`: a cold job waiting for room,
   cores short, a job refused for its room, the targets offered all held, done ("1 done (its record
   not read yet)") or backing off, steps offered but not to this Mac, or nothing offered), worded
   with the plan's waits; only with none of these, "the plan is complete: no job is left to offer".
   Shown while the refusal is younger than two minutes. The forecast's lanes are per slot (`<host>`,
-  `<host> #2`, …), as many as the slots each Mac may run now; each lane's next job is the scheduler's
-  grant to its Mac (§7.2, One scheduler), and each lane's runs are cut into the jobs as granted, so
-  the page draws every job to come as a block of its own.
+  `<host> #2`, …), as many as the slots each Mac may run now; each lane's next job is the
+  scheduler's grant to its Mac (§7.2, One scheduler), and each lane's runs are cut into the jobs as
+  granted, so the page draws every job to come as a block of its own.
 - **Regions** (`agent::regionsview`): each enabled region's `crumbs`, its `bytes` (the map's files a
   download of it copies) and its outline for the world maps (`fill` and `edge`, in Web Mercator,
   simplified to about 7 km), made by the lead on a thread of its own once per regions' version and
