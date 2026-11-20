@@ -414,21 +414,19 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
 }
 
 /// A folder's remainder is a piece of its own (#1448 review): paused after it, a check takes it
-/// back, never makes it again.
+/// back, never makes it again. (The folder alone, the pins and its two regions: the small world's
+/// other regions resolved at every pause had taken 15 s, #1553.)
 #[test]
 fn a_remainder_is_kept_as_a_piece() {
     let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
     let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nwater = []\n";
     let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n";
     let rem = "of = \"box:30.0,20.0,33.0,21.0\"\n";
-    let mut files = all();
-    files.retain(|f| f.0 != "far.toml" && f.0 != "_rules.toml");
-    let without = paused_at_every_piece(&w, &files);
-    files.extend([("p/l.toml", l), ("p/r.toml", r)]);
+    let mut files = vec![PINS, ("p/l.toml", l), ("p/r.toml", r)];
     let lands = paused_at_every_piece(&w, &files);
     files.push(("p/_remainder.toml", rem));
     // (Each of l and r: its land and its water; then the remainder, one piece.)
-    assert_eq!(lands, without + 4);
+    assert_eq!(lands, 4);
     assert_eq!(paused_at_every_piece(&w, &files), lands + 1, "the remainder one piece");
 }
 

@@ -1058,17 +1058,18 @@ pub fn small_grids(
 }
 
 /// The small lakes' grid of z10 tile `t`: each lake's bowl (each part of it its own, to the same
-/// depth), cropped to its data; None without one.
+/// depth), cropped to its data; None without one. (The tile's canvas, 64 MB of floats, is made only
+/// for a bowl to paint: most z10 tiles have none, and a z6 tile's 256 had each filled and scanned.)
 pub fn small_grid(lakes: &[Small], t: (u32, u32)) -> Option<Canvas> {
-    let mut c = Canvas::tile(SMALL_Z, 10, t.0, t.1);
+    let mut c: Option<Canvas> = None;
     for l in lakes {
         for part in &l.parts {
             if let Some(b) = Bowl::of(part, SMALL_Z) {
-                c.paint(part, &b, l.dmax);
+                c.get_or_insert_with(|| Canvas::tile(SMALL_Z, 10, t.0, t.1)).paint(part, &b, l.dmax);
             }
         }
     }
-    c.cropped()
+    c?.cropped()
 }
 
 // ---- the packs -----------------------------------------------------------------------------------

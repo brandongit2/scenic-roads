@@ -995,14 +995,18 @@ pub(crate) fn drive(
         }
     }
 
-    // The polar caps.
+    // The polar caps. (One made with nothing in it, its datasets meeting it but the cut keeping
+    // none of it, has no file: its key is recorded as "<key> empty", so it isn't made again while
+    // that holds.)
     let mut pole_keys = BTreeMap::new();
     for (pole, key, empty) in poles {
         let p = pole.letter().to_string();
         let pl = fmt::polar_layer(r.theme, r.set, pole.letter());
         let l = fmt::root_logical(&pl);
-        pole_keys.insert(p.clone(), key.clone());
-        if old.poles.get(&p) == Some(&key) && (empty || out.get(&l).is_some()) {
+        let made_empty = format!("{key} empty");
+        let was = old.poles.get(&p);
+        if was == Some(&made_empty) || (was == Some(&key) && (empty || out.get(&l).is_some())) {
+            pole_keys.insert(p, was.cloned().unwrap_or_default());
             continue;
         }
         made.poles.push(pole.letter());
@@ -1016,11 +1020,13 @@ pub(crate) fn drive(
                 if out.get(&l).is_some() {
                     out.remove(&l);
                 }
+                pole_keys.insert(p, if empty { key } else { made_empty });
             }
             c => {
                 let (b, raw) = stored(&c, &sets, ids);
                 tiles.push((0, 0, 0, b, raw));
                 made.tiles += put_pack(out, &pl, "root", (0, 0, 0), tiles)?;
+                pole_keys.insert(p, key);
             }
         }
     }

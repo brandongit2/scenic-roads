@@ -570,7 +570,9 @@ its pack has it, or the tile all of one set the pack isn't stored for), the step
 reader but it: the root is made from it). Its meta, JSON: `{"theme", "v": the step's KEY_V, "keys":
 {"6/x/y": key}, "poles": {"n"|"s": key}}`, each key a hash of what the tile is made from: the best
 set's, the polygons whose boxes meet the tile (or reach the pole's square), their pieces' ids and
-digests; the built set's, the datasets meeting it (docs/steps.md §14).
+digests; the built set's, the datasets meeting it (docs/steps.md §14). A pole's cap made with
+nothing in it (its sources meeting it, the cut keeping none of it) has no file, and its key is
+recorded as `"<key> empty"`: not made again while its key holds.
 
 ## The region layer (`layers/regions/`; codecs::regionlayer)
 

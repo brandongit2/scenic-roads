@@ -179,10 +179,20 @@ fn a_fill_masks_voids_and_a_coverage_cut_are_the_next_datasets() {
 }
 
 /// Each z6 tile keyed by the datasets meeting it: nothing moved, nothing made again; a dataset's
-/// presence moved, only its z6 tile.
+/// presence moved, only its z6 tile. Over a small coast (two z6 tiles of land, the dataset's and
+/// one it doesn't meet, among the 4096 cut away whole: the whole earth's land had a run build every
+/// tile, #1553).
 #[test]
 fn only_the_z6_tiles_a_dataset_moved_in_are_made_again() {
     let d = tempfile::tempdir().unwrap();
+    let land = crate::available::tests::coast(2.5);
+    let all = Cut::new(&land, super::super::cut::Side::Land).unwrap();
+    let run = |root: &Path, ds: &[Dataset]| {
+        let mut o = out(root);
+        let m = build(&mut o, ds, &all, &|_, _| {}).unwrap();
+        o.save().unwrap();
+        m
+    };
     let (tx, ty) = z10(2.25, 44.25);
     let fine = |tiles: &[(u32, u32)]| {
         let mut f = dataset(
