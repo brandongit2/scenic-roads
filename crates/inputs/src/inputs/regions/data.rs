@@ -65,6 +65,9 @@ pub struct Datasets {
     /// What they were read from (for the resolutions' keys, `resolve::Outcome::keys`): each source's id
     /// and version.
     pub names: String,
+    /// Each dataset `read` read, by role: the blake3 of its bytes, a line each (for a lasting
+    /// folder's pieces, `Regions::keep_lasting`: a dataset is a declared path, not content named).
+    pub digest: String,
 }
 
 const CELL: i64 = 10_000_000;
@@ -189,17 +192,22 @@ impl Datasets {
         let path = |src: &crate::inputs::sources::Source| -> Result<store::nasfs::NasPath> {
             Ok(root.join(src.param_str("path")?))
         };
-        let zones = |src: &crate::inputs::sources::Source| read_geojson_raw(&path(src)?, src.param_str("id")?);
+        let mut digest = Vec::new();
+        let mut zones = |role: &str, src: &crate::inputs::sources::Source| -> Result<Raw> {
+            let (raw, h) = read_geojson_raw(&path(src)?, src.param_str("id")?)?;
+            digest.push(format!("{role} {}", h.to_hex()));
+            Ok(raw)
+        };
         let mut d = Datasets::default();
         // (The zones read whole first, then simplified with the borders any two of their rings
         // share kept: neighbours' borders stay the same on both sides, no slivers between them.)
-        let eez = zones(sea)?;
+        let eez = zones(SEA, sea)?;
         let iw = match s.role(INTERNAL) {
-            Ok(iw) => zones(iw)?,
+            Ok(iw) => zones(INTERNAL, iw)?,
             Err(_) => Raw::new(),
         };
         let ts = match s.role(TERRITORIAL) {
-            Ok(ts) => zones(ts)?,
+            Ok(ts) => zones(TERRITORIAL, ts)?,
             Err(_) => Raw::new(),
         };
         let pins = shared_points(&[&eez, &iw, &ts]);
@@ -208,8 +216,14 @@ impl Datasets {
         d.ts12 = simplified(ts, &pins);
         drop(pins);
         if let Ok(l) = s.role(LAKES) {
-            // (The lakes' zip is read by the shapefile reader through PlainFile: counted as it reads.)
-            let p = path(l)?.unchecked_path();
+            // (The lakes' zip is read by the shapefile reader through PlainFile: counted as it reads;
+            // read once more for its digest, a few MB.)
+            let np = path(l)?;
+            digest.push(format!(
+                "{LAKES} {}",
+                blake3::hash(&np.read().with_context(|| format!("read {}", np.display()))?).to_hex()
+            ));
+            let p = np.unchecked_path();
             for (id, rings) in read_shapefile(&p, l.param_str("layer")?, Some(l.param_str("id")?))? {
                 let a = geom::area_km2(&Area::from_rings(&rings));
                 d.lakes.insert(id, (rings, a));
@@ -219,6 +233,10 @@ impl Datasets {
             d.land = Some(l);
         }
         d.names = names.unwrap_or_default();
+        d.digest = digest.join(
+            "
+",
+        );
         d.index();
         Ok(Some(d))
     }
@@ -273,10 +291,10 @@ fn e7(r: &[[f64; 2]]) -> Ring {
 pub type Raw = Vec<(u64, Vec<Ring>)>;
 
 /// A zone layer's GeoJSON on the NAS read whole through the counted read (the three of the regions
-/// are about 520 MB), as rings by the integer property `id`.
-pub fn read_geojson_raw(p: &store::nasfs::NasPath, id: &str) -> Result<Raw> {
+/// are about 520 MB), as rings by the integer property `id`; with the blake3 of its bytes.
+pub fn read_geojson_raw(p: &store::nasfs::NasPath, id: &str) -> Result<(Raw, blake3::Hash)> {
     let b = p.read().with_context(|| format!("read {}", p.display()))?;
-    parse_geojson_raw(&b, id).with_context(|| format!("parse {}", p.display()))
+    Ok((parse_geojson_raw(&b, id).with_context(|| format!("parse {}", p.display()))?, blake3::hash(&b)))
 }
 
 pub fn parse_geojson_raw(b: &[u8], id: &str) -> Result<Raw> {
@@ -397,7 +415,8 @@ mod tests {
         root.join("zones.geojson").write(&text).unwrap();
         let asked = || get(Count::ReadBytes) + own_held();
         let before = asked();
-        let raw = read_geojson_raw(&root.join("zones.geojson"), "mrgid").unwrap();
+        let (raw, h) = read_geojson_raw(&root.join("zones.geojson"), "mrgid").unwrap();
+        assert_eq!(h, blake3::hash(text.as_bytes()));
         assert_eq!(raw.len(), 2000);
         assert_eq!(asked() - before, text.len() as u64);
     }

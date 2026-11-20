@@ -3894,13 +3894,7 @@ pub(super) fn dissolved(t: &TArea) -> Area {
 /// from what it ends with (the coast's and the hand-outs' included: a region whose own parts had no
 /// land may be given some), either left out when empty. Drawn as one.
 fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> Stored {
-    let mut from = r.outline_text().join(", ");
-    if !r.intersect.is_empty() {
-        from += &format!(" ∩ {}", r.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
-    }
-    if !r.minus.is_empty() {
-        from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
-    }
+    let from = r.from_text();
     let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
     let tol = buildstore::coverage::draw_tolerance_m(&rings32(t));
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
@@ -3935,8 +3929,8 @@ fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> 
 /// A region's stored shapes and drawing (`store`).
 type Stored = (Vec<Shape>, BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>);
 
-/// `store`'s, a piece (super::kept) keyed by what it reads: the region's outline as its file has it
-/// (what its shapes are said to be from), its country and its area.
+/// `store`'s, a piece (super::kept) keyed by what it reads: what its shapes are said to be from
+/// (`Region::from_text`, the water's parts as written included), its country and its area.
 #[allow(clippy::too_many_arguments)]
 fn stored(
     id: &str,
@@ -3950,7 +3944,7 @@ fn stored(
     let make = || store(r, country, t, data);
     let Some(k) = ctx.kept else { return make() };
     let mut key = Reads::new(folder, ctx, "stored");
-    key.text(&format!("{:?}\n{:?}\n{:?}", r.outline, r.intersect, r.minus));
+    key.text(&r.from_text());
     key.text(country);
     key.tarea(t);
     // (Given up once a pause came: stored empty, the check stops.)

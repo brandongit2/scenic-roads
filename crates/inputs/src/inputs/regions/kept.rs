@@ -356,11 +356,18 @@ impl Lasting {
             full |= s.bytes + len > cap;
             if full {
                 match std::fs::remove_file(&path) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    r => r.with_context(|| format!("delete {}", path.display()))?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(()) => {
+                        s.deleted += 1;
+                        s.deleted_bytes += len;
+                    }
+                    // (Left, said, and counted as held: the next check's sweep tries it again.)
+                    Err(e) => {
+                        eprintln!("regions: {} not deleted: {e}", path.display());
+                        s.files += 1;
+                        s.bytes += len;
+                    }
                 }
-                s.deleted += 1;
-                s.deleted_bytes += len;
             } else {
                 s.files += 1;
                 s.bytes += len;

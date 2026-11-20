@@ -370,6 +370,19 @@ impl Region {
     pub fn outline_text(&self) -> Vec<String> {
         self.outline.iter().map(|p| p.to_string()).chain(self.water.iter().map(|p| format!("water {p}"))).collect()
     }
+
+    /// What its stored shapes and drawing are said to be from: its outline entries (`outline_text`),
+    /// then ` ∩ ` its intersect and ` − ` its minus, when it has them.
+    pub fn from_text(&self) -> String {
+        let mut from = self.outline_text().join(", ");
+        if !self.intersect.is_empty() {
+            from += &format!(" ∩ {}", self.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
+        }
+        if !self.minus.is_empty() {
+            from += &format!(" − {}", self.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
+        }
+        from
+    }
 }
 
 /// A region's id: `[a-z0-9-]`, 1–64 characters, not starting with a dash (as recipes' ids).

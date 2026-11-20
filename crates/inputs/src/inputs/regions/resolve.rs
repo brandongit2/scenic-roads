@@ -1045,13 +1045,7 @@ pub(super) fn resolve_one(
             format!("{}: the region has no area (a minus taking everything, an intersect meeting nothing?)", r.id),
         )]);
     }
-    let mut from = r.outline_text().join(", ");
-    if !r.intersect.is_empty() {
-        from += &format!(" ∩ {}", r.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
-    }
-    if !r.minus.is_empty() {
-        from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
-    }
+    let from = r.from_text();
     // The country: its first `osm:` part's (or a `region:`'s first shape's).
     let country = r
         .parts()

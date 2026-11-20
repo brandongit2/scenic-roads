@@ -209,7 +209,7 @@ pub const RESOLUTION: u32 = 14;
 /// resolution, and all they name but the code moving bytes and counting, `PLUMBING` there). A test (`checks_code_tests`) fails when that code changes and
 /// this doesn't: bump `RESOLUTION` when the change moves what an unchanged region resolves to (or
 /// its problems' words), and set this to the digest the test names either way.
-pub const RESOLUTION_CODE: &str = "76e4db9f4974d6ab8b9a02d0f3f63264";
+pub const RESOLUTION_CODE: &str = "f8475c38e8c6780ab697b021241d99d9";
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.

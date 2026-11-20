@@ -520,9 +520,15 @@ pub fn check_folder(
         }
         None => None,
     };
+    let besides = match keep {
+        Some(_) => {
+            Some(read_besides(declarations, data.as_ref().and_then(|d| Some(d.as_ref()?.digest.as_str())), land)?)
+        }
+        None => None,
+    };
     let mut checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
-    if let Some((d, mb)) = keep {
-        checks.keep_lasting(d, mb, &read_besides(root, declarations, land)?)?;
+    if let (Some((d, mb)), Some(b)) = (keep, besides) {
+        checks.keep_lasting(d, mb, &b)?;
     }
     drop(ph);
     eprintln!(
@@ -606,8 +612,11 @@ pub fn check_folder(
             );
         }
     }
-    if let (Some(s), Some((d, mb))) = (swept, keep) {
-        let s = s?;
+    // (A folder not held to its cap is said, and the check goes on: its report is as good.)
+    if let (Some(Err(e)), Some((d, _))) = (&swept, keep) {
+        eprintln!("regions-check: {} not held to its cap: {e:#}", d.display());
+    }
+    if let (Some(Ok(s)), Some((d, mb))) = (swept, keep) {
         eprintln!(
             "regions-check: {} holds {} pieces, {:.0} MB (its cap {mb} MB); {} deleted, {:.0} MB, the least recently used",
             d.display(),
@@ -678,13 +687,11 @@ pub fn check_folder(
 }
 
 /// What a scratch check reads besides the records that their content names don't tell, for its
-/// lasting pieces' keys (super::kept::Lasting): each declaration's bytes, the length and time
-/// written of each dataset file they name, and of the land file. (The records' are named by their
-/// content; a declaration names its dataset by its source and version.)
-fn read_besides(root: &store::nasfs::NasRoot, declarations: Option<&Path>, land: Option<&Path>) -> Result<String> {
-    let stat = |m: std::io::Result<std::fs::Metadata>| -> String {
-        m.map_or_else(|e| format!("({e})"), |m| format!("{} {:?}", m.len(), m.modified().ok()))
-    };
+/// lasting pieces' keys (super::kept::Lasting): each declaration's bytes, each dataset's
+/// (`data`: `Datasets::digest`, the blake3 of the bytes read), and the land file's length and time
+/// written (read where asked, not whole). (The records' are named by their content; a declaration
+/// names its dataset by its source, version and path.)
+fn read_besides(declarations: Option<&Path>, data: Option<&str>, land: Option<&Path>) -> Result<String> {
     let mut out = Vec::new();
     if let Some(d) = declarations {
         let mut names: Vec<_> =
@@ -693,17 +700,16 @@ fn read_besides(root: &store::nasfs::NasRoot, declarations: Option<&Path>, land:
         for e in names.iter().filter(|e| e.path().is_file()) {
             out.push(format!("{:?} {}", e.file_name(), blake3::hash(&std::fs::read(e.path())?).to_hex()));
         }
-        let s = crate::inputs::sources::Sources::of_folder(d)?;
-        for role in super::data::ROLES {
-            if let Ok(p) = s.role(role).and_then(|src| src.param_str("path")) {
-                out.push(format!("{role} {p} {}", stat(root.join(p).metadata())));
-            }
-        }
     }
+    out.extend(data.map(str::to_string));
     if let Some(p) = land {
-        out.push(format!("land {} {}", p.display(), stat(std::fs::metadata(p))));
+        let m = std::fs::metadata(p).with_context(|| format!("stat {}", p.display()))?;
+        out.push(format!("land {} {} {:?}", p.display(), m.len(), m.modified().ok()));
     }
-    Ok(out.join("\n"))
+    Ok(out.join(
+        "
+",
+    ))
 }
 
 /// Each accepted region's cells (`tiles::cells_of` each ring's box), by id: from its drawn

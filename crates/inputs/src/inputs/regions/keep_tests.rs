@@ -129,6 +129,58 @@ fn an_edit_makes_again_exactly_the_pieces_reading_it() {
     assert_eq!(check(&w, &files(), d.path(), CODE).0, set(&[]));
 }
 
+/// A water written otherwise to the same area (12 nmi as metres): its water made again (it reads
+/// its parts as written), its area as it was, but what its stored shapes are said to be from
+/// changed, so stored again: a check keeping nothing says the new words.
+#[test]
+fn a_water_written_otherwise_is_stored_again() {
+    let w = the_world();
+    let d = tempfile::tempdir().unwrap();
+    let mut f = files();
+    check(&w, &f, d.path(), CODE);
+    f.insert("far.toml".into(), f["far.toml"].replace("12 nmi", "22224 m"));
+    assert_eq!(check(&w, &f, d.path(), CODE).0, set(&[("water", "far"), ("stored", "far")]));
+}
+
+/// A remainder reads the regions in its cells: a region without water there (by its piece), and a
+/// region with water there not one of its own (by its outline), each moved, makes it again.
+#[test]
+fn a_remainder_is_made_again_when_a_region_in_its_cells_moves() {
+    let w = the_world();
+    let d = tempfile::tempdir().unwrap();
+    let mut f = files();
+    f.insert("q.toml".into(), f["q.toml"].replace("box:40.0,20.0,41.0,21.0", "box:31.4,20.4,31.6,20.6"));
+    f.insert("n.toml".into(), "id = \"n\"\nname = \"N\"\noutline = [\"box:31.4,20.2,31.6,20.3\"]\nwater = []\n".into());
+    check(&w, &f, d.path(), CODE);
+    f.insert("q.toml".into(), f["q.toml"].replace("box:31.4,20.4,31.6,20.6", "box:31.3,20.4,31.6,20.6"));
+    assert_eq!(
+        check(&w, &f, d.path(), CODE).0,
+        set(&[("resolved", "q"), ("remainder", "p/_remainder.toml"), ("stored", "l")]),
+        "q, without water: the remainder L takes less"
+    );
+    f.insert("n.toml".into(), f["n.toml"].replace("box:31.4,20.2", "box:31.3,20.2"));
+    assert_eq!(
+        check(&w, &f, d.path(), CODE).0,
+        set(&[("land", "n"), ("remainder", "p/_remainder.toml"), ("stored", "l"), ("stored", "n")]),
+        "n, with water: the remainder L takes less"
+    );
+}
+
+/// A region's land keeps its pieces in the cells the remainders read: the remainder grown into
+/// more of L's cells (its cells made again), L's land made again to keep them.
+#[test]
+fn a_land_is_made_again_when_the_cells_kept_of_it_change() {
+    let w = the_world();
+    let d = tempfile::tempdir().unwrap();
+    let mut f = files();
+    check(&w, &f, d.path(), CODE);
+    f.insert("p/_remainder.toml".into(), "of = \"box:29.0,20.0,33.0,21.0\"\n".into());
+    assert_eq!(
+        check(&w, &f, d.path(), CODE).0,
+        set(&[("land", "l"), ("remainder", "p/_remainder.toml"), ("remainder's cells", "p/_remainder.toml")])
+    );
+}
+
 /// Another code, or another `RESOLUTION`, makes every piece again (its pieces' names are
 /// others'), and the first's are still taken after.
 #[test]

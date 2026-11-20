@@ -900,7 +900,8 @@ Mac's server (§6.1.9).
   outline, every region without water and the pieces of the remainders taken before it), each
   region's water (its `water` as parsed, its lines and shapes, the regions it names, every region
   without water in each of its cells), each hand-out's moves (the handing region's area and its
-  units' members') and each region's stored shapes (its outline as written, its country, its area);
+  units' members') and each region's stored shapes (the text they're said to be from, `Region::from_text`: its outline
+  and water as written, its `intersect` and `minus`; its country, its area);
   all of them against what the folder is resolved against (the pass, the outline set's, extract's,
   land's and datasets' names) and the pins. A key is told before the piece's parts are read (their
   rings cut into cells costs as much as most pieces): its cells are those its parts' boxes reach
@@ -1093,13 +1094,19 @@ naming it, a hand-out of it, the regions whose area changed with it, stored agai
 a full check's, byte for byte. A piece's file is named by its whole key: the pieces' format
 (`kept::FORMAT`), `RESOLUTION`, the regions' code digest as compiled (`inputs::code_of`), the other
 passes' outline sets, the files the check reads besides the regions' (the declarations' bytes,
-each dataset's and the land file's size and modified time), and its own key. So a folder is safe across versions: a piece of other code
-or other reads is another file and is never read; nothing is invalidated by hand. A file holds its
+the blake3 of each dataset's bytes as read, `Datasets::digest`, and a `--land` file's size and
+modified time: it's read where asked, not whole), and its own key: a stored piece's, the text its
+shapes are said to be from (`Region::from_text`, its water's parts as written). So a folder is safe
+across versions: a piece of other code or other reads is another file and is never read; nothing is
+invalidated by hand. The code digest covers this crate's code, not the crates it builds on (the
+`i_overlay`'s: a version of one that changes what a region resolves to needs `RESOLUTION` raised by
+hand, as the records' resolutions do). Keep the folder on a local
+disk: a whole check writes about 4,900 small files, which a NAS share takes 20–55 a second. A file holds its
 key and the blake3 of its bytes: one cut short or changed is said, made again and written over; a
 write a stopped check left isn't read. Once the check is done the folder is held to `--keep-mb`
 MB (`kept::KEEP_MB`, 10,000, by default; a whole check's pieces came to about 2 GB when measured): its files, the most recently used (written, or read)
 first, are kept while they fit, the rest deleted; the check says what the folder holds and what
-it deleted. With a lasting folder the check holds no copy of a piece in memory (it reads it back
+it deleted (a file it can't delete, or a folder it can't list, is said, and the check goes on). With a lasting folder the check holds no copy of a piece in memory (it reads it back
 from there).
 
 #### 6.1.8 Checks
