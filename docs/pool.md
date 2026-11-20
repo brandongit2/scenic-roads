@@ -1135,8 +1135,11 @@ tile's area, one a target, and its source's time below):
   the NAS doesn't read as serial.
 - **memory**: the `needs-mem-pct` percentile (98) of the peaks of its step's runs at or above its
   size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, a smaller run's
-  peak grown by the step's slope over size, `model::slope`, at most in proportion; no slope, and no
-  growth, with fewer than `MIN_RUNS` runs, their sizes all equal or a falling fit: task #1535),
+  peak grown by the law the step's own largest runs are read by best, `model::Growth`: its slope
+  over size, at most in proportion, or a power of the size, its log slope over the log size, the
+  one under fewer of its `MIN_RUNS` largest runs held out and read from those below, then the
+  nearer, the slope on a tie; no fit, and no growth, with fewer than `MIN_RUNS` runs, their sizes
+  all equal or a falling fit: tasks #1535, #1497),
   each at the threads asked: past a run's threads (a live target's, those in force as its job's
   peak was reached: its cost line's `threads_peak`), the step's memory per thread for each more
   (fitted by least squares over size and threads, at least `needs-thread-share`, 50 %, of the

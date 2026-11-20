@@ -2044,6 +2044,8 @@ mod tests {
         taken: u64,
         post: Option<u64>,
         pre: Option<u64>,
+        /// The law its step's best size grows its memory by (`model::Growth`).
+        law: Option<model::Law>,
     }
 
     /// Of `all` (each read as the way its step runs now), each step's largest target by each of
@@ -2087,6 +2089,7 @@ mod tests {
         HeldOut {
             post: model.needs.mem(&sizes, threads),
             pre,
+            law: model.needs.by.first().map(|p| p.mem_growth().law),
             step: k.step.to_string(),
             key: key.to_string(),
             taken: c.peak_mb,
@@ -2209,12 +2212,16 @@ mod tests {
         let cases = held_out_cases(&all);
         for c in &cases {
             println!(
-                "{} {}: {} MB taken, {:?} by its run's sizes, {:?} by those known before",
-                c.step, c.key, c.taken, c.post, c.pre
+                "{} {}: {} MB taken, {:?} by its run's sizes, {:?} by those known before, grown by {:?}",
+                c.step, c.key, c.taken, c.post, c.pre, c.law
             );
         }
         println!("by its run's sizes: {}", held_out_score(&cases, |c| c.post));
         println!("by the sizes known before it runs: {}", held_out_score(&cases, |c| c.pre));
+        for law in [model::Law::Slope, model::Law::Power] {
+            let of = |c: &HeldOut| if c.law == Some(law) { c.post } else { None };
+            println!("by its run's sizes, its step's memory grown by {law:?}: {}", held_out_score(&cases, of));
+        }
     }
 
     /// By hand (task #1415): the admission replay on the lead's records (docs/pool.md §7.7, Memory
