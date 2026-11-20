@@ -22,7 +22,10 @@
 //!   threads where `MIN_RUNS` ran on differing threads, at least `thread_share` of the run's peak
 //!   over its threads; else that peak over its threads whole, as if its memory were its
 //!   threads'), never less on fewer: a small, fast or new run can't lower it. Disk alike, by size
-//!   alone, at `high_pct`.
+//!   alone, at `high_pct`. Both are read by the target's best size, and by each other size it is
+//!   past every run of that reads its step's largest runs better from those below them
+//!   (`Past::beats`, worked out only for a target past every run by such a size), the most of
+//!   them (`Model::units_of`).
 //! - **NAS** (`Moves`): its runs' of about the target's size, their bytes asked of the NAS and NAS
 //!   calls over their time together (`PerUnit::rate`).
 //!
@@ -36,7 +39,7 @@
 //! supply explains (JobFacts::explain), it's flagged; `relearn` runs in a row off on one side of
 //! their work and the step learns from the first of them on, as a cost version's bump does for code.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jobrt::needs::Tuning;
 
@@ -242,6 +245,101 @@ pub struct Model {
     pub off: Vec<Off>,
     /// The run its learning starts from, where it relearned (`relearn` off in a row).
     pub since: Option<String>,
+    /// Its runs' sizes and memory, and its disk measures', for `units_of`'s reads past the runs
+    /// (`Past`).
+    mem_past: Past,
+    disk_past: Past,
+}
+
+/// A step's measures (its runs' memory, or its disk measures) by each of its sizes, a column a
+/// size (`names`, its `by`'s: 0 where a run lacks it), and, worked out the first time asked, which
+/// other sizes a target past every run by each size is read better with it than by alone
+/// (`beats`): only a target
+/// past every run by a size other than the first it is read by asks (`Model::units_of`).
+#[derive(Clone, Debug, Default)]
+struct Past {
+    names: Vec<String>,
+    cols: Vec<Vec<f64>>,
+    y: Vec<f64>,
+    /// The percentile its reads are at (`mem_pct`, `high_pct`).
+    at: f64,
+    beats: Vec<std::sync::OnceLock<BTreeSet<String>>>,
+}
+
+impl Past {
+    /// The measures `v` (a run's sizes, its measure) by `names`, read at percentile `at`.
+    fn new<'a>(names: &[String], v: impl Iterator<Item = (&'a BTreeMap<String, f64>, f64)>, at: f64) -> Past {
+        let mut cols = vec![Vec::new(); names.len()];
+        let mut y = Vec::new();
+        for (sizes, m) in v {
+            for (c, n) in cols.iter_mut().zip(names) {
+                c.push(sizes.get(n).copied().filter(|&u| u > 0.0).unwrap_or(0.0));
+            }
+            y.push(m);
+        }
+        let beats = names.iter().map(|_| std::sync::OnceLock::new()).collect();
+        Past { names: names.to_vec(), cols, y, at, beats }
+    }
+
+    /// Whether a target past every run by size `s` is read better by it and `other` together than
+    /// by `other` alone (`beaten`).
+    fn beats(&self, s: &str, other: &str) -> bool {
+        self.beaten(s).is_some_and(|b| b.contains(other))
+    }
+
+    /// The sizes `s` reads a target past every run by it better than (`Past::beats`), worked out
+    /// the first time asked: of the measures, the `MIN_RUNS` largest by `s` are each held out and
+    /// read from the runs smaller by `s` as a target past every run is read (`past_read`), by `s`
+    /// and by each other size from those same runs; `s` beats another where the most of both, as
+    /// `Model::mem` takes them, has log errors summing less over the held-out runs both read than
+    /// the other's alone: read by `s` too, they come out nearer. A size whose reads are no higher
+    /// changes nothing and so beats nothing; one that raises reads already over makes them worse.
+    /// From the step's own runs, so no figure is set by hand (task #1542's review). A size whose largest runs its smaller ones can't be read from
+    /// (fewer than `MIN_RUNS` below them, all of one size: `TARGET`'s) beats none. None: not a size
+    /// of the step's.
+    fn beaten(&self, s: &str) -> Option<&BTreeSet<String>> {
+        let si = self.names.iter().position(|n| n == s)?;
+        Some(self.beats[si].get_or_init(|| {
+            let order = |k: usize| {
+                let c = &self.cols[k];
+                let mut ix: Vec<usize> = (0..c.len()).filter(|&i| c[i] > 0.0).collect();
+                ix.sort_by(|&a, &b| c[a].total_cmp(&c[b]));
+                ix
+            };
+            let orders: Vec<Vec<usize>> = (0..self.names.len()).map(order).collect();
+            let own = &self.cols[si];
+            let mut errs = vec![(0.0f64, 0.0f64, false); self.names.len()];
+            for &j in &orders[si][orders[si].len().saturating_sub(MIN_RUNS)..] {
+                let (sj, y) = (own[j], self.y[j]);
+                if y <= 0.0 {
+                    continue;
+                }
+                // (Read by size `k` from the runs smaller by `s`, as `PerUnit::mem` and `disk` read.)
+                let read_by = |k: usize| -> Option<f64> {
+                    let c = &self.cols[k];
+                    let u = Some(c[j]).filter(|&u| u > 0.0)?;
+                    let pts: Vec<(f64, f64)> = orders[k]
+                        .iter()
+                        .filter(|&&i| own[i] > 0.0 && own[i] < sj)
+                        .map(|&i| (c[i], self.y[i]))
+                        .collect();
+                    (pts.len() >= MIN_RUNS).then(|| past_read(&pts, u, self.at)).flatten()
+                };
+                let Some(by_s) = read_by(si) else { continue };
+                let err = |x: f64| det::Det::dln(x.max(1.0) / y).abs();
+                for (k, e) in errs.iter_mut().enumerate().filter(|(k, _)| *k != si) {
+                    if let Some(other) = read_by(k) {
+                        *e = (e.0 + err(by_s.max(other)), e.1 + err(other), true);
+                    }
+                }
+            }
+            errs.iter()
+                .zip(&self.names)
+                .filter(|((mine, theirs, read), _)| *read && mine < theirs)
+                .map(|(_, n)| n.clone())
+                .collect()
+        }))
+    }
 }
 
 /// The `p` percentile of the sorted `v` (linear between ranks); None with none.
@@ -523,7 +621,11 @@ impl Model {
                 p.stand_in = Some(PerUnit::of(&older, &[], &[], &p.size, t, cores).whole);
             }
         }
-        Model { runs: all.len(), learned: learned.len(), par, by, off, since: since_key }
+        let names: Vec<String> = by.iter().map(|p| p.size.clone()).collect();
+        let mem_past =
+            Past::new(&names, all.iter().filter(|o| o.peak > 0).map(|o| (&o.sizes, o.peak as f64)), t.mem_pct);
+        let disk_past = Past::new(&names, disks.iter().map(|(s, d)| (s, *d as f64)), t.high_pct);
+        Model { runs: all.len(), learned: learned.len(), par, by, off, since: since_key, mem_past, disk_past }
     }
 
     /// The first of its sizes (best first) that `sizes` has, with a run of about as many units of
@@ -540,10 +642,33 @@ impl Model {
         })
     }
 
-    /// The first of its sizes (best first) that `sizes` has and `has` says it has measures of
-    /// (memory's, disk's: past its runs a target is grown from the largest), and how many.
-    fn unit_of(&self, sizes: &BTreeMap<String, f64>, has: impl Fn(&PerUnit) -> bool) -> Option<(&PerUnit, f64)> {
-        self.by.iter().find_map(|p| Some((p, sizes.get(&p.size).copied().filter(|&u| u > 0.0 && has(p))?)))
+    /// The sizes a target of `sizes`' memory or disk is read by, with how many units of each: of its
+    /// sizes (best first) that `sizes` has and that have measures (`largest`: the largest
+    /// measured; None with none), the first, and each other the target is past every measure of
+    /// that reads past its runs better than that first (`past`, `Past::beats`, asked only then). Where its sizes disagree, in range by one
+    /// but past every run by another the measure follows, the one in range says nothing of what it
+    /// holds past them (bldprep 6/47/27, in range by its bytes, past every run by its buildings,
+    /// rows and bytes written: read by its bytes alone, 517 MB against the 10,770 it took, task
+    /// #1542).
+    fn units_of<'m>(
+        &'m self,
+        sizes: &BTreeMap<String, f64>,
+        largest: impl Fn(&'m PerUnit) -> Option<f64>,
+        past: &Past,
+    ) -> Vec<(&'m PerUnit, f64)> {
+        let mut read: Vec<(&PerUnit, f64)> = Vec::new();
+        for p in &self.by {
+            let (Some(&u), Some(top)) = (sizes.get(&p.size), largest(p)) else { continue };
+            if u > 0.0 && read.first().is_none_or(|f| u > top && past.beats(&p.size, &f.0.size)) {
+                read.push((p, u));
+            }
+        }
+        read
+    }
+
+    /// The sizes a target's memory is read by (`units_of`).
+    fn mem_units(&self, sizes: &BTreeMap<String, f64>) -> Vec<(&PerUnit, f64)> {
+        self.units_of(sizes, |p| Some(p.mem.last()?.0), &self.mem_past)
     }
 
     /// The time (s) a target of `sizes` takes on `threads` (0: as many as it can use) on a Mac
@@ -577,22 +702,23 @@ impl Model {
         Some(p.times(u).work? * u)
     }
 
+    /// The memory (MB) a target of `sizes` needs on `threads` (`PerUnit::mem`): the most of the
+    /// sizes it is read by (`units_of`).
     pub fn mem(&self, sizes: &BTreeMap<String, f64>, threads: u32) -> Option<u64> {
-        let (p, u) = self.unit_of(sizes, |p| !p.mem.is_empty())?;
-        p.mem(u, threads)
+        self.mem_units(sizes).into_iter().filter_map(|(p, u)| p.mem(u, threads)).max()
     }
 
-    /// What each thread a job grows by adds to a target of `sizes`' memory (`PerUnit::thread_mb`).
+    /// What each thread a job grows by adds to a target of `sizes`' memory (`PerUnit::thread_mb`),
+    /// the most of the sizes it is read by.
     pub fn thread_mb(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
-        let (p, u) = self.unit_of(sizes, |p| !p.mem.is_empty())?;
-        p.thread_mb(u)
+        self.mem_units(sizes).into_iter().filter_map(|(p, u)| p.thread_mb(u)).max()
     }
 
     /// The memory per thread fitted over its runs' sizes and threads (`PerUnit::mem_per_thread`)
-    /// of the size a target of `sizes` is read by: a slope, the same for every size. None where
-    /// none is fitted.
+    /// of the first size a target of `sizes` is read by: a slope, the same for every size. None
+    /// where none is fitted.
     pub fn fitted_per_thread(&self, sizes: &BTreeMap<String, f64>) -> Option<f64> {
-        self.unit_of(sizes, |p| !p.mem.is_empty())?.0.mem_per_thread
+        self.mem_units(sizes).first()?.0.mem_per_thread
     }
 
     /// What a thread of the step holds by its runs alone, whatever a target's size (MB): the
@@ -606,9 +732,11 @@ impl Model {
         Some(linear.max(p.mem_per_thread.unwrap_or(0.0)).ceil() as u64)
     }
 
+    /// The disk (MB) a target of `sizes` needs (`PerUnit::disk`): the most of the sizes it is read
+    /// by (`units_of`).
     pub fn disk(&self, sizes: &BTreeMap<String, f64>) -> Option<u64> {
-        let (p, u) = self.unit_of(sizes, |p| !p.disk.is_empty())?;
-        p.disk(u)
+        let read = self.units_of(sizes, |p| Some(p.disk.last()?.0), &self.disk_past);
+        read.into_iter().filter_map(|(p, u)| p.disk(u)).max()
     }
 
     /// What a target of `sizes` moves on the NAS a second at the lead's pace (`PerUnit::rate`).
@@ -634,6 +762,14 @@ fn rank(runs: &[&Obs], all: &[&Obs], disks: &[Disk], t: &Tuning, cores: f64) -> 
         .collect();
     by.sort_by(|a, b| a.spread.total_cmp(&b.spread).then(a.size.cmp(&b.size)));
     by
+}
+
+/// A measure of a target of `u` units read from `pts` (size, measure; by size), as `PerUnit::mem`
+/// (on the threads its runs ran) and `PerUnit::disk` read one: the runs at or above it (`above`),
+/// a smaller one's grown by the slope over them all (`scaled_up`), at percentile `at`.
+fn past_read(pts: &[(f64, f64)], u: f64, at: f64) -> Option<f64> {
+    let k = slope(pts.iter().copied());
+    pct(&sorted(above(pts, u, |p| p.0).iter().map(|p| scaled_up(p.1, p.0, u, k)).collect()), at)
 }
 
 /// `runs`' parallelism (`Par`): a run is a floor when the cores it kept busy while not waiting were
@@ -980,6 +1116,76 @@ mod tests {
         let m = Model::of(runs, &[], &[], &t);
         assert_eq!(m.by[0].size, "km2");
         assert_eq!(mb(&m, 100.0), 10_500);
+    }
+
+    /// Task #1542: a target in range by its best size but past every run by another that its
+    /// memory follows (bldprep 6/47/27: in range by its bytes, past every run by its buildings) has
+    /// its memory and disk read by both, the most of them: here its buildings', grown past the runs
+    /// by their slope (100 MB and 1e-4 MB a building), 8,100 MB, not the 600 at most its bytes'
+    /// runs took. In range by both, its best size reads it alone.
+    #[test]
+    fn a_target_past_every_run_by_another_size_is_read_by_it_too() {
+        let t = Tuning::default();
+        let runs: Vec<Obs> = (0..20u32)
+            .map(|i| {
+                let b = 1e6 * f64::from(1 + i % 5);
+                let mut o =
+                    obs(u64::from(i), 100.0 + f64::from(i), 2.0 * (100.0 + f64::from(i)), 1, 100 + (b / 1e4) as u64);
+                o.sizes.insert("buildings".into(), b);
+                o
+            })
+            .collect();
+        let disks: Vec<Disk> = runs.iter().map(|o| (o.sizes.clone(), o.peak)).collect();
+        let m = Model::of(runs, &[], &disks, &t);
+        assert_eq!(m.by[0].size, "km2", "its work per unit of area spreads least");
+        assert!(m.mem_past.beats("buildings", "km2"), "{:?}", m.mem_past.beaten("buildings"));
+        let target = |b: f64| -> BTreeMap<String, f64> {
+            [(TARGET.to_string(), 1.0), ("km2".to_string(), 110.0), ("buildings".to_string(), b)].into()
+        };
+        let (mem, disk) = (m.mem(&target(8e7), 0).unwrap(), m.disk(&target(8e7)).unwrap());
+        assert!((8000..=8200).contains(&mem) && (8000..=8200).contains(&disk), "{mem} MB, {disk} MB");
+        let alone: BTreeMap<String, f64> = [(TARGET.to_string(), 1.0), ("km2".to_string(), 110.0)].into();
+        assert_eq!(m.mem(&target(3e6), 0), m.mem(&alone, 0), "in range by both: its area alone");
+        assert!(m.mem(&alone, 0).unwrap() <= 600);
+    }
+
+    /// Task #1542's review: memory that follows a step's best size (10 MB a km²) is read by it alone
+    /// for a target past every run by a size unrelated to it (`files`), as for one without that
+    /// size: the unrelated one's reads raise none of the largest runs' nearer (`Past::beats`).
+    #[test]
+    fn a_target_past_every_run_by_an_unrelated_size_is_read_as_without_it() {
+        let t = Tuning::default();
+        let runs: Vec<Obs> = (0..40u32)
+            .map(|i| {
+                let km2 = 100.0 + f64::from(i);
+                let mut o = obs(u64::from(i), km2, 2.0 * km2, 1, (10.0 * km2) as u64);
+                o.sizes.insert("files".into(), f64::from(1 + (i * 7) % 13));
+                o
+            })
+            .collect();
+        let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.by[0].size, "km2");
+        let alone: BTreeMap<String, f64> = [(TARGET.to_string(), 1.0), ("km2".to_string(), 120.0)].into();
+        let mut files = alone.clone();
+        files.insert("files".into(), 1000.0);
+        assert!(!m.mem_past.beats("files", "km2"), "{:?}", m.mem_past.beaten("files"));
+        assert_eq!(m.mem(&files, 0), m.mem(&alone, 0));
+    }
+
+    /// Task #1542's review: a size its measure follows reads the step's largest runs by it better
+    /// from those below them than a size it doesn't, and so beats it (`Past::beaten`); that one beats
+    /// nothing: its reads past the runs are worse. (The measure 10 MB a unit of `a`; `b` a size
+    /// unrelated to it.)
+    #[test]
+    fn a_size_beats_another_where_it_reads_the_largest_runs_better() {
+        let sizes: Vec<BTreeMap<String, f64>> = (0..40u32)
+            .map(|i| [("a".to_string(), f64::from(1 + i)), ("b".to_string(), f64::from(1 + (i * 7) % 13))].into())
+            .collect();
+        let names = ["a".to_string(), "b".to_string()];
+        let past = Past::new(&names, sizes.iter().map(|s| (s, 10.0 * s["a"])), 98.0);
+        assert_eq!(past.beaten("a"), Some(&BTreeSet::from(["b".to_string()])));
+        assert_eq!(past.beaten("b"), Some(&BTreeSet::new()));
+        assert_eq!(past.beaten("c"), None, "not a size of the step's");
     }
 
     /// A target is predicted by the best of the step's sizes it has: its work spread least.

@@ -905,7 +905,14 @@ tile's area, one a target, and its source's time below):
   each at the threads asked: past a run's threads, the step's memory per thread for each more
   (fitted by least squares over size and threads, at least `needs-thread-share`, 50 %, of the
   peaks over threads; more threads never read as less memory). Of every run the way the step runs
-  now: a small new run can't lower a large target's. Disk alike, at `needs-high-pct` (95).
+  now: a small new run can't lower a large target's. Disk alike, at `needs-high-pct` (95). Both
+  are read by the target's best size and by each other size it is past every run of whose reads,
+  taken with the best size's, read the step's own largest runs by it nearer than the best size's
+  alone, the most of them (`model::Model::units_of`; `model::Past::beaten`: the `MIN_RUNS`
+  largest by a size each held out and read from the runs below them, the log errors summed;
+  worked out per size the first time a target past its runs asks, so a model's build costs
+  nothing more; task #1542: bldprep 6/47/27, in range by its bytes but past every run by its
+  buildings, had been read by its bytes alone, 517 MB against 10,770).
 - **NAS** (`model::Moves`): bytes read (the NAS or the page cache), written and read back, and its
   creates, lists, stats and deletes; a target's rate its runs of about its size together.
 

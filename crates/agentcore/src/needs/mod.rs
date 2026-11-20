@@ -1928,6 +1928,190 @@ mod tests {
         }
     }
 
+    /// A target held out of its step's costs (`held_out`): its step and cost key, the memory
+    /// it took, and its step's model of the rest's memory for it (`model::Model::mem`, on its
+    /// threads) by the sizes its run measured (`post`) and by those known before it runs alone
+    /// (`pre`: `Book::sizes`, its tile's area, the measure its plan offers it by, `OFFERED_BY`, and
+    /// its source's time), as a never-run target is read.
+    struct HeldOut {
+        step: String,
+        key: String,
+        taken: u64,
+        post: Option<u64>,
+        pre: Option<u64>,
+    }
+
+    /// Of `all` (each read as the way its step runs now), each step's largest target by each of
+    /// its sizes (each target once) held out (`held_out`).
+    fn held_out_cases(all: &BTreeMap<String, Cost>) -> Vec<HeldOut> {
+        let mut by_step: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+        for k in all.keys() {
+            by_step.entry(crate::coord::CostKey::parse(k).step).or_default().push(k);
+        }
+        let mut cases = std::collections::BTreeSet::new();
+        for (step, keys) in &by_step {
+            let keys: Vec<&&String> = keys.iter().filter(|k| !is_drop(&all[**k]) && all[**k].peak_mb > 0).collect();
+            if keys.len() <= MIN_RUNS {
+                continue;
+            }
+            let mut names: Vec<String> = keys.iter().flat_map(|k| sizes_of(k, Some(&all[**k])).into_keys()).collect();
+            names.sort();
+            names.dedup();
+            for n in names {
+                let size = |k: &&&String| sizes_of(k, Some(&all[**k])).get(&n).copied().unwrap_or(0.0);
+                if let Some(k) = keys.iter().filter(|k| size(k) > 0.0).max_by(|a, b| size(a).total_cmp(&size(b))) {
+                    cases.insert((step.to_string(), (**k).clone()));
+                }
+            }
+        }
+        cases.into_iter().map(|(_, k)| held_out(all, &k)).collect()
+    }
+
+    /// Cost `key` of `all` held out of the rest (`HeldOut`).
+    fn held_out(all: &BTreeMap<String, Cost>, key: &str) -> HeldOut {
+        let mut costs = all.clone();
+        let c = costs.remove(key).unwrap();
+        let k = crate::coord::CostKey::parse(key);
+        let threads = own_threads(&c).unwrap_or(0);
+        let book = Book::new(crate::agent::seam::for_tests(), &costs);
+        let model = book.model(k.step);
+        let mut sizes = sizes_of(key, Some(&c));
+        sizes.insert(model::TARGET.to_string(), 1.0);
+        let offered = offered_by(k.step).and_then(|m| Some((m, *c.sizes.get(m)?)));
+        let pre = model.needs.mem(&book.sizes(k.step, k.target, offered), threads);
+        HeldOut {
+            post: model.needs.mem(&sizes, threads),
+            pre,
+            step: k.step.to_string(),
+            key: key.to_string(),
+            taken: c.peak_mb,
+        }
+    }
+
+    /// `cases`' predictions by `of` over what they took: their count, geometric mean, worst over
+    /// (with its key) and those under (key, ratio), in a line.
+    fn held_out_score(cases: &[HeldOut], of: impl Fn(&HeldOut) -> Option<u64>) -> String {
+        let (mut logs, mut worst, mut under) = (Vec::new(), (0.0f64, String::new()), Vec::new());
+        for c in cases {
+            let Some(p) = of(c) else { continue };
+            let r = p.max(1) as f64 / c.taken.max(1) as f64;
+            logs.push(det::Det::dln(r));
+            if r > worst.0 {
+                worst = (r, c.key.clone());
+            }
+            if r < 1.0 {
+                under.push(format!("{} {r:.3}x", c.key));
+            }
+        }
+        let gm = det::Det::dexp(logs.iter().sum::<f64>() / logs.len().max(1) as f64);
+        format!(
+            "{} cases: geometric mean {gm:.3}, worst over {:.1}x ({}), under {}: {}",
+            logs.len(),
+            worst.0,
+            worst.1,
+            under.len(),
+            under.join(", ")
+        )
+    }
+
+    /// Task #1542's acceptance: bldprep 6/47/27 (84 M rows, past every other run by them; in range
+    /// by its bytes), held out of the step's runs (the lead's of 20 Nov, testdata/bldprep-costs-
+    /// 20261120.json.zst, cut from its store), is read at no less than it took and no more than the
+    /// step's spread allows: the most memory a row its other runs of a million rows or more took,
+    /// times its rows; by the sizes known before it runs (its area and the rows its plan offers it
+    /// by) as by those its run measured. (Read by its bytes alone it had been 517 MB, 0.05 of the
+    /// 10,770 it took.)
+    #[test]
+    fn bldprep_6_47_27_held_out_is_read_within_its_steps_spread() {
+        let z = include_bytes!("testdata/bldprep-costs-20261120.json.zst");
+        let mut all: BTreeMap<String, Cost> = serde_json::from_slice(&zstd::decode_all(&z[..]).unwrap()).unwrap();
+        for c in all.values_mut() {
+            c.v = cost_version("bldprep");
+        }
+        let key = "bldprep 6/47/27";
+        let rows = |c: &Cost| c.sizes.get("rows").copied().unwrap_or(0) as f64;
+        let per_row: Vec<f64> = all
+            .iter()
+            .filter(|(k, c)| k.as_str() != key && !is_drop(c) && c.peak_mb > 0 && rows(c) >= 1e6)
+            .map(|(_, c)| c.peak_mb as f64 / rows(c))
+            .collect();
+        let hi = per_row.iter().fold(0.0f64, |a, &x| a.max(x)) * rows(&all[key]);
+        let case = held_out(&all, key);
+        let lo = case.taken as f64;
+        eprintln!(
+            "{key}: {} MB taken, {:?} by its run's sizes, {:?} by those known before, at most {hi:.0} MB",
+            case.taken, case.post, case.pre
+        );
+        for (by, p) in [("its run's sizes", case.post), ("the sizes known before it runs", case.pre)] {
+            let p = p.unwrap() as f64;
+            assert!((lo..=hi).contains(&p), "by {by}: {p} MB, outside {lo:.0}-{hi:.0} MB");
+        }
+    }
+
+    /// By hand (task #1542's review): every step's model built from the lead's costs (as
+    /// `held_out_memory_past_the_runs_on_the_leads_costs` reads them), timed: the whole build, best
+    /// of three, and its three slowest steps'.
+    #[test]
+    fn model_build_time_on_the_leads_costs() {
+        let Ok(dir) = std::env::var("SCENIC_NEEDS_HELDOUT") else {
+            eprintln!("needs build time skipped: SCENIC_NEEDS_HELDOUT unset (nothing checked)");
+            return;
+        };
+        let the_plan = crate::agent::seam::for_tests();
+        let (mut all, _) = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
+        for (k, c) in all.iter_mut() {
+            c.v = the_plan.cost_version(crate::coord::CostKey::parse(k).step);
+        }
+        let steps: std::collections::BTreeSet<&str> =
+            all.keys().map(|k| crate::coord::CostKey::parse(k).step).collect();
+        let mut best = (f64::INFINITY, Vec::new());
+        for _ in 0..3 {
+            let book = Book::new(the_plan, &all);
+            let t0 = std::time::Instant::now();
+            let mut each: Vec<(f64, &str)> = steps
+                .iter()
+                .map(|s| {
+                    let t = std::time::Instant::now();
+                    book.model(s);
+                    (t.elapsed().as_secs_f64(), *s)
+                })
+                .collect();
+            let whole = t0.elapsed().as_secs_f64();
+            each.sort_by(|a, b| b.0.total_cmp(&a.0));
+            if whole < best.0 {
+                best = (whole, each.into_iter().take(3).map(|(t, s)| format!("{s} {:.0} ms", t * 1e3)).collect());
+            }
+        }
+        println!("{} steps' models built in {:.3} s; slowest: {}", steps.len(), best.0, best.1.join(", "));
+    }
+
+    /// By hand (tasks #1535, #1542): the needs model's memory held out past its runs, on the lead's
+    /// costs (`costs.json` in `SCENIC_NEEDS_HELDOUT`, `read_costs`'s; each read as the way its step
+    /// runs now): `held_out_cases`, a line each (step, target, taken, predicted by the sizes its
+    /// run measured and by those known before it runs), then both scores (`held_out_score`).
+    /// Without the folder it prints that it skipped and checks nothing.
+    #[test]
+    fn held_out_memory_past_the_runs_on_the_leads_costs() {
+        let Ok(dir) = std::env::var("SCENIC_NEEDS_HELDOUT") else {
+            eprintln!("needs held-out skipped: SCENIC_NEEDS_HELDOUT unset (nothing checked)");
+            return;
+        };
+        let the_plan = crate::agent::seam::for_tests();
+        let (mut all, _) = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
+        for (k, c) in all.iter_mut() {
+            c.v = the_plan.cost_version(crate::coord::CostKey::parse(k).step);
+        }
+        let cases = held_out_cases(&all);
+        for c in &cases {
+            println!(
+                "{} {}: {} MB taken, {:?} by its run's sizes, {:?} by those known before",
+                c.step, c.key, c.taken, c.post, c.pre
+            );
+        }
+        println!("by its run's sizes: {}", held_out_score(&cases, |c| c.post));
+        println!("by the sizes known before it runs: {}", held_out_score(&cases, |c| c.pre));
+    }
+
     /// By hand (task #1415): the admission replay on the lead's records (docs/pool.md §7.7, Memory
     /// admission). For each day from `SCENIC_NEEDS_DAY0` (unix s), `SCENIC_NEEDS_DAYS` of them, a
     /// book of the runs that ended before it (and the floors of targets granted before it), and
