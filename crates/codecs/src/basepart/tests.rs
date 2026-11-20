@@ -186,6 +186,7 @@ fn a_part_read_makes_the_same_bytes() {
 /// Task #1464: what a part read takes of the two files is counted as every NAS read is
 /// (store::nasio), so a pack or lo job's record and its lease's beats see it: each file opened, and
 /// each byte read the NAS's or this Mac's cache's (here a local file's, quick: the cache's, `held`).
+/// Without the counting nothing goes up, so it fails then whatever runs beside it.
 #[test]
 fn a_part_reads_bytes_are_counted_as_nas_reads() {
     use store::nasio::{get, own_held, Count};
@@ -197,8 +198,11 @@ fn a_part_reads_bytes_are_counted_as_nas_reads() {
     let (files, nas, held) = (get(Count::Files), get(Count::ReadBytes), own_held());
     let (_, read) = open(&base, &roads, &boxes, refs(&to(&s)), Some(&[tile_bounds(6, 10, 20)])).unwrap();
     assert!(read.bytes > 0);
-    assert_eq!(get(Count::Files) - files, 2, "the base pack and its road values opened");
-    assert_eq!(get(Count::ReadBytes) - nas + own_held() - held, read.bytes, "every byte read counted");
+    // (The counts are the process's: under `cargo test` this module's other tests read in the same
+    // process meanwhile, so at least this open's, never fewer.)
+    assert!(get(Count::Files) - files >= 2, "the base pack and its road values opened");
+    let counted = get(Count::ReadBytes) - nas + own_held() - held;
+    assert!(counted >= read.bytes, "every byte read counted: {counted} of {}", read.bytes);
 }
 
 /// Way boxes kept for another chunking, or cut short, are worked out again.
