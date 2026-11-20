@@ -769,28 +769,28 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         // pause came. The wave's regions several at once, each its cells several at once: none
         // reads another's.)
         let res: Vec<(String, Result<Made, Vec<Problem>>, Vec<Id>)> = pace::par_each(wave, |id| {
-                let item = progress.item(&id);
-                let make = || {
-                    let mut more = BTreeSet::new();
-                    let m = make_land(&id, folder, ctx, data, &made, &others, out, &held, &keep, &item, &mut more);
-                    (m, more.into_iter().collect::<Vec<Id>>())
-                };
-                let (m, more) = match ctx.kept {
-                    None => make(),
-                    Some(k) => k
-                        .get_or_make(
-                            super::kept::LAND,
-                            &format!("{whole} {id}"),
-                            make,
-                            |(m, more), p| {
-                                super::kept::result(p, m, put_made);
-                                super::kept::ids(p, more);
-                            },
-                            |g| Ok((super::kept::get_result(g, get_made)?, super::kept::get_ids(g)?)),
-                        )
-                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
-                };
-                (id, m, more)
+            let item = progress.item(&id);
+            let make = || {
+                let mut more = BTreeSet::new();
+                let m = make_land(&id, folder, ctx, data, &made, &others, out, &held, &keep, &item, &mut more);
+                (m, more.into_iter().collect::<Vec<Id>>())
+            };
+            let (m, more) = match ctx.kept {
+                None => make(),
+                Some(k) => k
+                    .get_or_make(
+                        super::kept::LAND,
+                        &format!("{whole} {id}"),
+                        make,
+                        |(m, more), p| {
+                            super::kept::result(p, m, put_made);
+                            super::kept::ids(p, more);
+                        },
+                        |g| Ok((super::kept::get_result(g, get_made)?, super::kept::get_ids(g)?)),
+                    )
+                    .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+            };
+            (id, m, more)
         });
         for (id, m, more) in res {
             needs.extend(more);
@@ -1152,9 +1152,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         }
     }
     // (Several regions at once, each its cells several at once: none reads another's.)
-    let stored = pace::par_each(todo, |(id, r, t, _one)| {
-        (id, store(r, countries.get(id).map_or("", String::as_str), t, data))
-    });
+    let stored =
+        pace::par_each(todo, |(id, r, t, _one)| (id, store(r, countries.get(id).map_or("", String::as_str), t, data)));
     for (id, s) in stored {
         put(out.resolved.get_mut(id).unwrap(), s);
     }

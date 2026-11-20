@@ -1072,7 +1072,8 @@ fn split_in(
                 }
             }
             if let (Some((b, at)), Some(beyond)) = (found, beyond) {
-                let other = least.iter().enumerate().filter(|(l, _)| *l != b.2).map(|(_, d)| *d).fold(f64::INFINITY, f64::min);
+                let other =
+                    least.iter().enumerate().filter(|(l, _)| *l != b.2).map(|(_, d)| *d).fold(f64::INFINITY, f64::min);
                 if r > rings {
                     return Some((b, other));
                 }
@@ -1620,7 +1621,8 @@ mod tests {
         for reach in [None, Some(450_000.0)] {
             let all = nearest_split(&within, &coasts, 1000.0, reach).unwrap();
             for k in 0..coasts.len() {
-                let others: Vec<Area> = coasts.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, a)| a.clone()).collect();
+                let others: Vec<Area> =
+                    coasts.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, a)| a.clone()).collect();
                 let one = nearest_in(&within, &coasts[k..=k], &others, 1000.0, reach).unwrap();
                 assert_eq!(all[k], one, "coast {k}, reach {reach:?}");
             }
