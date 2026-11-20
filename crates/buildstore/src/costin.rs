@@ -162,6 +162,12 @@ pub fn add(key: &str, n: u64) {
     *state().m.entry(key.to_string()).or_default() += n;
 }
 
+/// The measures of what a target's run made (`wrote`) and read back of it (`take`): its way's
+/// outputs, which say nothing of what another way of its step makes of it (agentcore::needs: a
+/// target sized by its run of an earlier way is sized by what it read alone; task #1558: lake-depth's
+/// run before its cost version 1 wrote a 120 MB grid, one after a few KB).
+pub const MADE: [&str; 3] = ["wrote", "creates", "read_back"];
+
 /// Counts file `path` of `bytes` made on the NAS in `ms` (crate::out's `put_file`, `store_bytes`): `wrote`
 /// and `creates`, and the file made in this process's NAS count (store::nasio, whose bytes
 /// store::naming counted as it wrote them). One already there (reused, touched) isn't counted.

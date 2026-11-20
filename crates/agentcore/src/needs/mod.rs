@@ -742,16 +742,34 @@ impl<'a> Book<'a> {
         let md = self.model(step);
         let (way, older) = md.older.as_ref()?;
         let own = self.costs.get(&cost_key(step, target)).filter(|c| c.v == *way && !is_drop(c)).map(|c| c.peak_mb);
-        let by_size = older.mem(&self.sizes(step, target, None), 0);
+        let by_size = older.mem(&self.sizes_by(step, target, None, |v| v == *way), 0);
         by_size.into_iter().chain(own).max().filter(|&mb| mb > 0)
     }
 
-    /// The sizes target `target` of `step` is predicted by: its own earlier run's (of any way),
-    /// else its tile's area; the measure it was offered by (`offered`, `OFFERED_BY`) where its run
-    /// doesn't say it; one target.
+    /// The sizes target `target` of `step` is predicted by: its own earlier run's (of any way:
+    /// what it read, task #1507's lo 3/4/2; of an earlier way, not what it made, `MADE`), else its
+    /// tile's area; the measure it was offered by (`offered`, `OFFERED_BY`) where its run doesn't
+    /// say it; one target.
     fn sizes(&self, step: &str, target: &str, offered: Option<(&str, u64)>) -> BTreeMap<String, f64> {
+        let v = self.the_plan.cost_version(step);
+        self.sizes_by(step, target, offered, |w| w >= v)
+    }
+
+    /// `sizes` as a model of the ways `way` holds for reads them: the target's run of one of those
+    /// gives every size it measured, a run of another what it read alone.
+    fn sizes_by(
+        &self,
+        step: &str,
+        target: &str,
+        offered: Option<(&str, u64)>,
+        way: impl Fn(u32) -> bool,
+    ) -> BTreeMap<String, f64> {
         let key = cost_key(step, target);
-        let mut sizes = sizes_of(&key, self.costs.get(&key));
+        let ran = self.costs.get(&key);
+        let mut sizes = sizes_of(&key, ran);
+        if ran.is_some_and(|c| !way(c.v)) {
+            sizes.retain(|k, _| !buildstore::costin::MADE.contains(&k.as_str()));
+        }
         if let Some((m, x)) = offered.filter(|o| o.1 > 0) {
             sizes.entry(m.to_string()).or_insert(x as f64);
         }
@@ -1245,6 +1263,50 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
 mod tests {
     use super::*;
     use crate::coord::cost_version;
+
+    /// Task #1558, the lead's records of 20 Nov 14:32Z (its lake-depth costs, its jobs' facts from
+    /// its timings log, its Macs' paces): the M1's one-tile jobs of targets last run before
+    /// lake-depth's cost version 1 were held at 30,000-45,000 min (6/10/22 at 44,476), by the
+    /// model's best size, what a run wrote, read off those runs' 120 MB grids where the way it runs
+    /// now writes a few KB. Each such target is predicted, on each Mac, within its step's measured
+    /// spread: its current way's runs' times at that Mac's pace.
+    #[test]
+    fn a_target_run_an_earlier_way_is_predicted_within_its_steps_spread() {
+        let z = include_bytes!("testdata/lake-depth-20261120.json.zst");
+        #[derive(serde::Deserialize)]
+        struct Case {
+            costs: BTreeMap<String, Cost>,
+            facts: BTreeMap<String, jobrt::timings::JobFacts>,
+            paces: crate::paces::Paces,
+        }
+        let c: Case = serde_json::from_slice(&zstd::decode_all(&z[..]).unwrap()).unwrap();
+        let the_plan = crate::agent::seam::for_tests();
+        let inputs = Inputs { paces: &c.paces, records: &c.facts, tuning: Default::default() };
+        let b = Book::pool(the_plan, &c.costs, None, inputs);
+        let v = the_plan.cost_version("lake-depth");
+        let now: Vec<&Cost> = c.costs.values().filter(|c| c.v >= v && !is_drop(c)).collect();
+        let older: Vec<&String> = c.costs.iter().filter(|(_, c)| c.v < v).map(|(k, _)| k).collect();
+        assert!(now.len() > 100 && older.len() > 1000 && older.iter().any(|k| *k == "lake-depth 6/10/22"));
+        for w in ["MacBook-Pro-de-Brandon", "Brandons-MacBook-Pro", "Mac-mini-de-Brandon"] {
+            let ratio = |m: &str| c.paces.get(m);
+            let at = |r: &Cost| r.secs as f64 * ratio(w) / ratio(r.worker.as_deref().unwrap_or(""));
+            let (lo, hi) = now.iter().map(|r| at(r)).fold((f64::MAX, 0.0f64), |(l, h), s| (l.min(s), h.max(s)));
+            for k in &older {
+                let t = crate::coord::CostKey::parse(k).target;
+                let (s, _) = b.secs_on("lake-depth", t, 0, Some(w)).unwrap();
+                assert!((lo..=hi).contains(&(s as f64)), "{k} on {w}: {s} s, outside {lo:.0}-{hi:.0} s");
+            }
+            let sizes = b.sizes("lake-depth", "6/10/22", None);
+            let m = b.model("lake-depth");
+            let (by, _) = m.needs.unit(&sizes).unwrap();
+            eprintln!(
+                "lake-depth 6/10/22 on {w}: {:?} s by its {} (sizes {sizes:?}), the step's spread there {lo:.0}-{hi:.0} s",
+                b.secs_on("lake-depth", "6/10/22", 0, Some(w)),
+                by.size
+            );
+            assert!(!sizes.contains_key("wrote"), "nothing its run of an earlier way made");
+        }
+    }
 
     fn cost(peak: u64, secs: u64, sizes: &[(&str, u64)]) -> Cost {
         Cost {

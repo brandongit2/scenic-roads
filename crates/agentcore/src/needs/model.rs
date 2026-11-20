@@ -30,7 +30,8 @@
 //!   calls over their time together (`PerUnit::rate`).
 //!
 //! The size a target is predicted by is the first of the step's sizes, best first (`by`: the least
-//! spread of its runs' work per unit), that the target has (its own earlier run's sizes, its tile's
+//! spread of its runs' work per unit), that the target has (its own earlier run's sizes, of an
+//! earlier way what it read alone, crate::needs's `Book::sizes`; its tile's
 //! area, the measure its plan offered it by, its source's time: crate::needs::SOURCE; "target"
 //! always) and a run of about its size has (`PerUnit::ran_about`).
 //!

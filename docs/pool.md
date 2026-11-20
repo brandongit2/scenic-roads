@@ -1096,7 +1096,11 @@ tile's area, one a target, and its source's time below):
 
 "Of about its size" means half to twice its units (fewer than `MIN_RUNS`, the nearest). A target is
 predicted by the first of its step's sizes, best first (the least spread of work per unit), that
-both it and some run have. **Its source's time** is one such size (`needs::SOURCE`): the time the
+both it and some run have: its own earlier run's sizes (of an earlier way, what it read alone, not
+what it made and read back, `buildstore::costin::MADE`: lake-depth's runs before its cost version 1
+wrote a 120 MB grid where one now writes a few KB, and a target read by what its run wrote was held
+at 44,476 min against the 50 to 71 s its model gives it, task #1558), its tile's area, the measure
+it was offered by and its source's time. **Its source's time** is one such size (`needs::SOURCE`): the time the
 same target of the step it reads took (slope-deep's terrain-deep): a slope-deep target whose
 terrain-deep took under 2 s took a median 0 s, one whose took 64–127 s a median 57 s. Its time on
 `threads` on a Mac at `r` times the lead's time is work × units × r / min(threads, parallelism) +
