@@ -21,16 +21,29 @@ pub struct Backoff {
     /// The lead's agent's own work's: its start (minutes) and ceiling (hours).
     pub own_start_min: f64,
     pub own_ceiling_h: f64,
+    /// A Mac's brake on a step (`brakes`): this many of its jobs of the step failed within
+    /// `brake_minutes` hold the whole step from it, as a target's failure holds the target.
+    pub brake_jobs: f64,
+    pub brake_minutes: f64,
 }
 
 pub const START_H: f64 = 1.0;
 pub const CEILING_H: f64 = 32.0;
 pub const OWN_START_MIN: f64 = 10.0;
 pub const OWN_CEILING_H: f64 = 6.0;
+pub const BRAKE_JOBS: f64 = 3.0;
+pub const BRAKE_MINUTES: f64 = 120.0;
 
 impl Default for Backoff {
     fn default() -> Self {
-        Backoff { start_h: START_H, ceiling_h: CEILING_H, own_start_min: OWN_START_MIN, own_ceiling_h: OWN_CEILING_H }
+        Backoff {
+            start_h: START_H,
+            ceiling_h: CEILING_H,
+            own_start_min: OWN_START_MIN,
+            own_ceiling_h: OWN_CEILING_H,
+            brake_jobs: BRAKE_JOBS,
+            brake_minutes: BRAKE_MINUTES,
+        }
     }
 }
 
@@ -38,8 +51,9 @@ impl Default for Backoff {
 /// lead's start from six minutes (a hold shorter than a job's start is a retry at once) to a day;
 /// its ceiling from an hour to a week, the history the lead's start recalls the holds from
 /// (agentcore::coord::history::KEEP_S). The agent's own start from a minute to a day; its ceiling
-/// from six minutes to a week.
-pub const KNOBS: [Knob<Backoff>; 4] = [
+/// from six minutes to a week. A step's brake from two failed jobs to a hundred, within five
+/// minutes to a day.
+pub const KNOBS: [Knob<Backoff>; 6] = [
     Knob {
         name: "backoff-start-hours",
         what: "a target that failed on a Mac, or whose hand-off from it was refused again, isn't offered to it again for this long, twice as long after each more; a job the lead's own memory guard stopped is kept from the lead this long too",
@@ -76,6 +90,24 @@ pub const KNOBS: [Knob<Backoff>; 4] = [
         get: |b| b.own_ceiling_h,
         set: |b, v| b.own_ceiling_h = v,
     },
+    Knob {
+        name: "step-brake-jobs",
+        what: "this many failed jobs of a step on one Mac within step-brake-minutes keep the whole step from that Mac as a target's failure keeps the target (for backoff-start-hours, twice as long each time after), whatever targets they failed on",
+        unit: "jobs",
+        least: 2.0,
+        most: 100.0,
+        get: |b| b.brake_jobs,
+        set: |b, v| b.brake_jobs = v,
+    },
+    Knob {
+        name: "step-brake-minutes",
+        what: "the window step-brake-jobs failed jobs of a step on one Mac are counted in",
+        unit: "min",
+        least: 5.0,
+        most: 1440.0,
+        get: |b| b.brake_minutes,
+        set: |b, v| b.brake_minutes = v,
+    },
 ];
 
 impl Backoff {
@@ -107,6 +139,20 @@ impl Backoff {
     pub fn own_hold(&self, n: u32) -> Duration {
         let m = self.own_start_min * 2f64.powi(n.saturating_sub(1).min(60) as i32);
         Duration::from_secs_f64((m * 60.0).min(self.own_ceiling_h * 3600.0))
+    }
+
+    /// Whether a failed job at `at` (unix s) brakes its step on its Mac, `fails` the times of that
+    /// Mac's failed jobs of the step before it: `brake_jobs` of them, this one among them, within
+    /// `brake_minutes` (those older dropped). A brake counts afresh: `fails` emptied.
+    pub fn brakes(&self, fails: &mut Vec<u64>, at: u64) -> bool {
+        let window = (self.brake_minutes * 60.0) as u64;
+        fails.retain(|t| at.saturating_sub(*t) < window);
+        fails.push(at);
+        if fails.len() as f64 >= self.brake_jobs {
+            fails.clear();
+            return true;
+        }
+        false
     }
 
     /// How long the lead's agent keeps a job its memory guard stopped from its Mac: as long as the
@@ -149,6 +195,18 @@ mod tests {
         });
         assert_eq!((1..=4).map(|n| o.own_hold(n).as_secs()).collect::<Vec<_>>(), [120, 240, 360, 360]);
         assert_eq!((o.start_h, o.ceiling_h), (START_H, CEILING_H), "the lead's own as they were");
+        // (A step's brake: three failed jobs within two hours, by default; a brake counts afresh.)
+        let mut f = Vec::new();
+        assert!(!d.brakes(&mut f, 0) && !d.brakes(&mut f, 100));
+        assert!(!d.brakes(&mut f, 7250), "the first out of the window");
+        assert!(d.brakes(&mut f, 7280) && f.is_empty());
+        let b = Backoff::of(|n| match n {
+            "step-brake-jobs" => Some(2.0),
+            "step-brake-minutes" => Some(10.0),
+            _ => None,
+        });
+        let mut f = Vec::new();
+        assert!(!b.brakes(&mut f, 0) && !b.brakes(&mut f, 600) && b.brakes(&mut f, 1199));
         // (Out of its range: its default.)
         let b = Backoff::of(|n| (n == "backoff-ceiling-hours").then_some(500.0));
         assert_eq!(b, Backoff::default());

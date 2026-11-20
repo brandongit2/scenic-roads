@@ -115,8 +115,31 @@ struct Later {
     /// The bytes copied by uploads landed and not yet claimed (`claim_written`), by their order
     /// sent: the target that put them off claims them for its cost line.
     unclaimed: Vec<(u64, u64)>,
-    /// The first upload that failed or didn't land: every later save fails with it.
-    failed: Option<String>,
+    /// The first upload that failed or didn't land, and its place among those put off: every later
+    /// save fails with it (`UploadFailed`).
+    failed: Option<(String, u64)>,
+}
+
+/// An upload put off that failed or didn't land, as the context of the error any later wait for it
+/// fails with (`Out::settle`, a save's, a put's of its name): its place among those put off (0 the
+/// first, as `Out::mark` counts them), so a step that puts a target's uploads off beside the next
+/// target's work names the target it was (scenic-build's `Landing`), not the one under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadFailed {
+    pub seq: u64,
+}
+
+impl std::fmt::Display for UploadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upload no. {} of those put off", self.seq + 1)
+    }
+}
+
+impl UploadFailed {
+    /// The failed upload's place, when `e` is of one.
+    pub fn of(e: &anyhow::Error) -> Option<u64> {
+        e.downcast_ref::<UploadFailed>().map(|u| u.seq)
+    }
 }
 
 impl Default for Later {
@@ -161,6 +184,13 @@ struct Landed {
 /// The uploads put off up to a moment (`Out::mark`): `Out::save_upto` waits for those alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark(u64);
+
+impl Mark {
+    /// The uploads put off before it: those of `UploadFailed::seq` below are before it.
+    pub fn seq(self) -> u64 {
+        self.0
+    }
+}
 
 /// How long the uploads put off may go with no byte moved (hashed here, written to the share or
 /// read back from it: store::naming's `count_moved`, counted by their thread) before the job
@@ -557,8 +587,8 @@ impl Out {
     /// (`UPLOAD_STALL`), and takes them into the records. The first that failed, or moved nothing
     /// for `UPLOAD_STALL`, fails this (and the job: what it put off isn't named).
     fn settle(&mut self, upto: Mark) -> Result<()> {
-        if let Some(f) = &self.later.failed {
-            bail!("an upload put off failed earlier: {f}");
+        if let Some((f, seq)) = &self.later.failed {
+            return Err(anyhow::anyhow!("an upload put off failed earlier: {f}").context(UploadFailed { seq: *seq }));
         }
         if self.later.landed >= upto.0 {
             return Ok(());
@@ -585,21 +615,23 @@ impl Out {
                         "an upload put off ({size} bytes) moved no byte in {} s (the NAS's share stuck?)",
                         UPLOAD_STALL.as_secs()
                     );
-                    self.later.failed = Some(format!("{e:#}"));
-                    return Err(e);
+                    let seq = self.later.landed;
+                    self.later.failed = Some((format!("{e:#}"), seq));
+                    return Err(e.context(UploadFailed { seq }));
                 }
                 clock.sleep(UPLOAD_LOOK);
             };
             let l = match got {
                 Some(Ok(l)) => l,
                 Some(Err(e)) => {
-                    let e = e.context("an upload put off failed");
-                    self.later.failed = Some(format!("{e:#}"));
-                    return Err(e);
+                    let (e, seq) = (e.context("an upload put off failed"), self.later.landed);
+                    self.later.failed = Some((format!("{e:#}"), seq));
+                    return Err(e.context(UploadFailed { seq }));
                 }
                 None => {
-                    self.later.failed = Some("the uploads' thread is gone".into());
-                    bail!("the uploads' thread is gone");
+                    let seq = self.later.landed;
+                    self.later.failed = Some(("the uploads' thread is gone".into(), seq));
+                    return Err(anyhow::anyhow!("the uploads' thread is gone").context(UploadFailed { seq }));
                 }
             };
             // (One landed is progress too.)

@@ -198,7 +198,8 @@ pub struct Sched {
     /// record never to be read (Coordinator::merged).
     pub done: BTreeMap<(String, String), String>,
     /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
-    /// it again for a while (`backoff`, as `fail_hold` says: an hour by default, doubling each time).
+    /// it again for a while (`backoff`, as `fail_hold` says: an hour by default, doubling each time);
+    /// and its brakes on a step (`brake_key`), each holding the whole step from it so.
     pub failed: BTreeMap<(String, String), (Instant, u32)>,
     /// The failures' backoff as the pool's settings say (jobrt::backoff: `backoff-start-hours`,
     /// `backoff-ceiling-hours`), set by the lead as it packs.
@@ -754,6 +755,8 @@ struct Refused {
     backoff: usize,
     other: usize,
     blocked: Option<(String, String, Measured)>,
+    /// The steps braked on its Mac (`Sched::braked`), in words (`brake_words`).
+    braked: Vec<String>,
 }
 
 impl Refused {
@@ -799,6 +802,7 @@ impl Refused {
         .iter()
         .filter(|(n, _)| *n > 0)
         .map(|(n, what)| format!("{n} {what}"))
+        .chain(self.braked.iter().cloned())
         .collect();
         let mem = || match a.cap.as_ref() {
             Some(c) => mem_words(c, room.mem_mb),
@@ -1105,9 +1109,22 @@ impl Sched {
     /// Whether target `t` of `step` is kept from `worker` after it failed it there (`failed`): the
     /// backoff's start after its first failure, twice as long after each more, at most its ceiling
     /// (`fail_hold`).
+    /// Its step braked there too (`braked`) holds every target of it.
     pub(super) fn backoff(&self, worker: &str, step: &str, t: &str, now: Instant) -> bool {
+        self.held_by(worker, &cost_key(step, t), now) || self.braked(worker, step, now)
+    }
+
+    /// Whether `step` is kept whole from `worker` (its brake, `brake_key`: jobrt::backoff's
+    /// `step-brake-jobs` of its jobs of the step failed there within `step-brake-minutes`), as a
+    /// target's failure holds it.
+    pub(super) fn braked(&self, worker: &str, step: &str, now: Instant) -> bool {
+        self.held_by(worker, &brake_key(step), now)
+    }
+
+    /// Whether `failed`'s entry of `worker` and `key` holds now.
+    fn held_by(&self, worker: &str, key: &str, now: Instant) -> bool {
         self.failed
-            .get(&(worker.to_string(), cost_key(step, t)))
+            .get(&(worker.to_string(), key.to_string()))
             .is_some_and(|(at, n)| now.saturating_duration_since(*at) < self.fail_hold.hold(*n))
     }
 
@@ -2611,6 +2628,12 @@ impl Sched {
                     r.done += 1;
                 } else if self.backoff(&a.worker, &o.step, t, now) {
                     r.backoff += 1;
+                    if self.braked(&a.worker, &o.step, now) {
+                        let w = brake_words(&o.step, &self.fail_hold);
+                        if !r.braked.contains(&w) {
+                            r.braked.push(w);
+                        }
+                    }
                 } else if r.blocked.is_none() {
                     let m = if o.job.is_some() { own } else { self.measured(&o.step, t) };
                     let past =
@@ -3581,4 +3604,18 @@ impl Sched {
     pub fn end(&mut self, id: u64) {
         self.leases.cancel(id);
     }
+}
+
+/// The key of a Mac's brake on `step` in `Sched::failed` (its "target" `*`, no target's: a
+/// cost key of unit is its z6 tile alone).
+pub fn brake_key(step: &str) -> String {
+    format!("{step} *")
+}
+
+/// A brake on `step`, in words, as `b` sets it (the status's, the history's).
+pub fn brake_words(step: &str, b: &jobrt::backoff::Backoff) -> String {
+    format!(
+        "{step} kept from this Mac after {} of its jobs failed here within {} min (step-brake-jobs, step-brake-minutes)",
+        b.brake_jobs, b.brake_minutes
+    )
 }

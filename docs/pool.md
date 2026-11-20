@@ -743,12 +743,16 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   `backoff-start-hours` (1) after the first, twice as long after each more, at most
   `backoff-ceiling-hours` (32); a failure is forgotten that long after its last, and the worker's
   hand-off of the target lets its hold go. A failed job holds only the targets it failed on
-  (`failed_on`): those its error names (jobrt::control::failed_on: a unit z6 tile's work, its
-  set-aside, its commit; a target's landing beside the next one's work, scenic-build's `Landing`;
-  peaks' read-ahead; a polar block or root) or it set aside, as its costs file says (`{unit,
-  failed: true}`); naming none (a job killed, stopped by the memory guard, or failing in a step's
-  work of one target at a time), the one target under way as it ended when there was exactly one
-  (begun, not ended, not landing); else every target its lease didn't finish. The lead's own job's
+  (`failed_on`), as its costs file says: those its error names (`{unit, failed: true}`:
+  jobrt::control::failed_on, a unit z6 tile's work, its set-aside, its commit, the tiles set aside
+  at its end; a target's landing beside the next one's work, scenic-build's `Landing`, and an
+  upload it put off failing in the next one's save or put, buildstore::out::UploadFailed naming
+  the upload, the landing target's; peaks' read-ahead; a polar block or root); naming none (a job
+  killed, stopped by the memory guard, or failing in a step's work of one target at a time), the
+  one target under way as it ended when there was exactly one (begun, not ended, not landing);
+  else every target its lease didn't finish. Besides the first two, the targets that failed as it
+  went on (`{unit, failed: true, also: true}`: a unit z6 tile set aside, a server giving no
+  answer; a landing failing under the next one's own failure). The lead's own job's
   "end" says which in its note; it, a member's "fail" and its "done" that failed carry them as
   `failed` (/work/fail's and /work/done's `failed_on`), and an end of none, an older app's, holds
   every target not done. Both are pool settings (`scenic pool set
@@ -759,6 +763,19 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   `failed` where it names any, "refused",
   "merged" and "retry" (a page's retry, `clear_failed`: its target's holds and refusals
   forgotten) events, in order, each hold from its event's time.
+- **A Mac failing a step's jobs is braked on it** (jobrt::backoff's `brakes`, `Sched::braked`):
+  `step-brake-jobs` (3) failed jobs of one step on one Mac within `step-brake-minutes` (120),
+  whatever targets they failed on, keep the whole step from that Mac as a target's failure keeps
+  the target: `backoff-start-hours` after the first brake, twice as long after each more, at most
+  `backoff-ceiling-hours`; a brake counts its jobs afresh. The failures counted are those that
+  hold targets above (a member's "fail" not interrupted, its "done" that failed, the lead's own
+  failed "end"). Each brake is a "brake" event, its note saying the Mac, the step, the settings
+  and the hold (the lead logs it too), and while it holds
+  the step's refusal to the Mac says "{step} kept from this Mac after … (step-brake-jobs,
+  step-brake-minutes)". A page's retry of the step lets it go, and a lead's start counts the
+  brakes and the failed jobs within the window again from the history (`seed_backoff`). Pool
+  settings, in the build page's "Backoff" (2 to 100 jobs, 5 to 1,440 min), taken from the next
+  failed job.
 - **The lead's own work backs off too** (jobrt::backoff's `own_hold`): a job of the lead's agent
   that failed (its own work, a backup, a check, a region's step, besides the lead's hold above of
   those it took as offers) waits `own-retry-start-minutes` (10) before it is tried again, twice as
@@ -1739,7 +1756,7 @@ election, handover or takeover, and no pool switch.
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, the NAS pacing's bounds
 (`nas-step` … `nas-apart-judges`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
-§7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, `own-retry-start-minutes`, `own-retry-ceiling-hours`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
+§7.7), the failures' backoff (`backoff-start-hours`, `backoff-ceiling-hours`, `own-retry-start-minutes`, `own-retry-ceiling-hours`, `step-brake-jobs`, `step-brake-minutes`, §7.5), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
 and `near-slope` (docs/building.md §2; off while not set). A new setting is made only once every
 member's heartbeat shows the app that has it. A role is read as the agent starts (docs/agent-parts.md §9.1);
 `state/pool/slots` is read by no current app but stays `on` on the NAS for older apps, and

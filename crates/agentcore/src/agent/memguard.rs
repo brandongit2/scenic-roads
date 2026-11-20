@@ -383,9 +383,10 @@ pub fn current(costs: &Path) -> Option<String> {
 /// line says (a target run on its job's threads as it began, jobrt::control::on_grant: docs/pool.md
 /// §7.1, Threads controlled live), and whether it says it is live (jobrt::control::on_grant_live:
 /// on its threads file's threads as they change, `threads` those it began on). And, for its end:
-/// the targets it said it failed on (`failed`, a `failed` line each: scenic-build's `note_failed`),
-/// and those under way (`open`: begun, neither ended nor failed, nor landing beside the next's
-/// work, scenic-build's `note_landing`), by cost key, in order.
+/// the targets its end said it failed on (`failed`, a `failed` line each: scenic-build's
+/// `note_failed`), those that failed as it went on (`also`, a `failed` line saying `also`:
+/// `note_also`), and those under way (`open`: begun, neither ended nor failed, nor landing beside
+/// the next's work, scenic-build's `note_landing`), by cost key, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
@@ -393,6 +394,7 @@ pub struct Targets {
     pub threads: Option<u32>,
     pub live: bool,
     pub failed: Vec<String>,
+    pub also: Vec<String>,
     pub open: Vec<String>,
 }
 
@@ -410,8 +412,9 @@ pub fn targets(costs: &Path) -> Targets {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let Some(key) = v["unit"].as_str() else { continue };
         if v["failed"] == true {
-            if !t.failed.iter().any(|f| f == key) {
-                t.failed.push(key.to_string());
+            let into = if v["also"] == true { &mut t.also } else { &mut t.failed };
+            if !into.iter().any(|f| f == key) {
+                into.push(key.to_string());
             }
         } else if v["landing"] == true {
             landing.push(key.to_string());
@@ -437,7 +440,8 @@ pub fn targets(costs: &Path) -> Targets {
             t.live = false;
         }
     }
-    t.open = begun.into_iter().filter(|b| !landing.contains(b) && !t.failed.contains(b)).collect();
+    t.open =
+        begun.into_iter().filter(|b| !landing.contains(b) && !t.failed.contains(b) && !t.also.contains(b)).collect();
     t
 }
 

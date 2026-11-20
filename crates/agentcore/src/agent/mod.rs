@@ -332,10 +332,12 @@ fn fail_why(outcome: Outcome, note: &str, handed: bool) -> String {
 
 /// The targets a failed job of `step` over `targets` (`done` of them done) is held on against its
 /// Mac (the lead's backoff: crate::coord::Coordinator::finish_failed, a member's `failed_on`), as
-/// its costs file says (`t`), and how they were found, in words for its end's event: those it
-/// said it failed on (scenic-build's `note_failed`); named none, the one target under way as it
-/// ended when there was exactly one (memguard::Targets::open: a job stopped or killed mid-target);
-/// else none, which holds every target not done.
+/// its costs file says (`t`), and how they were found, in words for its end's event: those its end
+/// said it failed on (scenic-build's `note_failed`); naming none, the one target under way as it
+/// ended when there was exactly one (memguard::Targets::open: a job stopped or killed mid-target,
+/// or failing in a step's work of one target at a time); else none, which holds every target not
+/// done. Those that failed as it went on (memguard::Targets::also: set aside, a landing failed)
+/// held beside the first two.
 fn failed_on(
     t: &memguard::Targets,
     step: &str,
@@ -353,18 +355,21 @@ fn failed_on(
         }
         v
     };
-    let named = of(&t.failed);
-    if !named.is_empty() {
+    let (named, open) = (of(&t.failed), of(&t.open));
+    let (mut held, mut said) = if !named.is_empty() {
         let which = if named.len() == 1 { "the target" } else { "the targets" };
-        let said = format!("held against this Mac: {}, {which} it failed on", named.join(" "));
-        return (named, said);
+        (named.clone(), format!("held against this Mac: {}, {which} it failed on", named.join(" ")))
+    } else if let ([one], 1) = (open.as_slice(), t.open.len()) {
+        (vec![one.clone()], format!("held against this Mac: {one}, under way as it ended (it named none)"))
+    } else {
+        return (Vec::new(), "held against this Mac: every target not done (it named none)".to_string());
+    };
+    let before: Vec<String> = of(&t.also).into_iter().filter(|a| !held.contains(a)).collect();
+    if !before.is_empty() {
+        said.push_str(&format!(", and {}, failed as it went on", before.join(" ")));
+        held.extend(before);
     }
-    match of(&t.open).as_slice() {
-        [one] if t.open.len() == 1 => {
-            (vec![one.clone()], format!("held against this Mac: {one}, under way as it ended (it named none)"))
-        }
-        _ => (Vec::new(), "held against this Mac: every target not done (it named none)".to_string()),
-    }
+    (held, said)
 }
 
 /// A slot's files' suffix in the agent's folder: none for the first, `-2`, `-3`, … after
@@ -21875,6 +21880,26 @@ mod membership_tests {
         let unknown = (Vec::new(), "held against this Mac: every target not done (it named none)".to_string());
         assert_eq!(held(&[&a, &b]), unknown, "two under way: which isn't known");
         assert_eq!(held(&[]), unknown, "none under way");
+        // (Task #1567 review: what failed as it went on, a z6 tile set aside, held beside what its
+        // end named or the one under way; with neither known, every target not done.)
+        let also = r#"{"unit":"6/5/18","failed":true,"also":true}"#;
+        let beside = |first: &str| {
+            (
+                vec![first.to_string(), "6/5/18".to_string()],
+                format!("held against this Mac: {first}, the target it failed on, and 6/5/18, failed as it went on"),
+            )
+        };
+        assert_eq!(held(&[&a, &b, also, &failed("6/17/22")]), beside("6/17/22"));
+        assert_eq!(
+            held(&[&a, also, &b]),
+            (
+                vec!["6/17/22".to_string(), "6/5/18".to_string()],
+                "held against this Mac: 6/17/22, under way as it ended (it named none), and 6/5/18, failed as it went on"
+                    .into()
+            ),
+            "the one set aside isn't under way"
+        );
+        assert_eq!(held(&[&a, &b, &c, also]), unknown);
     }
 
     /// Task #815: a member paused (or away) through a change of lead kept its way to the old lead's

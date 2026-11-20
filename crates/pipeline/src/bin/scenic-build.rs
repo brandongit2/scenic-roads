@@ -2568,10 +2568,15 @@ fn disk_since_start() -> u64 {
     store::cachefile::written().saturating_sub(WRITTEN_AT_START.load(std::sync::atomic::Ordering::Relaxed)) >> 20
 }
 
-/// Notes that the target whose cost key is `key` begins (`SCENIC_COSTS`).
+/// Notes that the target whose cost key is `key` begins (`SCENIC_COSTS`), its measures begun.
 fn note_started(key: &str) {
     WRITTEN_AT_START.store(store::cachefile::written(), std::sync::atomic::Ordering::Relaxed);
     buildstore::costin::begin();
+    note_started_line(key);
+}
+
+/// `note_started`'s line alone: a z6 tile's measures begin before it's known to have a piece.
+fn note_started_line(key: &str) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let mut line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     // (The threads it runs on, where it takes its job's grant as it begins (jobrt::control::
@@ -2618,18 +2623,36 @@ fn note_landing(key: &str) {
     note_cost_line(&p, key, "its landing", &serde_json::json!({ "unit": key, "landing": true }));
 }
 
-/// The targets set aside so far (`set_aside`), by cost key: failed too, whatever ends the job.
-static ASIDE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Notes that the target whose cost key is `key` failed as the job went on (a z6 tile set aside,
+/// `set_aside`; a landing that failed under the next target's failure, `Landing::after`;
+/// `SCENIC_COSTS`, a `failed` line saying `also`): held against this Mac whatever ends the job,
+/// beside what its end names (agentcore::agent::memguard::Targets::also).
+fn note_also(key: &str) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    note_cost_line(&p, key, "its failure", &serde_json::json!({ "unit": key, "failed": true, "also": true }));
+}
 
-/// The targets the job's error `e` names (jobrt::control::failed_on) and those it set aside
-/// (`ASIDE`), each noted failed for the agent (`SCENIC_COSTS`, a `failed` line), which holds only
-/// these against this Mac (agentcore::agent::memguard::Targets::failed). Named none, the agent
-/// falls back on the target under way, or every one not done.
+/// The target uploading beside the next one's work (`Landing::then`): the uploads put off before
+/// its mark (buildstore::out::Mark) are its, and its cost key; none once landed.
+static UPLOADING: std::sync::Mutex<Option<(u64, String)>> = std::sync::Mutex::new(None);
+
+/// The targets the job's error `e` names (jobrt::control::failed_on); naming none, the target
+/// uploading whose upload it is (buildstore::out::UploadFailed, `UPLOADING`), wherever it surfaced
+/// (the next target's save or put); each noted failed for the agent (`SCENIC_COSTS`, a `failed`
+/// line), which holds those, and what failed as the job went on (`note_also`), against this Mac
+/// (agentcore::agent::memguard::Targets::failed). Named none, the agent falls back on the target
+/// under way, or every one not done.
 fn note_failed(e: &anyhow::Error) {
-    let mut keys = ASIDE.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(f) = jobrt::control::failed_of(e) {
-        keys.extend(f.targets.iter().map(|t| agentcore::coord::cost_key(&f.step, t)));
-    }
+    let keys: Vec<String> = match jobrt::control::failed_of(e) {
+        Some(f) => f.targets.iter().map(|t| agentcore::coord::cost_key(&f.step, t)).collect(),
+        None => buildstore::out::UploadFailed::of(e)
+            .and_then(|seq| {
+                let up = UPLOADING.lock().unwrap_or_else(|e| e.into_inner());
+                up.as_ref().filter(|(mark, _)| seq < *mark).map(|(_, k)| k.clone())
+            })
+            .into_iter()
+            .collect(),
+    };
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     for k in keys {
         note_cost_line(&p, &k, "its failure", &serde_json::json!({ "unit": k, "failed": true }));
@@ -4359,10 +4382,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             a.on(&u.slash());
             a.say(true);
         });
-        // (Under way, for the agent, agentcore::agent::memguard; its processes' most held from here,
-        // its measure.)
+        // (Its processes' most held from here, and its inputs' measures, its measure.)
         jobrt::sys::reset_group_peak();
-        note_started(&agentcore::coord::cost_key("unit", &u.slash()));
+        buildstore::costin::begin();
         // (What the caches' accessor had written as it began: its own disk, carried with it, as a
         // later z6 tile begins before its tail ends.)
         let written_at = store::cachefile::written();
@@ -4478,6 +4500,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             tile_progress(|a| a.finished(&u.slash()));
             continue;
         };
+        // (Under way, for the agent, agentcore::agent::memguard: once it has a piece, so one with
+        // none isn't left under way, the target a failure naming none is taken for.)
+        note_started_line(&agentcore::coord::cost_key("unit", &u.slash()));
         // Its pieces (task #889: roads::unit::PREPARE, tail_piece), taken while its folders are
         // as its last piece left them, what their links name held again (roads::unit::take_up);
         // else afresh.
@@ -4696,28 +4721,30 @@ fn app_folder(exe: &Path) -> Result<PathBuf> {
 }
 
 /// Sets z6 tile `u` aside when `e` is a server that gave no answer (roads::unit::source_down):
-/// noted, for the job's end (`aside_end`) and its agent (`ASIDE`); else `e`, which ends the job,
-/// named `u`'s (jobrt::control::failed_on).
+/// noted, for the job's end (`aside_end`) and its agent (`note_also`); else `e`, which ends the
+/// job, named `u`'s (jobrt::control::failed_on).
 fn set_aside(aside: &mut Vec<(TileId, String)>, u: TileId, e: anyhow::Error) -> Result<()> {
     if !roads::unit::source_down(&e) {
         return Err(jobrt::control::failed_on(e, "unit", &[&u.slash()]));
     }
     eprintln!("unit {}: set aside, the job goes on with its other z6 tiles: {e:#}", u.slash());
-    ASIDE.lock().unwrap_or_else(|e| e.into_inner()).push(agentcore::coord::cost_key("unit", &u.slash()));
+    note_also(&agentcore::coord::cost_key("unit", &u.slash()));
     aside.push((u, format!("{e:#}")));
     Ok(())
 }
 
-/// The job's end with z6 tiles set aside (of `of`): a failure naming them, so they're built again
-/// later (the agent's retry); the z6 tiles it built are kept as each was saved.
+/// The job's end with z6 tiles set aside (of `of`): a failure naming them (jobrt::control::
+/// failed_on), so they're built again later (the agent's retry); the z6 tiles it built are kept as
+/// each was saved.
 fn aside_end(aside: &[(TileId, String)], of: usize) -> Result<()> {
     let Some((_, first)) = aside.first() else { return Ok(()) };
     let names: Vec<String> = aside.iter().map(|(u, _)| u.slash()).collect();
-    bail!(
+    let e = anyhow::anyhow!(
         "{} of {of} z6 tiles set aside, a server they read giving no answer ({}); the others built. The first: {first}",
         aside.len(),
         names.join(" ")
-    )
+    );
+    Err(jobrt::control::failed_on(e, "unit", &names.iter().map(String::as_str).collect::<Vec<_>>()))
 }
 
 /// A z6 tile prepared (and its tail's first steps run), waiting to be finished and committed: its
@@ -6229,6 +6256,7 @@ impl Landing {
             // (Its uploads waited for: what the work beside them didn't cover.)
             let p = phase("waiting for the uploads beside to land");
             out.save_upto(u.mark).map_err(|e| jobrt::control::failed_on(e, u.step, &[&u.target]))?;
+            *UPLOADING.lock().unwrap_or_else(|e| e.into_inner()) = None;
             drop(p);
             let (wrote, creates) = out.claim_written(u.mark);
             if let Some(m) = u.cost.get_mut("sizes").and_then(|v| v.as_object_mut()) {
@@ -6247,7 +6275,8 @@ impl Landing {
     }
 
     /// The next target's work, `f`, beside the uploading one's uploads; when it fails, the
-    /// uploading one is landed first (its outputs kept), then the failure returned.
+    /// uploading one is landed first (its outputs kept), then the failure returned, a landing that
+    /// failed too noted as the uploading one's failure (`note_also`).
     fn after<T>(&mut self, out: &mut Out, f: impl FnOnce(&mut Out) -> Result<T>) -> Result<T> {
         match f(out) {
             Ok(v) => Ok(v),
@@ -6258,6 +6287,11 @@ impl Landing {
                         return Err(l);
                     }
                     eprintln!("{l:#}");
+                    if let Some(f) = jobrt::control::failed_of(&l) {
+                        for t in &f.targets {
+                            note_also(&agentcore::coord::cost_key(&f.step, t));
+                        }
+                    }
                 }
                 Err(e)
             }
@@ -6280,6 +6314,9 @@ impl Landing {
         note_landing(&agentcore::coord::cost_key(step, target));
         self.land(out)?;
         self.up = Some(Uploading { step, target: target.to_string(), mark: out.mark(), said, began, cost });
+        // (Its uploads' failure, wherever it surfaces, its own: `note_failed`.)
+        *UPLOADING.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((out.mark().seq(), agentcore::coord::cost_key(step, target)));
         Ok(())
     }
 
@@ -7302,15 +7339,65 @@ mod tests {
         assert_eq!((t.open, t.failed), (vec![key("6/1/6")], Vec::new()), "the one landing isn't under way");
         note_failed(&e.context("the job"));
         assert_eq!(agentcore::agent::memguard::targets(&costs).failed, [key("6/1/4")]);
-        // (A z6 tile set aside, a server giving no answer, is failed too, whatever ends the job; one
-        // failing otherwise names itself.)
+        // (A z6 tile set aside, a server giving no answer, is noted failed as the job goes on,
+        // whatever ends it, and no longer under way; one failing otherwise names itself. An end
+        // naming none adds nothing: the agent's fallback holds the rest beside those set aside.)
         let mut aside = Vec::new();
         let down = anyhow::Error::new(roads::unit::SourceDown("no answer".into()));
         set_aside(&mut aside, TileId { z: 6, x: 5, y: 18 }, down).unwrap();
         let e = set_aside(&mut aside, TileId { z: 6, x: 17, y: 22 }, anyhow::anyhow!("a dangling link")).unwrap_err();
         assert_eq!(jobrt::control::failed_of(&e).map(|f| f.targets.clone()), Some(vec!["6/17/22".to_string()]));
         note_failed(&anyhow::anyhow!("the pass's reaches"));
-        assert_eq!(agentcore::agent::memguard::targets(&costs).failed, [key("6/1/4"), "6/5/18".into()]);
+        let t = agentcore::agent::memguard::targets(&costs);
+        assert_eq!((t.failed, t.also), (vec![key("6/1/4")], vec!["6/5/18".to_string()]));
+    }
+
+    /// Task #1567 review: an upload put off by a target landing beside the next one's work, failing
+    /// where that work saves (its own save or put, `Out::settle`), is the uploading target's
+    /// failure (buildstore::out::UploadFailed), named so, not the next one's; and a landing failing
+    /// under the next one's own failure is noted failed as the job goes on.
+    #[test]
+    fn an_upload_failing_in_the_next_targets_save_is_the_uploading_targets() {
+        use super::{cost_start, note_failed, Landing, Out};
+        // (Alone in a process of its own: what it notes goes to its environment's costs file.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "tests::an_upload_failing_in_the_next_targets_save_is_the_uploading_targets"])
+                .env(ALONE, "1");
+            let out = store::spawn::output(&mut c).unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let _done = store::testkit::EnvVar::set(jobrt::control::DONE_ENV, d.path().join("done"));
+        let costs = d.path().join("costs");
+        let _costs = store::testkit::EnvVar::set("SCENIC_COSTS", &costs);
+        let key = |t: &str| agentcore::coord::cost_key("slope", t);
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
+        // (6/1/1's upload can't land: a file where its folder goes.)
+        std::fs::write(root.join("hidata"), b"in the way").unwrap();
+        let mut landing = Landing::default();
+        let c = cost_start("slope", "6/1/1");
+        let p = out.scratch_file("a");
+        std::fs::write(&p, b"a").unwrap();
+        out.put_file_later("hidata/6-1-1", "sect", &p).unwrap();
+        landing.then(&mut out, "slope", "6/1/1", "a".into(), c).unwrap();
+        cost_start("slope", "6/1/2");
+        let e = out.save().unwrap_err();
+        note_failed(&e.context("the job"));
+        let t = agentcore::agent::memguard::targets(&costs);
+        assert_eq!((t.failed, t.open), (vec![key("6/1/1")], vec![key("6/1/2")]), "the uploading one's, not the next's");
+        let r: anyhow::Result<()> = landing.after(&mut out, |_| anyhow::bail!("its work failed"));
+        assert_eq!(format!("{:#}", r.unwrap_err()), "its work failed", "the next one's own failure returned");
+        assert_eq!(agentcore::agent::memguard::targets(&costs).also, [key("6/1/1")], "its landing noted failed");
     }
 
     /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.
@@ -7490,8 +7577,10 @@ mod tests {
         set_aside(&mut aside, a, down.context("unit 6/13/26")).unwrap();
         assert!(set_aside(&mut aside, b, anyhow::anyhow!("elevations (elev) failed (exit status: 1)")).is_err());
         assert_eq!(aside.len(), 1);
-        let e = aside_end(&aside, 3).unwrap_err().to_string();
-        assert!(e.starts_with("1 of 3 z6 tiles set aside") && e.contains("6/13/26"), "{e}");
+        let e = aside_end(&aside, 3).unwrap_err();
+        assert_eq!(jobrt::control::failed_of(&e).map(|f| f.targets.clone()), Some(vec!["6/13/26".to_string()]));
+        let e = format!("{e:#}");
+        assert!(e.starts_with("unit 6/13/26: 1 of 3 z6 tiles set aside"), "{e}");
         assert!(aside_end(&[], 3).is_ok());
     }
 

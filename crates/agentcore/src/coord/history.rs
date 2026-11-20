@@ -40,7 +40,8 @@ pub struct Event {
     /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task", "task-fail" and "task-back" (a task given back unfinished, not failed),
     /// "catalog" (a catalogue written: its `n`, its job's time and its crate::pubtimes::CatalogueStats),
-    /// "merged" (journal entries merged: their keys), "refused" (a hand-off the lead's merge refused,
+    /// "merged" (journal entries merged: their keys), "brake" (a Mac's failed jobs of a
+    /// step held the step from it, its note saying so: crate::coord::sched::brake_words), "refused" (a hand-off the lead's merge refused,
     /// its targets offered again: its member's Mac, job, targets and why, crate::coord::Coordinator::merged), "retry" (a page's retry: its
     /// step, none for any, and target, whose failures and refusals were forgotten, its note who asked: crate::coord::Coordinator::clear_failed), "adopt" (a Mac's map server at the map's `n`, its
     /// `worker` the Mac: crate::pubtimes::ADOPT), "mirror-start" and "mirror-end" (its mirror's round at
