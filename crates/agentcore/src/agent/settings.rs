@@ -141,7 +141,10 @@ pub fn set_regions_pieces(home: &Path, what: &str, by: &str) -> Result<Option<ro
     if what == "off" {
         match std::fs::remove_file(&p) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => return Ok(None),
+            _ => {
+                room::sweep_pieces(&home.join("cache"), regions_pieces_mb(home))?;
+                return Ok(None);
+            }
         }
     }
     let bytes = (gb(what, "the regions check's pieces")? * (1u64 << 30) as f64) as u64;
@@ -151,6 +154,8 @@ pub fn set_regions_pieces(home: &Path, what: &str, by: &str) -> Result<Option<ro
     }
     let t = room::Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
     store::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    // (Held to it now: the folder over a lowered cap until the next check's end is a limit not as set.)
+    room::sweep_pieces(&home.join("cache"), regions_pieces_mb(home))?;
     Ok(Some(t))
 }
 
@@ -533,6 +538,18 @@ mod tests {
             (Some(2 << 30), Some(500), Some(true))
         );
         assert_eq!(v["regions_pieces"]["by"], "the build page");
+        // A lowered cap holds the folder to it as it's set: the least recently used piece goes.
+        // (Sparse files: their lengths, no disk.)
+        let sized = |name: &str, len: u64, age_s: u64| {
+            let f = std::fs::File::create(pieces.join(name)).unwrap();
+            f.set_len(len).unwrap();
+            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age_s)).unwrap();
+        };
+        sized("old.piece", 700_000_000, 100);
+        sized("new.piece", 700_000_000, 10);
+        assert!(set_regions_pieces(h, "1", "t").is_ok());
+        assert!(!pieces.join("old.piece").exists() && pieces.join("new.piece").exists());
+        assert!(pieces.join("a.piece").exists() && pieces.join("b.piece").exists(), "the newest kept");
         assert!(set_regions_pieces(h, "off", "t").unwrap().is_none() && regions_pieces(h).is_none());
         assert!(set_regions_pieces(h, "off", "t").unwrap().is_none(), "off twice");
         assert_eq!(regions_pieces_mb(h), default);

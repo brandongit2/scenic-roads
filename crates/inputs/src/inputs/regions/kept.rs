@@ -371,48 +371,54 @@ impl Lasting {
         std::fs::rename(&tmp, &path).with_context(|| format!("rename into {}", path.display()))
     }
 
-    /// The folder held to its cap: its pieces (and any piece's write a stopped check left), the
-    /// most recently used first, kept while they fit within `cap_mb`; the first that doesn't, and
-    /// every one used before it, deleted.
+    /// The folder held to its cap (`sweep_dir`).
     pub fn sweep(&self) -> Result<Swept> {
-        let mut v: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
-        for e in std::fs::read_dir(&self.dir).with_context(|| format!("list {}", self.dir.display()))? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            if !(name.ends_with(&format!(".{EXT}")) || name.contains(TMP)) {
-                continue;
-            }
-            // (A file another check's sweep deleted, or a write it renamed, since the listing: passed over.)
-            let Ok(m) = e.metadata() else { continue };
-            v.push((m.modified()?, m.len(), e.path()));
-        }
-        v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
-        let cap = self.cap_mb.saturating_mul(1_000_000);
-        let mut s = Swept::default();
-        let mut full = false;
-        for (_, len, path) in v {
-            full |= s.bytes + len > cap;
-            if full {
-                match std::fs::remove_file(&path) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Ok(()) => {
-                        s.deleted += 1;
-                        s.deleted_bytes += len;
-                    }
-                    // (Left, said, and counted as held: the next check's sweep tries it again.)
-                    Err(e) => {
-                        eprintln!("regions: {} not deleted: {e}", path.display());
-                        s.files += 1;
-                        s.bytes += len;
-                    }
-                }
-            } else {
-                s.files += 1;
-                s.bytes += len;
-            }
-        }
-        Ok(s)
+        sweep_dir(&self.dir, self.cap_mb)
     }
+}
+
+/// A lasting folder `dir` held to `cap_mb`: its pieces (and any piece's write a stopped check
+/// left), the most recently used first, kept while they fit; the first that doesn't, and every one
+/// used before it, deleted. (By a check once it's done, and by the build page's setting of the
+/// pool's cap as it's set.)
+pub fn sweep_dir(dir: &Path, cap_mb: u64) -> Result<Swept> {
+    let mut v: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    for e in std::fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
+        let e = e?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.ends_with(&format!(".{EXT}")) || name.contains(TMP)) {
+            continue;
+        }
+        // (A file another check's sweep deleted, or a write it renamed, since the listing: passed over.)
+        let Ok(m) = e.metadata() else { continue };
+        v.push((m.modified()?, m.len(), e.path()));
+    }
+    v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+    let cap = cap_mb.saturating_mul(1_000_000);
+    let mut s = Swept::default();
+    let mut full = false;
+    for (_, len, path) in v {
+        full |= s.bytes + len > cap;
+        if full {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(()) => {
+                    s.deleted += 1;
+                    s.deleted_bytes += len;
+                }
+                // (Left, said, and counted as held: the next check's sweep tries it again.)
+                Err(e) => {
+                    eprintln!("regions: {} not deleted: {e}", path.display());
+                    s.files += 1;
+                    s.bytes += len;
+                }
+            }
+        } else {
+            s.files += 1;
+            s.bytes += len;
+        }
+    }
+    Ok(s)
 }
 
 /// The piece a lasting file `bytes` holds, when it's whole and of key `whole`.

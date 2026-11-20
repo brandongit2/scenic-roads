@@ -1245,6 +1245,16 @@ pub fn pieces_bytes(cache: &Path) -> u64 {
     files.iter().map(|f| f.1).sum()
 }
 
+/// The regions check's pieces in the cache at `cache` held to `cap_mb` at once (a cap lowered on
+/// the build page takes effect as it's set, not at the next check's end), when there are some.
+pub fn sweep_pieces(cache: &Path, cap_mb: u64) -> anyhow::Result<()> {
+    let dir = cache.join(PIECES);
+    if dir.is_dir() {
+        inputs::inputs::regions::kept::sweep_dir(&dir, cap_mb)?;
+    }
+    Ok(())
+}
+
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
 /// member's leaves its loose raw tiles out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`

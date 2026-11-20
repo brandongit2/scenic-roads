@@ -1122,7 +1122,7 @@ The pool's inputs check of the regions keeps the same lasting folder in its Mac'
 content, so nothing besides). Its cap is that Mac's build-page setting, "Regions check's pieces"
 (GB; `kept::KEEP_MB` MB until set; agentcore's agent::settings, given to each job as it starts),
 shown with what the folder holds now; the job holds the folder to it once its outcome is saved,
-and says what it took, made and deleted. Room-making frees it as it frees the other cheap caches,
+and says what it took, made and deleted; a new cap holds the folder to it as it is set. Room-making frees it as it frees the other cheap caches,
 the least recently used pieces first, and a clear empties it: a piece gone is made again by the
 next check that reads it, which is only slower. A job run by hand (no agent's cache and cap)
 keeps none.
