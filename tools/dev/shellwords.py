@@ -29,11 +29,10 @@ def sub_end(t, i):
             if not depth: return j + 1, b
         j += 1
     return len(t), b
-def substitutions(t, pwd=False, mark=None):
+def substitutions(t, pwd=False):
     """(t with each $( … ), <( … ), >( … ) and ` … ` outside single quotes made one word, ${SUBSTITUTION}
-    (with pwd, $(pwd) as $PWD; with mark, mark(k) for the k-th), and the scripts inside them): a
-    command's words stay together for the checks, and the scripts are checked on their own. <( and
-    >( count outside quotes only."""
+    (with pwd, $(pwd) as $PWD), and the scripts inside them): a command's words stay together
+    for the checks, and the scripts are checked on their own. <( and >( count outside quotes only."""
     out, inner, q, i = [], [], None, 0
     while i < len(t):
         ch = t[i]
@@ -46,7 +45,7 @@ def substitutions(t, pwd=False, mark=None):
             j, b = sub_end(t, i)
             body = t[b:j - 1]
             inner.append(body)
-            out.append("$PWD" if pwd and body.strip() == "pwd" else mark(len(inner) - 1) if mark else "${SUBSTITUTION}")
+            out.append("$PWD" if pwd and body.strip() == "pwd" else "${SUBSTITUTION}")
             i = j; continue
         out.append(ch); i += 1
     return "".join(out), inner

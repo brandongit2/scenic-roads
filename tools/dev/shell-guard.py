@@ -119,6 +119,15 @@ def place(k):
     return "\x00%d\x00" % k
 
 
+def placed(t):
+    """substitutions(t), each substitution `place(k)` in the text: a `${SUBSTITUTION}` the command
+    itself holds is made another literal first, so it's never taken for one."""
+    t = t.replace("${SUBSTITUTION}", "${SUBSTITUTION_}")
+    t, inner = substitutions(t)
+    n = iter(range(len(inner)))
+    return re.sub(r"\$\{SUBSTITUTION\}", lambda _: place(next(n)), t), inner
+
+
 def scripts(text, depth=0):
     """The scripts a command line runs, itself first: (script, bounded, its substitutions' bodies),
     `bounded` when it runs under `timeout`; each substitution in the script is `place(k)`."""
@@ -135,7 +144,7 @@ def scripts(text, depth=0):
     for m in HERESTRING.finditer(text):
         if reads_script(cmd_words(re.split(r"[\n;&|()]", text[:m.start()])[-1])):
             bodies.append(next(g for g in m.groups() if g is not None))
-    text, inner = substitutions(text, mark=place)
+    text, inner = placed(text)
     out.append((text, False, inner))
     if depth >= 4:
         return out
@@ -282,7 +291,7 @@ def sub_names(b, depth=0):
         return {"__clock__"}
     if not h.startswith("(") or depth > 4:
         return set()
-    t, inner = substitutions(h, mark=place)
+    t, inner = placed(h)
     out = set(re.findall(r"[A-Za-z_]\w*", PLACE.sub(" ", t)))
     for x in inner:
         out |= sub_names(x, depth + 1)
