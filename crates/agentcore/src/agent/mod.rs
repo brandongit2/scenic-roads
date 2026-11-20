@@ -249,13 +249,13 @@ pub(crate) fn want(slots: usize, running: usize) -> usize {
     slots.saturating_sub(running)
 }
 
-/// This Mac's role as its pool's driver last read the declaration (docs/roles.md §1).
+/// This Mac's role as its pool's driver last read the declaration (docs/agent-parts.md §9.1).
 fn role_by(run: &membership::Run) -> Role {
     crate::pool::lead::role_of(run.side.driver().declared(), Some(&run.side.member().id))
 }
 
-/// What only the lead's parts keep in the agent's folder `home`, removed on a member (docs/roles.md
-/// §5 steps 2 and 6): the terrain packs' indexes the plan reads (`pack-idx/`, agent::plan's
+/// What only the lead's parts keep in the agent's folder `home`, removed on a member (docs/agent-parts.md
+/// §9.2 and §9.5): the terrain packs' indexes the plan reads (`pack-idx/`, agent::plan's
 /// `TerrainTiles`; no job reads them), and a day after they were last written, the lead's other
 /// files and those no code writes any more (room::member_leftovers, §3.5).
 fn drop_lead_files(home: &Path) {
@@ -1269,7 +1269,7 @@ impl Status {
         v("idle", "Nothing to build".into())
     }
 
-    /// The build in a line, as the lead tells its members' menu bars at `now` (docs/roles.md §3.4,
+    /// The build in a line, as the lead tells its members' menu bars at `now` (docs/macs.md, The menu bar,
     /// `held::LeadLine`): its own verdict (`say` first), but while it builds nothing and the build
     /// isn't paused, a member in touch with a job running says the build is building.
     pub fn build_said(&self, now: u64) -> Verdict {
@@ -1548,7 +1548,7 @@ fn edit_held(
 
 pub struct Agent {
     o: Options,
-    /// This Mac's role (docs/roles.md §1, `crate::pool::lead::role`), decided as it starts: its parts are
+    /// This Mac's role (docs/agent-parts.md §9.1, `crate::pool::lead::role`), decided as it starts: its parts are
     /// built by it (a lead's, or a member's for a member and an unknown one). A member's unknown
     /// role learnt a member's stays; a declaration naming another role restarts the agent
     /// (`declared_role`).
@@ -1658,7 +1658,7 @@ pub struct Agent {
     /// coordinator's, `coord`), and when one last failed to start.
     broker: Option<crate::coord::Broker>,
     /// The page's data (crate::agent::pageview), served by the lead's coordinator alone
-    /// (docs/roles.md §3.3).
+    /// (docs/pool.md §10, The build page).
     pageview: std::sync::Arc<pageview::PageView>,
     /// The build page's Catalogues map (crate::agent::cataloguesview): made once the NAS's root is
     /// known, read only while a page asks.
@@ -8649,7 +8649,7 @@ impl Agent {
         l.set_root(root);
     }
 
-    /// The build page, each loop (docs/roles.md §3.3): the lead's alone. On the lead, its
+    /// The build page, each loop (docs/pool.md §10, The build page): the lead's alone. On the lead, its
     /// coordinator serves it from this Mac's views (crate::agent::pageview, cataloguesview,
     /// builtview), the pageview told the lead and this app, and its pages' asks taken. On a member,
     /// its port (its broker, else a viewer alone started there) told where the page is
@@ -8743,7 +8743,7 @@ impl Agent {
         }
     }
 
-    /// A member's port, each loop (docs/roles.md §3.3): with neither a coordinator nor a broker
+    /// A member's port, each loop (docs/pool.md §10, The build page): with neither a coordinator nor a broker
     /// answering there (in the pool), a viewer alone started (tried again five minutes after it
     /// failed); whichever answers told where the build page is (`page_at`).
     fn member_page(&mut self) {
@@ -9322,7 +9322,7 @@ impl Agent {
     }
 
     /// This process's part changed with its step `out` (docs/pool.md §7.6; its parts are its role's,
-    /// docs/roles.md §1, never changed in process): the declared lead took the records up, so its
+    /// docs/agent-parts.md §9.1, never changed in process): the declared lead took the records up, so its
     /// coordinator (built as it started) leads, the jobs it runs going on, their leases its own
     /// coordinator's from now (held again: `beat`); or it no longer leads, so it restarts, its
     /// duties in flight stopped first. A lead whose coordinator didn't start restarts too.
@@ -9382,8 +9382,8 @@ impl Agent {
 
     /// The role as the declaration last read says (the driver's, each step) against the role this
     /// process started with: an unknown one learnt a member's is taken as it is (its parts are
-    /// already a member's); any other change restarts the agent into the new role (docs/roles.md
-    /// §1, decision 3). A declaration not read (none, or unreadable) changes nothing.
+    /// already a member's); any other change restarts the agent into the new role (docs/agent-parts.md
+    /// §9.1). A declaration not read (none, or unreadable) changes nothing.
     fn declared_role(&mut self) {
         let Some(now) = self.pooled().map(|r| role_by(&r)) else { return };
         match (self.role, now) {
@@ -19502,7 +19502,7 @@ mod membership_tests {
             std::thread::sleep(Duration::from_millis(250));
         }
         // The lead's page reads the member's live store at its broker, with CORS (the page itself is
-        // the lead's: docs/roles.md §3.3).
+        // the lead's: docs/pool.md §10, The build page).
         let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
         let (code, _, acao) = http_post(bport, "/api/live", &[("Origin", &page_origin)], "{}");
         assert!(matches!(code, 200 | 503) && acao.as_deref() == Some(page_origin.as_str()), "{code} {acao:?}");
@@ -19586,7 +19586,7 @@ mod membership_tests {
         (code, serde_json::from_str(b.trim()).unwrap_or_default(), acao)
     }
 
-    /// Task #882 step 1 (docs/roles.md, decision 3): a pool past its start (its records saved) with
+    /// Task #882 step 1 (docs/agent-parts.md §9.1): a pool past its start (its records saved) with
     /// no lead declared: the role isn't known, so the agent starts a member's parts (no plan, no
     /// coordinator); the declaration then read naming another member, it is a member, with no
     /// restart.
@@ -19699,7 +19699,7 @@ mod membership_tests {
         stop_jobs(&mut lead);
     }
 
-    /// Task #882 step 2 (docs/roles.md §5): two agents, the lead and a member. The member counts
+    /// Task #882 step 2 (docs/agent-parts.md §9.2): two agents, the lead and a member. The member counts
     /// no region: it has no plan (so no `start_region_steps`, no regions' counts or steps, no
     /// checklist), opens no pack index, and the indexes a lead's process left in its folder go as it
     /// starts; its status carries none of the build's regions or checklist.
@@ -19742,7 +19742,7 @@ mod membership_tests {
         stop_jobs(&mut m);
     }
 
-    /// Task #882 step 6 (docs/roles.md §3.5): two agents, the lead and a member. Each entry the
+    /// Task #882 step 6 (docs/agent-parts.md §9.5): two agents, the lead and a member. Each entry the
     /// lead writes in its folder (and its coordinator's, `coord/`) is a member's leftover
     /// (room::is_member_leftover) or kept: one the member writes too, or §3.5's kept list (the
     /// agent's own `timings.jsonl`, the broker's `coord/` files). Nothing a member writes is a
@@ -21371,8 +21371,8 @@ mod membership_tests {
         ));
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec!["unit".into()], mem_mb: 64_000, ..Default::default() };
-        // The change of lead, this member held meanwhile: the mini restarted as a member (docs/roles.md
-        // §1), its broker on the same port and token (crate::coord::Broker), the new lead (the M1,
+        // The change of lead, this member held meanwhile: the mini restarted as a member (docs/agent-parts.md
+        // §9.1), its broker on the same port and token (crate::coord::Broker), the new lead (the M1,
         // in epoch 539) declared (task #1119: found by the declaration's host, no NAS contact).
         drop(old);
         let old =

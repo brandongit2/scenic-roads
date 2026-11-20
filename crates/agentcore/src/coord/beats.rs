@@ -28,7 +28,7 @@ pub const SPEAKS: &str = "beat";
 /// docs/coordination.md step 4), not the NAS's files.
 pub const VIEW: &str = "view";
 
-/// What a lead's answer says it serves: its members' build pages (docs/roles.md §3.3). A member's
+/// What a lead's answer says it serves: its members' build pages (docs/pool.md §10, The build page). A member's
 /// port redirects its page to a lead saying it, heard within `PAGE_AWAY_S`; else (an older lead,
 /// or none answering) it shows its own (crate::coord::memberpage).
 pub const PAGE: &str = "page";
@@ -67,7 +67,7 @@ pub const PAGE_AWAY_S: u64 = 35;
 pub const FORGET_S: u64 = crate::agent::membership::FORGET_AFTER.as_secs();
 
 /// Where a member keeps its lead's last answer's line, in its agent's folder (`LeadView`, written
-/// at each answer): what `scenic menu` shows of the build (docs/roles.md §3.4), no NAS read.
+/// at each answer): what `scenic menu` shows of the build (docs/macs.md, The menu bar), no NAS read.
 pub const LEAD_VIEW: &str = "lead-view.json";
 
 /// The lead's line as a member last heard it (`LEAD_VIEW`): when the lead last answered its beat

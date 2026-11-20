@@ -439,7 +439,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   its own records up in a new epoch of its coordinator's store (docs/coordination.md §4.3) and
   goes on with its leases; woken, it goes on in the epoch it led. No other
   Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). Each Mac
-  reads its role once as its agent starts (`pool::lead::role`, docs/roles.md §1) and builds that
+  reads its role once as its agent starts (`pool::lead::role`, docs/agent-parts.md §9.1) and builds that
   role's parts; when the owner moves the declaration, the agent restarts into its new role at once,
   its jobs handed over to the next process.
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
@@ -637,7 +637,7 @@ available. Until work is done, the map stays as its last update left it.
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the memory floor, the memory the Mac keeps available: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** runs `scenic menu` (`agentcore::menu`, every 5 s, 10 s at most), which
-  reads this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's agent's status, and
+  reads this Mac's disk alone, never the NAS (docs/macs.md, The menu bar): this Mac's agent's status, and
   on a member the build in a line as the lead's last beat answer carried it (`agent/lead-view.json`:
   its state, its pause, when the lead answered). An agent or a lead not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each

@@ -6,7 +6,7 @@
 //!   tasks are offered there (::offload: `SCENIC_COORD`), served from its disk and handed back
 //!   to it. The lead's coordinator brokers the lead's, as before.
 //! - **A change of lead** (the owner's move of the declaration) restarts both Macs' agents into
-//!   their new roles (docs/roles.md §1), their jobs handed over to the next process; a job taken
+//!   their new roles (docs/agent-parts.md §9.1), their jobs handed over to the next process; a job taken
 //!   over offers its tasks through the new process's coordinator or broker on the same port (the
 //!   jobs' token kept: docs/building.md, Restarts).
 //! - **Its heartbeat says where it is** (crate::agent::membership::Heartbeat's `broker`): its addresses,

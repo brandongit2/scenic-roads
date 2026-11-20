@@ -1,8 +1,8 @@
-//! A member's broker (docs/roles.md §3.2, docs/pool.md §8): the tasks of its Mac's own jobs, the
+//! A member's broker (docs/agent-parts.md §9.3, docs/pool.md §8): the tasks of its Mac's own jobs, the
 //! `/work/*` calls those jobs make, and what the lead's build page
 //! asks of this Mac (`/api/live`, `/api/settings`). The page itself is the lead's: asked here, it
 //! is sent there, or this Mac's own is shown while the lead isn't reached (crate::coord::memberpage,
-//! docs/roles.md §3.3). Not a
+//! docs/pool.md §10, The build page). Not a
 //! coordinator: it offers no plan, holds no job's lease, reads none of the files a lead kept in
 //! the folder (the leases, measures and pause of when this Mac once led are the lead's: a
 //! member's agent removes them, crate::agent::room::member_leftovers), keeps nothing in the pool's

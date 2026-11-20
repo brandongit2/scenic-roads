@@ -177,7 +177,7 @@ pub struct Answer {
     pub merged: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lacks: Vec<String>,
-    /// The build in a line as the lead says it (docs/roles.md §3.4): what a member's menu bar shows
+    /// The build in a line as the lead says it (docs/macs.md, The menu bar): what a member's menu bar shows
     /// of the build, kept by the member (`beats::LEAD_VIEW`). Left out by a lead before it, and
     /// until its agent first says its line (`Coordinator::set_said`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

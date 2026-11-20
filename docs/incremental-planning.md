@@ -419,7 +419,7 @@ reference.
   agent/build.rs only: 6e moves none of the agent, so they can land now (at most an import line
   in build.rs to merge), and collide with 6f alone. Steps 4-6 should land before 6f, or 6f moves
   the incremental state with `Plan`.
-- **#882 (Mac roles).** Planning is the lead's alone (#881, roles.md steps 1-2: no region states,
+- **#882 (Mac roles).** Planning is the lead's alone (#881, #882; docs/agent-parts.md §9.2: no region states,
   checklist or `TerrainTiles` on a member), so the incremental state is held on the mini only and
   costs the laptops nothing. The forecast and the build page's data stay readers of `PlanView`.
 - **#878 (coordination off the NAS, landed).** The records are at `state/build/records.json` and

@@ -1,5 +1,5 @@
 //! A simulated Mac's agent (crate::pool's `sim`; modelled): its loop around the pool's driver, its
-//! role read from the declaration (docs/roles.md §1: a change restarts it into the new one), its
+//! role read from the declaration (docs/agent-parts.md §9.1: a change restarts it into the new one), its
 //! coordinator while it leads (crate::coord, in process: offered the plan's work, its own jobs
 //! granted by `ask_own`, told what its driver's step came to as `agent::lead::after` and
 //! `agent::membership`'s step tell it), its member's beat to the lead
@@ -70,7 +70,7 @@ pub(super) struct Mac {
     jobs: u64,
     /// The epoch it leads in, as the world was told.
     leads: Option<u64>,
-    /// Its role, decided as its process starts (docs/roles.md §1).
+    /// Its role, decided as its process starts (docs/agent-parts.md §9.1).
     role: Role,
     /// Its registry (a member's: its lead's answers; the lead's: its members' beats) and, leading,
     /// its coordinator's hand-offs.

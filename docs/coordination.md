@@ -154,7 +154,7 @@ rule):
 
 | Call | From | Answer |
 | --- | --- | --- |
-| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), who leads while it leads (`leading`), and what it has of the jobs' spans the beat carried (`spans`: docs/formats.md, Job spans), and the last of its notes it has (`noted`, decision 4) |
+| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/macs.md, The menu bar), who leads while it leads (`leading`), and what it has of the jobs' spans the beat carried (`spans`: docs/formats.md, Job spans), and the last of its notes it has (`noted`, decision 4) |
 | `POST /pool/handoff` | the beat poster, for each hand-off the answer says the lead lacks | taken (durable) |
 | `POST /pool/mail` | a member's agent: a page's `Cancel` or `Retry` | `took` |
 | `POST /pool/hold`, `/pool/settings` | any Mac's agent, for the owner's CLI, menu and page | the new state (the settings: a post naming none reads them) |

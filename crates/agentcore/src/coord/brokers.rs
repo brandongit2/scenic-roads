@@ -83,7 +83,7 @@ pub fn tailnet(o: &str) -> bool {
             .is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
 }
 
-/// The origins of a broker's pages: every address its page is served at (docs/roles.md §3.3, the
+/// The origins of a broker's pages: every address its page is served at (docs/pool.md §10, The build page, the
 /// owner's rule: the page works from any device), so a member allows the lead's page however it was
 /// opened. Its addresses (the tailnet's, its LAN name: a member's port sends a LAN device there,
 /// crate::coord::memberpage::location), its HTTPS page (`tailscale serve`), the tailnet's names for

@@ -2,7 +2,7 @@
 //! Every Mac ran one until #874; an installed server started on another Mac retires itself: its
 //! LaunchAgent (`local.scenic.server`) and run file are removed and the job unloaded, which ends
 //! it. The Mac's offline map (its mirror, downloads and followed map) is left where it is, and
-//! served by a server started on demand (`--on-demand`, the menu bar's: docs/roles.md §8.3), which
+//! served by a server started on demand (`--on-demand`, the menu bar's: docs/macs.md, The offline map), which
 //! is never retired.
 //!
 //! The live map must never go down for a file gone missing, so a server retires only when it's

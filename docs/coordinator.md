@@ -165,7 +165,7 @@ Common rules:
   --here` (`hold-request.json`); the Jobs tab's schedule chips a paused, out-of-touch or
   on-battery Mac's lanes) shows the build to anyone the Mac answers, with no key: in the
   pool the lead serves it (docs/pool.md §10); a member's port sends it there with a 307, or shows a
-  small page of its own while the lead isn't reached (docs/roles.md §3.3). It
+  small page of its own while the lead isn't reached (docs/pool.md §10, The build page). It
   runs none of the build's work. Its data and the owner's asks are under `/api/` (`coord::API`). A page on any device the Mac answers may pause the build (`/api/pause`), accept a
   held unit's warnings (`/api/inputs`), cancel a job and try a failed target again (`/api/act`),
   and change the owner's settings (`/api/settings`, below), each at the lead (a Mac's own settings

@@ -98,7 +98,7 @@ impl From<std::net::TcpListener> for Listeners {
 /// on that port takes them (`listeners_on`), so no test running beside takes the port between.
 /// (Let go, a test's port was taken by another test while its agent turned its viewer into a
 /// coordinator, which then never started: #914.) A test only: a Mac's agent changes role by
-/// restarting its process (docs/roles.md), and a port kept open with nothing taking its
+/// restarting its process (docs/agent-parts.md §9.1), and a port kept open with nothing taking its
 /// connections would leave every member's, page's and job's connection to a Mac that just
 /// stopped hanging in its backlog where it is refused at once. (So filled only in a unit test,
 /// `buildstore::out::testing`, where `close_kept_connections` takes and closes what a kept port is
@@ -1838,7 +1838,7 @@ pub struct Fail {
 
 impl Coordinator {
     /// A viewer alone, from birth, answering on `listener`: a member's port with no broker
-    /// (docs/roles.md §3.3): the page sent to the lead, or this Mac's own (`page_at`); `/api/live`,
+    /// (docs/pool.md §10, The build page): the page sent to the lead, or this Mac's own (`page_at`); `/api/live`,
     /// from the live store; this Mac's settings and hold; every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
@@ -2042,7 +2042,7 @@ impl Coordinator {
         let now = clock.now();
         // The files of an agent before the store (crate::coord::kept), read by the lead's alone as
         // its store's first fill: a member's broker keeps no store, and a viewer's folder is its own
-        // scratch (docs/roles.md §3.5: a member's agent removes them).
+        // scratch (docs/agent-parts.md §9.5: a member's agent removes them).
         let lead = mode == Mode::Lead;
         let first_fill = |f: &str| if lead { std::fs::read(dir.join(f)).ok() } else { None };
         let mut leases = Leases::load(first_fill("leases.json"), TTL, now, clock.wall());
@@ -2911,7 +2911,7 @@ impl Coordinator {
     }
 
     /// The build in a line as its agent says it on `host` (crate::agent::Status::build_said), and
-    /// its flags (crate::agent::flags), for the members' menu bars (docs/roles.md §3.4): in each
+    /// its flags (crate::agent::flags), for the members' menu bars (docs/macs.md, The menu bar): in each
     /// beat's answer from now.
     pub fn set_said(&self, host: &str, said: crate::agent::Verdict, flags: Vec<crate::agent::flags::Flag>) {
         self.shared.lock().unwrap().said = Some((host.to_string(), said, flags));
@@ -6568,7 +6568,7 @@ mod http {
         }
         let path = req.uri().path().to_string();
         let key = bearer(req.headers()).map(str::to_string);
-        // (Not the lead's, a member's port: the page is the lead's, docs/roles.md §3.3. A page of
+        // (Not the lead's, a member's port: the page is the lead's, docs/pool.md §10, The build page. A page of
         // its own origin (or none: an address typed) sent there; the lead's
         // page asking this Mac's `/api/live`, `/api/settings` and `/api/asked` from its origin
         // answered here.)
@@ -14712,7 +14712,7 @@ mod tests {
         assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)).0, 404);
     }
 
-    /// docs/roles.md §3.3: a member's port sends its page, the page's data and the owner's asks
+    /// docs/pool.md §10, The build page: a member's port sends its page, the page's data and the owner's asks
     /// to the lead (307, path and query kept), from an address typed or a page of its
     /// own origin; the lead's page asking this Mac's `/api/live` and `/api/settings` from its
     /// origin, and the jobs' calls, are answered here.
@@ -14753,7 +14753,7 @@ mod tests {
         assert_ne!(code, 307);
     }
 
-    /// docs/roles.md §3.3: the lead not reached (or an older lead, not serving its members'
+    /// docs/pool.md §10, The build page: the lead not reached (or an older lead, not serving its members'
     /// pages), a member's port shows its own page (this Mac's status, since when the lead isn't
     /// reached) and answers the page's data 503, never a redirect into a page that isn't there.
     #[test]
@@ -14904,7 +14904,7 @@ mod tests {
 
     #[test]
     fn a_viewer_shows_the_leads_page_does_nothing_else_and_keeps_nothing() {
-        // (Task #409 review; docs/roles.md §3.3) a member with no broker (tasks brokered by every
+        // (Task #409 review; docs/pool.md §10, The build page) a member with no broker (tasks brokered by every
         // member off): its page the lead's, or its own while the lead isn't reached; its live
         // store, settings and hold; every other call refused, its key's or not; nothing written
         // but its token, in its scratch.

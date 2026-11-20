@@ -37,7 +37,7 @@ fn it_helps_and_refuses_without_starting() {
     assert!(code == 2 && err.contains("--on-demand"), "{err}");
 }
 
-/// A server on demand (docs/roles.md §8.3, #882 step 7a) takes this Mac's loopback first of all:
+/// A server on demand (docs/macs.md, The offline map) takes this Mac's loopback first of all:
 /// with another server holding it (a second click, the installed one), it ends at once, before it
 /// reads a map or touches a mirror (its home left empty).
 #[test]

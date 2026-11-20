@@ -104,8 +104,9 @@ Checked by the simulator (§13):
 - **A member** is any Mac running the agent with the NAS. Its id (`m-<16 hex>`) is kept in its home
   folder bound to the hardware UUID (a copied folder makes a new id). One process per member runs
   the pool, holding `pool-<id>.lock` (`crate::pool::MemberLock`, checked every step; a process that
-  loses it stops). A member beats (§10), runs job slots (§7), brokers its jobs' tasks (§8), and
-  passes its build page's asks to the lead.
+  loses it stops). A member beats (§10), runs job slots (§7) and brokers its jobs' tasks (§8); its
+  port sends the build page to the lead's (§10, The build page). Its parts are its role's
+  (docs/agent-parts.md §9).
 - **The lead** is the declared member (§6.1): the Mac mini, always on, at home and on power. It
   also plans (`crate::agent::build`), runs the coordinator, merges hand-offs into the records,
   updates the map, runs GC, compacts the raw tiles' archives, keeps the pause and writes the
@@ -711,7 +712,7 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
 Jobs call the lead through one interface resolved again each call (`crate::agent`'s `beat`,
 `end_lease`): in process while this Mac leads, over HTTP otherwise, so a job carries on across the
 owner's move of the lead. A job's tasks are offered through its own Mac's coordinator or broker.
-A process's parts are its role's, read as it starts (docs/roles.md §1); a change of the declaration
+A process's parts are its role's, read as it starts (docs/agent-parts.md §9.1); a change of the declaration
 naming another role restarts the agent, its jobs handed over to the next process. A lead whose
 update waits on its jobs keeps the lead and restarts at a safe point like any member
 (docs/building.md §2, A newly installed app).
@@ -1126,7 +1127,7 @@ offers: programs over a folder of files, giving files back (kinds and protocol: 
 §5). Any member's idle slot takes it (`scenic run-task`). Pages take none (coordinator.md §5).
 
 - **Brokers** (`crate::agent::brokering`, `crate::coord::brokers`): each member's agent runs a
-  broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the pool's port; jobs given
+  broker for its jobs' tasks (`coord::Broker`, docs/agent-parts.md §9.3, on the pool's port; jobs given
   its address as `SCENIC_COORD`; its answers say epoch 0). Its heartbeat's `broker` gives its
   addresses. A task lives as long as its job, whoever leads.
 - **Cross-member calls:** members allow each other's page origins (CORS, with preflight): every
@@ -1238,8 +1239,21 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
   minute), zstd-compressed past 2 MiB (~11 MB of JSON, ~0.9 MB compressed); every time and speed
   made finite before it's written. Handed to the inputs' archive (§7.9); the last ones before it are
   the old terms' `state/build/term/<E>/forecast-input.json`.
-- **The page's data on the lead** (`agent::pageview`; docs/roles.md §3.3: a member's port sends the
-  page there): the lead's port answers `/api/swarm` (and `/api/steps`, the steps table), the
+- **The build page** is the lead's alone (`coord::memberpage`, task #882). A member's port (its
+  broker, or a viewer's) answers the page, its files and its data and asks (`/api/swarm`,
+  `/api/history`, `/api/pause`, `/api/act`, `/api/settings`, …) from a page of its own origin or
+  none with a 307 to the lead's same path and query, at the lead's address of the network the
+  request came by (`memberpage::location`: its HTTPS page through `tailscale serve`, its tailnet
+  address, its LAN name `<host>.local`, else its first). Answered there still: `/api/live` and
+  `/api/settings` asked by the lead's page (CORS, Cross-member calls, §8), the jobs' calls, and
+  `sw.js`; the build's own asks from any other origin are refused. It redirects only to a lead whose
+  beat answer says `page` (`beats::PAGE`), heard within 35 s (`beats::PAGE_AWAY_S`); else the port
+  answers `/` with a small page of this Mac's own status and "The lead (<name>) isn't reachable
+  since <time>", refreshed every 10 s, and the data calls 503. The agent builds the page's views
+  only beside its coordinator; a member's port is told where the page is each loop
+  (`Agent::member_page`).
+- **The page's data on the lead** (`agent::pageview`; a member's port sends the page there, The
+  build page, above): the lead's port answers `/api/swarm` (and `/api/steps`, the steps table), the
   forecast, `/api/tocome` and `/api/history` from its coordinator's memory. While a page asked in
   the last 60 s, a thread asks the lead's view every 2 s; with the lead down, the last view is kept
   and the answer says its age (`view_age_s`). No NAS read on any page's path. Until the first view a
@@ -1406,7 +1420,7 @@ The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `sceni
 (`nas-step` … `nas-young-spans`, §7.7), the needs model's (`needs-work-pct` … `needs-relearn`,
 §7.7), `batch-minutes` (§7.7), `overdue-factor` (§10, Flags), and the map updates' `hold-catalog`
 and `near-slope` (docs/building.md §2; off while not set). A new setting is made only once every
-member's heartbeat shows the app that has it. A role is read as the agent starts (docs/roles.md §1);
+member's heartbeat shows the app that has it. A role is read as the agent starts (docs/agent-parts.md §9.1);
 `state/pool/slots` is read by no current app but stays `on` on the NAS for older apps, and
 `state/pool/enabled` and `state/pool/budgets` are read by no app.
 

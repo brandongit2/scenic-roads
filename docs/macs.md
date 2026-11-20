@@ -105,7 +105,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   without one, or not there; one it can't read keeps it serving), and the pool's declared lead
   (`state/build/lead-member.json`) read and naming another member than this Mac's (`agent/member`,
   read). Without the NAS, or with either unread, it serves.
-- **The offline map, on demand** (#882 step 7a, docs/roles.md §8.3): the menu bar's Open the map on
+- **The offline map, on demand** (task #882): the menu bar's Open the map on
   this Mac opens http://localhost:7311 in the browser; where no server answers there and none is
   installed (a laptop), it first starts the app's `server --on-demand` (its output appended to
   `~/Library/Logs/scenic/server.log`) and waits for it, up to two minutes. That server answers this
@@ -116,15 +116,72 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   downloads were copied for. Away from the NAS it serves what's downloaded and nothing else (#985,
   Mirror below): inside a downloaded region every feature works (the place search, the terrain and
   its shading, the basemap, at every zoom), outside the downloads each answers empty at once, and
-  with nothing downloaded the search finds nothing and no terrain is drawn (docs/roles.md §8.3). It
-  runs no app updater (its next start runs the newest app), and
-  ends at once when another server holds 127.0.0.1:7311. Nothing runs while it's closed, so the
-  downloads are as current as the last time it ran.
+  with nothing downloaded the search finds nothing and no terrain is drawn. It
+  runs no app updater (its next start runs the newest app), writes no `map-page` and skips
+  `retire.rs`'s start check (no LaunchAgent installed or removed), runs in a session of its own (the
+  menu bar may quit or be replaced meanwhile), and ends at once when another server holds
+  127.0.0.1:7311. Its cursors in the map's log hold the files of the map it was at for at most
+  `CURSOR_TTL_S` (6 hours) after it closes. Nothing runs while it's closed, so the downloads are as
+  current as the last time it ran. What it serves from, on the laptop: the app's `server`, `web/`
+  and fonts; its kept map (`~/Library/Caches/scenic/map/current.json.zst` and `lead.json`); its
+  downloads (`mirror/`, `downloads.json`, `reserve.json`, `idx/`: Mirror, below); and what the
+  server keeps for offline use (`accepted/`, the translations' and descriptions' accepted
+  versions; `names/`; its own `profiles.json`; `region-areas.json`).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
 - **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy
   and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
   folders go once it's built.
+
+**Roles: the Mac mini serves, the laptops work** (task #882). Each Mac's agent reads its role once
+as it starts, from the declared lead, and builds that role's parts (docs/agent-parts.md §9):
+
+| Service | Runs on | A member reaches it by |
+| --- | --- | --- |
+| Jobs: slots, the memory and disk guards, the ramp | every Mac | — |
+| The member's broker (its jobs' tasks and `/work/*`; `/api/live`, `/api/settings` for the lead's page) | every Mac (the lead's coordinator on the mini) | its jobs at its own port |
+| Control (this Mac's hold, quit, settings), the live store, the memory sampler, caches and room, the updater | every Mac | local; the hold and settings told the lead by the beat |
+| Beat poster | members | `POST /pool/beat` to the mini |
+| Budgets' proxy | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |
+| NAS mount, heal, the NAS calls' deadline | every Mac (jobs read and write the NAS) | — |
+| Pool thread (the declaration, the lead's records) | every Mac; on a member, no NAS call while its lead answers | the mini's `/pool/*`, by the beat |
+| Menu bar | every Mac: this Mac's status and the lead's line (The menu bar, below) | the lead's line in the beat's answer |
+| Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini | a member's port sends it there (docs/pool.md §10, The build page) |
+| Plan, checklist, regions' states, gate, inputs watch, redo | the mini | grants by `/work/ask` |
+| Coordinator, pool store, hand-off merge, the map's log and feed, publishing, GC, backup, catalogue and prune, the other `LEAD_ONLY` steps | the mini | `/pool/*`, `/work/*`, `/map/*` |
+| Map server and its mirror | the mini; a laptop's own on demand (The offline map, above) | devices: map.brandontsang.net; a laptop's own: http://localhost:7311 |
+| Caddy, the dev tools app | the mini | — |
+
+- **The menu bar** (tools/status; `scenic menu`, `agentcore::menu`) reads this Mac's disk alone,
+  never the NAS: its own agent's status (the fresher of `status.json` and `helper.json`: a file
+  left from a part this Mac had before is the staler), and on a member the lead's line, which the
+  beat's answer carries (`held::Answer::lead`, `LeadLine`: `host`, `app`, `said`, the build in a
+  line, `pause` and `flags`) and the member's beat poster keeps in `agent/lead-view.json` at each
+  answer, with when the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer
+  with no line; written outside the registry's lock and not synced: a slow disk never holds up the
+  beats, and a line lost to a crash is said again at the next answer). The build in a line is the
+  lead's agent's (`Status::build_said`, handed its coordinator each loop, `Coordinator::set_said`,
+  and kept in its own status as `build`): its own verdict, or, while it builds nothing and the
+  build isn't paused, "Building on <member>; the lead: …" for a member in touch with a job running;
+  the pause is the coordinator's at each answer. A member's menu shows its own state while it
+  builds, else the lead's line, or "Lead (<name>) out of touch since <time>" when the lead hasn't
+  answered for the out-of-touch threshold, and its own agent out of touch as this Mac's; the
+  lead's menu shows its status's `build`, the same line: the rule is Rust's alone (the line is
+  pinned both sides by tools/status/test/lead-view-said.json). Neither shows the lead's checklist,
+  forecast or regions (the build page has them). Any click on the item, left or right, opens the
+  menu; its Show on the build page (a held unit's) opens this Mac's own port, which sends it on to
+  the lead's page (or with the lead down shows this Mac's own). Its pause asks go to the agent and
+  on to the lead (`/pool/hold`).
+- **The mini unreachable** (no takeover, docs/pool.md §6.3): a member finishes its held jobs and
+  starts none (no grant); its hand-offs stay in its saved state and are posted when the lead
+  answers again (docs/coordination.md §5.3); its budgets' proxy gives nothing, so a Wikimedia job
+  waits. Its menu says the lead is out of touch; its port shows its own small page (docs/pool.md
+  §10, The build page). The map and the build page are the mini's, so devices have neither until
+  it's back; a laptop serves its own offline map on demand (above), whole while it reaches the
+  NAS, and away from the NAS what it downloaded and nothing else.
+- **A laptop off the network:** over Tailscale it stays a member (docs/coordination.md §7.2): beats
+  to the mini, the NAS at ~12 MB/s, jobs slower. Fully offline its jobs fail on the NAS and the lead
+  keeps its leases until it's heard or 12 h pass (`coord::held::AWAY_RELEASE_S`).
 
 **The M1 (16 GB)** is a member: it builds what the lead's coordinator
 gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory it has available above its memory floor

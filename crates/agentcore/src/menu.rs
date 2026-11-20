@@ -1,5 +1,5 @@
 //! What the menu bar item (tools/status) shows, as `scenic menu` prints it, from this Mac's own disk
-//! alone (docs/roles.md §3.4: never the NAS, so a hung share or a Mac away from home never holds
+//! alone (docs/macs.md, The menu bar: never the NAS, so a hung share or a Mac away from home never holds
 //! it): this Mac's own agent's status (the lead's `status.json`, a member's `helper.json`, the
 //! fresher), and on a member the lead's line as the lead's last beat answer carried it
 //! (crate::coord::beats::LEAD_VIEW: the build's state in a line, its pause, when the lead last
@@ -92,7 +92,7 @@ mod tests {
         });
     }
 
-    /// docs/roles.md §5 step 5: the lead's line rides in its beat's answer; the member keeps it
+    /// docs/macs.md, The menu bar: the lead's line rides in its beat's answer; the member keeps it
     /// (`lead-view.json`), and its menu shows it beside its own status.
     #[test]
     fn menu_reads_the_lead_from_the_beat() {
@@ -115,7 +115,7 @@ mod tests {
         c.stop();
     }
 
-    /// docs/roles.md §5 step 5: a member's menu shows its own status, its job, and the lead's line,
+    /// docs/macs.md, The menu bar: a member's menu shows its own status, its job, and the lead's line,
     /// each as fresh as its last beat, from its own disk (no beat writes the NAS, task #1119).
     #[test]
     fn menu_follows_the_members_beats() {

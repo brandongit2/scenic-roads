@@ -351,7 +351,7 @@ const LEAD_COORD_FILES: [&str; 10] = [
 ];
 
 /// Whether `rel`, an entry of the agent's folder (`<name>`, or `coord/<name>`), is what only a lead
-/// writes there or what no code writes any more (docs/roles.md §3.5): what a member's agent
+/// writes there or what no code writes any more (docs/agent-parts.md §9.5): what a member's agent
 /// removes (`member_leftovers`).
 pub fn is_member_leftover(rel: &str) -> bool {
     if let Some(name) = rel.strip_prefix("coord/") {
@@ -1898,7 +1898,7 @@ mod tests {
         assert!(c.exists() && given_back(home).is_empty());
     }
 
-    /// Task #882 step 6 (docs/roles.md §3.5): a member's leftovers by name, and by age, a folder by
+    /// Task #882 step 6 (docs/agent-parts.md §9.5): a member's leftovers by name, and by age, a folder by
     /// its newest entry; the agent's own files are none.
     #[test]
     fn member_leftovers_go_by_name_and_age() {

@@ -1311,7 +1311,7 @@ its old path, and the server names their crates:
   `lan_urls`: none, loopback, none) are a test's in its own tests as in agentcore's;
 - the declared lead and this Mac's role (`LEAD`, `Declared`, `declared`, `Role`, `role`, `role_of`,
   `declare`): agentcore::pool::term → buildstore::records::term (the role moving out of pool::term
-  ahead of #878 step 8c, docs/roles.md; `records::lead` since step 8c);
+  ahead of #878 step 8c; `records::lead` since step 8c);
 - this Mac's member id and its lock (`member_id`, `read_member_id`, `MemberLock`): agentcore::pool
   → buildstore::records::member;
 - this Mac's room target read (`TARGET`, `target`, `RoomTarget`): agentcore's agent::room and
@@ -1621,7 +1621,7 @@ after each step that moves a crate boundary.
   sweep falls back to a margin of 0); the comments of affected-tests.sh, check-reuse.py and
   test-guard.zsh (their `#[path]` and module handling is any crate's, unchanged), tools/status's
   Swift sources and health.sh; every doc naming a moved file (`grep -rl agentcore docs tools`: this
-  file's §2 and §7.4, formats.md, building.md, testing.md, roles.md, inputs.md, pool.md,
+  file's §2 and §7.4, formats.md, building.md, testing.md, inputs.md, pool.md,
   coordinator.md and the others). Measured as §8.1: the edits (with `--top` too), the unit-test
   builds, a clean build.
 - **8c, agentbase in four** (a step each, measured; only once 8b's figures bear the model out): W,

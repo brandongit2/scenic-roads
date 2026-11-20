@@ -4,7 +4,7 @@
 // and build caches, and the controls below. Its timers run in
 // the run loop's common modes, so the polls and the icon go on while a menu is
 // open. It asks `scenic menu` (crates/agentcore/src/menu.rs, the installed app's), which answers
-// from this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's own agent's status,
+// from this Mac's disk alone, never the NAS (docs/macs.md, The menu bar): this Mac's own agent's status,
 // and on a member the lead's line as the lead's last beat answer carried it. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last clears (crates/agentcore/src/agent/room.rs): Clear the build caches asks
@@ -18,7 +18,7 @@
 // (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service
 // (service.swift). The map server is no part of it: the devices' map is the Mac mini's, a service of
 // its own (docs/macs.md, Devices; task #874). Its menu's Open the map on this Mac opens this Mac's
-// own, starting a laptop's server on demand (`startMapHere`; docs/roles.md §8.3).
+// own, starting a laptop's server on demand (`startMapHere`; docs/macs.md, The offline map).
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
 //                                                        and its build service's launchd plist)
@@ -69,7 +69,7 @@ struct Reply: Decodable {
     /// This Mac's ask to pause alone or go on (crates/jobrt/src/control.rs HoldRequest, task #224),
     /// while the agent hasn't taken it up.
     let hold_asked: Bool?
-    /// A member's: the lead's line as the lead's last beat answer carried it (docs/roles.md §3.4;
+    /// A member's: the lead's line as the lead's last beat answer carried it (docs/macs.md, The menu bar;
     /// none on the lead, and from a `scenic menu` before it).
     let lead: LeadView?
 }
@@ -658,7 +658,7 @@ func kindOf(_ state: String) -> Kind {
 }
 
 /// The state, with a line saying it: this Mac's own while it builds; on a member, else, the build
-/// as its lead last said it (docs/roles.md §3.4); on the lead, the build as it says it
+/// as its lead last said it (docs/macs.md, The menu bar); on the lead, the build as it says it
 /// (`Status.build`: its members' lines say the same), else (a Mac that doesn't lead) its own word.
 func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "No status: this Mac's `scenic menu` didn't answer") }
@@ -1456,9 +1456,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(it)
         }
         m.addItem(.separator())
-        // This Mac's map (docs/roles.md §8.3, 7a): its own server, started on demand where none is
+        // This Mac's map (docs/macs.md, The offline map): its own server, started on demand where none is
         // installed (a laptop), so the map and its downloads work with the Mac mini away (away from
-        // the NAS too, only what's downloaded: docs/roles.md §8.3).
+        // the NAS too, only what's downloaded: docs/macs.md, The offline map).
         do {
             let it = NSMenuItem(title: mapStarting ? "Opening the map on this Mac…" : "Open the map on this Mac", action: mapStarting ? nil : #selector(openMapHere), keyEquivalent: "")
             it.target = self
@@ -1665,7 +1665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 }
 
-// MARK: the map on this Mac (docs/roles.md §8.3, 7a)
+// MARK: the map on this Mac (docs/macs.md, The offline map)
 
 /// This Mac's map server's address (coordwire::net::DEFAULT_PORT).
 let mapHere = URL(string: "http://localhost:7311/")!

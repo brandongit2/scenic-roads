@@ -1,6 +1,7 @@
 # The agent in parts
 
-**Built (task #871, steps 0–7 of §7; the pool part's HTTP, §4.6, by #878).** This doc
+**Built (task #871, steps 0–7 of §7; the pool part's HTTP, §4.6, by #878; the roles' parts, §9,
+by #882).** This doc
 says how the build agent's single serial loop (`crate::agent::Agent::run` and `step`,
 crates/agentcore/src/agent/mod.rs, as it was) became independent parts, each split by what it waits
 on; docs/pool.md §7.8 and §11 and docs/building.md §2 say the same as built. §1 and the parts
@@ -319,7 +320,7 @@ which **plan** and **jobs** read.
 4. **Grants follow the plan they came from.** A `Grant` carries its plan's number; the lead
    grants no target cancelled after that plan began (`coord::lease::Cancelled`), and **jobs**
    drops a grant no newer than a cancel of the same target it saw, as a second guard.
-5. **A part change stops beats first.** When this Mac's part changes (the lead no longer declared, before its restart into its role, docs/roles.md §1),
+5. **A part change stops beats first.** When this Mac's part changes (the lead no longer declared, before its restart into its role, §9.1),
    **beat** is told first and writes no more shared status under the old part (pool.md §7.6's rule,
    today enforced by clearing `BEATING`).
 6. **Shutdown order:** control stops taking asks; jobs hand over or stop; plan, pool stop (60 s
@@ -372,6 +373,99 @@ for the part that owns it.
    (no new dependency, coarser). Proposed: kqueue plus the 2-s sweep.
 4. **The stall sample:** keep `sample` on a part past 5 min (plan only), or drop it with the loop
    watchdog.
+
+## 9. Roles: the lead's parts and a member's (task #882)
+
+The Mac mini serves (the lead's coordinator and plan, the map server, catalogues and publishing, GC,
+the forecast, the build page); the laptops work: jobs, the broker of their own jobs' tasks, and a
+thin status for their own menu bar (where each service runs: docs/macs.md, Roles).
+
+### 9.1 The role, read once
+
+`pool::lead::role(nas, me) -> Role::{Lead, Member, Unknown}` (buildstore::records::lead,
+re-exported as `pool::lead`): `state/build/lead-member.json` (`lead::declared`) against this Mac's
+member id. `Unknown` (the NAS unread, no member file yet) starts the member's parts, a subset of the
+lead's, and is read again each minute until known; an unknown role learnt a member's is taken in
+place. `Agent::new` builds the parts for the role, and nothing below asks again; the server's
+`retire::retires` reads the same function. A changed declaration, or the lead no longer declared,
+restarts the agent into its new role at once (`restart_for_part`, `Agent::role_restart`), its jobs handed over to the next
+process: nothing is promoted or demoted in process.
+
+### 9.2 A member's parts
+
+A member runs **control**, **beat**, **nas** (the mount, the heal; its NAS calls under
+store::deadline), **dsm**, **jobs**, the **pool** client (the lead by HTTP, §4.6), the caches, the
+live store, the memory and disk guards, the budgets' proxy, the updater and its **broker** (§9.3).
+Nothing else is built: no plan, checklist, regions' states (no `region-states` thread, no terrain
+pack indexes), forecast, inputs watch, page views (pageview, Catalogues, built tiles) or
+coordinator. Its round never waits on the records brief: a job's `--expect-same` reads it from the
+lead. Its status (`helper.json` on its own disk, and its beat to the lead) carries only this Mac:
+conditions, slots and jobs, waiting lines, caches, memory, ramp, budgets, hold, app. Tests:
+`a_member_never_counts_the_regions`, `a_members_round_never_waits_on_the_records_brief`,
+`an_unknown_role_starts_the_members_parts`, `a_changed_declaration_restarts_into_the_new_role`.
+
+### 9.3 Its broker
+
+`coord::Broker`: the tasks of this Mac's own jobs and the `/work/*` calls those jobs make, plus
+`/api/live` and `/api/settings` for the lead's page. It runs on the coordinator's server and folder
+(one at a time on a Mac; the jobs' token kept there, so a job outlives a change of role), started
+as a broker: no phase sharer, nothing kept in the pool's store, no job lease, none of the files a
+lead keeps in the folder read or written (the leases, measures, jobs' disks, fills and pause there
+are a lead's store's first fill alone). Its answers say epoch 0 and its member (`x-pool-epoch`,
+`x-pool-member`), so a member still asking that Mac as the lead after a change of lead reads the
+contact again. Its API is its own: its addresses and jobs' token, its member, its jobs' tasks
+closed and leases lapsed, its pause, placement and the members' brokers (`coord::Brokering` is what
+the run's steps tell, the lead's coordinator or a member's broker). Of the build page its port
+answers only what the lead's page asks of this Mac; the rest goes to the lead (docs/pool.md §10,
+The build page).
+
+### 9.4 What a member needs of the lead
+
+All by HTTP from the lead's coordinator (docs/coordination.md §5.1):
+
+| Need | How |
+| --- | --- |
+| Work | `/work/ask`, `/work/beat`, `/work/done`; its leases by its beat (`POST /pool/beat`); hand-offs by `/pool/handoff` |
+| Its jobs to come (caches) | `/api/tocome` |
+| The pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`: docs/macs.md, The menu bar) |
+| Holds and settings | `/pool/hold`, `/pool/settings`, this Mac's in the beat's answer |
+| The build page | a 307 to the lead (docs/pool.md §10, The build page) |
+| The records brief (jobs' `Out`, the view, `--expect-same`) | `GET /pool/brief` |
+
+### 9.5 Leftovers
+
+At a member's start (and when an unknown role is learnt a member's), the agent removes what only a
+lead writes and what no code writes any more, each last written a day ago or more (a week for the
+history file; a folder by its newest entry), so nothing a process of the Mac still writes goes
+(`room::member_leftovers`, `room::drop_member_leftovers`, by name: `room::is_member_leftover`):
+
+- the lead's: `status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`,
+  `inputs-listing/` (the plan's, agent/plan.rs), `maplog/` (the map log's writer, agent/publish.rs
+  `MAPLOG`), `plan-stall-sample-*.txt`, `costs.jsonl` and `costs-<n>.jsonl` (what the lead's own
+  jobs' targets cost, `Agent::costs_path`; a member's jobs note theirs in their lease's folder), and
+  in `coord/` the coordinator's files (`costs.json`, `disks.json`, `floors.json`,
+  `cache-fills.json`, `job-disks-v6.json`, `leases.json`, `pause.json`, `timings.jsonl`, `store/`),
+  which only a lead's coordinator reads, as its store's first fill, and its history's kept waits
+  (`history-waits.json`, read back as a lead's coordinator starts);
+- written by nothing now: `loop-stall-sample-*.txt`, `round.json`, `battery-floor.moved` and
+  `pageview-waits.json`;
+- `coord/history.jsonl`, which a member's broker doesn't write (an older app's, or the one a lead's
+  coordinator wrote before the Mac handed over), last written a week ago or more, not a day (the
+  history's own span).
+
+A whole write cut off (`helper.json.<host>.<pid>.<n>.tmp`) is not in the list: `store::whole::write`
+sweeps its folder's day-old ones itself, hourly. Kept: `coord/` itself, the broker's folder (§9.3),
+with `jobs-token`, `page`, `workers-token` (the pool's, copied in by `membership::seed` at each
+broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every broker's start,
+`Coordinator::start_with`); the agent's own `timings.jsonl` (every Mac appends its own jobs'
+timings there, `take_timings`, which `scenic` reads as "this Mac's jobs"); its memory,
+`state.json`; and the lead's answers to its owner's asks, `asks-answered.json` with its lock
+`asks-answered.lock` (every Mac's: agent/answered.rs). The test
+`member_leftovers_names_every_lead_file` runs a lead and a member (the two-agents harness) and
+requires each entry the lead writes in its folder and `coord/` to be a leftover, written by the
+member too, or in the kept list, and nothing the member writes to be a leftover;
+`room::tests::member_leftovers_go_by_name_and_age` and
+`room::tests::member_history_leftover_goes_a_week_stale` test the ages.
 
 ## Decisions (PM, 30 Oct night)
 

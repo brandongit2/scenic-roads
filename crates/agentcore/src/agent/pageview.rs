@@ -1,5 +1,5 @@
 //! The build page's data on the lead (docs/pool.md §10, task #409; the page is the lead's alone,
-//! docs/roles.md §3.3): `/api/swarm` from its coordinator's view. The history isn't here:
+//! docs/pool.md §10, The build page): `/api/swarm` from its coordinator's view. The history isn't here:
 //! `/api/history` and the swarm's `seq`, `epoch` and `rates` are the coordinator's, from its memory
 //! (crate::coord::history, task #1160); so are the forecast and the tiles to come (`/api/tocome`):
 //! the lead's agent's own, as its status has them, handed to its coordinator as each is taken in
@@ -26,7 +26,7 @@ pub const ASKED_FOR_S: u64 = 60;
 pub const LEAD_EVERY: Duration = Duration::from_secs(2);
 
 /// Where the lead's view is asked (crate::coord::ViewAsk): its coordinator, in process (the page is
-/// the lead's alone, docs/roles.md §3.3); a test's fake.
+/// the lead's alone, docs/pool.md §10, The build page); a test's fake.
 pub trait Lead: Send + Sync {
     /// The view's answer to `ask`.
     fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value>;

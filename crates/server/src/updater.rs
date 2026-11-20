@@ -33,8 +33,8 @@ pub fn in_use(secs: u64) -> bool {
     t != 0 && now().saturating_sub(t) < secs
 }
 
-/// How long a server started on demand (`--on-demand`, a laptop's offline map: docs/roles.md
-/// §8.3) runs on unused.
+/// How long a server started on demand (`--on-demand`, a laptop's offline map: docs/macs.md, The
+/// offline map) runs on unused.
 pub const ON_DEMAND_IDLE: Duration = Duration::from_secs(1800);
 
 /// Ends this server (one started on demand) once it has been unused for `idle`: no request

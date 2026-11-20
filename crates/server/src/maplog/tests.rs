@@ -254,7 +254,7 @@ async fn with_no_map_kept_nothing_is_served_until_the_lead_answers() {
     assert_eq!(tile(&b, home.path()).await.0, 200);
 }
 
-/// A server on demand (docs/roles.md §8.3, 7a) keeps the map each time it moves: started on the map
+/// A server on demand (docs/macs.md, The offline map) keeps the map each time it moves: started on the map
 /// this Mac kept, it follows the lead to a newer one and keeps it at once, so a later start away
 /// from the lead serves the map its downloads were copied for. A resident one keeps the newer map
 /// only `SAVE_EVERY` after its start.

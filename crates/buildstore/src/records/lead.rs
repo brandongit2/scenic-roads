@@ -31,7 +31,7 @@ pub fn declared(nas: &dyn Nas) -> Result<Option<Declared>> {
     Ok(nas.read(LEAD)?.and_then(|b| serde_json::from_slice::<Declared>(&b).ok()).filter(|d| !d.member.is_empty()))
 }
 
-/// This Mac's role (docs/roles.md §1), decided once as its agent starts and by the server's retire
+/// This Mac's role (docs/agent-parts.md §9.1), decided once as its agent starts and by the server's retire
 /// check: the declared lead's member (`declared`) against this Mac's own (`me`, its member file).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

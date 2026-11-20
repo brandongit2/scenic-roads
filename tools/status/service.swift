@@ -763,7 +763,7 @@ func selfTest(_ dir: String) -> Never {
     let byUnit = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "unit": "z6 tiles"}"#.utf8))
     let byNoun = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "counted_in": "parts", "eta_s": 60}"#.utf8))
     check("a job's progress read by its noun under either name", byUnit?.counted_in == "z6 tiles" && byNoun?.counted_in == "parts" && byNoun?.eta_s == 60)
-    // A member's answer (docs/roles.md §3.4: crates/agentcore/src/menu.rs, its `lead` pinned by
+    // A member's answer (docs/macs.md, The menu bar: crates/agentcore/src/menu.rs, its `lead` pinned by
     // lead-view-said.json, which menu.rs's test writes): its own status, and the build as its lead
     // last said it, heard 5 s before; the lead heard an hour ago, or not yet; this Mac's agent
     // out of touch.

@@ -1,4 +1,4 @@
-//! The build page on a member's port (docs/roles.md §3.3): the page is the lead's alone. A
+//! The build page on a member's port (docs/pool.md §10, The build page): the page is the lead's alone. A
 //! member's broker answers the page and its data and asks, from a page of its own origin (or none:
 //! a browser's address bar), with a 307 to the lead's same path and query
 //! at its address of the same network as the one asked (`location`),
