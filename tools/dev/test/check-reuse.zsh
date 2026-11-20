@@ -430,7 +430,9 @@ traced() {  # traced <name> <the edit> <want commands, |-separated>
   ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
 members = ["crates/a", "crates/b"]'
     w crates/a/Cargo.toml '[package]
-name = "a"'; w crates/a/src/lib.rs 'pub mod m;'
+name = "a"'; w crates/a/src/lib.rs 'pub mod m;
+pub mod n;'
+    w crates/a/src/n.rs 'pub fn load() -> crate::m::Cfg { crate::m::Cfg { knob: 12 } }'
     w crates/a/src/m.rs '//! m.
 pub fn used() -> u8 { 1 }
 pub fn unused() -> u8 { 2 }
@@ -453,6 +455,13 @@ pub struct C {
 fn base() -> u8 { 9 }
 macro_rules! made { ($n:ident) => { pub fn $n() -> u8 { base() } } }
 made!(gen);
+pub trait Tr { fn d(&self) -> u8; }
+impl<T: Clone> Tr for T {
+    fn d(&self) -> u8 { 10 }
+}
+pub struct Cfg {
+    pub knob: u8,
+}
 #[cfg(test)]
 mod tests {
     pub fn used() -> u8 { 6 }
@@ -463,8 +472,8 @@ mod tests {
 name = "b"
 [dependencies]
 a = { path = "../a" }'; w crates/b/src/lib.rs 'pub mod u;'
-    w crates/b/src/u.rs 'use a::m::used;
-pub fn x() -> u8 { used() + a::m::wrapper() + a::m::make().run() + a::m::kit() + a::m::C { n: 0 }.n + a::m::gen() }
+    w crates/b/src/u.rs 'use a::m::*;
+pub fn x() -> u8 { used() + 5u8.d() + a::n::load().knob + a::m::wrapper() + a::m::make().run() + a::m::kit() + a::m::C { n: 0 }.n + a::m::gen() }
 #[cfg(test)]
 mod tests {
     #[test]
@@ -496,6 +505,10 @@ m() { sed -i '' 's/{ 8 }/{ 88 }/' crates/a/src/m.rs }
 traced "a function an attribute's string names (serde's default)" m $both
 m() { sed -i '' 's/{ 9 }/{ 99 }/' crates/a/src/m.rs }
 traced "a function a macro's items call: every user" m $both
+m() { sed -i '' 's/impl<T: Clone> Tr/impl<T: Copy> Tr/' crates/a/src/m.rs }
+traced "an impl's header: its methods, called on a value whose type the user never names" m $both
+m() { sed -i '' 's/pub knob: u8/pub knob: u16/' crates/a/src/m.rs }
+traced "a field read through a value whose type the user never names" m $both
 m() { print 'thread_local! { static X: u8 = 0; }' >> crates/a/src/m.rs }
 traced "a line outside every item: every user" m $both
 

@@ -7080,7 +7080,7 @@ mod tests {
     /// publish's run. nextest runs as many tests at once as the run has test threads (its share of
     /// the test Mac's cores), so in a check's run a test of a thread per core took them from the
     /// others (14 a test on the M4, beside two other runs). Publish's run has every core, and its
-    /// tests over every entry are its last to finish: with 4 threads they ran 118-131 s, alone.
+    /// tests over every entry are its last to finish: with 4 threads they ran 118-131 s.
     fn case_threads() -> usize {
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
         if every_entry() {

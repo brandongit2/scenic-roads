@@ -88,7 +88,8 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   the script.
 - Of those users, only the files naming what changed (#1539, `tools/dev/rustitems.py`): the changed
   lines' items by name (a function, a type, an enum's variant, a trait's or a trait impl's item by
-  the trait and the type), a method by `.m(`, `.m::<` or `::m` whatever type the user names (its
+  the trait and the type; an `impl`'s or `trait`'s header also by every method in it), a method
+  by `.m(`, `.m::<` or `::m` and a struct's field by `.f`, whatever type the user names (its
   value's type may be named nowhere), and the module's items naming them, until none more do (a
   private helper's change is its callers'). Names in attributes' strings count (`#[serde(default =
   "f")]` names f). A file in another crate is matched only against what it can see: `pub`, and not
@@ -100,9 +101,8 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   ("names …, but none of what changed in it"). Over main's last 40 commits (20 Nov), one at a time:
   pipeline's `agent::build::` tests ran for 17 of them, not 24; the tests selected went from 28,750
   to 23,476, their time (each test's median in publish's runs) from 35,356 s to 27,301 s. Missed,
-  and caught by publish's whole run: a field read through a value whose type the user never names,
-  a type reached through an alias of it, a trait method reached without naming the trait, the type
-  or the method (formatting with `{}`).
+  and caught by publish's whole run: a type reached through an alias of it, a trait method reached
+  without naming the trait, the type or the method (formatting with `{}`).
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so
   `tests::` or `::` alone counts as a bare word. A single `--test`/`--bin` target may take bare names.
 - No full suites from agents or reviewers, and no `--workspace`. Reviewers (in the main checkout)
