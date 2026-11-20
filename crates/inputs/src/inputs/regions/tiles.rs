@@ -1040,40 +1040,30 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             // (Each member's boxes by cell, made once: every stretch reads them.)
             let boxes: Vec<Vec<HashMap<Cell, [i64; 4]>>> =
                 theirs.iter().map(|ts| pace::par_map(ts.iter().map(|(_, t)| *t).collect(), boxes_of)).collect();
-            // Each stretch's edge with each member, cell by cell (the piece's ring of 100 m made
-            // once a cell): a stretch of thousands of cells, the open sea's, spreads over every
-            // thread allowed.
-            let work: Vec<(usize, usize, usize)> = comps
-                .iter()
-                .enumerate()
-                .flat_map(|(b, cs)| cs.iter().enumerate().flat_map(move |(k, s)| (0..s.len()).map(move |i| (b, k, i))))
-                .collect();
-            let edges: Vec<Vec<f64>> = pace::par_map(work.clone(), |(b, k, i)| {
-                let _part = item.part_on_drop();
-                let (c, is) = &comps[b][k][i];
-                let t = &areas[batch[b].0];
-                let p = Area { polys: is.iter().map(|&n| t.cells[c].polys[n].clone()).collect() };
-                let mut ring: Option<Area> = None;
-                theirs[b].iter().enumerate().map(|(j, (_, t))| edge_in(&p, *c, t, &boxes[b][j], &mut ring)).collect()
-            });
-            // (Each stretch's edges summed over its cells in order, as one stretch at a time.)
-            let mut sums: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
-            for ((b, k, _), e) in work.into_iter().zip(edges) {
-                let edge = sums.entry((b, k)).or_insert_with(|| vec![0.0; e.len()]);
-                for (s, x) in edge.iter_mut().zip(e) {
-                    *s += x;
-                }
-            }
-            // (One member alone borders it: its. Several: it stays the handing region's.)
-            sums.into_iter()
-                .filter_map(|((b, k), edge)| {
-                    let mut touching = edge.iter().zip(&theirs[b]).filter(|(l, _)| **l > 0.0).map(|(_, (m, _))| *m);
-                    match (touching.next(), touching.next()) {
-                        (Some(m), None) => Some((b, k, m.clone())),
-                        _ => None,
+            // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell),
+            // and where it goes.
+            let work: Vec<(usize, usize)> =
+                comps.iter().enumerate().flat_map(|(b, cs)| (0..cs.len()).map(move |k| (b, k))).collect();
+            pace::par_map(work, |(b, k)| {
+                let comp = piece_of(&areas[batch[b].0], &comps[b][k]);
+                let mut edge: Vec<f64> = vec![0.0; theirs[b].len()];
+                for (c, p) in &comp {
+                    let _part = item.part_on_drop();
+                    let mut ring: Option<Area> = None;
+                    for (j, (_, t)) in theirs[b].iter().enumerate() {
+                        edge[j] += edge_in(p, *c, t, &boxes[b][j], &mut ring);
                     }
-                })
-                .collect()
+                }
+                // (One member alone borders it: its. Several: it stays the handing region's.)
+                let mut touching = edge.iter().zip(&theirs[b]).filter(|(l, _)| **l > 0.0).map(|(_, (m, _))| *m);
+                match (touching.next(), touching.next()) {
+                    (Some(m), None) => Some((b, k, m.clone())),
+                    _ => None,
+                }
+            })
+            .into_iter()
+            .flatten()
+            .collect()
         };
         // Applied region by region, cell by cell: taken from the handing region, given to each
         // member (no two of the run's regions share one: each one's as it would be alone).
