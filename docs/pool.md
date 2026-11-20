@@ -1033,23 +1033,23 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) |
   |---|---|---|---|---|---|
-  | the readings as they were | – | 177 (146) | 210 (215) | 26, 4 (26, 4) | 0 (0) |
+  | the readings as they were | – | 177 (146) | 222 (215) | 26, 4 (26, 4) | 0 (0) |
   | jobs of 100, on a Mac not answering | 806 (685) | 361 (315) | 106 (63) | 57, 9 (41, 4) | 6, 1 (6, 1) |
-  | jobs of 250, on a Mac not answering | 320 (342) | 414 (416) | 90 (81) | 54, 4 (76, 7) | 5, 1 (6, 1) |
+  | jobs of 250, on a Mac not answering | 320 (342) | 403 (416) | 138 (81) | 49, 4 (76, 7) | 6, 1 (6, 1) |
   | jobs of 100, on the mini | 844 (685) | 381 (315) | 37 (63) | 63, 9 (41, 4) | 5, 1 (6, 1) |
   | jobs of 250, on the mini | 342 (342) | 423 (416) | 89 (81) | 65, 4 (76, 7) | 5, 1 (6, 1) |
 
   It never grows past the knee where the jobs it let go slowed the answers past it on their own.
   With jobs of 100 it starts 18 to 23 % more jobs than the rule judging against the weight; with
   jobs of 250 as many on the mini, and 6 % fewer on a Mac not answering. It sits at its floor more
-  than that rule in three of the four closed-loop rows (106, 90 and 89 readings against 63, 81 and
+  than that rule in three of the four closed-loop rows (106, 138 and 89 readings against 63, 81 and
   81), less with jobs of 100 on the mini (37 against 63). At the model's cliff about as often (5
   or 6 readings against 6, never two in a row); at the disks' target at most about 1.5 times as
   often (63 readings against 41).
-  As the readings were it is at its floor less (210 readings against 215); by the last cut's
-  cause, 99 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
+  As the readings were it is at its floor more (222 readings against 215); by the last cut's
+  cause, 111 of them after cuts on deadlines missed (140), 57 on the answers (45), 31 on a disk
   reading at the target (the rule has no such cut; 7 of its floor readings followed a cut that fell
-  on one) and 20 on the smoothed share (20). In 150 of the 210 the answers were undecidable too: a
+  on one) and 20 on the smoothed share (20). In 155 of the 222 the answers were undecidable too: a
   coincidence in time, not the cause. On 20 Nov 08:15-08:29 it held the window at 32 %, cut once
   (back to the knee), where the weight's rule went from 5 % to 22 % with 2 cuts.
   With the disks read at half the NAS's true load, or not read
@@ -1068,16 +1068,19 @@ thousandths:
 
   | | at the floor after deadline cuts | at the floor | at the cliff |
   |---|---|---|---|
-  | the readings as they were | 99 (111) | 210 (222) | 0 (0) |
-  | the same, the answers apart | 96 (104) | 147 (155) | 0 (0) |
+  | the readings as they were | 111 (111) | 222 (222) | 0 (0) |
+  | the same, the answers apart | 108 (104) | 159 (155) | 0 (0) |
   | jobs of 100, on a Mac not answering | 60 (60) | 106 (106) | 6 (6) |
-  | jobs of 250, on a Mac not answering | 23 (35) | 90 (136) | 5 (6) |
+  | jobs of 250, on a Mac not answering | 37 (35) | 138 (136) | 6 (6) |
   | jobs of 100, on the mini | 11 (11) | 37 (37) | 5 (5) |
   | jobs of 250, on the mini | 26 (26) | 89 (89) | 5 (5) |
   | jobs of 100, on the mini, the answers apart | 11 (11) | 47 (47) | 5 (5) |
   | jobs of 250, on the mini, the answers apart | 16 (16) | 67 (67) | 6 (6) |
 
-  At the cliff no more often in any row (32 readings in all against 33), never two in a row. The
+  The rows are main's but for two, a few readings more at the floor after deadline cuts (4 and 2).
+  Before the cap (above) the rule read fewer there (99, 96 and 23 against 111, 104 and 35): that
+  gain was take-backs going past the weight the misses came at, which the cap forbids. At the cliff as often in every row (33 readings in all),
+  never two in a row. The
   bursts above are main's to the second, cut for cut. With every Mac's probe judging (task #1552, `replay`'s
   `apart`): the readings hold no probe's answers, so where a Mac's own jobs moved a step or more its
   answer is modelled as the median of its own recorded answers at that tenth of the disks' busy
@@ -1089,7 +1092,7 @@ thousandths:
 
   | | started | median window | at the floor | disks ≥ 85 % (most in a row) | at the cliff (most in a row) | undecidable |
   |---|---|---|---|---|---|---|
-  | the readings as they were | – | 224 (214) | 147 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
+  | the readings as they were | – | 224 (214) | 159 (168) | 26, 4 (26, 4) | 0 (0) | 0 (3,197) |
   | jobs of 100, on the mini | 806 (903) | 360 (406) | 47 (14) | 63, 4 (81, 13) | 5, 1 (6, 1) | 0 (5,328) |
   | jobs of 250, on the mini | 313 (345) | 389 (429) | 67 (36) | 79, 7 (92, 23) | 6, 1 (11, 2) | 0 (5,110) |
 
@@ -1100,7 +1103,7 @@ thousandths:
   readings against 6 and 11, never two in a row, where main reaches it twice in a row with jobs of
   250), and at the disks' target less often for longer (4 and 7 readings in a row at most against
   13 and 23). As the readings were, at its floor less often than with the answers as recorded
-  (147 readings against 210).
+  (159 readings against 222).
 
   **Assumed:** a job adds to the disks' busy share what a thousandth of measured use added over
   those readings (0.046 %).
