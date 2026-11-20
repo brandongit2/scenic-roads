@@ -153,9 +153,7 @@ skip() { summary+="skip  $1  ($2)"; dj_span part $1 $EPOCHREALTIME $EPOCHREALTIM
 # 4th second had gone on 16 min through clippy, prod and the tests, #1076).
 stopped() {  # stopped <part>: 0 when a part failed: <part> not run, said so
   (( ${#fails} )) || return 1
-  local why="not run: ${(j:, :)fails} failed"
-  summary+="skip  $1  ($why)"; print -r -- "$1 ... not run (${(j:, :)fails} failed)"
-  dj_span part $1 $EPOCHREALTIME $EPOCHREALTIME skip why $why
+  skip $1 "not run: ${(j:, :)fails} failed"; print -r -- "$1 ... not run (${(j:, :)fails} failed)"
 }
 reused=
 reuse() {  # reuse <name> <commit> <why>: the part's pass at <commit> holds here
@@ -177,24 +175,34 @@ if [[ -n $treekey ]]; then
 fi
 notreused() { [[ -n ${why[$1]:-} ]] && print -r -- "$1: not reused: ${why[$1]}" }
 
-# (Formatting it here, not only checking: the fix is the formatting, and the run says what to commit.)
+# (Formatting it here, not only checking: the fix is the formatting, and the run says what to commit.
+# The files it formatted are its stdout (-l); its stderr, a toolchain sync's "info: …" too, goes to
+# the log as it is, not counted as one.)
+# (Each `zsh -c` part's script and substitution end in a builtin, `exit $?`: zsh execs a last
+# external command in place, and macOS's wait4 for it then leaves out the children it had already
+# reaped, so the part's CPU time counted only that last command's.)
 part fmt zsh -c '
-  out=$( { cargo fmt -- -l && cargo fmt --manifest-path tools/bldfield/Cargo.toml -- -l } 2>&1 ) ||
-    { print -r -- "$out"; print "cargo fmt failed (above): fix the code it cannot read and run check.sh again"; exit 1 }
+  out=$( { cargo fmt -- -l && cargo fmt --manifest-path tools/bldfield/Cargo.toml -- -l }; exit $? ); rc=$?
+  out=${out//${(b)PWD}\//}
+  if (( rc )); then
+    print "cargo fmt failed (above): fix the code it cannot read and run check.sh again"
+    [[ -n $out ]] && { print -r -- "It had formatted these files here already (commit them too):"; print -r -- "$out" }
+    exit 1
+  fi
   [[ -z $out ]] && exit 0
-  print -r -- "check.sh formatted these files here (cargo fmt):"; print -r -- "${out//${(b)PWD}\//}"
+  print -r -- "check.sh formatted these files here (cargo fmt):"; print -r -- "$out"
   print "Commit them and run check.sh again (the run was on the code before the formatting)."
   exit 1'
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
-  part web zsh -c "tools/dev/web-deps.sh && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
+  part web zsh -c "tools/dev/web-deps.sh && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir; exit \$?"
 else skip web "web/ unchanged"; fi
-if has 'tools/devtools/*' || has 'web/buildpage/(timeline|sums|chartmath).js'; then part devtools zsh -c "cd tools/devtools && node --test test/*.test.mjs"
+if has 'tools/devtools/*' || has 'web/buildpage/(timeline|sums|chartmath).js'; then part devtools zsh -c "cd tools/devtools && node --test test/*.test.mjs; exit \$?"
 else skip devtools "tools/devtools unchanged"; fi
 if has 'tools/dev/devjob*' || has 'tools/dev/test/(devjob.zsh|test_devjob.py)'; then part devjob zsh tools/dev/test/devjob.zsh
 else skip devjob "the dev jobs' recorder unchanged"; fi
-if has 'tools/app/*'; then part shell zsh -c 'zsh tools/app/test/shell.zsh && zsh tools/app/test/remote-tests.zsh'
+if has 'tools/app/*'; then part shell zsh -c 'zsh tools/app/test/shell.zsh && zsh tools/app/test/remote-tests.zsh; exit $?'
 else skip shell "tools/app unchanged"; fi
 if has 'tools/dev/test-guard*' || has 'tools/dev/shellwords.py' || has 'tools/dev/test/test-guard.zsh'; then part testguard zsh tools/dev/test/test-guard.zsh
 else skip testguard "tools/dev/test-guard unchanged"; fi
@@ -224,7 +232,7 @@ if has 'tools/dev/ran.zsh' || has 'tools/dev/test/ran.zsh' || has 'crates/store/
   part ran zsh tools/dev/test/ran.zsh
 else skip ran "the kept folders' rule unchanged"; fi
 if has 'tools/status/*'; then
-  part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
+  part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test; exit \$?"
 else skip swift "tools/status unchanged"; fi
 # The tests, those that will run (not reused; of a partial reuse, those run again).
 willtest=0

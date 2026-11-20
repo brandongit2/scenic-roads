@@ -141,10 +141,15 @@ of seconds) all run, so each of their failures shows in one run; after any failu
 the tests and python don't run (`not run (<parts> failed)`), the run ends `FAIL: <parts> failed`
 and records nothing. (A run failing fmt at its 4th second had gone on 16 min through clippy, prod
 and the tests, #1076; one failing fmt on a change to `names` ended at 237 s, now at 15 s.)
-fmt runs `cargo fmt -- -l` (and tools/bldfield's) in the checkout: a file it formats fails the part,
-the run naming it (`check.sh formatted these files here`): commit it and run again. rustfmt writes
+fmt runs `cargo fmt -- -l` (and tools/bldfield's) in the checkout: a file it formats (its stdout)
+fails the part, the run naming it (`check.sh formatted these files here`): commit it and run again.
+Its stderr (a toolchain sync's `info: …` too) goes to the log as it is and counts as no file. On
+code rustfmt can't read the part fails, naming the files it had formatted already. rustfmt writes
 only a file it changes, so a formatted tree is left untouched; a run that formatted one fails, and
-records nothing either way (its tree changed during the run).
+records nothing either way (its tree changed during the run). The `zsh -c` parts (fmt, web,
+devtools, shell, swift) end their scripts in a builtin, `exit $?`: zsh execs a last external
+command in place, and macOS's wait4 for it leaves out the children already reaped, so the part's
+CPU time had counted only that last command.
 Clippy runs after the other parts, then prod, just before the tests; when two of the three run
 here, they take one turn with the shared build folder (#1123, below: a hold, let
 go as the first test starts), so the tests' build doesn't queue again behind other agents (10 Nov:
@@ -536,7 +541,8 @@ are its own for the disk rule and the drop below.
   a file back to an earlier version with an older date, a module moved, a source a test overwrote. The same turns with times kept fail it (#983's bug).
 - The build folders are the slots', not the keys' (#969): `~/scenic-check/.build/<slot>/{src,target}`,
   one per test slot, the same paths whichever tree comes, kept between runs. A key takes the slot it
-  last used if it is free, else the least recently used. rustc's incremental state holds only for
+  last used if it is free (a `<worktree>.check` key with none yet, its worktree's key's: where its agent
+  last built), else the least recently used. rustc's incremental state holds only for
   the folder it was made in, so a folder per key compiled every workspace crate anew at a key's first run;
   here a run compiles what differs from the slot's last tree, publish's too. The target is set by
   `~/scenic-check/.build/<slot>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*

@@ -184,6 +184,13 @@ k=$tmp/k4; mkdir -p $k/.build/{1,2}; touch -t 202601010100 $k/.build/1/stamp; to
 print 1 > $k/slot
 [[ ${(j: :)${(f)"$(slot_order $k 3 $k)"}} == "1 3 2" ]] && ok "a key's own slot first" \
   || no "a key's own slot first" "$(slot_order $k 3 $k)"
+# A check's key (<worktree>.check, #1524) with no slot yet: its worktree's key's.
+rm $k/slot; mkdir -p $k.check; print 2 > $k/slot
+[[ ${(j: :)${(f)"$(slot_order $k 3 $k.check)"}} == "2 3 1" ]] && ok "a check's first slot: its worktree's" \
+  || no "a check's first slot: its worktree's" "$(slot_order $k 3 $k.check)"
+print 1 > $k.check/slot
+[[ ${(j: :)${(f)"$(slot_order $k 3 $k.check)"}} == "1 3 2" ]] && ok "a check's own slot once it has one" \
+  || no "a check's own slot once it has one" "$(slot_order $k 3 $k.check)"
 print 9 > $k/slot
 [[ ${(j: :)${(f)"$(slot_order $k 3 $k)"}} == "3 2 1" ]] && ok "a slot no longer there not tried" \
   || no "a slot no longer there not tried" "$(slot_order $k 3 $k)"
@@ -283,7 +290,7 @@ out=$(make_room $base me "m1:/repo/.git" "me live" $base/.build/1)
 # A drop removes a key's folder and its check's, not one in use nor another key's.
 fresh; copy wt 10 1; copy wt.check 10 1; copy wt2 10 1; copy u 10 1; copy u.check 10 1; mkdir $base/u.check/.busy
 out=$(HOME=$tmp; remote_drop wt; remote_drop u)
-[[ $(have) == "u.check wt2" && $out == "in use: u.check" ]] && ok "a drop: the key's and its check's" || no "a drop: the key's and its check's" "left $(have): $out"
+[[ $(have) == "u.check wt2" && $out == *"removed wt on"*"removed wt.check on"*"removed u on"*"in use: u.check" ]] && ok "a drop: the key's and its check's" || no "a drop: the key's and its check's" "left $(have): $out"
 
 # A removal cut short (.gone-*) is finished.
 fresh; copy me 10 1; mkdir -p $base/.gone-x-1/target

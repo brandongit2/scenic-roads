@@ -38,8 +38,8 @@
 # .cargo/config.toml. A key's first run is so no new build: rustc's incremental state holds only
 # for the folder it was made in (its working directory is part of what it checks), and a folder per
 # key compiled every workspace crate anew (77 % of a new key's compile, M4, 7 Nov); only what
-# differs from the slot's last tree rebuilds. A key takes the slot it last used if free, else the
-# one least recently used (slot_order). rustc goes through the test Mac's sccache when it has one
+# differs from the slot's last tree rebuilds. A key takes the slot it last used if free (a check's
+# key with none yet, its worktree's key's), else the one least recently used (slot_order). rustc goes through the test Mac's sccache when it has one
 # (third-party crates, for an emptied folder).
 # The command runs at nice 20 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
 # agent's loop first, task #700; the lowest nice, so the pool's jobs at nice 0 win the CPU, #887),
@@ -192,7 +192,8 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 }
 
 slot_order() {  # <base> <slots> <key folder>: the slots to try, the key's last, then the least recently used
-  local s last=$(cat $3/slot 2>/dev/null)
+  # (A check's key, <worktree>.check, with no slot yet: its worktree's key's, where its agent last built.)
+  local s last=$(cat $3/slot 2>/dev/null || cat ${3%.check}/slot 2>/dev/null)
   local -a rest
   for s in {1..$2}; do
     [[ $s == $last ]] || rest+=("$(stat -f %m $1/.build/$s/stamp 2>/dev/null || print 0) $s")
@@ -346,8 +347,10 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
 remote_drop() {  # on the test Mac: <key>: its folder and <key>.check's
   local base=~/scenic-check key=$1 k
   [[ -n $key && $key != .* && $key != */* ]] || exit 2
+  # (By drop_copy: its lock taken first, so no run takes the folder meanwhile.)
   for k in $key $key.check; do
-    if [[ -d $base/$k/.busy ]]; then print "in use: $k"; else rm -rf $base/$k; fi
+    [[ -d $base/$k ]] || continue
+    drop_copy $base $base/$k "remote-tests.sh --drop" || print "in use: $k"
   done
   return 0
 }

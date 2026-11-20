@@ -33,11 +33,14 @@ w tools/app/remote-tests.sh "#!/bin/zsh
 [[ -d $tmp/locks/\$1 ]] && { print \"remote-tests: key \$1 is in use on the test Mac: waiting\"; exit 3 }
 print -r -- \$1 > $tmp/key"
 # (Each call noted in $tmp/calls. fmt, while $tmp/fmtfail is there: formats docs/a.md and says so,
-# as cargo fmt -- -l. clippy, while $tmp/hold is there: says it started, then waits for $tmp/go, a
+# as cargo fmt -- -l; while $tmp/fmtnoise is there: a toolchain sync's line on stderr, nothing
+# formatted; while $tmp/fmtbroken is there: formats docs/a.md, then fails on a file it can't read. clippy, while $tmp/hold is there: says it started, then waits for $tmp/go, a
 # minute at most.)
 w tools/dev/bin/cargo "#!/bin/zsh
 print -r -- \"\$*\" >> $tmp/calls
 [[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtfail ]] && { print formatted >> docs/a.md; print -r -- \$PWD/docs/a.md; exit 0 }
+[[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtnoise ]] && { print -u2 'info: syncing channel updates for 1.98.1-aarch64-apple-darwin'; exit 0 }
+[[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtbroken ]] && { print formatted >> docs/a.md; print -r -- \$PWD/docs/a.md; print -u2 'error: this file contains an unclosed delimiter'; exit 1 }
 [[ \$1 == clippy && -e $tmp/hold ]] || exit 0
 : > $tmp/started
 for i in {1..600}; do [[ -e $tmp/go ]] && exit 0; sleep 0.1; done
@@ -115,14 +118,15 @@ f=( .git/check-running.*(N) )
 
 # The stop at a failed part (#1524): fmt formatting a file, or guards failing, and the parts of
 # minutes (clippy, prod, the tests) don't run, each saying why; the run fails and records nothing.
-# stop <name> <what failed> <a text the output has>
+# stop <name> <what failed> <texts the output has…>
 stop() {
-  local out rc before after
+  local out rc before after t has=1
   rm -f $tmp/calls $tmp/key; before=$(cat $passed 2>/dev/null | wc -l)
   HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1; rc=$?
   out=$(<$tmp/out); after=$(cat $passed 2>/dev/null | wc -l)
-  if (( rc != 0 && after == before )) && [[ $out == *"clippy ... not run ($2 failed)"* && $out == *"prod ... not run ($2 failed)"* &&
-      $out == *"tests ... not run ($2 failed)"* && $out == *"FAIL: $2 failed"* && $out == *"$3"* ]] &&
+  for t in ${@:3}; do [[ $out == *"$t"* ]] || has=0; done
+  if (( rc != 0 && after == before && has )) && [[ $out == *"clippy ... not run ($2 failed)"* && $out == *"prod ... not run ($2 failed)"* &&
+      $out == *"tests ... not run ($2 failed)"* && $out == *"FAIL: $2 failed"* ]] &&
       ! grep -qE '^(clippy|check)' $tmp/calls && [[ ! -e $tmp/key ]]; then
     ok "$1: stopped before clippy, prod and the tests"
   else bad "$1: wanted $2 failed, clippy, prod and the tests not run, nothing recorded; exit $rc, records $before -> $after, calls: $(tr '\n' ';' < $tmp/calls):"
@@ -137,6 +141,13 @@ stop "guards failing" guards 'guards: a stub failure'
 : > $tmp/fmtfail
 stop "fmt and guards failing" "fmt, guards" "Commit them"
 rm $tmp/fmtfail $tmp/guardsfail; g checkout -q docs/a.md
+: > $tmp/fmtbroken
+stop "fmt failing on a file it can't read" fmt "unclosed delimiter" "cargo fmt failed (above)" "It had formatted these files here already (commit them too):"$'\n'"    docs/a.md"
+rm $tmp/fmtbroken; g checkout -q docs/a.md
+# (A toolchain sync's stderr is no formatted file: the run passes.)
+: > $tmp/fmtnoise; w docs/e.md 1; g add -A; g commit -m noise
+run "fmt with a toolchain sync on stderr" recorded
+rm $tmp/fmtnoise
 run "the tests' run after" recorded
 [[ $(<$tmp/key) == main-checkout.check ]] && ok "the main checkout's key: main-checkout.check" || bad "the main checkout's key: $(<$tmp/key)"
 
