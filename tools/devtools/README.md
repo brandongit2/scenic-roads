@@ -135,11 +135,11 @@ curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"s
 # → {"id":"i674","num":674,"order":52,"added":"…"}
 ```
 
-**Starting a task** (#1534, `board.mjs` sizeAndStart). A task in flight is `working`, `backgrounded`, `integrating`, `review` or `waiting` (`IN_FLIGHT`).
-- A start, a change of `status` from queued (a POST born so too) to a status in flight, is refused (400) while its `small` is unset, saying to classify it, true or false, before or in the same request; and, for a small task, unless the same request carries `batch`: "batch: #N is a small task starting: start it through tools/dev/board.py batch, with the four next small tasks …". board.py batch starts it with the four next small tasks under one batch id (tools/dev/agent-rules.md, "Starting tasks"); an id made up by another client is taken, and tools/dev/health.sh flags its batch as having no start event.
-- A resume, a change to `working` from any other status but queued, needs the size set too, and a small task's batch, stored or sent ("… is a small task in no batch: …"): a batched task resumes as it is, from the page too.
+**Starting a task** (#1534, `board.mjs` sizeAndStart). A task in flight is `working`, `backgrounded`, `integrating` or `review` (`IN_FLIGHT`); not `waiting`, as a task waits on the owner before it starts as well as during its work.
+- A change of `status` into a status in flight from one that isn't (queued, waiting, done, abandoned; a POST born in flight is from queued), or into `working` from any other status, is refused (400) while its `small` is unset, saying to classify it, true or false, before or in the same request ("small: #N isn't classified: set "small": true or false before it goes from done to in review, …").
+- For a small task it is refused too unless it has a batch: `batch` sent in the same request, or, unless it comes from queued, the one it holds. From queued: "batch: #N is a small task starting: start it through tools/dev/board.py batch, with the four next small tasks …"; from elsewhere with none held: "… is a small task in no batch: …". So a batched task resumes as it is from any status, from the page too, and a small task that waited before it ever started starts through board.py batch. board.py batch starts it with the four next small tasks under one batch id (tools/dev/agent-rules.md, "Starting tasks"); an id made up by another client is taken, and tools/dev/health.sh flags its batch as having no start event.
 - A task queued again loses its batch: the page's undo of a requeue is a start, refused as above.
-- Other changes (closing a queued task, moving between statuses in flight other than to working) are as before.
+- Unchecked: queued ↔ waiting, closing a task, and moves between statuses in flight other than into `working`.
 
 **A priority with a fraction** (#1100) slots in between, in the same transaction as the rest of the
 write, by `priority.mjs` (the page places a drag or a typed number by the same module): a POST, PATCH

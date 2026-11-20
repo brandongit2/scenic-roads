@@ -2,10 +2,10 @@
 """The PM's board tools: starting small tasks five at a time, and health.sh's look at the board.
 
   board.py batch <num> ... [--left-out TEXT]... [--note TEXT]
-      Starts small tasks as one piece of work (tools/dev/agent-rules.md, "Starting tasks"). Each
-      queued one is set under way with the batch's id (`batch`: the board refuses to start a small
-      task without one in the same request), and each gets the batch's `start` event, the same text
-      on all:
+      Starts small tasks as one piece of work (tools/dev/agent-rules.md, "Starting tasks"). Each one
+      queued, or waiting on the owner and in no batch, is set under way with the batch's id (`batch`:
+      the board refuses to start a small task without one in the same request), and each gets the
+      batch's `start` event, the same text on all:
           Batch b1601-20261120T0300 of small tasks: #1601 #1602 #1603 #1604 #1605
           Left out: #1610 (blocked by #1600); #1611 (conflicts with #1534)     (only with --left-out)
           <the note>                                                          (only with --note)
@@ -13,17 +13,17 @@
       or semicolons outside parentheses; only an entry's leading #N is the task left out. Given more
       than once, the lists are merged.
       Refused, nothing written, unless every task named is a small task (the board's `small`),
-      queued or in flight, not archived and in no other batch; at most five; every left-out entry has
-      a reason; and, when fewer than five, every other queued small task is named in --left-out. A
-      task in flight is put in the batch as it is (its status kept): a small task in no batch, such
-      as one marked small while under way, is recorded so.
+      queued, waiting or in flight, not archived and in no other batch; at most five; every left-out
+      entry has a reason; and, when fewer than five, every other queued small task is named in
+      --left-out (a waiting one needn't be). A task in flight is put in the batch as it is (its status
+      kept): a small task in no batch, such as one marked small while under way, is recorded so.
       A rerun with the same tasks and options finishes a batch cut short and writes nothing more:
       a task already in the batch isn't set again, and one whose latest batch event has the same
       text gets no second one. A batch grown later is recorded by running it with all of it (its id
       kept).
   board.py health
       health.sh's board part: the parked tasks (backgrounded or integrating) with their last events,
-      and the small tasks in flight (working, backgrounded, integrating, in review, waiting) by batch
+      and the small tasks in flight (working, backgrounded, integrating, in review; not waiting) by batch
       (their `batch`). A batch of fewer than five is flagged when a task queued now was already small
       when the batch was recorded (its `smallAt`, the server's, no later than the batch's latest start
       event) and is neither in it nor named as left out; a batch no start event records (an id made
@@ -44,7 +44,8 @@ from datetime import datetime, timezone
 BOARD = os.environ.get("SCENIC_BOARD", "http://mac-mini-de-brandon:8077")
 BATCH = 5  # small tasks started together (the owner's rule, 20 Nov)
 HEAD = re.compile(r"^Batch (\S+) of small tasks:")
-IN_FLIGHT = ("working", "backgrounded", "integrating", "review", "waiting")  # (tools/devtools/board.mjs IN_FLIGHT)
+IN_FLIGHT = ("working", "backgrounded", "integrating", "review")  # (tools/devtools/board.mjs IN_FLIGHT)
+WAITS = ("", "waiting")  # not started: queued, or waiting on the owner (also before it starts)
 NUM = re.compile(r"#(\d+)")
 ENTRY = re.compile(r"^#(\d+)\s*(.*)$", re.S)
 
@@ -233,8 +234,8 @@ def batch(args):
             errs.append(f"#{n} is archived")
         elif d.get("small") is not True:
             errs.append(f"#{n} isn't marked small: " + ("classify it first" if d.get("small") is None else "start it alone"))
-        elif d.get("status") not in ("",) + IN_FLIGHT:
-            errs.append(f"#{n} is {d['status']}, neither queued nor in flight")
+        elif d.get("status") not in WAITS + IN_FLIGHT:
+            errs.append(f"#{n} is {d['status']}, neither queued, waiting nor in flight")
     for n, _ in left:
         if n in nums:
             errs.append(f"#{n} is both in the batch and left out")
@@ -255,9 +256,9 @@ def batch(args):
     for n in nums:
         id, d = ids[n], items[ids[n]]
         did = []
-        if d["status"] == "":
+        if d["status"] in WAITS and d.get("batch") != bid:
             call("PATCH", f"items/{id}", {"status": "working", "batch": bid})
-            did.append("started")
+            did.append("started" + (" (it was waiting on you)" if d["status"] else ""))
         elif d.get("batch") != bid:
             call("PATCH", f"items/{id}", {"batch": bid})
             did.append(f"already {d['status']}, put in the batch")

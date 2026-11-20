@@ -14,8 +14,9 @@ import { COLS, DEFAULT_ORDER } from "./store.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
 import { placePriority } from "./priority.mjs";
 
-// The statuses of a task in flight: started and not closed (sizeAndStart, below).
-const IN_FLIGHT = new Set(["working", "backgrounded", "integrating", "review", "waiting"]);
+// The statuses of a task in flight: started and not closed (sizeAndStart, below). Not `waiting`: a
+// task waits on the owner before it starts as well as during its work.
+const IN_FLIGHT = new Set(["working", "backgrounded", "integrating", "review"]);
 const STATUS_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
 const MAX_BLOB = 20 * 1024 * 1024;
@@ -73,23 +74,23 @@ export function makeBoard(store, changed) {
   // ---- a task's size and its start (#1534) -------------------------------------------------------
   // `doc`, about to be written (`cur`, what it was, none for a new one; `sent`, the request's
   // fields). `smallAt` is when `small` was last set; a task queued again leaves its batch.
-  // - Starting (out of queued, a new task too, into any status in flight) needs the task's size
-  //   classified, and a small task's a batch id in the same request: small tasks start five at a
-  //   time, as one piece of work, through tools/dev/board.py batch, which sends it.
-  // - Resuming (into working from any other status but queued) needs the size classified, and a
-  //   small task's a batch, stored or sent: a batched task resumes as it is.
+  // A move checked: into a status in flight from one that isn't (queued, waiting, done, abandoned;
+  // a new task is from queued), or into working from any other status. It needs the task's size
+  // classified, and a small task's a batch: sent in the same request (tools/dev/board.py batch sends
+  // it: small tasks start five at a time, as one piece of work), or, unless it comes from queued,
+  // the one it holds, so a batched task resumes as it is. Queued ↔ waiting, a closing, and moves
+  // between statuses in flight other than into working, aren't checked.
   function sizeAndStart(doc, cur, sent) {
     if (doc.small === undefined || doc.kind !== "task") delete doc.smallAt;
     else if (cur?.small !== doc.small || cur?.kind !== "task") doc.smallAt = nowIso();
     if (doc.kind !== "task") return;
-    const from = cur?.kind === "task" ? cur.status : "";
-    if (doc.status === "" && from !== "") delete doc.batch;
-    const starting = from === "" && IN_FLIGHT.has(doc.status), resuming = from !== "" && from !== "working" && doc.status === "working";
-    if (!starting && !resuming) return;
-    const what = starting ? `it goes from queued to ${STATUS_LABEL[doc.status].toLowerCase()}` : "it resumes";
+    const from = cur?.kind === "task" ? cur.status : "", to = doc.status;
+    if (to === "" && from !== "") delete doc.batch;
+    if (!IN_FLIGHT.has(to) || (IN_FLIGHT.has(from) && !(to === "working" && from !== "working"))) return;
+    const what = `it goes from ${STATUS_LABEL[from].toLowerCase()} to ${STATUS_LABEL[to].toLowerCase()}`;
     if (doc.small === undefined) invalid([{ field: "small", message: `#${doc.num} isn't classified: set "small": true or false before ${what}, or in the same request (a small task starts through tools/dev/board.py batch)` }]);
-    if (doc.small && (starting ? typeof sent.batch !== "string" : !doc.batch)) {
-      invalid([{ field: "batch", message: `#${doc.num} is a small task ${starting ? "starting" : "in no batch"}: start it through tools/dev/board.py batch, with the four next small tasks (it sends their batch id, "batch", with the start)` }]);
+    if (doc.small && typeof sent.batch !== "string" && (from === "" || !doc.batch)) {
+      invalid([{ field: "batch", message: `#${doc.num} is a small task ${from === "" ? "starting" : "in no batch"}: start it through tools/dev/board.py batch, with the four next small tasks (it sends their batch id, "batch", with the start)` }]);
     }
   }
 

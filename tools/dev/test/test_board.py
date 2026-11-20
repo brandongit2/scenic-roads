@@ -137,13 +137,15 @@ class Health(Base):
         self.assertNotIn("<--", out)
         self.assertNotIn("#8", out)
 
-    def test_a_small_task_in_flight_in_no_batch_is_flagged_whatever_its_status(self):
-        for n, st in enumerate(["working", "backgrounded", "integrating", "review", "waiting"], 1):
+    def test_a_small_task_in_flight_in_no_batch_is_flagged_whatever_its_status_but_waiting(self):
+        for n, st in enumerate(["working", "backgrounded", "integrating", "review"], 1):
             self.b.task(n, status=st)
+        self.b.task(5, status="waiting")  # (waiting on the owner before it starts: no batch yet)
         self.b.task(6, status="done")
         out = self.small_part()
-        for n, st in enumerate(["working", "backgrounded", "integrating", "review", "waiting"], 1):
+        for n, st in enumerate(["working", "backgrounded", "integrating", "review"], 1):
             self.assertIn(f"#{n} ({st}) is in no batch  <-- RECORD IT IN ONE (board.py batch #{n} …), OR MARK IT NOT SMALL", out)
+        self.assertNotIn("#5", out)
         self.assertNotIn("#6", out)
 
     def test_a_batch_in_flight_counts_whatever_its_members_statuses(self):
@@ -253,7 +255,7 @@ class Batch(Base):
         self.refused("1", "2", "3", "4", "8", says="#8 is done")
         self.refused("1", "2", "3", "4", "99", says="#99 isn't a task")
         self.refused("1", "1", says="named twice")
-        self.refused("1", "2", "3", "4", "8", says="#8 is done, neither queued nor in flight")
+        self.refused("1", "2", "3", "4", "8", says="#8 is done, neither queued, waiting nor in flight")
         self.b.items["i1"].update(status="working", batch=B)
         self.refused("1", "10", "2", "3", "4", says="in different batches already (b1-20261120T0200, other)")
 
@@ -267,6 +269,19 @@ class Batch(Base):
         self.assertEqual(len(patch1), 1)
         self.assertEqual(set(patch1[0]), {"batch"}, "its status kept")
         self.assertIn("#1: already backgrounded, put in the batch", out)
+
+    def test_a_small_task_waiting_on_the_owner_starts_with_its_batch_and_needs_no_naming(self):
+        self.b.task(1, status="waiting")
+        for n in range(2, 6):
+            self.b.task(n)
+        self.b.task(6, status="waiting")  # (waiting: not a queued task the batch must take or name)
+        code, out, err = run(self.b, "batch", "1", "2", "3", "4")
+        self.assertEqual(code, 2, "queued #5 must be taken or named")
+        code, out, err = run(self.b, "batch", "1", "2", "3", "4", "5")
+        self.assertEqual(code, 0, err)
+        patch1 = [w[2] for w in self.b.writes if w[0] == "PATCH" and w[1] == "i1"]
+        self.assertEqual(patch1[0]["status"], "working")
+        self.assertIn("#1: started (it was waiting on you)", out)
 
 
 if __name__ == "__main__":

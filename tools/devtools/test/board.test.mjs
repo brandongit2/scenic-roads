@@ -428,11 +428,11 @@ test("small (#1534): a task's size, three states (unset, true, false), set by PO
   assert.deepEqual([f.small, f.smallAt], [undefined, undefined]);
 });
 
-const IN_FLIGHT = ["working", "backgrounded", "integrating", "review", "waiting"];
+const IN_FLIGHT = ["working", "backgrounded", "integrating", "review"];
 test("a task goes from queued into any status in flight only classified, and a small one only with a batch id in the same request (#1534)", async () => {
   const u = (await post("items", { text: "Unclassified" })).body.id;
   for (const st of IN_FLIGHT) {
-    await refused(() => patch("items", u, { status: st }), { says: new RegExp(`small: #\\d+ isn't classified: set "small": true or false before it goes from queued to ${st === "working" ? "under way" : st === "review" ? "in review" : st === "waiting" ? "waiting on you" : st}`) });
+    await refused(() => patch("items", u, { status: st }), { says: new RegExp(`small: #\\d+ isn't classified: set "small": true or false before it goes from queued to ${st === "working" ? "under way" : st === "review" ? "in review" : st}`) });
     await refused(() => post("items", { text: "x", status: st }), { says: /small: #\d+ isn't classified/ });
   }
   // (Closing a queued task, or queuing it, needs no size.)
@@ -452,6 +452,40 @@ test("a task goes from queued into any status in flight only classified, and a s
   await refused(() => post("items", { text: "x", kind: "folder", batch: "b1" }), { says: /batch: is only for tasks/ });
 });
 
+test("queued ↔ waiting needs no size and no batch, for an unclassified task and a small one; out of waiting is checked (#1534)", async () => {
+  const u = (await post("items", { text: "Waits on the owner first" })).body.id;
+  const sm = (await post("items", { text: "Small, waits on the owner first", small: true })).body.id;
+  for (const id of [u, sm]) {
+    assert.equal((await patch("items", id, { status: "waiting" })).status, 200);
+    assert.equal((await patch("items", id, { status: "" })).status, 200);
+    assert.equal((await patch("items", id, { status: "waiting" })).status, 200);
+  }
+  assert.equal((await post("items", { text: "Born waiting", status: "waiting" })).status, 200);
+  assert.equal((await post("items", { text: "Born waiting, small", small: true, status: "waiting" })).status, 200);
+  // Out of waiting into flight: a start, unless the task holds a batch (a resume).
+  await refused(() => patch("items", u, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false before it goes from waiting on you to under way/ });
+  await refused(() => patch("items", sm, { status: "review" }), { says: /batch: #\d+ is a small task in no batch: start it through tools\/dev\/board\.py batch/ });
+  assert.equal((await patch("items", sm, { status: "working", batch: "b4-x" })).status, 200, "as board.py batch starts it");
+  assert.equal((await patch("items", sm, { status: "waiting" })).status, 200);
+  assert.equal((await patch("items", sm, { status: "working" })).status, 200, "a batched task resumes from waiting");
+});
+
+test("a closed task (done, abandoned) back in flight is checked as a start (#1534)", async () => {
+  for (const closed of ["done", "abandoned"]) {
+    const u = (await post("items", { text: "Unclassified", status: closed })).body.id;
+    for (const st of IN_FLIGHT) await refused(() => patch("items", u, { status: st }), { says: new RegExp(`small: #\\d+ isn't classified: set "small": true or false before it goes from ${closed}`) });
+    const sm = (await post("items", { text: "Small", small: true, status: closed })).body.id;
+    for (const st of IN_FLIGHT) await refused(() => patch("items", sm, { status: st }), { says: /batch: #\d+ is a small task in no batch/ });
+    const ok = (await post("items", { text: "Not small", small: false, status: closed })).body.id;
+    assert.equal((await patch("items", ok, { status: "review" })).status, 200);
+  }
+  // (A batched one reopens as it is; closing needs nothing.)
+  const b = (await post("items", { text: "Batched", small: true })).body.id;
+  assert.equal((await patch("items", b, { status: "working", batch: "b5-x" })).status, 200);
+  assert.equal((await patch("items", b, { status: "done" })).status, 200);
+  assert.equal((await patch("items", b, { status: "integrating" })).status, 200);
+});
+
 test("a task resumes (to working from any status but queued) classified, and a small one in its batch, as the page's resume and undo send it (#1534)", async () => {
   const sm = (await post("items", { text: "Small", small: true })).body.id;
   assert.equal((await patch("items", sm, { status: "working", batch: "b2-x" })).status, 200);
@@ -468,7 +502,7 @@ test("a task resumes (to working from any status but queued) classified, and a s
   // An unclassified task in flight (from before #1534) resumes only once classified.
   const old = (await post("items", { text: "Old", small: false, status: "review" })).body.id;
   assert.equal((await patch("items", old, { small: null })).status, 200);
-  await refused(() => patch("items", old, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false before it resumes/ });
+  await refused(() => patch("items", old, { status: "working" }), { says: /small: #\d+ isn't classified: set "small": true or false before it goes from in review to under way/ });
   // Queued again, it leaves its batch: the page's undo of a requeue is a start, refused like any.
   assert.equal((await patch("items", sm, { status: "" })).status, 200);
   assert.equal((await get("items", sm)).batch, undefined);

@@ -105,7 +105,7 @@ tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
 # tools/dev/agent-rules.md, "Starting tasks").
 python3 tools/dev/board.py health 2>&1
 print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
-print "== fill free slots by priority, classifying each task's size (small true or false) as you pick it; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out '#N (why); …' for each other small one waiting; agent-rules.md, \"Starting tasks\")"
+print "== fill free slots by priority, classifying each task's size (small true or false) as you pick it; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out '#N (why); …' for each other queued small one; agent-rules.md, \"Starting tasks\")"
 # (The PM's marker, #1398: while it is there, every agent's tests on this Mac run here, not on the test Mac.)
 [[ -e .claude/tests-local ]] && print -r -- "tests-local: agents' tests run on this Mac, not the test Mac, since $(stat -f %Sm .claude/tests-local) ($(head -1 .claude/tests-local)): delete .claude/tests-local once the test Mac is back"
 print "gates (.claude/gates.txt):"
