@@ -1471,11 +1471,7 @@ mod tests {
     #[test]
     fn a_program_that_failed_keeps_only_what_was_credited() {
         let r0 = get(Count::ReadBytes);
-        let p = ProgramReads::begin_with(
-            100,
-            std::time::Duration::from_secs(3600),
-            std::sync::Arc::new(|| Some(0)),
-        );
+        let p = ProgramReads::begin_with(100, std::time::Duration::from_secs(3600), std::sync::Arc::new(|| Some(0)));
         drop(p);
         assert_eq!((get(Count::ReadBytes) - r0, own_held()), (0, 0));
     }

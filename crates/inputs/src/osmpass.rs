@@ -871,10 +871,7 @@ impl UnitLinks {
 
 /// `run` (`unit_links` of a piece's path) on the piece `src` on the NAS, read where it lies: the
 /// extract program's reads of it counted (`EXTRACT`).
-fn unit_links_of(
-    src: &store::nasfs::NasPath,
-    run: impl FnOnce(&Path) -> Result<UnitLinks>,
-) -> Result<UnitLinks> {
+fn unit_links_of(src: &store::nasfs::NasPath, run: impl FnOnce(&Path) -> Result<UnitLinks>) -> Result<UnitLinks> {
     src.read_by_program(EXTRACT, run)
 }
 
@@ -1853,7 +1850,11 @@ mod tests {
     fn the_ferries_way_ids_of_a_piece_are_counted() {
         use store::nasio::{get, own_held, Count};
         let d = tempfile::tempdir().unwrap();
-        let src = osm(d.path(), "piece", "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nw10 v1 Troute=ferry Nn1,n2\nw11 v1 Thighway=road Nn1,n2\n");
+        let src = osm(
+            d.path(),
+            "piece",
+            "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nw10 v1 Troute=ferry Nn1,n2\nw11 v1 Thighway=road Nn1,n2\n",
+        );
         let size = std::fs::metadata(&src).unwrap().len();
         let root = store::nasfs::NasRoot::local_for_test(d.path());
         let (asked, files) = (get(Count::ReadBytes) + own_held(), get(Count::Files));
