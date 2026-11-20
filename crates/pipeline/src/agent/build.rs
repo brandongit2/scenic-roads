@@ -2398,6 +2398,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     nasread::PLAN.enter("build::plan: the z6 tiles' records asked again");
     super::idents::warm_asked(x);
     super::idents::warm_lakes(x);
+    super::idents::warm_peaks(x);
     nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
@@ -5231,7 +5232,8 @@ mod tests {
     /// (buildstore::asked::Run over an `Out`, answered by roads::peaks::z8::Z8 from the packs' own
     /// indexes). With no record, its lo lines are every lo pack by content, as before it recorded,
     /// and its first record keeps them: rolling it out moves no key. Then a change to a z8 tile it
-    /// didn't read keeps the key; one to a tile it read moves it, once.
+    /// didn't read keeps the key, through the plan's warm pass too (`warm_peaks`); one to a tile it
+    /// read moves it, once.
     #[test]
     fn a_peaks_key_moves_only_with_the_z8_tiles_its_run_read() {
         use buildstore::asked::{target_logical, Record, Run};
@@ -5284,6 +5286,7 @@ mod tests {
         };
         let lo = |out: &Out, tiles: &TerrainTiles| -> Vec<String> {
             let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, tiles);
+            crate::agent::idents::warm_peaks(&x);
             let lines = crate::agent::steps::key_lines("peaks", t, &x).unwrap();
             lines.into_iter().filter(|l| l.starts_with("w terrain-lo ")).collect()
         };
@@ -6972,6 +6975,7 @@ mod tests {
             let x = KeyCtx::new(&self.c, "d", m, inputs, reach, tiles).memo(&memo);
             crate::agent::idents::warm_asked(&x);
             crate::agent::idents::warm_lakes(&x);
+            crate::agent::idents::warm_peaks(&x);
             let mut keys = BTreeMap::new();
             for &step in steps {
                 for (t, _) in step_keys_all(step, &x).unwrap_or_default() {

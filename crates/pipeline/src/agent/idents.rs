@@ -721,9 +721,23 @@ pub fn peaks_lo_geo<'m>(m: impl Manifest<'m>) -> (String, Vec<String>) {
 /// keeps spelled so (buildstore::asked::Run::spelled), so recording moves no key. None while a lo
 /// pack's index can't be read. Key lines `w terrain-lo <line>`.
 pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let (geo, lines) = peaks_lo_geo(x.m);
+    let line = peaks_line(t, x.cov, x.m, x.tiles)?;
+    Some(if line == geo { lines } else { line.lines().map(str::to_string).collect() })
+}
+
+/// `peaks_lo`'s line (the cheap test's hash while it has no record) of the coverage `cov`
+/// (unread: no question of it), the records `m` names and the indexes, heads and memo of `tiles`
+/// (`warm_peaks`', on any thread).
+fn peaks_line<'m>(
+    t: &str,
+    cov: &buildstore::coverage::Coverage,
+    m: impl Manifest<'m>,
+    tiles: &super::tiles::TerrainTiles,
+) -> Option<String> {
     use roads::peaks::z8::{question_tile, tile_answer, Z};
     TileId::parse(t).filter(|u| u.z == 6)?;
-    let (geo, lines) = peaks_lo_geo(x.m);
+    let (geo, lines) = peaks_lo_geo(m);
     // (Every lo pack's index read, so each question is answered: none taken for flipped while its
     // index is only not read yet.)
     for l in &lines {
@@ -733,14 +747,44 @@ pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         else {
             continue;
         };
-        x.tiles.hash(x.m, Z, q.x << (Z - 3), q.y << (Z - 3)).ok()?;
+        tiles.hash(m, Z, q.x << (Z - 3), q.y << (Z - 3)).ok()?;
     }
     let reask = |q: &str| {
         let (a, b) = question_tile(q)?;
-        x.tiles.hash(x.m, Z, a, b).ok().map(tile_answer)
+        tiles.hash(m, Z, a, b).ok().map(tile_answer)
     };
-    let line = target_asked("peaks", t, geo.clone(), x, &reask)?;
-    Some(if line == geo { lines } else { line.lines().map(str::to_string).collect() })
+    asked_line("peaks", t, geo, cov, m, tiles, &reask)
+}
+
+/// Works out, on rayon's threads, the line of every peaks z6 tile whose lo packs moved under its
+/// record (`peaks_line`: its record read and asked again), kept in the tiles' memo for the plan's
+/// keys to find, as `warm_lakes` the lake-depth's: any lo pack made again moves the cheap test of
+/// every record, and the plan's thread reads none of them one by one. Once per what those lines
+/// read: the lo packs and the records `m` names (the plan runs it every loop: none of them
+/// changed, nothing done). One that can't be worked out now is left to the key that reads it.
+pub fn warm_peaks(x: &KeyCtx) {
+    use rayon::prelude::*;
+    // (None in a shadow plan, as `warm_asked`.)
+    if x.shadow() {
+        return;
+    }
+    // (A cache filled, on other threads: each key finds its line by what it reads itself.)
+    let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
+    let named = |p: &'static str| m.under(p);
+    let asked = "work/asked/peaks/";
+    let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
+    if each.is_empty() {
+        return;
+    }
+    let from: Vec<&str> =
+        named("layers/terrain/lo/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
+    let _ = tiles.memo("peaks:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
+        each.par_iter().for_each(|t| {
+            let _d = store::keyread::deriving();
+            peaks_line(t, cov, m, tiles);
+        });
+        Ok(String::new())
+    });
 }
 
 /// What a lake-depth z6 tile's key reads of the terrain by its packs, its cheap test
