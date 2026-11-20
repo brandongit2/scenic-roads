@@ -248,6 +248,14 @@ out=$(LC_ALL=en_US.UTF-8 TZ=America/Vancouver run_remote c1 "true")
 [[ -d $fb/.build/6 && -e $fb/.slots/6/owner ]] \
   && ok "a slot whose owner was written under LANG=fr_FR and another TZ: still alive, kept" || no "a slot whose owner was written under LANG=fr_FR and another TZ: still alive, kept" "$(<$fb/.slots/6/owner) vs $(proc_id): $out"
 rm -rf $fb/.slots/6 $fb/.build/6
+# One whose owner was written by the code before #1555 (ps's start time in the writer's own locale
+# and zone; the run's here): still alive under this code, kept.
+mkdir -p $fb/.build/6/target $fb/.slots/6
+print -r -- "$$ $(ps -o lstart= -p $$) test" > $fb/.slots/6/owner
+out=$(run_remote c1 "true")
+[[ -d $fb/.build/6 && -e $fb/.slots/6/owner ]] \
+  && ok "a slot whose owner id is in the form before #1555: still alive, kept" || no "a slot whose owner id is in the form before #1555: still alive, kept" "$(<$fb/.slots/6/owner) vs $(proc_id): $out"
+rm -rf $fb/.slots/6 $fb/.build/6
 
 base=$tmp/scenic-check
 # The slot a key tries first: its last; then the least recently used, those never used before all.

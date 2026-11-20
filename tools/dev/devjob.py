@@ -109,6 +109,19 @@ def lstart(pid):
     return " ".join(r.stdout.split())
 
 
+def starts():
+    """Every process's start times as a live file may hold them: {pid: {the C locale's and UTC's,
+    this process's own locale's and zone's}}, the second the form written before #1555, so a live
+    file of either code reads as live."""
+    out = {}
+    for env in (PS_ENV, None):
+        r = subprocess.run(["ps", "-A", "-o", "pid=,lstart="], capture_output=True, text=True, env=env)
+        for ln in r.stdout.splitlines():
+            p, _, st = ln.strip().partition(" ")
+            out.setdefault(p, set()).add(" ".join(st.split()))
+    return out
+
+
 def live(span_id, pid):
     """The span is live while process `pid` (as started then: a reused pid isn't it) is."""
     try:
@@ -688,11 +701,7 @@ def sampler():
         ids = sorted(os.listdir(LIVE))
         if time.time() - last >= SAMPLE_S:
             last = time.time()
-            started = {}
-            r = subprocess.run(["ps", "-A", "-o", "pid=,lstart="], capture_output=True, text=True, env=PS_ENV)
-            for ln in r.stdout.splitlines():
-                p, _, st = ln.strip().partition(" ")
-                started[p] = " ".join(st.split())
+            started = starts()
             alive = []
             for i in ids:
                 try:
@@ -703,7 +712,7 @@ def sampler():
                 # (" sample": a process this Mac is sampled for, no span: devjob.zsh dj_sampling.)
                 only = st.endswith(" sample")
                 st = st.removesuffix(" sample")
-                if started.get(pid) == st:
+                if st in started.get(pid, ()):
                     if not only:
                         alive.append(i)
                 elif os.path.exists(os.path.join(LIVE, i)):

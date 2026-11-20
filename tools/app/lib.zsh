@@ -9,9 +9,14 @@ app_programs=(server scenic scenic-build)
 # proc_id [<pid>]: a process's owner id, "<pid> <its start time>" (ps's lstart in the C locale and UTC,
 # so an owner written under one LANG or TZ reads the same under another): a lock names its holder so,
 # as the PID alone may be another process's later. This process by default.
-# proc_alive <id>: 0 while the process an owner id names still runs (its PID, started then).
+# proc_alive <id>: 0 while the process an owner id names still runs (its PID, started then). An id
+# in the form before #1555 (ps's lstart in this process's own locale and time zone, as the code
+# before wrote it) is read too, so runs of either code don't take each other's locks over.
 proc_id() { local p=${1:-$$}; print -r -- "$p $(LC_ALL=C TZ=UTC ps -o lstart= -p $p 2>/dev/null)"; }
-proc_alive() { kill -0 ${1%% *} 2>/dev/null && [[ $(proc_id ${1%% *}) == "$1" ]]; }
+proc_alive() {
+  local p=${1%% *}
+  kill -0 $p 2>/dev/null && [[ $(proc_id $p) == "$1" || "$p $(ps -o lstart= -p $p 2>/dev/null)" == "$1" ]]
+}
 
 # stop_program <executable>: a TERM to each process running exactly <executable> (its whole path, as
 # ps names it), by its PID: never by a pattern (`pkill -f` also matches a process whose arguments

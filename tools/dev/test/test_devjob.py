@@ -324,6 +324,23 @@ class Wrap(unittest.TestCase):
             self.assertIn(("end", "toy-1", "gone"), [(e["op"], e.get("id"), e.get("status")) for e in ev], "kept to send (the app away)")
             self.assertEqual(os.listdir(os.path.join(d, "live")), [])
 
+    def test_a_live_file_of_either_form_reads_as_live(self):
+        # (#1555: live files written before it hold ps's lstart in the writer's locale and zone;
+        # those after in the C locale and UTC. A sampler of either code runs beside the other's jobs.)
+        p = subprocess.Popen(["sleep", "30"])
+        try:
+            fr = dict(os.environ, LANG="fr_FR.UTF-8", TZ="Asia/Tokyo")
+            fr.pop("LC_ALL", None)
+            old = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(p.pid)], capture_output=True, text=True).stdout.split())
+            other = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(p.pid)], capture_output=True, text=True, env=fr).stdout.split())
+            got = devjob.starts().get(str(p.pid), set())
+            self.assertIn(devjob.lstart(p.pid), got, "the C locale's and UTC's form")
+            self.assertIn(old, got, "the form before #1555, in this process's own locale and zone")
+            self.assertNotIn(other, got, "another locale's and zone's: no form either code writes here")
+        finally:
+            p.kill()
+            p.wait()
+
     def test_a_spool_that_cant_be_written_runs_the_command_still(self):
         with tempfile.TemporaryDirectory() as d:
             spool = os.path.join(d, "a-file")
