@@ -140,7 +140,7 @@ Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`
 of seconds) all run, so each of their failures shows in one run; after any failure, clippy, prod,
 the tests and python don't run (`not run (<parts> failed)`), the run ends `FAIL: <parts> failed`
 and records nothing. (A run failing fmt at its 4th second had gone on 16 min through clippy, prod
-and the tests, #1076; one failing fmt on a change to `names` ended at 237 s, now at 10 s.)
+and the tests, #1076; one failing fmt on a change to `names` ended at 237 s, now at 15 s.)
 fmt runs `cargo fmt -- -l` (and tools/bldfield's) in the checkout: a file it formats fails the part,
 the run naming it (`check.sh formatted these files here`): commit it and run again. rustfmt writes
 only a file it changes, so a formatted tree is left untouched; a run that formatted one fails, and

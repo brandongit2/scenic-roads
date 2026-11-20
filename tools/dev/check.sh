@@ -178,16 +178,14 @@ fi
 notreused() { [[ -n ${why[$1]:-} ]] && print -r -- "$1: not reused: ${why[$1]}" }
 
 # (Formatting it here, not only checking: the fix is the formatting, and the run says what to commit.)
-fmtpart() {
-  local out
+# (A script, not a function: the part's CPU time counts a script's cargo, not a function's.)
+part fmt zsh -c '
   out=$( { cargo fmt -- -l && cargo fmt --manifest-path tools/bldfield/Cargo.toml -- -l } 2>&1 ) ||
-    { print -r -- "$out"; print "cargo fmt failed (above): fix the code it can't read and run check.sh again"; return 1 }
-  [[ -z $out ]] && return 0
-  print -r -- "check.sh formatted these files here (cargo fmt):"; print -r -- "${out//${(b)root}\//}"
+    { print -r -- "$out"; print "cargo fmt failed (above): fix the code it cannot read and run check.sh again"; exit 1 }
+  [[ -z $out ]] && exit 0
+  print -r -- "check.sh formatted these files here (cargo fmt):"; print -r -- "${out//${(b)PWD}\//}"
   print "Commit them and run check.sh again (the run was on the code before the formatting)."
-  return 1
-}
-part fmt fmtpart
+  exit 1'
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
