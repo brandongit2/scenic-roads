@@ -261,15 +261,13 @@ tree checked before likewise take only a pass naming its commit's tree; passes r
 #980 without one (a dirty checkout's, or one whose HEAD moved) vouch for nothing.
 
 SubagentStop fires at the end of every turn of a subagent, also one that only waits for a
-background run's notice, so report-guard.sh lets a stop through while that worktree's check.sh runs
-(#1522): check.sh writes `check-running.<pid>` in the checkout's own git folder
-(`git rev-parse --absolute-git-dir`) holding its start time and deletes it on exit; a file whose
-pid is gone or started at another time, or another worktree's, doesn't count. A hand-back still
-needs a pass while check.sh runs: a stop whose agent's last tool call in its transcript
-(`agent_transcript_path`) is `SubagentHandback`. What it can't tell apart: an agent reporting in its
-closing text rather than through SubagentHandback, while its check.sh runs, gets through; and the
-hook's input names no task of the agent's own (`background_tasks` lists the whole session's), so a
-running check.sh is the only sign of waiting it reads. Tested by `tools/dev/test/report-guard.zsh`.
+background run's notice. report-guard.sh keeps an agent with unchecked commits working, and lets a
+stop pass while that worktree's check.sh runs (#1522): check.sh writes `check-running.<pid>` in the
+checkout's own git folder (`git rev-parse --absolute-git-dir`) holding its start time and deletes it
+on exit; an empty file, one whose pid is gone or started at another time, or another worktree's,
+doesn't count. A check.sh started by anyone in that worktree counts. The hook can't stop a report
+already delivered (SubagentHandback delivers it before the stop): the gate that holds is
+merge-ok.sh before a merge. Tested by `tools/dev/test/report-guard.zsh`.
 
 ## Whose checkout: git writes (#980, 6 Nov)
 

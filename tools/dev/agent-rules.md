@@ -62,7 +62,9 @@ rely on the agent.
   `tools/dev/git-guard.py`).
 - End commit messages with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Run `zsh tools/dev/check.sh` in your worktree before reporting, and report only after it prints
-  PASS (*enforced* for agents with commits: `tools/dev/report-guard.sh`).
+  PASS. `tools/dev/report-guard.sh` keeps an agent with unchecked commits working (a stop passes
+  while that worktree's check.sh runs, whoever started it) but can't recall a report already
+  delivered: the gate that holds is `tools/dev/merge-ok.sh`, which the PM runs before a merge.
 - Don't merge, push or publish: the PM does.
 
 ## The work
