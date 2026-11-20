@@ -13726,9 +13726,10 @@ mod tests {
             refused: Some("writes outside its step's names".into()),
         };
         c.merged(&[], &[refused]);
-        assert_eq!(c.shared.lock().unwrap().failed.len(), 3, "all three failed on m2");
+        // (Three failed jobs of the step on m2 brake it there too: sched::brake_key.)
+        assert_eq!(c.shared.lock().unwrap().failed.len(), 4, "all three failed on m2, and its brake");
         assert_eq!(c.shared.lock().unwrap().handoffs_refused.len(), 1);
-        assert_eq!(c.clear_failed(Some("pack"), "6/1/1", "a test"), 1);
+        assert_eq!(c.clear_failed(Some("pack"), "6/1/1", "a test"), 2, "the target and its step's brake");
         assert_eq!(c.clear_failed(None, "6/1/2", "a test"), 1);
         let kept = |c: &Coordinator| {
             let s = c.shared.lock().unwrap();
