@@ -869,7 +869,9 @@ tile's area, one a target, and its source's time below):
   one that didn't says what the step can use (their median); waits left out, so a step crowded off
   the NAS doesn't read as serial.
 - **memory**: the `needs-mem-pct` percentile (98) of the peaks of its step's runs at or above its
-  size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, scaled up by size),
+  size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, a smaller run's
+  peak grown by the step's slope over size, `model::slope`, at most in proportion; no slope, and no
+  growth, with fewer than `MIN_RUNS` runs, their sizes all equal or a falling fit: task #1535),
   each at the threads asked: past a run's threads, the step's memory per thread for each more
   (fitted by least squares over size and threads, at least `needs-thread-share`, 50 %, of the
   peaks over threads; more threads never read as less memory). Of every run the way the step runs

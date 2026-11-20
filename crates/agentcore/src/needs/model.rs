@@ -16,7 +16,8 @@
 //! - **parallelism** (`Par`): a run that kept every thread busy while not waiting is a floor, at
 //!   least its threads; one that didn't, what it kept busy; its waits left out.
 //! - **memory**: the `mem_pct` percentile, over every run at or above the target's size (`above`;
-//!   past every run, the largest scaled up by size), of each one's peak at the threads asked: past
+//!   past every run, the largest grown by the step's fitted slope over size, `scaled_up`: none
+//!   where its runs' sizes don't differ), of each one's peak at the threads asked: past
 //!   the threads it ran on, its memory per thread for each more (least squares over size and
 //!   threads where `MIN_RUNS` ran on differing threads, at least `thread_share` of the run's peak
 //!   over its threads; else that peak over its threads whole, as if its memory were its
@@ -147,6 +148,10 @@ pub struct PerUnit {
     pub mem_per_thread: Option<f64>,
     /// Its disk measures' (size, disk MB) by size.
     disk: Vec<(f64, u64)>,
+    /// The memory and disk (MB) a unit more adds (`slope`): what a smaller run is grown by to a
+    /// target's size (`scaled_up`).
+    mem_slope: f64,
+    disk_slope: f64,
     work_pct: f64,
     high_pct: f64,
     mem_pct: f64,
@@ -304,8 +309,8 @@ fn about<T>(v: &[T], u: f64, size: impl Fn(&T) -> f64) -> &[T] {
 
 /// The runs at or above `u` units among `v` (sorted by their size, `size`): those of `u` to twice
 /// it, else (fewer than `MIN_RUNS`) the `MIN_RUNS` nearest at `u` or more, else the largest
-/// `MIN_RUNS`, a smaller one's measure scaled up by the target's size over its own
-/// (`scaled_up`): what a target's memory and disk are read from, so no smaller run lowers them.
+/// `MIN_RUNS`, a smaller one's measure grown to the target's size (`scaled_up`): what a target's
+/// memory and disk are read from, so no smaller run lowers them.
 fn above<T>(v: &[T], u: f64, size: impl Fn(&T) -> f64) -> &[T] {
     let from = v.partition_point(|m| size(m) < u);
     let to = v.partition_point(|m| size(m) <= 2.0 * u);
@@ -316,14 +321,35 @@ fn above<T>(v: &[T], u: f64, size: impl Fn(&T) -> f64) -> &[T] {
     &v[from..(from + MIN_RUNS).min(v.len())]
 }
 
-/// A measure `x` of a run of `size` units, for a target of `u`: scaled up where the run was
-/// smaller (past every run, from the largest: a target twice their size needs about twice).
-fn scaled_up(x: f64, size: f64, u: f64) -> f64 {
+/// A measure `x` of a run of `size` units, for a target of `u`: where the run was smaller, grown by
+/// `slope` (the step's measure per unit over its runs, `slope`) for each unit more, at most in
+/// proportion (`x` per `size`). With no slope fitted (its runs' sizes all one, as inputs' files
+/// created: 1 for 9 of its 10 runs, which scaled a never-run target's 20-221 MB runs by its 2,012
+/// files to hundreds of GB, task #1535), it isn't grown: the runs say nothing of what a unit more
+/// takes, and past them the target is read as they are.
+fn scaled_up(x: f64, size: f64, u: f64, slope: f64) -> f64 {
     if size > 0.0 && size < u {
-        x * u / size
+        x + slope.min(x / size) * (u - size)
     } else {
         x
     }
+}
+
+/// The least-squares slope of a measure over size among `v` (size, measure), at least 0: what a
+/// unit more of the size adds to it. 0 where it isn't fitted: fewer than `MIN_RUNS`, or their
+/// sizes all one. On the lead's costs of 19 Nov, each step's largest target by each of its sizes
+/// held out and predicted from the rest past their range (112 such): the peak predicted over what it
+/// took was a geometric mean 1.69, at most 30, under it for 19 (at least 0.34); in proportion to
+/// size it had been 3.36, at most 16,875, under it for 5.
+fn slope(v: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
+    let (n, sx, sy) = v.clone().fold((0usize, 0.0, 0.0), |(n, a, b), (x, y)| (n + 1, a + x, b + y));
+    let first = v.clone().next().map(|p| p.0);
+    if n < MIN_RUNS || v.clone().all(|p| Some(p.0) == first) {
+        return 0.0;
+    }
+    let (mx, my) = (sx / n as f64, sy / n as f64);
+    let (cov, var) = v.fold((0.0, 0.0), |(c, w), (x, y)| (c + (x - mx) * (y - my), w + (x - mx) * (x - mx)));
+    (cov / var).max(0.0)
 }
 
 impl PerUnit {
@@ -366,6 +392,8 @@ impl PerUnit {
         let mut disk: Vec<(f64, u64)> =
             disks.iter().filter_map(|(s, d)| Some((*s.get(size)?, *d))).filter(|(u, _)| *u > 0.0).collect();
         disk.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mem_slope = slope(mem.iter().map(|m| (m.0, m.2 as f64)));
+        let disk_slope = slope(disk.iter().map(|d| (d.0, d.1 as f64)));
         PerUnit {
             size: size.to_string(),
             runs: have.len(),
@@ -377,6 +405,8 @@ impl PerUnit {
             mem,
             mem_per_thread,
             disk,
+            mem_slope,
+            disk_slope,
             work_pct: t.work_pct,
             high_pct: t.high_pct,
             mem_pct: t.mem_pct,
@@ -401,11 +431,13 @@ impl PerUnit {
     }
 
     /// The memory (MB) a target of `u` units needs on `threads` (0: as its runs ran): the
-    /// `mem_pct` percentile, over the runs at or above `u` units (`above`, a smaller one's scaled
-    /// up), of each one's peak at `threads` (`at_threads`). None with no run.
+    /// `mem_pct` percentile, over the runs at or above `u` units (`above`, a smaller one's grown,
+    /// `scaled_up`), of each one's peak at `threads` (`at_threads`). None with no run.
     pub fn mem(&self, u: f64, threads: u32) -> Option<u64> {
         let big = above(&self.mem, u, |m| m.0);
-        let peaks = sorted(big.iter().map(|m| self.at_threads(scaled_up(m.2 as f64, m.0, u), m.1, threads)).collect());
+        let peaks = sorted(
+            big.iter().map(|m| self.at_threads(scaled_up(m.2 as f64, m.0, u, self.mem_slope), m.1, threads)).collect(),
+        );
         pct(&peaks, self.mem_pct).map(|p| p.ceil() as u64)
     }
 
@@ -433,16 +465,17 @@ impl PerUnit {
     /// over their threads. None: no run said its threads.
     pub fn thread_mb(&self, u: f64) -> Option<u64> {
         let big = above(&self.mem, u, |m| m.0);
-        let each = big.iter().filter(|m| m.1 > 0).map(|m| scaled_up(m.2 as f64, m.0, u) / f64::from(m.1));
+        let each =
+            big.iter().filter(|m| m.1 > 0).map(|m| scaled_up(m.2 as f64, m.0, u, self.mem_slope) / f64::from(m.1));
         let linear = pct(&sorted(each.collect()), self.mem_pct)?;
         Some(self.per_thread_of(linear).ceil() as u64)
     }
 
     /// The disk (MB) a target of `u` units needs: the high percentile of the measures' at or above
-    /// `u` units (`above`, a smaller one's scaled up). None with none.
+    /// `u` units (`above`, a smaller one's grown, `scaled_up`). None with none.
     pub fn disk(&self, u: f64) -> Option<u64> {
         let near = above(&self.disk, u, |d| d.0);
-        pct(&sorted(near.iter().map(|d| scaled_up(d.1 as f64, d.0, u)).collect()), self.high_pct)
+        pct(&sorted(near.iter().map(|d| scaled_up(d.1 as f64, d.0, u, self.disk_slope)).collect()), self.high_pct)
             .map(|d| d.ceil() as u64)
     }
 
@@ -507,7 +540,7 @@ impl Model {
     }
 
     /// The first of its sizes (best first) that `sizes` has and `has` says it has measures of
-    /// (memory's, disk's: past its runs a target is scaled up from the largest), and how many.
+    /// (memory's, disk's: past its runs a target is grown from the largest), and how many.
     fn unit_of(&self, sizes: &BTreeMap<String, f64>, has: impl Fn(&PerUnit) -> bool) -> Option<(&PerUnit, f64)> {
         self.by.iter().find_map(|p| Some((p, sizes.get(&p.size).copied().filter(|&u| u > 0.0 && has(p))?)))
     }
@@ -888,11 +921,11 @@ mod tests {
         assert_eq!(m.unit(&[(TARGET.to_string(), 1.0), ("km2".to_string(), 1e6)].into()).unwrap().0.size, TARGET);
     }
 
-    /// The review's probes of memory (task #1416): a target past twice the largest run is scaled up
-    /// from the largest; one is read from the runs at or above its size, a few larger ones not
+    /// The review's probes of memory (task #1416): a target past twice the largest run is grown
+    /// from the largest by the step's fitted slope; one is read from the runs at or above its size, a few larger ones not
     /// raising it to theirs; neither a relearn nor a window of small runs lowers it.
     #[test]
-    fn memory_past_the_runs_is_scaled_up_and_never_lowered_by_smaller_or_newer_runs() {
+    fn memory_past_the_runs_is_grown_and_never_lowered_by_smaller_or_newer_runs() {
         let t = Tuning::default();
         let mb = |m: &Model, u: f64| m.mem(&[(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into(), 0).unwrap();
         // (Past them: 20 runs of 10 to 48 km², 100 MB a km²; a 100 km² target needs 10,000.)
@@ -921,6 +954,31 @@ mod tests {
         runs.extend((100..600).map(|i| obs(i, 1.0, 1.0, 1, 200)));
         let m = Model::of(runs, &[], &[], &t);
         assert_eq!(mb(&m, 100.0), 8000);
+    }
+
+    /// Task #1535: past every run, a target grows by what a unit more took in its step's runs, not
+    /// in proportion to its size. inputs' runs of 19 Nov but regions' (20-221 MB, each having
+    /// created 1 file): a target of 2,012 files had been read as each run times 2,012 (444 GB at
+    /// heritage's 221 MB, past every Mac); its runs' sizes all one, nothing fits what a file more
+    /// takes, and it is read as they are. Where they differ, the fitted slope grows it: 100 MB a
+    /// unit over 10 to 28 units with 500 MB at none, a 100-unit target 10,500 MB, not the 14,775
+    /// that their peaks in proportion to size said.
+    #[test]
+    fn past_every_run_a_target_grows_by_its_steps_fitted_slope_not_in_proportion() {
+        let t = Tuning::default();
+        let mb = |m: &Model, u: f64| m.mem(&[(TARGET.to_string(), 1.0), ("km2".to_string(), u)].into(), 0).unwrap();
+        let peaks = [20, 137, 25, 221, 41, 58, 23, 20, 20, 30];
+        let runs: Vec<Obs> = peaks.iter().enumerate().map(|(i, &p)| obs(i as u64, 1.0, 1.0 + i as f64, 1, p)).collect();
+        let m = Model::of(runs, &[], &[], &t);
+        assert!(m.by.iter().any(|p| p.size == "km2"));
+        let at = mb(&m, 2012.0);
+        assert!((137..=221).contains(&at), "read as its runs are, not 2,012 times them: {at}");
+        let runs: Vec<Obs> = (0..10)
+            .map(|i| obs(i, 10.0 + 2.0 * i as f64, 10.0 + 2.0 * i as f64, 1, 500 + 100 * (10 + 2 * i)))
+            .collect();
+        let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.by[0].size, "km2");
+        assert_eq!(mb(&m, 100.0), 10_500);
     }
 
     /// A target is predicted by the best of the step's sizes it has: its work spread least.

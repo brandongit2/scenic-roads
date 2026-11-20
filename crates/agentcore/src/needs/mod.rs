@@ -2228,12 +2228,13 @@ mod tests {
         let t = "inputs/regions";
         assert_eq!(b.cores("inputs", t).map(|c| c.grant), Some(2), "its own run's 0.7 busy cores and a thread more");
         let (md, sizes) = (b.model("inputs"), b.sizes("inputs", t, None));
-        assert_eq!(md.needs.thread_mb(&sizes), Some(207_116), "its siblings' peaks scaled to its files created");
+        let model = md.needs.thread_mb(&sizes).unwrap();
+        assert!(model < 5_000, "its siblings grown by what a file more took (task #1535), not 207,116 MB: {model}");
         assert_eq!(md.needs.fitted_per_thread(&sizes), Some(0.0));
         assert_eq!(b.thread_mb("inputs", t), Some(4_590), "its own peak a thread, not 207,116 MB");
         assert_eq!(b.mem("inputs", t, 1, 0), (4_590, From::Measured));
         assert_eq!(b.mem("inputs", t, 2, 0), (9_180, From::Measured), "not 211,706 MB");
-        // (A target never run is still read by its step's runs scaled to its size.)
+        // (A target never run is still read by its step's runs grown to its size.)
         assert!(b.thread_mb("inputs", "inputs/new").is_some());
     }
 
