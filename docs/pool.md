@@ -723,7 +723,21 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   last `history::DAYS`, 7, days), held in memory for the page (§10, The page's history); members'
   notes reach it in their beats. Each day before today is packed by the `gc` job into
   `state/coord/history-archive/<day>.tar` (merged into what the tar holds, written to a temporary
-  name, read back and renamed), so a lead's disk lost loses only the days not yet packed. `scenic
+  name, read back and renamed), so a lead's disk lost loses only the days not yet packed. A Mac
+  that led and starts as a member packs what its file holds, every day of it (the day it handed the
+  lead over too), under its own member, on a thread of its own, looked at from its start every
+  `FORMER_EVERY` (60 s; a look gone wrong, a tar unreadable, doubles the wait up to an hour,
+  `FORMER_BACKOFF_MAX`, its warning said once while it stands). The file is removed only by a look
+  `former_settle` (10 min) after its pack returned that finds every day's tar holding its lines
+  and the file as packed, and never by the leftovers' sweep (docs/agent-parts.md §9.5):
+  `agent::histarchive::spawn_former`, `Former::look`. Every merge into a day's tar reads the tar
+  again just before its rename and merges again if it changed (`merge_into_tar`, 3 tries), so a
+  writer frozen between its read and its rename (a GC job the memory guard stopped, a lead's
+  laptop asleep) merges in what landed meanwhile. The settle covers the rest: another writer
+  whose read just before its rename came before the pack's rename, its rename landing after (two
+  back-to-back calls; 10 min is twice the agent's longest NAS deadline, the big read's 5 min).
+  Lines dropped all the same are found missing by that look and packed again, as the lead's GC
+  packs its own again at its next run. `scenic
   timings publish` and the forecast check read the tars and the lead's file.
 - **The contact** (`coordwire::lead`): each Mac's agent keeps its lead's contact (`lead.json`:
   member, host, addresses, token, page), and every other process on the Mac (CLI, map server,

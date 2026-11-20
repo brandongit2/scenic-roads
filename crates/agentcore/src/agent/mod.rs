@@ -275,6 +275,21 @@ fn drop_lead_files(home: &Path) {
     }
 }
 
+/// The history a process of this Mac's left as it led (`home`'s room::HISTORY_FILE) packed into
+/// the archive under `member` and then removed, tried while the NAS part `nas` sees the NAS
+/// (histarchive::spawn_former, task #1442; looked at every `FORMER_EVERY`, removed
+/// `former_settle` after its pack; a unit test's 20 and 50 ms).
+fn spawn_former(nas: &nas::Handle, home: &Path, member: String) {
+    let view = nas.view.clone();
+    let root = move || view.get().root.clone().map(|r| r.long_retry());
+    let (every, settle) = if buildstore::out::testing() {
+        (Duration::from_millis(20), Duration::from_millis(50))
+    } else {
+        (histarchive::FORMER_EVERY, histarchive::former_settle())
+    };
+    histarchive::spawn_former(root, home.join(room::HISTORY_FILE), member, every, settle);
+}
+
 /// A role in words, for the log.
 fn role_name(r: Role) -> &'static str {
     match r {
@@ -2125,6 +2140,11 @@ impl Agent {
             beat.watch_plan(plan.running());
         }
         if role == Role::Member && lock.is_some() && !o.dry_run {
+            // (A history its process left as it led archived, and only then removed: the leftovers'
+            // sweep leaves it.)
+            if let Some(r) = &run {
+                spawn_former(&nas, &o.home, r.side.member().id.clone());
+            }
             drop_lead_files(&o.home);
         }
         let spans = spans::Shipper::new(&o.home);
@@ -9466,6 +9486,9 @@ impl Agent {
             (Role::Unknown, Role::Member) => {
                 eprintln!("agent: the lead's declaration read: this Mac is a member");
                 self.role = Role::Member;
+                if let Some(id) = self.pooled().map(|r| r.side.member().id.clone()) {
+                    spawn_former(&self.nas, &self.o.home, id);
+                }
                 drop_lead_files(&self.o.home);
             }
             (was, now) => self.restart_for_part(format!(
@@ -19854,12 +19877,67 @@ mod membership_tests {
         stop_jobs(&mut m);
     }
 
+    /// Task #1442: a Mac that led and starts as a member archives the history its process left,
+    /// today's (the day it handed over) too, under its own member, beside the lead's; the lead's
+    /// GC never would (it packs its own file, and the days before today).
+    #[test]
+    fn a_former_lead_archives_its_history_as_it_starts_a_member() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: d.path().join(who).join("agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let mut lead = test_agent(o("l")).unwrap();
+        // (Left by a process of this Mac's that led, up to its hand-over now.)
+        let now = now_s();
+        let ev = |seq: u64, t: u64| {
+            serde_json::to_string(&crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("x") })
+                .unwrap()
+                + "\n"
+        };
+        let file = d.path().join("m/agent").join(room::HISTORY_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, ev(1, now - 86_400) + &ev(2, now)).unwrap();
+        // (Stale past the history's week, as one is that waited out the NAS away: the leftovers'
+        // sweep at the member's start leaves it, task #1442's review.)
+        let stale = std::time::SystemTime::now() - Duration::from_secs(8 * 86_400);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(stale).unwrap();
+        let mut m = test_agent(o("m")).unwrap();
+        assert_eq!(m.role, Role::Member);
+        // (The NAS not yet seen by the NAS part, as when away at the start: the file waits, kept.
+        // Its look, as each loop asks for one, finds it, and the packing goes on.)
+        std::thread::sleep(Duration::from_millis(100)); // (absence)
+        assert!(file.exists(), "the NAS not seen: kept");
+        assert!(m.root().is_some());
+        let id = m.pooled().unwrap().side.member().id.clone();
+        let day = crate::pool::journal::day(now).unwrap();
+        let tar = r.join(histarchive::ARCHIVE).join(format!("{day}.tar"));
+        let mine = format!("{day}/{id}.jsonl");
+        store::testkit::wait_for("the day it handed over archived under its member", || {
+            let t = codecs::tar::list_tar(&std::fs::read(&tar).ok()?).ok()?;
+            t.into_iter().find(|(n, _)| *n == mine)
+        });
+        let yesterday =
+            r.join(histarchive::ARCHIVE).join(format!("{}.tar", crate::pool::journal::day(now - 86_400).unwrap()));
+        store::testkit::eventually("the day before too", || yesterday.exists());
+        store::testkit::eventually("the file removed once packed", || !file.exists());
+        stop_jobs(&mut lead);
+    }
+
     /// Task #882 step 6 (docs/agent-parts.md §9.5): two agents, the lead and a member. Each entry the
     /// lead writes in its folder (and its coordinator's, `coord/`) is a member's leftover
     /// (room::is_member_leftover) or kept: one the member writes too, or §3.5's kept list (the
     /// agent's own `timings.jsonl`, the broker's `coord/` files). Nothing a member writes is a
     /// leftover. A member's agent removes, as it starts, the leftovers last written a day ago or
-    /// more (the history file's, a week), and keeps a newer one and every kept file.
+    /// more, and keeps a newer one and every kept file (the history file: its packing removes it,
+    /// histarchive::spawn_former).
     #[test]
     fn member_leftovers_names_every_lead_file() {
         let d = tempfile::tempdir().unwrap();
@@ -19886,8 +19964,9 @@ mod membership_tests {
         // §3.5's kept: the agent's own timings (every Mac's jobs') and memory (`state.json`, written
         // when it changes: a member's within these rounds may not), the lead's answers to its asks
         // (every Mac's, answered::FILE: a member's within these rounds asks nothing), the broker's
-        // folder and files.
+        // folder and files; the coordinator's history, which its packing removes (task #1442).
         let kept_list = [
+            room::HISTORY_FILE,
             "timings.jsonl",
             "state.json",
             answered::FILE,

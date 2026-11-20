@@ -175,7 +175,7 @@ pub fn with<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + 
 
 /// How long a big read may take (the build's keys: the manifest and its records): 5 min, 20 s in a
 /// unit test (`buildstore::out::testing`).
-fn big_read_deadline() -> Duration {
+pub(crate) fn big_read_deadline() -> Duration {
     if buildstore::out::testing() {
         Duration::from_secs(20)
     } else {

@@ -448,10 +448,13 @@ history file; a folder by its newest entry), so nothing a process of the Mac sti
   which only a lead's coordinator reads, as its store's first fill, and its history's kept waits
   (`history-waits.json`, read back as a lead's coordinator starts);
 - written by nothing now: `loop-stall-sample-*.txt`, `round.json`, `battery-floor.moved` and
-  `pageview-waits.json`;
-- `coord/history.jsonl`, which a member's broker doesn't write (an older app's, or the one a lead's
-  coordinator wrote before the Mac handed over), last written a week ago or more, not a day (the
-  history's own span).
+  `pageview-waits.json`.
+
+The coordinator's history, `coord/history.jsonl` (an older app's member broker's, or the one a
+lead's coordinator wrote before the Mac handed over), is not in the list, however old: a
+member's agent packs its days into the NAS's history archive under the Mac's member, from its
+start, and removes it only once a look a settling time after the pack finds every day's tar
+holding them and the file unchanged (`agent::histarchive::spawn_former`, docs/pool.md §7.5).
 
 A whole write cut off (`helper.json.<host>.<pid>.<n>.tmp`) is not in the list: `store::whole::write`
 sweeps its folder's day-old ones itself, hourly. Kept: `coord/` itself, the broker's folder (§9.3),

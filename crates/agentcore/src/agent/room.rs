@@ -321,19 +321,10 @@ pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<St
 const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(86400);
 
 /// The coordinator's history file, whichever role wrote it (an older app's member broker, or the
-/// Mac's former lead: since task #1160 a member's broker keeps its history in memory alone). A
-/// leftover once `HISTORY_LEFTOVER_AGE` stale: the history's own span (coord::history::KEEP_S).
-const HISTORY_FILE: &str = "coord/history.jsonl";
-const HISTORY_LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(crate::coord::history::KEEP_S);
-
-/// How long leftover `rel` (`is_member_leftover`) must have gone unwritten.
-fn leftover_age(rel: &str) -> std::time::Duration {
-    if rel == HISTORY_FILE {
-        HISTORY_LEFTOVER_AGE
-    } else {
-        LEFTOVER_AGE
-    }
-}
+/// Mac's former lead: since task #1160 a member's broker keeps its history in memory alone). Never
+/// a leftover: a member's agent removes it once its days are packed into the archive and read back
+/// there (histarchive::spawn_former, task #1442), whatever its age.
+pub(crate) const HISTORY_FILE: &str = "coord/history.jsonl";
 
 /// The coordinator's files in its folder (`coord/`) that only the lead's reads, as a first fill of
 /// its store (crate::coord::kept), and that a member's broker neither reads nor writes.
@@ -355,7 +346,7 @@ const LEAD_COORD_FILES: [&str; 10] = [
 /// removes (`member_leftovers`).
 pub fn is_member_leftover(rel: &str) -> bool {
     if let Some(name) = rel.strip_prefix("coord/") {
-        return rel == HISTORY_FILE || LEAD_COORD_FILES.contains(&name);
+        return LEAD_COORD_FILES.contains(&name);
     }
     let between =
         |pre: &str, suf: &str| rel.len() > pre.len() + suf.len() && rel.starts_with(pre) && rel.ends_with(suf);
@@ -382,7 +373,7 @@ pub fn is_member_leftover(rel: &str) -> bool {
         || ["round.json", "battery-floor.moved", "pageview-waits.json"].contains(&rel)
 }
 
-/// The leftovers (`is_member_leftover`) in the agent's folder `home` last written `leftover_age`
+/// The leftovers (`is_member_leftover`) in the agent's folder `home` last written `LEFTOVER_AGE`
 /// ago or more (a folder by its newest entry), by `now`.
 pub fn member_leftovers(home: &Path, now: SystemTime) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -394,8 +385,7 @@ pub fn member_leftovers(home: &Path, now: SystemTime) -> Vec<PathBuf> {
                 continue;
             }
             let p = e.path();
-            let age = leftover_age(&rel);
-            if newest_write(&p).is_some_and(|t| now.duration_since(t).unwrap_or_default() >= age) {
+            if newest_write(&p).is_some_and(|t| now.duration_since(t).unwrap_or_default() >= LEFTOVER_AGE) {
                 out.push(p);
             }
         }
@@ -1920,7 +1910,6 @@ mod tests {
             "coord/job-disks-v6.json",
             "coord/store",
             "coord/timings.jsonl",
-            "coord/history.jsonl",
         ] {
             assert!(is_member_leftover(l), "{l}");
         }
@@ -1959,25 +1948,21 @@ mod tests {
         assert!(drop_member_leftovers(home) == 0 && home.join("backups/blobs/a").exists());
     }
 
-    /// Task #1364: a member's `coord/history.jsonl` (an older app's broker's) goes once a week
-    /// stale by its mtime; a fresher one stays.
+    /// Task #1442 review: a member's `coord/history.jsonl` (a former lead's, an older app's
+    /// broker's) is never swept, however stale: only its packing into the archive removes it
+    /// (histarchive::spawn_former).
     #[test]
-    fn member_history_leftover_goes_a_week_stale() {
+    fn member_history_is_never_swept() {
         let d = tempfile::tempdir().unwrap();
         let home = d.path();
         std::fs::create_dir_all(home.join("coord")).unwrap();
         let f = home.join(HISTORY_FILE);
         std::fs::write(&f, b"{}\n").unwrap();
-        let aged = |days: u64| {
-            let t = SystemTime::now() - std::time::Duration::from_secs(days * 86400 + 3600);
-            std::fs::File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
-        };
-        aged(6);
+        let t = SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        assert!(!is_member_leftover(HISTORY_FILE));
         assert!(member_leftovers(home, SystemTime::now()).is_empty() && drop_member_leftovers(home) == 0);
-        assert!(f.exists(), "six days stale stays");
-        aged(8);
-        assert_eq!(member_leftovers(home, SystemTime::now()), vec![f.clone()]);
-        assert!(drop_member_leftovers(home) > 0 && !f.exists(), "eight days stale goes");
+        assert!(f.exists(), "thirty days stale stays");
     }
 
     /// The sweep of what no code reads (task #660): the retired caches always; a copy of a NAS file
