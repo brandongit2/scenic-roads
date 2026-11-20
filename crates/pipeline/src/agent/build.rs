@@ -7076,11 +7076,14 @@ mod tests {
         std::env::var_os("SCENIC_PUBLISH").is_some()
     }
 
-    /// The threads a test working through its cases takes (#1539): at most 4. nextest runs as many
-    /// tests at once as the run has test threads (its share of the test Mac's cores), so a test of
-    /// a thread per core took them from the others (14 a test on the M4, beside two other runs).
+    /// The threads a test working through its cases takes (#1539): at most 4, but every core in
+    /// publish's run. nextest runs as many tests at once as the run has test threads (its share of
+    /// the test Mac's cores), so in a check's run a test of a thread per core took them from the
+    /// others (14 a test on the M4, beside two other runs). Publish's run has every core, and its
+    /// tests over every entry are its last to finish: with 4 threads they ran 118-131 s, alone.
     fn case_threads() -> usize {
-        std::thread::available_parallelism().map_or(4, |n| n.get()).min(4)
+        let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+        if every_entry() { n } else { n.min(4) }
     }
 
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
