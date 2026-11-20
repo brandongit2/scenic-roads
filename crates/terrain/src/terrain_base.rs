@@ -37,11 +37,12 @@ const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// once (`at_once`), each `chunk_tiles` of them.
 const IN_FLIGHT: usize = 64;
 
-/// Chunks sampled at once (task #896): the job's threads (its grant, `RAYON_NUM_THREADS`), a
-/// chunk to each, so a thread waiting on a chunk's reads leaves the others' sampling going; at
-/// most `IN_FLIGHT`, a tile a chunk.
+/// Chunks sampled at once (task #896): the target's threads as a level's sampling begins (its
+/// grant: jobrt::control::in_force, a live target's as its file says now; outside a target, this
+/// thread's pool's), a chunk to each, so a thread waiting on a chunk's reads leaves the others'
+/// sampling going; at most `IN_FLIGHT`, a tile a chunk.
 fn at_once() -> usize {
-    rayon::current_num_threads().clamp(1, IN_FLIGHT)
+    jobrt::control::in_force().unwrap_or_else(rayon::current_num_threads).clamp(1, IN_FLIGHT)
 }
 
 /// Tiles sampled in one call (each 256 × 256 × K² points) with `at_once` chunks at once: their
@@ -233,17 +234,23 @@ struct RawFetch<'a> {
     raw: &'a RawTiles,
     url: Option<&'a str>,
     inner: &'a dyn Fetch,
-    /// The raw tiles read at once, and the most: the threads the job runs on, as when the
-    /// sampler's threads fetched its tiles themselves (task #665 review: its pyramids' tiles are
-    /// fetched `TILE_FETCHES` at once, and these are read from the NAS's archives and loose tiles,
-    /// whose load stays as it was).
+    /// The raw tiles read at once, and the most outside a target: the threads the job runs on
+    /// (`most`), as when the sampler's threads fetched its tiles themselves (task #665 review: its
+    /// pyramids' tiles are fetched `TILE_FETCHES` at once, and these are read from the NAS's
+    /// archives and loose tiles, whose load stays as it was).
     reading: (Mutex<usize>, std::sync::Condvar),
-    most: usize,
+    outside: usize,
 }
 
 impl<'a> RawFetch<'a> {
     fn new(raw: &'a RawTiles, url: Option<&'a str>, inner: &'a dyn Fetch) -> RawFetch<'a> {
-        RawFetch { raw, url, inner, reading: Default::default(), most: rayon::current_num_threads().max(1) }
+        RawFetch { raw, url, inner, reading: Default::default(), outside: rayon::current_num_threads().max(1) }
+    }
+
+    /// The most raw tiles read at once: the target's threads now (jobrt::control::in_force, a
+    /// live target's as its grant grows and is cut), else the job's.
+    fn most(&self) -> usize {
+        jobrt::control::in_force().unwrap_or(self.outside)
     }
 
     /// Raw tile z/x/y, read once fewer than `most` are.
@@ -251,9 +258,9 @@ impl<'a> RawFetch<'a> {
         let (m, cv) = &self.reading;
         {
             let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
-            if *n >= self.most {
+            if *n >= self.most() {
                 let _w = store::waits::other();
-                while *n >= self.most {
+                while *n >= self.most() {
                     n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
                 }
             }
@@ -492,13 +499,14 @@ impl RawSource for Tiles<'_> {
     // it's held. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], turns: &Turns, ready: Ready) -> Result<usize> {
         // (As many at once as the job's threads, each a task of a pool as wide as the target's
-        // grant (jobrt::control::on_outside_pool), its sampler's passes there too
-        // (inputs::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
-        // waits, working on nothing, so the job is on its grant's threads, no more. Never threads of
-        // their own whose passes go on a pool: the target's own one's thread is waiting for them
-        // (task #961), and another's beside them is twice the grant. One task a thread of the pool
-        // (rayon's broadcast), never two on one: a thread waiting in one chunk's passes takes up no
-        // other chunk, so no more than `at_once` are in flight.)
+        // grant (jobrt::control::on_outside_pool; a live target's as wide as the Mac's cores), its
+        // sampler's passes there too (inputs::dem::generic's, through
+        // jobrt::control::on_target_pool): the target's own thread waits, working on nothing, and
+        // every thread of the pool computes on a turn, so the job is on its grant's threads, no
+        // more. Never threads of their own whose passes go on a pool: the target's own one's thread
+        // is waiting for them (task #961), and another's beside them is twice the grant. One task a
+        // thread of the pool (rayon's broadcast), never two on one: a thread waiting in one chunk's
+        // passes takes up no other chunk, so no more than `at_once` are in flight.)
         let at_once = at_once();
         let chunks: Vec<&[(u32, u32)]> = tiles.chunks(chunk_tiles(at_once)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);

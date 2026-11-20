@@ -1448,11 +1448,12 @@ impl<'a> Maker<'a> {
     }
 
     /// Level `z`'s blocks `todo` sampled and made: the sampling (`RawSource::prefetch_each`, the
-    /// blocks' tiles in turn) on this thread's pool, and beside it as many threads as that pool
-    /// has making each tile (`process`) as soon as the sampling has told it ready, each block kept
-    /// (`keep`) as its last tile is made. The making takes the turns the
-    /// sampling's waits lend (store::waits::Turns, as many as the pool's threads): it computes on
-    /// the cores the sampling leaves idle, the job on no more cores than its threads. Each block's
+    /// blocks' tiles in turn), and beside it as many threads as the target may come to use
+    /// (jobrt::control::width) making each tile (`process`) as soon as the sampling has told it
+    /// ready, each block kept (`keep`) as its last tile is made. The making takes the turns the
+    /// sampling leaves and its waits lend (the target's, jobrt::control::turns: as many as its
+    /// threads, a live target's following its grant as it runs): it computes on the cores the
+    /// sampling leaves idle, the job on no more cores than its threads. Each block's
     /// tiles as made, in order. A failure of the sampling (a pause's ends between chunks) lets the
     /// tiles sampled be made first, so the blocks whole by then are kept.
     fn pipeline(
@@ -1469,8 +1470,8 @@ impl<'a> Maker<'a> {
             return Ok(Vec::new());
         }
         let src = self.src;
-        let threads = rayon::current_num_threads().max(1);
-        let turns = Turns::new(threads);
+        let threads = jobrt::control::width().max(1);
+        let turns = jobrt::control::turns();
         // (By tile, its block and its place there, and whether it's been said ready; by block, its
         // tiles made so far and how many are not.)
         let at: HashMap<(u32, u32), (usize, usize)> =

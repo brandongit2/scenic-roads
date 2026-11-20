@@ -8060,8 +8060,9 @@ impl Agent {
     /// Threads controlled live): what its file says now (`Running::threads`, as this agent or one
     /// before it wrote it: a job taken over after a restart has its start's in its record), and the
     /// threads its target under way runs on (a job taking them as each target begins says them in
-    /// its costs file, jobrt::control::on_grant; a paced one, inputs::inputs::pace, runs on its
-    /// file's within the second), watched afresh from when those change, with its CPU time and the
+    /// its costs file, jobrt::control::on_grant; a paced one, inputs::inputs::pace, and a live
+    /// target, its costs line saying so, jobrt::control::on_grant_live, run on its file's within the
+    /// second), watched afresh from when those change, with its CPU time and the
     /// wall time it waited then (store::nasio::waited_in, its counts' folder). A stopped or stopping
     /// job measures nothing. The time it was stopped (a guard's freeze, a pause: the sampler's
     /// `stopped_ns`) is kept in its watch and left out of its wall time (`watched_for`), however
@@ -8077,7 +8078,16 @@ impl Agent {
         if let Some(n) = file {
             r.threads = n;
         }
-        let on = if is_paced(&r.spec) { file.map(|n| n as u32) } else { memguard::targets(&costs).threads };
+        let on = if is_paced(&r.spec) {
+            file.map(|n| n as u32)
+        } else {
+            let t = memguard::targets(&costs);
+            if t.live {
+                file.map(|n| n as u32).or(t.threads)
+            } else {
+                t.threads
+            }
+        };
         r.watch = match (on, cpu) {
             (Some(n), Some(ns)) if r.pausing.is_none() => match r.watch {
                 Some(w) if w.threads == n && ns >= w.cpu_ns && waited >= w.waited_ns && stopped >= w.stopped_ns => {
@@ -13628,6 +13638,101 @@ mod tests {
         assert_eq!((file(&a), grown(&a)), (2, 0), "taken, then work waits: given back");
         if let Some(mut r) = a.slots[0].running.take() {
             r.stop(Duration::from_secs(1));
+        }
+    }
+
+    /// Task #1550: a job of one target whose costs line says it is live (jobrt::control::
+    /// on_grant_live: terrain-deep's) takes a grow within its target: busy short of a thread a core
+    /// on 2, while nothing waits for its Mac's cores and its Mac has cores free, tried on 3 and
+    /// watched on 3 at once (taken: never given back untaken); then work waits, and its next minute
+    /// gives the thread back. The same job whose line doesn't say so still runs its target on 2:
+    /// the thread, untaken, is given back as soon as work waits.
+    #[test]
+    fn a_live_one_target_job_grows_within_its_target_and_gives_back_when_work_waits() {
+        for live in [true, false] {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(d.path().join("nas")).unwrap();
+            let mut a = test_agent(Options {
+                the_plan: crate::agent::seam::for_tests(),
+                root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+                home: d.path().join("home"),
+                bin: PathBuf::from("/app"),
+                dry_run: false,
+                once: true,
+                member: true,
+            })
+            .unwrap();
+            a.mac = cond::Mac::TEST;
+            a.mem_set = Some((32 << 10, 30 << 10));
+            let spec = JobSpec {
+                id: "terrain-deep 10/1/1".into(),
+                what: "terrain-deep 10/1/1".into(),
+                cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+                needs: Needs { nas: false },
+                restart_after_sleep: false,
+                record: Some(jobs::Work { step: "terrain-deep".into(), targets: vec![("10/1/1".into(), "k".into())] }),
+            };
+            std::fs::create_dir_all(&a.o.home).unwrap();
+            std::fs::create_dir_all(a.nas_counts_path(0)).unwrap();
+            let r =
+                Running::start(spec, None, 2, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None).unwrap();
+            let pgid = r.pgid;
+            a.slots[0].running = Some(r);
+            let out = d.path().join("out");
+            std::fs::create_dir_all(&out).unwrap();
+            a.slots[0].lease = Some(Held::Leased { lease: 7, dir: out });
+            a.slots[0].thread_mb = (500, 2);
+            jobrt::control::grant(&a.threads_path(0), 2).unwrap();
+            // (Its one target under way, begun on 2.)
+            let line = serde_json::json!({ "unit": "terrain-deep 10/1/1", "started": 1, "threads": 2 });
+            let mut line = line.as_object().unwrap().clone();
+            if live {
+                line.insert("live".into(), true.into());
+            }
+            std::fs::write(a.slot_costs(0), format!("{}\n", serde_json::Value::Object(line))).unwrap();
+            let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+            let s = 1_000_000_000u64;
+            let mut total = 0;
+            a.sampler.watch(0, memguard::Watch { pgid, cpu_ns: Some(0), ..Default::default() });
+            a.watch_threads(0);
+            let file = |a: &Agent| std::fs::read_to_string(a.threads_path(0)).unwrap().trim().parse::<u32>().unwrap();
+            let watched = |a: &Agent| a.slots[0].running.as_ref().unwrap().watch.map(|w| w.threads);
+            // (A minute on its threads, `cores` of them busy.)
+            let mut busy = |a: &mut Agent, cores: f64| {
+                a.slots[0].running.as_mut().unwrap().watch.as_mut().unwrap().since = Instant::now();
+                a.watch_ahead = Duration::from_secs(61);
+                total += (cores * 61.0) as u64 * s;
+                a.sampler.watch(0, memguard::Watch { pgid, cpu_ns: Some(total), ..Default::default() });
+                a.tend_threads(&cond);
+                a.watch_ahead = Duration::ZERO;
+                a.watch_threads(0);
+            };
+            a.asked = Some((Instant::now(), true));
+            busy(&mut a, 1.6);
+            busy(&mut a, 1.6);
+            assert_eq!(file(&a), 3, "live {live}: measured on 2, nothing waiting: a thread more tried");
+            if live {
+                assert_eq!(watched(&a), Some(3), "taken within its target");
+                assert_eq!(
+                    a.capacity(&cond).threads.iter().map(|t| (t.lease, t.threads)).collect::<Vec<_>>(),
+                    [(7, 3)]
+                );
+                // Work waits: its threads stay to its next minute (taken, never given back
+                // untaken), which gives the thread back.
+                a.asked = Some((Instant::now(), false));
+                a.tend_threads(&cond);
+                assert_eq!(file(&a), 3, "taken: decided on at its minute");
+                busy(&mut a, 2.4);
+                assert_eq!((file(&a), watched(&a)), (2, Some(2)), "work waits: given back");
+            } else {
+                assert_eq!(watched(&a), Some(2), "its target under way still on 2");
+                a.asked = Some((Instant::now(), false));
+                a.tend_threads(&cond);
+                assert_eq!(file(&a), 2, "untaken: given back at once");
+            }
+            if let Some(mut r) = a.slots[0].running.take() {
+                r.stop(Duration::from_secs(1));
+            }
         }
     }
 

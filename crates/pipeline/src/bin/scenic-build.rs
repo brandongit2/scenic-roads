@@ -2559,9 +2559,14 @@ fn note_started(key: &str) {
     let mut line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     // (The threads it runs on, where it takes its job's grant as it begins (jobrt::control::
     // on_grant): what the agent watches it on and tells its lead it runs with now, so a cut is
-    // counted once a target takes it up (agentcore::agent::memguard::targets, agent::threads).)
+    // counted once a target takes it up (agentcore::agent::memguard::targets, agent::threads). A
+    // live target (jobrt::control::on_grant_live) says so: it runs on its file's threads as they
+    // change, which its agent watches it on instead.)
     if let Some(n) = jobrt::control::in_force() {
         line["threads"] = n.into();
+    }
+    if jobrt::control::is_live() {
+        line["live"] = true.into();
     }
     let r = std::fs::OpenOptions::new()
         .create(true)
@@ -5855,8 +5860,9 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
             landing.safe_point(out, STEP, || ())?;
             jobrt::jobs::part(k, &names);
-            // (On its job's grant as it begins: jobrt::control::on_grant.)
-            jobrt::control::on_grant(|| -> Result<()> {
+            // (On its job's grant as it changes, within the target: jobrt::control::on_grant_live;
+            // its work computes on the target's turns, terrain::terrain_pack's level pipeline.)
+            jobrt::control::on_grant_live(|| -> Result<()> {
                 let c = cost_start(STEP, &t.slash());
                 let fetched = buildstore::fetch::fetched_bytes();
                 let levels = td::levels(&cov, &sets, (t.x, t.y));
@@ -5917,8 +5923,12 @@ fn terrain_same_deep(
     let pool = base_pool(out, td::PACK_Z, &[t])?;
     let t0 = std::time::Instant::now();
     let (made, mid) = with_fills(raw, &pool, cov, &sets, &|_, _| false, |tiles, src| {
-        terrain::terrain_pack::make_piece_logged(tiles, src, levels, None, &|what, done, total| {
-            jobrt::jobs::report(done, total, what)
+        // (On its threads file's grant as it changes, as its terrain-deep target runs it:
+        // jobrt::control::on_grant_live; without the file, as it is.)
+        jobrt::control::on_grant_live(|| {
+            terrain::terrain_pack::make_piece_logged(tiles, src, levels, None, &|what, done, total| {
+                jobrt::jobs::report(done, total, what)
+            })
         })
     })?;
     let secs = t0.elapsed().as_secs_f64();

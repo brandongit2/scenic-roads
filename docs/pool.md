@@ -348,11 +348,21 @@ stops further grants but no running job. The agent logs each start:
 busy now, not what its step's past runs did: each Mac's agent decides them for its own jobs about
 once a minute; the lead keeps placement and memory admission, and counts each job at what its agent
 says it runs on. The agent writes the threads in a file of the job's slot (`SCENIC_THREADS_FILE`,
-replaced whole). Steps that take it (slope-hi, slope-deep, terrain-hi, terrain-deep, lake-depth:
-`control::on_grant`) read it as each target begins and run that target on a pool that wide; a
-change waits for the next target, and the thread count changes no output. A paced job (an input
-check, tree cover: `inputs::pace`) reads the file every second and limits its tasks under way to
-it. Other steps keep their starting grant.
+replaced whole). Steps that take it as each target begins (slope-hi, slope-deep, terrain-hi,
+lake-depth: `control::on_grant`) run that target on a pool that wide; a change waits for the next
+target. A live target (terrain-deep's: `control::on_grant_live`, task #1550) reads the file every
+second as it runs (`control::Live`): its work runs on threads as many as the Mac's cores, each
+taking a turn of the target's (`store::waits::Turns`, as many as the file says now) for the work
+it does, so a grow is taken within the second and a cut as the turns held are given back, inside
+the target; its costs line says `live`, and its agent watches it on its file's threads. A paced job
+(an input check, tree cover: `inputs::pace`) reads the file every second and limits its tasks under
+way to it. Other steps keep their starting grant. The thread count changes no output.
+
+Rayon's pools can't be resized and have no hook between a worker's jobs, so a pool can't hold its
+threads to a count that changes: a step goes live by putting its parallel work under the target's
+turns. terrain-deep's level pipeline (`terrain_pack`'s tile making, `terrain_base`'s sampling and
+its passes on the outside pool) does; terrain-hi, slope-hi, slope-deep, lake-depth, bld-fetch and
+pyramids-fill don't yet, and a one-target job of theirs keeps its start grant to its end.
 
 - **What the agent measures** (`Agent::watch_threads`): each job's CPU time and the wall time it
   waited on the NAS and the network (an instant counts as waiting when any of its threads is in
@@ -378,16 +388,17 @@ it. Other steps keep their starting grant.
     threads are measured (two windows). A thread so grown that didn't pay is cut back the next
     minute, and all of them are given back once work waits for the Mac's cores again (those a
     job hasn't taken yet, its target under way still on fewer, at once: its file set back,
-    `Agent::give_back_untaken`). A Mac with every slot full asks for no work (`takes_more`), so
+    `Agent::give_back_untaken`; a live target's and a paced job's, which take them within the
+    second, at their next minute). A Mac with every slot full asks for no work (`takes_more`), so
     after a minute it no longer knows that nothing waits, and it grows no job this way, even on a
     dry queue.
   - Past the most it may run on (the owner back): cut to that.
   The gap between 0.9 and 0.5 is the hysteresis: a grow that didn't pay is cut back the next
   minute (4 busy of 4, doubled to 8, still 4 busy: back to 6). These figures are the rule's form,
   not limits: the Mac's cores and memory bound a job's threads. The agent logs `agent: <job> on
-  <n> threads (was <m>): <why>`. A grow reaches a job as its next target begins (or within the
-  second, a paced job's): a job of one target runs it on its start grant. Growing within a
-  target, for the steps whose pools could be resized, isn't built.
+  <n> threads (was <m>): <why>`. A grow reaches a job as its next target begins, or within the
+  second, a live target's or a paced job's: a job of one target of the other steps runs it on its
+  start grant.
 - **What the lead counts**: each capacity lists the jobs' threads, and the lead counts each job at
   the more of its current and its file's threads (a grow at once, a cut once a target runs on it),
   its memory at its grant's figure plus what a grow took past the threads its grant covers

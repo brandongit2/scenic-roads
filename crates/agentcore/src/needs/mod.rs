@@ -1103,8 +1103,8 @@ impl<'a> Book<'a> {
 }
 
 /// The threads a target's own run `c` measured its memory on: those it said (`threads`), or the
-/// fewest a paced run was cut to under way where fewer (`threads_least`, from the fewest its pace
-/// allowed: its peak may have come on them); None where not said.
+/// fewest a paced run or a live target ran on under way where fewer (`threads_least`, from the
+/// fewest its file allowed: its peak may have come on them); None where not said.
 pub fn own_threads(c: &Cost) -> Option<u32> {
     let least = c.sizes.get("threads_least").copied();
     c.sizes.get("threads").map(|&n| least.map_or(n, |l| l.min(n)) as u32).filter(|&n| n > 0)

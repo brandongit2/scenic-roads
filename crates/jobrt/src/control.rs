@@ -1006,8 +1006,8 @@ fn now() -> u64 {
 
 /// The file a running job's agent keeps its threads in (docs/pool.md §7.1, Threads controlled live):
 /// the threads it may use now, a number, rewritten as its agent grows or cuts them
-/// (agentcore::agent::threads). A job reads it as each target begins (`on_grant`); a paced one
-/// (inputs::inputs::pace) every second.
+/// (agentcore::agent::threads). A job reads it as each target begins (`on_grant`); a live target
+/// (`on_grant_live`) and a paced job (inputs::inputs::pace) every second (`Live`).
 pub const THREADS_ENV: &str = "SCENIC_THREADS_FILE";
 
 /// Tells a job its grant: `THREADS_ENV`'s file `f` replaced whole (store::whole::write), so a read
@@ -1020,16 +1020,55 @@ pub fn grant(f: &Path, threads: usize) -> anyhow::Result<()> {
 /// The threads the job is granted now (`THREADS_ENV`'s number, one at least); None without the file
 /// or a number in it (a hand run's).
 pub fn granted() -> Option<usize> {
-    let f = std::env::var_os(THREADS_ENV)?;
+    read_grant(Path::new(&std::env::var_os(THREADS_ENV)?))
+}
+
+/// The number in grant file `f` (one at least); None without the file or a number in it.
+fn read_grant(f: &Path) -> Option<usize> {
     std::fs::read_to_string(f).ok()?.trim().parse::<usize>().ok().map(|n| n.max(1))
 }
 
+/// How often a job's grant is read again as it runs (`Live::now`).
+pub const POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A job's grant as its file says it now, read again at most every `POLL` (a paced job's,
+/// inputs::inputs::pace, and a live target's, `on_grant_live`): `fallback` without the file or a
+/// number in it (a hand run's). Each read noted as the threads its work is allowed (`allowed`).
+pub struct Live {
+    file: Option<PathBuf>,
+    fallback: usize,
+    read: std::sync::Mutex<(usize, Option<std::time::Instant>)>,
+}
+
+impl Live {
+    pub fn new(file: Option<PathBuf>, fallback: usize) -> Live {
+        let fallback = fallback.max(1);
+        Live { file, fallback, read: std::sync::Mutex::new((fallback, None)) }
+    }
+
+    /// The threads granted now (one at least).
+    pub fn now(&self) -> usize {
+        let mut r = self.read.lock().unwrap_or_else(|e| e.into_inner());
+        if r.1.is_some_and(|t| t.elapsed() < POLL) {
+            return r.0;
+        }
+        let n = self.file.as_deref().and_then(read_grant).unwrap_or(self.fallback);
+        *r = (n, Some(std::time::Instant::now()));
+        // (Its cost line says the fewest its target ran on: buildstore::costin's `threads_least`.)
+        if self.file.is_some() {
+            allowed(n);
+        }
+        n
+    }
+}
+
 /// The fewest threads this process's work has been allowed so far (0: none said): a paced job's
-/// (inputs::inputs::pace), its file as read, which its agent changes under its one long target.
+/// (inputs::inputs::pace) or a live target's (`on_grant_live`, from its start), its file as read
+/// (`Live`), which its agent changes under the target.
 static FEWEST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// This process's work allowed `n` threads now (a paced job's, as it reads its file): `fewest_allowed`
-/// is the fewest so noted.
+/// This process's work allowed `n` threads now (`Live`, as it reads its file): `fewest_allowed` is
+/// the fewest so noted.
 pub fn allowed(n: usize) {
     use std::sync::atomic::Ordering;
     let n = n.max(1);
@@ -1084,18 +1123,53 @@ pub fn fewest_allowed() -> Option<usize> {
     Some(FEWEST.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }
 
-/// The threads the target under way runs on (`on_grant`); 0 outside one.
+/// The threads the target under way began on (`on_grant`, `on_grant_live`); 0 outside one.
 static IN_FORCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The threads the target under way runs on, as `on_grant` read them as it began; None outside one
-/// (its cost line then says none: crate's caller, scenic-build's `note_started`).
+/// The threads the target under way runs on: as `on_grant` read them as it began, a live target's
+/// as its file says them now (`on_grant_live`); None outside one (its cost line then says none:
+/// crate's caller, scenic-build's `note_started`).
 pub fn in_force() -> Option<usize> {
+    if let Some(t) = live_target() {
+        return Some(t.now());
+    }
     Some(IN_FORCE.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }
 
-/// The pool the target under way runs on (`on_grant`; its width, `IN_FORCE`): the last one made,
-/// kept while the grant stands.
+/// A pool kept in `slot`: the one there if it is `n` wide, else a new one that wide (its threads
+/// named by `name`), kept there in its place. None: no pool to be had.
+fn kept_pool(
+    slot: &std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>>,
+    n: usize,
+    name: Option<&'static str>,
+) -> Option<std::sync::Arc<rayon::ThreadPool>> {
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, p)) = g.as_ref().filter(|(w, _)| *w == n) {
+        return Some(p.clone());
+    }
+    let mut b = rayon::ThreadPoolBuilder::new().num_threads(n);
+    if let Some(name) = name {
+        b = b.thread_name(move |i| format!("{name} {i}"));
+    }
+    let p = std::sync::Arc::new(b.build().ok()?);
+    *g = Some((n, p.clone()));
+    Some(p)
+}
+
+/// The pool the target under way runs on (`on_grant`: its grant as it began, `IN_FORCE`; one
+/// thread, a live target's, `on_grant_live`): the last one made, kept while its width stands.
 static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
+
+/// The target under way ends (`on_grant`, `on_grant_live`), however `f` ends: no target in force,
+/// none live.
+struct TargetEnds;
+
+impl Drop for TargetEnds {
+    fn drop(&mut self) {
+        *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        IN_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 /// A target's work, `f`, on as many threads as its job is granted as it begins (`granted`): a rayon
 /// pool that wide (the last one kept while the grant stands), the timings' main thread carried onto
@@ -1112,31 +1186,112 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         Some(n) if IN_FORCE.load(Ordering::Relaxed) == 0 => n,
         _ => return f(),
     };
-    let pool = {
-        let mut g = POOL.lock().unwrap_or_else(|e| e.into_inner());
-        match g.as_ref().filter(|(w, _)| *w == n) {
-            Some((_, p)) => p.clone(),
-            None => match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
-                Ok(p) => {
-                    let p = std::sync::Arc::new(p);
-                    *g = Some((n, p.clone()));
-                    p
-                }
-                // (No pool to be had: the job's own, as before.)
-                Err(_) => return f(),
-            },
-        }
-    };
+    // (No pool to be had: the job's own, as before.)
+    let Some(pool) = kept_pool(&POOL, n, None) else { return f() };
     IN_FORCE.store(n, Ordering::Relaxed);
+    let _ends = TargetEnds;
     let main = crate::timings::Main::here();
-    let r = pool.install(move || main.run(f));
-    IN_FORCE.store(0, Ordering::Relaxed);
-    r
+    pool.install(move || main.run(f))
+}
+
+/// A live target (`on_grant_live`): its grant read as it runs, the most its threads may come to
+/// (the Mac's cores) and the turns its work computes on.
+struct LiveTarget {
+    grant: std::sync::Arc<Live>,
+    most: usize,
+    turns: store::waits::Turns,
+}
+
+impl LiveTarget {
+    /// Its threads now: its grant, within `most`.
+    fn now(&self) -> usize {
+        self.grant.now().min(self.most)
+    }
+}
+
+/// The live target under way (`on_grant_live`), None outside one.
+static LIVE: std::sync::Mutex<Option<std::sync::Arc<LiveTarget>>> = std::sync::Mutex::new(None);
+
+fn live_target() -> Option<std::sync::Arc<LiveTarget>> {
+    LIVE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Whether the target under way is a live one (`on_grant_live`): its threads follow its file as
+/// it runs (scenic-build's `note_started` says so in its costs line, for its agent to watch it on
+/// its file's threads: agentcore::agent's `watch_threads`).
+pub fn is_live() -> bool {
+    live_target().is_some()
+}
+
+/// The Mac's cores: the most a live target's threads may come to.
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
+/// A target's work, `f`, on threads that follow its job's grant as it runs (task #1550; docs/pool.md
+/// §7.1, Threads controlled live): its file read again every `POLL` (`Live`), so a grow is taken
+/// within the second and a cut as the work holding the turns gives them back, not at the next
+/// target. Its work computes on the target's turns (`turns`: store::waits::Turns, as many as its
+/// grant now, within the Mac's cores), on threads as many as the Mac's cores (`width`) that each take
+/// a turn for their work: no more of them compute at once than it is granted. `f` itself runs on a
+/// pool of one thread (the timings' main thread carried onto it, crate::timings::Main): it orders
+/// the work, and computes on no thread of the grant's but its own; a step whose target computes on
+/// pools without taking turns runs under `on_grant` instead. The parallel work of a thread holding
+/// a turn runs on its own thread (`on_outside_pool`). Without the file (a hand run), `f` as
+/// `on_grant` runs it. The thread count changes no output.
+pub fn on_grant_live<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    use std::sync::atomic::Ordering;
+    let n = match granted() {
+        Some(n) if IN_FORCE.load(Ordering::Relaxed) == 0 => n,
+        _ => return f(),
+    };
+    let Some(pool) = kept_pool(&POOL, 1, None) else { return f() };
+    let most = cores();
+    let grant = std::sync::Arc::new(Live::new(std::env::var_os(THREADS_ENV).map(PathBuf::from), n));
+    let turns = {
+        let g = grant.clone();
+        store::waits::Turns::following(move || g.now().min(most))
+    };
+    // (The fewest this target runs on, from its start: buildstore::costin's `threads_least`.)
+    FEWEST.store(0, Ordering::Relaxed);
+    let t = std::sync::Arc::new(LiveTarget { grant, most, turns });
+    t.now();
+    *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+    IN_FORCE.store(n, Ordering::Relaxed);
+    let _ends = TargetEnds;
+    let main = crate::timings::Main::here();
+    pool.install(move || main.run(f))
+}
+
+/// How many threads the target under way may come to use: a live target's the Mac's cores (its
+/// grant may grow to them, its turns holding them to it: `turns`), another's its grant as it began
+/// (`on_grant`); outside a target, this thread's pool's.
+pub fn width() -> usize {
+    if let Some(t) = live_target() {
+        return t.most;
+    }
+    in_force().unwrap_or_else(rayon::current_num_threads)
+}
+
+/// The turns the target under way's work computes on (store::waits::Turns): a live target's, as
+/// many as its grant now, shared by all its work; else as many as `width`, new ones for the caller's
+/// work alone.
+pub fn turns() -> store::waits::Turns {
+    match live_target() {
+        Some(t) => t.turns.clone(),
+        None => store::waits::Turns::new(width()),
+    }
+}
+
+thread_local! {
+    /// This thread's own pool of one thread (`on_outside_pool`, a live target's work from a thread of
+    /// no pool), made as it's first asked for.
+    static OWN: std::cell::OnceCell<Option<rayon::ThreadPool>> = const { std::cell::OnceCell::new() };
 }
 
 /// The pool a thread of no pool runs its parallel work on while a target is under way
-/// (`on_target_pool`): as wide as the target's grant (`IN_FORCE`), the last one made, kept while the
-/// grant stands. Never the target's own pool (`POOL`).
+/// (`on_target_pool`): as wide as the target's grant (`IN_FORCE`; a live target's the Mac's cores,
+/// `width`), the last one made, kept while that width stands. Never the target's own pool (`POOL`).
 static OUTSIDE: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
 
 /// Parallel work `f` called on a thread of no rayon pool while a target is under way (a thread the
@@ -1163,29 +1318,27 @@ pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 /// base sampling's chunks, crate's caller terrain_base, task #961): run there as the outside
 /// pool's tasks instead, it is on as many threads as the grant, no more (the target's thread waits,
 /// working on nothing), and its parallel work on the pool it is on, which waits on no thread of the
-/// target's.
+/// target's. A live target's (`on_grant_live`): the outside pool is as wide as the Mac's cores, its
+/// work there each holding a turn as it computes (`turns`: its caller's to see to); from a thread
+/// of no pool, `f` on that thread's own pool of one thread, holding a turn (the thread's own, else
+/// one waited for): one thread computing on one turn.
 pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    let Some(n) = in_force() else { return f() };
-    let pool = {
-        let mut g = OUTSIDE.lock().unwrap_or_else(|e| e.into_inner());
-        match g.as_ref().filter(|(w, _)| *w == n) {
-            Some((_, p)) => p.clone(),
-            None => match rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .thread_name(|i| format!("outside work {i}"))
-                .build()
-            {
-                Ok(p) => {
-                    let p = std::sync::Arc::new(p);
-                    *g = Some((n, p.clone()));
-                    p
-                }
-                // (No pool to be had: the global one, as before task #948.)
-                Err(_) => return f(),
-            },
+    let Some(mut n) = in_force() else { return f() };
+    if let Some(t) = live_target() {
+        if rayon::current_thread_index().is_none() {
+            let _turn = t.turns.take();
+            return OWN.with(|p| match p.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(1).build().ok()) {
+                Some(p) => p.install(f),
+                None => f(),
+            });
         }
-    };
-    pool.install(f)
+        n = t.most;
+    }
+    // (No pool to be had: the global one, as before task #948.)
+    match kept_pool(&OUTSIDE, n, Some("outside work")) {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
 }
 
 #[cfg(test)]
@@ -1292,6 +1445,98 @@ mod tests {
         std::env::remove_var(THREADS_ENV);
         assert_eq!(on_grant(rayon::current_num_threads), rayon::current_num_threads());
         assert_eq!(on_grant(in_force), None);
+    }
+
+    /// Task #1550: one live target (`on_grant_live`) follows its job's grant as it runs: as many
+    /// threads as the Mac's cores taking the target's turns, no more of them computing at once than
+    /// its file says, 1 at first, 3 once raised (within the target: no next one), 1 once cut; its
+    /// threads in force follow the file, the fewest kept for its cost line. A thread of no pool
+    /// computes its parallel work on its own thread, on a turn; one of the target's, on the outside
+    /// pool, as wide as the Mac's cores. After it, nothing live. (In a process of its own: the
+    /// file's variable and the target under way are the process's. Its windows from when each change
+    /// was written, plus the `POLL` the file is read within, the `RECHECK` a waiting thread looks
+    /// again within and a margin.)
+    #[test]
+    fn a_live_target_follows_its_grant_as_it_runs_never_past_it() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "control::tests::a_live_target_follows_its_grant_as_it_runs_never_past_it"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        grant(&f, 1).unwrap();
+        std::env::set_var(THREADS_ENV, &f);
+        let most = cores();
+        let up = 3.min(most);
+        let t0 = Instant::now();
+        let ms = || t0.elapsed().as_millis() as usize;
+        let settle = (POLL + store::waits::RECHECK + Duration::from_millis(500)).as_millis() as usize;
+        let (raised, cut) = (AtomicUsize::new(usize::MAX), AtomicUsize::new(usize::MAX));
+        let (now, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+        let seen = std::sync::Mutex::new(Vec::<(usize, usize)>::new());
+        let (began, said, on_own, on_outside, raised_in_force) = on_grant_live(|| {
+            let began = (rayon::current_num_threads(), width(), in_force(), is_live());
+            let turns = turns();
+            let (on_own, on_outside) = (
+                std::thread::scope(|s| {
+                    s.spawn(|| on_target_pool(|| (rayon::current_num_threads(), turns.held()))).join().unwrap()
+                }),
+                on_outside_pool(rayon::current_num_threads),
+            );
+            let mut raised_in_force = None;
+            std::thread::scope(|s| {
+                for _ in 0..most {
+                    s.spawn(|| {
+                        while !stop.load(Ordering::SeqCst) {
+                            let _t = turns.take();
+                            let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                            seen.lock().unwrap().push((ms(), n));
+                            std::thread::sleep(Duration::from_millis(5)); // (sleep ok: a turn's work)
+                            now.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(1200)); // (sleep ok: the test's timeline)
+                raised.store(ms(), Ordering::SeqCst);
+                grant(&f, up).unwrap();
+                std::thread::sleep(Duration::from_millis(settle as u64 + 1500)); // (sleep ok: the test's timeline)
+                raised_in_force = in_force();
+                grant(&f, 1).unwrap();
+                cut.store(ms(), Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(settle as u64 + 1000)); // (sleep ok: the test's timeline)
+                stop.store(true, Ordering::SeqCst);
+            });
+            (began, in_force(), on_own, on_outside, raised_in_force)
+        });
+        assert_eq!(began, (1, most, Some(1), true), "its own thread one, its work's the Mac's cores, on its grant");
+        assert_eq!(on_own, (1, 1), "a thread of no pool: on its own thread, on a turn");
+        assert_eq!(on_outside, most, "the outside pool as wide as the Mac's cores");
+        assert_eq!((raised_in_force, said), (Some(up), Some(1)), "its threads in force follow its file");
+        let (raised, cut) = (raised.into_inner(), cut.into_inner());
+        let seen = seen.into_inner().unwrap();
+        let top = |from: usize, to: usize| seen.iter().filter(|(at, _)| (from..to).contains(at)).map(|s| s.1).max();
+        assert_eq!(top(0, raised), Some(1), "on 1 at first");
+        assert_eq!(top(raised + settle, cut), Some(up), "raised within the target: {up} at once");
+        assert!(top(cut + settle, usize::MAX).is_some_and(|n| n == 1), "cut: 1, {:?}", top(cut + settle, usize::MAX));
+        assert_eq!(top(0, usize::MAX), Some(up), "never past the most it was granted");
+        assert_eq!(fewest_allowed(), Some(1));
+        assert!(!is_live() && in_force().is_none(), "after it: nothing live");
+        std::env::remove_var(THREADS_ENV);
+        assert_eq!(on_grant_live(rayon::current_num_threads), rayon::current_num_threads(), "no file: as it is");
     }
 
     /// A run past the bound on its gaps says so; one within it, nothing.

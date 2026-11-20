@@ -215,8 +215,8 @@ pub fn take() -> BTreeMap<String, u64> {
     }
     let threads = if s.threads > 0 { s.threads } else { threads() };
     m.insert("threads".into(), threads as u64);
-    // (Fewer allowed meanwhile, its agent cutting a paced job's threads under its one target: the
-    // fewest, which its peak may have come on: agentcore's `needs::own_threads`.)
+    // (Fewer allowed meanwhile, its agent cutting a paced job's or a live target's threads under the
+    // target: the fewest, which its peak may have come on: agentcore's `needs::own_threads`.)
     if let Some(f) = jobrt::control::fewest_allowed().filter(|&f| f < threads) {
         m.insert("threads_least".into(), f as u64);
     }
@@ -314,7 +314,8 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     }
 }
 
-/// The threads a step's target runs on: its job's grant as the target began (jobrt::control::on_grant),
+/// The threads a step's target runs on: its job's grant as the target began (jobrt::control::on_grant;
+/// a live target's now, jobrt::control::on_grant_live),
 /// else as the agent set them at the job's start (`RAYON_NUM_THREADS`), else the pool's.
 pub fn threads() -> usize {
     jobrt::control::in_force()

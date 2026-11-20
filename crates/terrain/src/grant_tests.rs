@@ -174,11 +174,82 @@ fn a_terrain_hi_target_on_one_or_two_threads_finishes_the_same() {
     assert!(made[0] == made[1], "the same tiles on 1 and 2 threads");
 }
 
+/// `run` on each of `grants` as a live target's (jobrt::control::on_grant_live, terrain-deep's): its
+/// threads file written as the agent does, its grant at its start, and the grant `run`'s hook
+/// writes (None: none), within `BOUND` all told. What each made, and its threads in force at its
+/// end.
+fn on_live_grants<R: Send>(
+    what: &str,
+    grants: &[(usize, Option<usize>)],
+    run: impl Fn(&(dyn Fn() + Sync)) -> R + Sync,
+) -> Vec<(R, Option<usize>)> {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("threads");
+    std::env::set_var(jobrt::control::THREADS_ENV, &f);
+    let made = within(what, || {
+        grants
+            .iter()
+            .map(|&(n, to)| {
+                jobrt::control::grant(&f, n).unwrap();
+                jobrt::control::on_grant_live(|| {
+                    assert_eq!(jobrt::control::in_force(), Some(n));
+                    let grown = std::sync::atomic::AtomicBool::new(false);
+                    let grow = || {
+                        if let Some(m) = to.filter(|_| !grown.swap(true, std::sync::atomic::Ordering::SeqCst)) {
+                            jobrt::control::grant(&f, m).unwrap();
+                            // (Seen by the work: the file read again, a waiting thread looking again.)
+                            let seen = jobrt::control::POLL + store::waits::RECHECK;
+                            std::thread::sleep(seen + std::time::Duration::from_millis(200));
+                            // (sleep ok: the grow seen)
+                        }
+                    };
+                    (run(&grow), jobrt::control::in_force())
+                })
+            })
+            .collect()
+    });
+    std::env::remove_var(jobrt::control::THREADS_ENV);
+    made
+}
+
+/// `inner`, its levels' sampling begun with `grow` called (a grant written mid-target).
+struct Grows<'a> {
+    inner: &'a dyn crate::terrain_pack::RawSource,
+    grow: &'a (dyn Fn() + Sync),
+}
+
+impl crate::terrain_pack::RawSource for Grows<'_> {
+    fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+        self.inner.get(z, x, y)
+    }
+    fn prefetch_each(
+        &self,
+        z: u8,
+        tiles: &[(u32, u32)],
+        turns: &crate::terrain_pack::Turns,
+        ready: crate::terrain_pack::Ready,
+    ) -> anyhow::Result<usize> {
+        (self.grow)();
+        self.inner.prefetch_each(z, tiles, turns, ready)
+    }
+    fn built(&self, z: u8, tiles: &[(u32, u32)]) {
+        self.inner.built(z, tiles)
+    }
+    fn keep(&self, z: u8, x: u32, y: u32) -> bool {
+        self.inner.keep(z, x, y)
+    }
+    fn from(&self, z: u8, x: u32, y: u32) -> Option<Vec<String>> {
+        self.inner.from(z, x, y)
+    }
+}
+
 /// A terrain-deep target (a z10 tile's band sampled from the pool, crate::terrain_deep) on a grant
-/// of 1 and of 2 threads: done within the bound, the same deep pack and mid.
+/// of 1 and of 2 threads, and live (task #1550: jobrt::control::on_grant_live, as terrain-deep's
+/// jobs run it) on 1, on 3, and begun on 1 and grown to 3 within it (its file raised as its
+/// sampling begins): each done within the bound, the same deep pack and mid.
 #[test]
-fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
-    if !alone("grant_tests::a_terrain_deep_target_on_one_or_two_threads_finishes_the_same") {
+fn a_terrain_deep_target_on_any_grant_or_grown_within_it_finishes_the_same() {
+    if !alone("grant_tests::a_terrain_deep_target_on_any_grant_or_grown_within_it_finishes_the_same") {
         return;
     }
     let d = tempfile::tempdir().unwrap();
@@ -192,8 +263,8 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
     let reaching = |z: u8, x: u32, y: u32| crate::terrain_zoom::reaching(&sets, z, x, y);
     let src = Sources { native: Some(&native), sets: &sets, ..Default::default() };
     let k = std::sync::atomic::AtomicUsize::new(0);
-    let made = with_pool(|pool, raw| {
-        on_grants("a terrain-deep target", &[1, 2], || {
+    let (made, live) = with_pool(|pool, raw| {
+        let once = |grow: &(dyn Fn() + Sync)| {
             let r = d.path().join(k.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
             let mut out = buildstore::out::Out::unbound(
                 &store::nasfs::NasRoot::local_for_test(&r.join("root")),
@@ -207,7 +278,8 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
             let rep = pool
                 .with_tiles(raw, |tiles| {
                     let fills = Fills::new(tiles, tiles, &fill, &reaching);
-                    crate::terrain_deep::build_target(&mut out, t, levels.clone(), &fills, &src, false, &progress)
+                    let grows = Grows { inner: &fills, grow };
+                    crate::terrain_deep::build_target(&mut out, t, levels.clone(), &grows, &src, false, &progress)
                 })
                 .unwrap()
                 .unwrap();
@@ -215,8 +287,16 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
             assert_eq!(said.into_inner().unwrap().last(), Some(&("tiles".to_string(), n, n)));
             out.save().unwrap();
             (rep.tiles, out.manifest.into_iter().collect::<Vec<_>>())
-        })
+        };
+        let made = on_grants("a terrain-deep target", &[1, 2], || once(&|| ()));
+        let live = on_live_grants("a live terrain-deep target", &[(1, None), (3, None), (1, Some(3))], once);
+        (made, live)
     });
     assert!(made[0].0 > 0 && made[0].1.len() == 2, "a deep pack and its mid: {:?}", made[0]);
     assert_eq!(made[0], made[1], "the same deep pack and mid on 1 and 2 threads");
+    let ends: Vec<Option<usize>> = live.iter().map(|l| l.1).collect();
+    assert_eq!(ends, [Some(1), Some(3), Some(3)], "the last grown within its target");
+    for (l, on) in live.iter().zip(["1", "3", "1 grown to 3"]) {
+        assert_eq!(made[0], l.0, "the same deep pack and mid live on {on}");
+    }
 }

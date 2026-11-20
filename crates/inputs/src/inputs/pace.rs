@@ -5,18 +5,16 @@
 //! A check lasts hours, one target: its job's threads are taken as they change, not as a target
 //! begins (jobrt::control::on_grant). The agent keeps a file (jobrt::control::THREADS_ENV, replaced
 //! whole by jobrt::control::grant, so a read never meets it emptied and falls back to every core)
-//! with the threads the job may use at the moment, and the check's pools are as wide as `width`
-//! (the Mac's cores), their tasks each taking a `permit` for as long as they run, and the items of a
-//! `par_each` theirs, lent to the parallel maps inside them while those run: no more tasks run at
-//! once than the file says, whichever threads the pool has. A change is seen within `POLL`.
+//! with the threads the job may use at the moment (read as jobrt::control::Live reads it), and the
+//! check's pools are as wide as `width` (the Mac's cores), their tasks each taking a `permit` for
+//! as long as they run, and the items of a `par_each` theirs, lent to the parallel maps inside them
+//! while those run: no more tasks run at once than the file says, whichever threads the pool has. A
+//! change is seen within jobrt::control::POLL.
 
+use jobrt::control::{Live, POLL};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
-
-/// How often the file is read again, and how long a task waits for a permit before looking again.
-pub const POLL: Duration = Duration::from_secs(1);
 
 thread_local! {
     /// The permit this thread holds: none (`FREE`), a task's (`TASK`: a parallel operation inside
@@ -29,18 +27,13 @@ const FREE: u8 = 0;
 const TASK: u8 = 1;
 const ITEM: u8 = 2;
 
-struct State {
-    active: usize,
-    allowed: usize,
-    read_at: Option<Instant>,
-}
-
 /// The threads allowed, and the tasks running under them.
 pub struct Pace {
-    file: Option<PathBuf>,
-    /// The threads allowed when there is no file (or it can't be read): a hand run's, all the cores.
-    fallback: usize,
-    state: Mutex<State>,
+    /// The threads allowed: the file's, else (no file, or it can't be read) a hand run's, all the
+    /// cores.
+    allowed: Live,
+    /// The tasks running under permits.
+    active: Mutex<usize>,
     freed: Condvar,
 }
 
@@ -53,38 +46,12 @@ pub struct Permit<'a> {
 
 impl Pace {
     pub fn new(file: Option<PathBuf>, fallback: usize) -> Pace {
-        let fallback = fallback.max(1);
-        Pace {
-            file,
-            fallback,
-            state: Mutex::new(State { active: 0, allowed: fallback, read_at: None }),
-            freed: Condvar::new(),
-        }
-    }
-
-    fn refresh(&self, s: &mut State) {
-        if s.read_at.is_some_and(|t| t.elapsed() < POLL) {
-            return;
-        }
-        s.read_at = Some(Instant::now());
-        s.allowed = self
-            .file
-            .as_ref()
-            .and_then(|f| std::fs::read_to_string(f).ok())
-            .and_then(|t| t.trim().parse::<usize>().ok())
-            .unwrap_or(self.fallback)
-            .max(1);
-        // (Its cost line says the fewest its target ran on: buildstore::costin's `threads_least`.)
-        if self.file.is_some() {
-            jobrt::control::allowed(s.allowed);
-        }
+        Pace { allowed: Live::new(file, fallback), active: Mutex::new(0), freed: Condvar::new() }
     }
 
     /// The threads allowed now.
     pub fn allowed(&self) -> usize {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.refresh(&mut s);
-        s.allowed
+        self.allowed.now()
     }
 
     /// Waits until fewer tasks run than are allowed, then counts this one. Only a thread holding
@@ -99,19 +66,15 @@ impl Pace {
     }
 
     fn wait_and_count(&self) {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            self.refresh(&mut s);
-            if s.active < s.allowed {
-                break;
-            }
-            s = self.freed.wait_timeout(s, POLL).unwrap_or_else(|e| e.into_inner()).0;
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        while *active >= self.allowed.now() {
+            active = self.freed.wait_timeout(active, POLL).unwrap_or_else(|e| e.into_inner()).0;
         }
-        s.active += 1;
+        *active += 1;
     }
 
     fn uncount(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
+        *self.active.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
         self.freed.notify_one();
     }
 
@@ -133,7 +96,7 @@ impl Pace {
 
     /// The tasks running under permits now.
     pub fn active(&self) -> usize {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).active
+        *self.active.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -242,6 +205,7 @@ pub fn permit_unless_held() -> Option<Permit<'static>> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     fn file(n: &str) -> (tempfile::TempDir, PathBuf) {
         let d = tempfile::tempdir().unwrap();

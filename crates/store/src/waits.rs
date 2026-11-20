@@ -467,21 +467,35 @@ pub fn take(all: bool) -> (Vec<Interval>, Vec<(u64, &'static str, String)>) {
 /// cores the first's waits leave idle, and the two together on no more threads than there are
 /// turns (a job's grant: docs/pool.md §7.1, Threads granted), but for a thread back from a wait
 /// while its turn was taken, until that piece of work ends: a turn is taken back without waiting,
-/// so nothing holding a turn ever waits on a thread waiting for one.
+/// so nothing holding a turn ever waits on a thread waiting for one. A turn the first stage asks
+/// for is given before the second's (`computing` before `take`). How many turns there are may
+/// follow the job's grant as it changes (`following`: jobrt::control's live targets, docs/pool.md
+/// §7.1, Threads controlled live): a raise is seen within `RECHECK`, a cut as the turns held are
+/// given back.
 #[derive(Clone)]
 pub struct Turns(Arc<TurnsState>);
 
+/// How long a thread waiting for a turn waits before it reads how many there are again.
+pub const RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How many turns there are and how many are held (`Turns`).
 pub struct TurnsState {
-    n: usize,
-    held: Mutex<isize>,
+    n: Box<dyn Fn() -> usize + Send + Sync>,
+    held: Mutex<Held>,
     cv: std::sync::Condvar,
+}
+
+/// The turns held, and the first stage's threads waiting for one (`Turns::computing`).
+#[derive(Default)]
+struct Held {
+    held: isize,
+    first: usize,
 }
 
 impl TurnsState {
     /// The turns held changed by `d` (a turn given back wakes a taker).
     fn change(&self, d: isize) {
-        *self.held.lock().unwrap_or_else(|e| e.into_inner()) += d;
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).held += d;
         if d < 0 {
             self.cv.notify_all();
         }
@@ -532,37 +546,56 @@ impl Drop for Turn {
 impl Turns {
     /// `n` turns (at least one).
     pub fn new(n: usize) -> Turns {
-        Turns(Arc::new(TurnsState { n: n.max(1), held: Mutex::new(0), cv: Default::default() }))
+        Turns::following(move || n)
+    }
+
+    /// As many turns as `n` says each time a thread asks for one (at least one): a job's grant
+    /// now (jobrt::control's live target), so a turn asked for after a raise is given, one asked
+    /// for after a cut waits until fewer are held. `n` is called under the turns' lock: cheap.
+    pub fn following(n: impl Fn() -> usize + Send + Sync + 'static) -> Turns {
+        Turns(Arc::new(TurnsState { n: Box::new(n), held: Default::default(), cv: Default::default() }))
     }
 
     /// How many turns are held now (those lent to waits not counted).
     pub fn held(&self) -> isize {
-        *self.0.held.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.held.lock().unwrap_or_else(|e| e.into_inner()).held
     }
 
-    /// `f` run holding a turn, taken without waiting (a stage reading as it computes: its threads
-    /// are the turns'), lent while it waits (`Guard`). On a thread holding one already, `f` alone.
+    /// `f` run holding a turn (a stage reading as it computes), lent while it waits (`Guard`):
+    /// waited for while every one is held, given before any `take` waiting. On a thread holding
+    /// one already, `f` alone.
     pub fn computing<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _t = self.hold(false);
+        let _t = self.hold(true);
         f()
     }
 
-    /// A turn, waited for while every one is held (a stage that only computes); given back as it's
-    /// dropped. On a thread holding one already, nothing more.
+    /// A turn, waited for while every one is held or a `computing` thread waits for one (a stage
+    /// that only computes); given back as it's dropped. On a thread holding one already, nothing
+    /// more.
     pub fn take(&self) -> Turn {
-        self.hold(true)
+        self.hold(false)
     }
 
-    fn hold(&self, wait: bool) -> Turn {
+    fn hold(&self, first: bool) -> Turn {
         if HELD.with(|h| h.borrow().is_some()) {
             return Turn { turns: None, _thread: std::marker::PhantomData };
         }
         {
             let mut g = self.0.held.lock().unwrap_or_else(|e| e.into_inner());
-            while wait && *g >= self.0.n as isize {
-                g = self.0.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            if first {
+                g.first += 1;
             }
-            *g += 1;
+            while g.held >= (self.0.n)().max(1) as isize || (!first && g.first > 0) {
+                g = self.0.cv.wait_timeout(g, RECHECK).unwrap_or_else(|e| e.into_inner()).0;
+            }
+            if first {
+                g.first -= 1;
+                if g.first == 0 {
+                    // (The takers held back for it go on.)
+                    self.0.cv.notify_all();
+                }
+            }
+            g.held += 1;
         }
         HELD.with(|h| *h.borrow_mut() = Some((self.0.clone(), 0)));
         Turn { turns: Some(self.0.clone()), _thread: std::marker::PhantomData }
@@ -806,5 +839,61 @@ mod tests {
         // A thread holding none lends none.
         drop(other());
         assert_eq!(turns.held(), 0);
+    }
+
+    /// Task #1550: turns following a count (a live target's grant) give a waiting taker one once
+    /// the count is raised, and none past a count cut until enough are given back; a turn asked for
+    /// computing is given before a waiting taker's.
+    #[test]
+    fn turns_follow_their_count_and_the_computing_go_first() {
+        use crate::testkit::{eventually, Signal};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = Arc::new(AtomicUsize::new(1));
+        let turns = {
+            let n = n.clone();
+            Turns::following(move || n.load(Ordering::SeqCst))
+        };
+        let (took, go_end, third) = (Signal::new(), Signal::new(), Signal::new());
+        std::thread::scope(|s| {
+            let first = turns.take();
+            s.spawn(|| {
+                let _t = turns.take();
+                took.set();
+                go_end.wait("B told to end");
+            });
+            std::thread::sleep(Duration::from_millis(50)); // (sleep ok: B's wait shown to last)
+            assert!(!took.is_set(), "one turn, held: B waits");
+            n.store(2, Ordering::SeqCst);
+            took.wait("B on the turn the raise gave");
+            assert_eq!(turns.held(), 2);
+            // Cut to 1 with both held: a third waits even once one of them is given back.
+            n.store(1, Ordering::SeqCst);
+            drop(first);
+            s.spawn(|| {
+                let _t = turns.take();
+                third.set();
+            });
+            std::thread::sleep(Duration::from_millis(50)); // (sleep ok: the third's wait shown to last)
+            assert!(!third.is_set(), "cut to 1, 1 held: the third waits");
+            go_end.set();
+            third.wait("the third, once B gave its turn back");
+        });
+        assert_eq!(turns.held(), 0);
+        // One turn held; a taker waiting, then a computing thread: the turn given back goes to the
+        // computing one first.
+        let order = Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            let held = turns.take();
+            s.spawn(|| {
+                let _t = turns.take();
+                order.lock().unwrap().push("take");
+            });
+            std::thread::sleep(Duration::from_millis(50)); // (sleep ok: the taker waiting first)
+            let computing = s.spawn(|| turns.computing(|| order.lock().unwrap().push("computing")));
+            eventually("the computing thread waiting", || turns.0.held.lock().unwrap().first == 1);
+            drop(held);
+            computing.join().unwrap();
+        });
+        assert_eq!(*order.lock().unwrap(), ["computing", "take"]);
     }
 }

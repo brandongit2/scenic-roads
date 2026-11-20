@@ -381,12 +381,14 @@ pub fn current(costs: &Path) -> Option<String> {
 /// step's own per-target completion, the one notion of a target done for the batch's percent, its
 /// time left and the flags' count); and the threads the last to begin runs on, where its `started`
 /// line says (a target run on its job's threads as it began, jobrt::control::on_grant: docs/pool.md
-/// §7.1, Threads controlled live).
+/// §7.1, Threads controlled live), and whether it says it is live (jobrt::control::on_grant_live:
+/// on its threads file's threads as they change, `threads` those it began on).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
     pub ended: usize,
     pub threads: Option<u32>,
+    pub live: bool,
 }
 
 /// Costs file `costs`'s `Targets` (none when it can't be read). A target's `peak_mb` line ends it
@@ -405,7 +407,10 @@ pub fn targets(costs: &Path) -> Targets {
             t.on = Some((key.to_string(), at.as_u64().unwrap_or(0)));
             begun.push(key.to_string());
             // (A drop's line, run outside its grant, says none: the last said stands.)
-            t.threads = v["threads"].as_u64().map(|n| n as u32).or(t.threads);
+            if let Some(n) = v["threads"].as_u64() {
+                t.threads = Some(n as u32);
+                t.live = v["live"].as_bool().unwrap_or(false);
+            }
         } else if v.get("peak_mb").is_some() {
             if let Some(i) = begun.iter().position(|b| b == key) {
                 begun.swap_remove(i);
@@ -2293,18 +2298,34 @@ mod tests {
         assert_eq!(current(&p), None);
         std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"terrain 6/1/2\",\"started\":4}\nnot json\n").unwrap();
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/2"));
-        assert_eq!(targets(&p), Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1, threads: None });
+        assert_eq!(
+            targets(&p),
+            Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1, threads: None, live: false }
+        );
         // (Task #948: the threads the last target to begin runs on, as its line says; a drop's line,
         // run outside its job's grant, says none and leaves them.)
         std::fs::write(&p, "{\"unit\":\"slope-deep 10/1/1\",\"started\":1,\"threads\":6}\n{\"unit\":\"slope-deep 10/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/2\",\"started\":4,\"threads\":2}\n{\"unit\":\"slope-deep 10/1/2\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/3\",\"started\":5}\n").unwrap();
         assert_eq!(targets(&p).threads, Some(2));
+        assert!(!targets(&p).live);
+        // (Task #1550: a live target's line says so; the next target's line, not live, says not.)
+        std::fs::write(&p, "{\"unit\":\"terrain-deep 10/1/1\",\"started\":1,\"threads\":2,\"live\":true}\n{\"unit\":\"terrain-deep 10/1/2\",\"started\":5}\n").unwrap();
+        assert_eq!((targets(&p).threads, targets(&p).live), (Some(2), true));
+        std::fs::write(&p, "{\"unit\":\"terrain-deep 10/1/1\",\"started\":1,\"threads\":2,\"live\":true}\n{\"unit\":\"slope-deep 10/1/2\",\"started\":5,\"threads\":3}\n").unwrap();
+        assert_eq!((targets(&p).threads, targets(&p).live), (Some(3), false));
         // (A step that lands a target's uploads beside the next target's work writes its end line
         // after the next's start: each still ended, the next under way; the packing at the end
         // after the last: all ended, none under way.)
         std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/3\",\"started\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n").unwrap();
-        assert_eq!(targets(&p), Targets { on: Some(("terrain-hi 6/1/3".into(), 9)), ended: 2, threads: None });
+        assert_eq!(
+            targets(&p),
+            Targets { on: Some(("terrain-hi 6/1/3".into(), 9)), ended: 2, threads: None, live: false }
+        );
         std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"never begun\",\"peak_mb\":9}\n").unwrap();
-        assert_eq!(targets(&p), Targets { on: None, ended: 2, threads: None }, "each ends once, only after its start");
+        assert_eq!(
+            targets(&p),
+            Targets { on: None, ended: 2, threads: None, live: false },
+            "each ends once, only after its start"
+        );
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");
