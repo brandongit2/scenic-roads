@@ -1,7 +1,8 @@
 #!/bin/zsh
 # tools/dev/git-guard.py (#980) on a toy repo with worktrees: a git write goes only to the
 # session's own checkouts (an agent's worktree; the PM's main checkout, the checkout it started in
-# and the worktrees it made); reads and other repos pass. And shell-guard.sh runs it. Run by check.sh.
+# and the worktrees it made); reads and other repos pass. And shell-guard.sh runs it, after its own
+# rules (tools/dev/shell-guard.py: `ln -s` without -n, deletes of the shared scratchpad). Run by check.sh.
 set -u
 here=${0:A:h}
 fail=0
@@ -13,7 +14,7 @@ g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/nu
 r=$tmp/r W=$tmp/r/.claude/worktrees
 mkdir -p $r/tools/dev; cd $r
 g init -q -b main .
-cp $here/../git-guard.py $here/../shellwords.py $here/../shell-guard.sh $r/tools/dev/
+cp $here/../git-guard.py $here/../shellwords.py $here/../shell-guard.sh $here/../shell-guard.py $r/tools/dev/
 print x > README.md; g add -A; g commit -m b0
 for a in aaa bbb fff ddd abc bcd cde; do g worktree add -q $W/agent-$a -b br-$a; done
 mkdir -p $tmp/other; git -C $tmp/other init -q
@@ -206,5 +207,67 @@ for want cmd in \
   else
     print "FAIL ($want): $cmd: $rc $out"; fail=1
   fi
+done
+# The scratchpad rule (#1521): a delete of the session's shared scratchpad, a folder above it or a
+# glob directly in it is refused, its path given literally, by a variable (set on the line, exported
+# or in the environment), relative to a `cd` or to the session's cwd; a delete inside an agent's own
+# folder of it passes. Nothing is deleted: the guard reads the command only.
+S=/private/tmp/claude-$(id -u)/-Users-x-p/0f3c5b2e-1d30-4140-be0f-8a8503e93e7e/scratchpad
+mine=$S/agent-aaa sp="No delete of the session's shared scratchpad"
+for want cmd in \
+  $sp "rm -rf $S/*" \
+  $sp "rm -rf $S" \
+  $sp "rm -rf $S/" \
+  $sp "rm -r -- $S/.*" \
+  $sp "rm -rf $S/{*,.*}" \
+  $sp "rm -f $S/t14*" \
+  $sp "rm -rf ${S#/private}/*" \
+  $sp "rm -rf ${S:h}" \
+  $sp "rm -rf /private/tmp/claude-$(id -u)/*/*/scratchpad/*" \
+  $sp "rm -rf $mine/.." \
+  $sp "/bin/rm -rf \"$S\"/*" \
+  $sp "sudo rm -rf $S/*" \
+  $sp "trash $S" \
+  $sp "find $S -mindepth 1 -delete" \
+  $sp "find $S -type f -exec rm -f {} +" \
+  $sp "find -L $S/* -delete" \
+  $sp "find $S -mindepth 1 -print0 | xargs -0 rm -rf" \
+  $sp "S=$S; rm -rf \$S/*" \
+  $sp "S=$S && rm -rf \"\${S}\"/*" \
+  $sp "export S=$S; rm -rf \${S:?}/*" \
+  $sp "S=$S; find \$S -delete" \
+  $sp "cd $S && rm -rf *" \
+  $sp "cd $S; rm -rf ./* .[!.]*" \
+  $sp "sh -c 'rm -rf $S/*'" \
+  $sp "x=\$(rm -rf $S/*)" \
+  $sp "SCRATCH_ENV/*" \
+  ok "rm -rf $mine" \
+  ok "rm -rf $mine/*" \
+  ok "rm -f $mine/run.log" \
+  ok "S=$S; rm -rf \$S/agent-aaa" \
+  ok "S=$S; rm -rf \"\$S/agent-aaa\"/*" \
+  ok "cd $mine && rm -rf *" \
+  ok "cd $S && rm -rf agent-aaa" \
+  ok "find $mine -delete" \
+  ok "find $S -name '*.log'" \
+  ok "ls $S/*" \
+  ok "echo rm -rf $S/*" \
+  ok "rm -rf \$(mktemp -d)" \
+  ok "rm -rf /tmp/scenic-x*"; do
+  [[ $cmd == SCRATCH_ENV/* ]] && cmd='rm -rf $SCRATCH/*'
+  in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
+  out=$(print -r -- $in | SCRATCH=$S zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
+  if [[ $want == ok && $rc == 0 ]] || [[ $want != ok && $rc == 2 && $out == *"$want"* ]]; then
+    print "ok ($want): $cmd"
+  else
+    print "FAIL ($want): $cmd: $rc $out"; fail=1
+  fi
+done
+# Relative to the session's cwd: an agent whose cwd is the scratchpad.
+for want cmd in $sp "rm -rf *" $sp "rm -rf ." ok "rm -rf agent-aaa/*"; do
+  in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $S)
+  out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
+  if [[ $want == ok && $rc == 0 ]] || [[ $want != ok && $rc == 2 && $out == *"$want"* ]]; then print "ok ($want, in the scratchpad): $cmd"
+  else print "FAIL ($want, in the scratchpad): $cmd: $rc $out"; fail=1; fi
 done
 exit $fail

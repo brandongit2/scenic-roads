@@ -33,6 +33,22 @@ rely on the agent.
 - **Memory:** nothing caps an agent's own run (the pool's memory guard covers only pool jobs), and
   runs on real data have crashed Macs. Watch the footprint of a long run on real data.
 
+## Scratch
+
+- **The session's scratchpad is shared:** every subagent of a PM session gets the same scratchpad
+  folder (the system prompt's "Scratchpad directory",
+  `/private/tmp/claude-<uid>/<project>/<session>/scratchpad`). Keep your files in a folder of your
+  own inside it:
+  - with a worktree, the folder named after it: `<scratchpad>/<worktree folder name>`, for example
+    `<scratchpad>/agent-a7d798ebd89a5ed3a` (`basename "$(git rev-parse --show-toplevel)"` in your
+    worktree);
+  - without one, a folder you make with `mktemp -d <scratchpad>/t<task>-XXXXXX`, using the name it
+    printed from then on.
+- **Clean up only your own folder:** `rm -rf <scratchpad>/<your folder>`, and say in your report
+  where your files were. *Enforced*: `tools/dev/shell-guard.py` refuses `rm` or `trash` of the
+  scratchpad, of a folder above it or of a glob directly in it (`<scratchpad>/*`), and a `find`
+  from any of those that deletes (`-delete`, `-exec rm`, piped to `xargs rm`).
+
 ## Processes
 
 - **Never signal the pool's processes** (`scenic agent` and its jobs, `scenic-build`, `scenic gc`,
@@ -105,7 +121,8 @@ rely on the agent.
 ## The board
 
 - Post progress to your task's board item: `POST http://mac-mini-de-brandon:8077/api/c/events`
-  with `{item, kind, text}`. Leave the item's status to the PM unless your brief says otherwise.
+  with `{item, kind, text}`, `item` the task's id as a string, `i<number>` (`"i1521"` for #1521).
+  Leave the item's status to the PM unless your brief says otherwise.
 
 ## Your report
 

@@ -732,6 +732,20 @@ Not changed here (the owner's): Gatekeeper and the Macs' security settings. List
 Claude under Developer Tools (Privacy & Security), the setting meant to exempt what they start from
 these checks, is proposed to the owner (#1131).
 
+## The shared scratchpad (#1521)
+
+Claude Code gives every subagent of a session the session's one scratchpad folder,
+`/private/tmp/claude-<uid>/<project>/<session>/scratchpad`. Each agent keeps its files in a folder
+of its own there and deletes only that (tools/dev/agent-rules.md, "Scratch"). `tools/dev/shell-guard.py`,
+run by the same hook, refuses a delete that would take the other agents' files too: `rm` or `trash`
+of the scratchpad (under `/tmp` or `/private/tmp`), of a folder above it, or of a glob directly in it;
+a `find` starting at any of those with `-delete`, `-exec`/`-execdir`/`-ok rm`, or on a line that
+pipes into `xargs rm`. Paths are read as the shell would read them: variables set or exported
+earlier on the line or in the environment, `~`, an earlier `cd`/`pushd`, else the cwd; a path from
+a substitution can't be told and passes. Commands in quotes, comments and heredocs are none; the
+scripts of substitutions, `sh -c` and `eval` are read. What a script run by the command deletes
+(a Python `shutil.rmtree`, a zsh script) isn't seen. Tested in `tools/dev/test/git-guard.zsh`.
+
 ## Setting up a Mac (tools/dev is tracked, #548)
 
 Every script finds the repo from its own location (the main checkout from the shared `.git`, the
