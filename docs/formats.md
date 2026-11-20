@@ -942,7 +942,9 @@ supply: {secs, p, e, free_p, free_e, kept, build, mem_gb, mem_least_gb, floor_gb
   6/32/24", task #849). `job`: its run's job id (below, Job ids: `SCENIC_JOB`, else stamped by its
   agent and by the lead as they keep it; absent before task #1103 and for a job of no lease).
   `host`: the Mac. `start`: unix seconds.
-- `v`: 3 since task #1450 (`nas.read_b` what the NAS served, every read told by its time, below);
+- `v`: 4 since task #1464 (a pack or lo job's `nas.read_b` and `nas.files` its base packs' part
+  reads too, codecs::basepart); 3 since task #1450 (`nas.read_b` what the NAS served, every read
+  told by its time, below);
   2 since task #1116 (a phase's `cpu_s` its own work's; its `nas.read_b`, from task #1419, every byte
   read through the share but a whole copy's cached part); 1 before (a phase's `cpu_s` the process's
   while it was open, so an `overlapped` phase's counts other threads' work too). The build page's
@@ -1024,9 +1026,8 @@ read as absent):
   the links could carry, under by at most a read a run where a Wi-Fi's stated rate falls short.
 
   Not counted at all (no store::nasio count; tests/nas_access.rs lists them): readers that open a
-  NAS path in-process themselves, codecs::basepart's base-pack ranges (task #1464), lakefill's
-  basemap, outlines and zips, railfeeds' catalogue, checked list and keys, pageviews' month
-  indexes, the names tables' translation files, GDAL and the shapefile reader in
+  NAS path in-process themselves, lakefill's basemap, outlines and zips, railfeeds' catalogue,
+  checked list and keys, pageviews' month indexes, the names tables' translation files, GDAL and the shapefile reader in
   inputs::regions::data, lake_folder's GLOBathy and HydroLAKES zips, the GTFS counters' zips; and
   the programs given a NAS path to read where it lies: osmium (the OSM pass, ferries, heritage,
   the areas and heritage sites over the cover), the extract and convert programs (pois, the OSM

@@ -16,8 +16,11 @@
 //! the bytes not read are zeros and take no room. Neighbouring ranges are read as one (`GAP`), in
 //! reads of `READ` bytes at most, `READERS` at once (each taking its turn of the process's NAS
 //! limit, store::aimd), each a store::deadline call given up after `store::deadline::LONG` without
-//! a byte (`watched`: a stuck SMB read fails the job rather than holding it for good). Sections read
-//! whole are checked against their XXH3; ranges can't be (a file's sections are checksummed whole).
+//! a byte (`watched`: a stuck SMB read fails the job rather than holding it for good). Each file's
+//! open and reads are counted as every NAS read is (store::nasio: `opened`, and each read the NAS's
+//! or this Mac's cache's by its own time, nasio::Reads), so the job's record and its lease's beats
+//! see them (task #1464). Sections read whole are checked against their XXH3; ranges can't be (a
+//! file's sections are checksummed whole).
 
 use crate::basepack::{BasePack, Sect, Span};
 use crate::hipack::{meets, Bounds};
@@ -142,14 +145,29 @@ pub fn watched<T: Send + 'static>(
     store::deadline::watched(&what, &"read", deadline, Vec::new(), move |p| Ok(f(p)))?
 }
 
-/// A source file being copied in part to a sparse local one of its size.
+/// A source file being copied in part to a sparse local one of its size; its reads counted
+/// (`reads`, `read_at`).
 struct Copy {
     src: Arc<File>,
     dst: Arc<File>,
+    reads: Arc<store::nasio::Reads>,
     name: String,
     len: u64,
     ranges: Vec<(u64, u64)>,
     read: Read,
+}
+
+/// Bytes `buf.len()` of NAS file `src` at `at`, read under a turn of the process's NAS limit
+/// (store::aimd::nas_read) and counted (`reads`: the NAS's or this Mac's cache's by the read's own
+/// time, not its wait for a turn).
+fn read_at(src: &File, reads: &store::nasio::Reads, buf: &mut [u8], at: u64) -> std::io::Result<()> {
+    let n = buf.len() as u64;
+    store::aimd::nas_read(n, || {
+        let t = std::time::Instant::now();
+        src.read_exact_at(buf, at)?;
+        reads.read(at, n, t.elapsed());
+        Ok(())
+    })
 }
 
 impl Copy {
@@ -157,8 +175,10 @@ impl Copy {
         let name = src.display().to_string();
         let s = src.to_owned();
         let (src, len) = watched(LONG, &format!("open {name}"), move |_| {
+            let t = std::time::Instant::now();
             let f = File::open(&s).with_context(|| format!("open {}", s.display()))?;
             let len = f.metadata()?.len();
+            store::nasio::opened(&s, len, t.elapsed().as_millis() as u64);
             Ok((f, len))
         })?;
         let dst = File::options()
@@ -169,17 +189,25 @@ impl Copy {
             .open(dst)
             .with_context(|| format!("create {}", dst.display()))?;
         dst.set_len(len)?;
-        Ok(Copy { src: Arc::new(src), dst: Arc::new(dst), name, len, ranges: Vec::new(), read: Read::default() })
+        Ok(Copy {
+            src: Arc::new(src),
+            dst: Arc::new(dst),
+            reads: Arc::default(),
+            name,
+            len,
+            ranges: Vec::new(),
+            read: Read::default(),
+        })
     }
 
     /// Bytes `[off, off + len)` of the source, read now (not copied).
     fn get(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
         ensure!(off + len as u64 <= self.len, "a read past the end of the file");
-        let src = self.src.clone();
+        let (src, reads) = (self.src.clone(), self.reads.clone());
         let b = watched(LONG, &format!("read {}", self.name), move |p| {
             let mut b = vec![0u8; len];
             for (k, c) in b.chunks_mut(READ).enumerate() {
-                store::aimd::nas_read(c.len() as u64, || src.read_exact_at(c, off + (k * READ) as u64))?;
+                read_at(&src, &reads, c, off + (k * READ) as u64)?;
                 p.add(c.len() as u64);
             }
             Ok(b)
@@ -224,7 +252,7 @@ impl Copy {
             .iter()
             .flat_map(|&(a, b)| (a..b).step_by(READ).map(move |at| (at, ((b - at) as usize).min(READ))))
             .collect();
-        let (src, dst) = (self.src.clone(), self.dst.clone());
+        let (src, dst, reads) = (self.src.clone(), self.dst.clone(), self.reads.clone());
         let r = watched(LONG, &format!("read {}", self.name), move |p| {
             let next = std::sync::atomic::AtomicUsize::new(0);
             let done: Vec<Result<Read>> = std::thread::scope(|s| {
@@ -236,7 +264,7 @@ impl Copy {
                             loop {
                                 let k = next.fetch_add(1, Ordering::Relaxed);
                                 let Some(&(at, n)) = pieces.get(k) else { return Ok(r) };
-                                store::aimd::nas_read(n as u64, || src.read_exact_at(&mut buf[..n], at))?;
+                                read_at(&src, &reads, &mut buf[..n], at)?;
                                 dst.write_all_at(&buf[..n], at)?;
                                 p.add(n as u64);
                                 r += Read { bytes: n as u64, reads: 1 };

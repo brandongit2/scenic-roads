@@ -183,6 +183,24 @@ fn a_part_read_makes_the_same_bytes() {
     assert_eq!(made(&all, t), want);
 }
 
+/// Task #1464: what a part read takes of the two files is counted as every NAS read is
+/// (store::nasio), so a pack or lo job's record and its lease's beats see it: each file opened, and
+/// each byte read the NAS's or this Mac's cache's (here a local file's, quick: the cache's, `held`).
+#[test]
+fn a_part_reads_bytes_are_counted_as_nas_reads() {
+    use store::nasio::{get, own_held, Count};
+    let d = tempfile::tempdir().unwrap();
+    let (base, roads) = make(d.path(), 4 * CHUNK + 5);
+    let boxes = index_path(&d.path().join("cache"), "b.idx");
+    let s = d.path().join("s");
+    std::fs::create_dir_all(&s).unwrap();
+    let (files, nas, held) = (get(Count::Files), get(Count::ReadBytes), own_held());
+    let (_, read) = open(&base, &roads, &boxes, refs(&to(&s)), Some(&[tile_bounds(6, 10, 20)])).unwrap();
+    assert!(read.bytes > 0);
+    assert_eq!(get(Count::Files) - files, 2, "the base pack and its road values opened");
+    assert_eq!(get(Count::ReadBytes) - nas + own_held() - held, read.bytes, "every byte read counted");
+}
+
 /// Way boxes kept for another chunking, or cut short, are worked out again.
 #[test]
 fn bad_boxes_are_worked_out_again() {

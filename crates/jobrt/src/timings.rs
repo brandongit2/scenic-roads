@@ -80,10 +80,11 @@ pub const JOB_NAME_ENV: &str = "SCENIC_JOB_NAME";
 pub const JOB_ENV: &str = "SCENIC_JOB";
 /// Where a child program writes its phases, for the phase that ran it.
 pub const PHASES_TO_ENV: &str = "SCENIC_PHASES_TO";
-/// The record's version: 3 since task #1450 (`nas.read_b` the bytes the NAS served, each read told
-/// by its time, store::nasio::Reads; 2: every byte read through the share but a whole copy's
-/// cached part); 2 since task #1116 (a phase's CPU its own; 1: the process's while it was open).
-pub const VERSION: u32 = 3;
+/// The record's version: 4 since task #1464 (a pack or lo job's `nas.read_b` and files its base
+/// packs' part reads too, codecs::basepart); 3 since task #1450 (`nas.read_b` the bytes the NAS
+/// served, each read told by its time, store::nasio::Reads; 2: every byte read through the share
+/// but a whole copy's cached part); 2 since task #1116 (a phase's CPU its own; 1: the process's while it was open).
+pub const VERSION: u32 = 4;
 
 /// A phase's wall time by what the job waited on while it was open, measured (store::waits): by
 /// the job's wall clock, so the waits never sum past the phase's wall time; the rest is computing.
