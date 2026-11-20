@@ -3582,7 +3582,8 @@ impl Coordinator {
             waits.and_then(|w| s.history.set_waits(w))
         };
         // (The waits kept beside the history's file when due, off the lock (the caller's thread,
-        // the planner's: compacted, serialized and written whole, hundreds of ms), then told back.)
+        // the planner's: compacted, serialized and written whole, far longer than the lock may be
+        // held), then told back.)
         if let Some(k) = keep {
             let ok = k.write();
             self.shared.lock().unwrap().history.waits_kept(ok.then_some(k.at));
