@@ -152,6 +152,7 @@ fn nearest_splits_among_three_touching_lands_cover_once() {
 
 #[test]
 fn a_shared_edge_through_a_point_more_leaves_no_strip() {
+    use det::Det;
     // Task #1452: the segment Finland's zone shares with Estonia's (EEZ v12), Estonia's one edge,
     // Åland's and mainland Finland's two (the nearest-coast split's point on it, 0.1 cm off the line
     // in E7): what's in neither is 24 m² as drawn, and measured so (not 0.17 km², the 3 m strip).
@@ -173,7 +174,7 @@ fn a_shared_edge_through_a_point_more_leaves_no_strip() {
     ]]);
     let r = roadcore::geo::EARTH_R;
     let k = std::f64::consts::PI / 180.0;
-    let exact = r * r * (2.0 * (59.0 * k).cos() - (60.0 * k).cos() - (58.0 * k).cos()) / 1e6;
+    let exact = r * r * (2.0 * (59.0 * k).dcos() - (60.0 * k).dcos() - (58.0 * k).dcos()) / 1e6;
     assert!((geom::area_km2(&band) - exact).abs() < 1e-6 * exact, "{} of {exact}", geom::area_km2(&band));
 }
 
