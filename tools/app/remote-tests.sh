@@ -378,17 +378,12 @@ wait_alone() {  # <base> <slots> <bound s> <cores> <publish_threads set, or empt
 # process <pid> (publish's run) runs, a file in its agent's folder (agentcore's agent::share::hold),
 # which the agent reads each loop and keeps as it keeps the owner's in-use share: its jobs' threads
 # lowered to the cores left, live, and the lead counting those cores out. Written whole (a rename);
-# none without an agent's folder. Freed as the run ends, by a signal too (free_mine, unhold_tests);
-# a run killed outright leaves a hold whose process is gone, which holds nothing (the agent checks
-# the process, started by the time the hold was written, each look).
+# none without an agent's folder. Freed as the run ends, by a signal too (free_mine, with its
+# slots); a run killed outright leaves a hold whose process is gone, which holds nothing (the agent
+# checks the process, started by the time the hold was written, each look).
 hold_tests() {  # <agent's folder> <pid> <cores>: 0 written
   [[ -d $1 ]] || return 1
   print -r -- "{\"cores\":$3,\"pid\":$2,\"at\":$(date +%s)}" > $1/test-hold.json.$$ && mv -f $1/test-hold.json.$$ $1/test-hold.json
-}
-unhold_tests() {  # <pid>: the hold freed while it is <pid>'s
-  local f=$agent_home/test-hold.json
-  [[ $(plutil -extract pid raw -o - $f 2>/dev/null) == $1 ]] && rm -f $f
-  return 0
 }
 
 # A slot (remote_main's, and a run on the test Mac itself): publish's run slot 0, any other the
@@ -455,12 +450,16 @@ free_stale_slot() {  # <base> <slot>: frees the slot if its run is gone (0), els
 }
 
 free_mine() {  # <base> <owner> <its slot's folder>: the slots <owner> holds freed, the check slots publish's run took first, its tests' hold too
-  local s
-  unhold_tests ${2%% *}
+  local s l= f=$agent_home/test-hold.json
   for s in $1/.slots/<1->(/N); do
     [[ $s != $3 && $(cat $s/owner 2>/dev/null) == "$2" ]] && rm -rf $s
   done
   [[ $(cat $3/owner 2>/dev/null) == "$2" ]] && rm -rf $3
+  # (The hold, while it names <owner>'s process, in hold_tests's form. Here, not in a function of
+  # its own: run from an EXIT trap as a TERM's exit ends the shell, zsh runs nothing of the trap
+  # past a function's return.)
+  [[ -f $f ]] && read -r l < $f
+  [[ $l == *"\"pid\":${2%% *},"* ]] && rm -f $f
   return 0
 }
 

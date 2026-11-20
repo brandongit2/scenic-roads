@@ -339,9 +339,9 @@ out=$(wait_alone $fb 1 1 14 "" "$$ Fri Nov 20 20:00:00 2026 publish" $tmp/agent-
 [[ $(plutil -extract pid raw -o - $tmp/agent-w/test-hold.json 2>/dev/null) == $$ && $(plutil -extract cores raw -o - $tmp/agent-w/test-hold.json 2>/dev/null) == 14 \
    && $out == *"14 test threads"*"held from the pool's jobs ($tmp/agent-w/test-hold.json)"* ]] \
   && ok "publish's tests' threads held from the pool's jobs" || no "publish's tests' threads held from the pool's jobs" "$out; $(cat $tmp/agent-w/test-hold.json 2>&1)"
-(agent_home=$tmp/agent-w; unhold_tests 1)
+(agent_home=$tmp/agent-w; free_mine $fb "1 x publish" $fb/.slots/0)
 [[ -e $tmp/agent-w/test-hold.json ]] && ok "another run's hold left as it is" || no "another run's hold left as it is" "removed"
-(agent_home=$tmp/agent-w; unhold_tests $$)
+(agent_home=$tmp/agent-w; free_mine $fb "$$ x publish" $fb/.slots/0)
 [[ ! -e $tmp/agent-w/test-hold.json ]] && ok "a run's own hold freed" || no "a run's own hold freed" "left"
 rm -rf $fb/.slots $tmp/agent-w
 
@@ -351,12 +351,14 @@ out=$(HOME=$fh here_on_test_mac h1 $tmp/here "cat $fb/.slots/1/owner; print \$NE
 [[ $out == *"running here (this is the test Mac;"*"slot 1 of 3, $n test threads"* && $out == *" h1"$'\n'$n && ! -e $fb/.slots/1 ]] \
   && ok "a run on the test Mac itself: counted in a slot, its share, freed" || no "a run on the test Mac itself: counted in a slot, its share, freed" "$out; $(ls $fb/.slots)"
 rm -f $tmp/up $tmp/sl
+# (#1570: its tests' hold too, by the trap as a TERM ends it: the run's process is this shell's.)
+mkdir -p $agent_home; print -r -- "{\"cores\":3,\"pid\":$$,\"at\":1}" > $agent_home/test-hold.json
 ( HOME=$fh here_on_test_mac h2 $tmp/here "touch $tmp/up; sleep 30 & print \$! > $tmp/sl; wait" >/dev/null 2>&1 ) &
 hp=$!
 wait_for $tmp/up && [[ -d $fb/.slots/1 ]]; held=$?
 kill -TERM $hp; wait $hp 2>/dev/null
 for i in {1..50}; do [[ -e $fb/.slots/1 ]] || break; sleep 0.1; done
-(( held == 0 )) && [[ ! -e $fb/.slots/1 ]] && ok "a run on the test Mac itself stopped: its slot freed" || no "a run on the test Mac itself stopped: its slot freed" "$held; $(ls $fb/.slots)"
+(( held == 0 )) && [[ ! -e $fb/.slots/1 && ! -e $agent_home/test-hold.json ]] && ok "a run on the test Mac itself stopped: its slot freed, its hold too" || no "a run on the test Mac itself stopped: its slot freed, its hold too" "$held; $(ls $fb/.slots $agent_home)"
 [[ -s $tmp/sl ]] && kill $(<$tmp/sl) 2>/dev/null
 # (remote-tests.sh itself on the test Mac: that way, not run outside the capacity.)
 out=$(SCENIC_THIS_MAC=tm SCENIC_TEST_MAC=tm SCENIC_TESTS_LOCAL_FILE=$tmp/no-marker HOME=$fh local_main h4 $tmp/here "cat $fb/.slots/1/owner" 2>&1)
