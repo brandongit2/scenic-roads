@@ -8527,8 +8527,8 @@ mod tests {
         assert!(c.not_raised().is_empty(), "half");
 
         // Task #1528 review: a target its step's largest by far, inputs/regions (4.6 GB on its
-        // thread, its siblings' runs 20-221 MB), is past the bar, though its size would scale its
-        // siblings past it: its reruns at 40 GB count, and flag the step.
+        // thread, its siblings' runs 20-221 MB), is past the bar: its reruns at 40 GB count, and
+        // flag the step.
         let (_d, c, _w) = start();
         let one = |peak: u64| Cost {
             peak_mb: peak,
