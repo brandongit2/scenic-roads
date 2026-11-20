@@ -258,7 +258,10 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
   operation inside a task runs its items one after another on that task's thread, inside its
   permit's budget, so a permit's holder never waits for another permit (no deadlock) and nothing
-  runs beyond what is allowed. Without the file (a hand run) every core is allowed. It reports
+  runs beyond what is allowed. Regions taken several at once (`pace::par_each`, the land's and
+  storing's) each run under a permit too, which a region lends to each parallel operation inside it
+  while that runs (its cells taking theirs) and takes back after: a region's own work and its cells'
+  together never run on more threads than are allowed. Without the file (a hand run) every core is allowed. It reports
   its progress as six stages (the files read and checked, the candidate checked whole, the next
   version checked whole, the version in use checked whole when the next raised a finding that holds,
   what is derived from the next, the files stored), each counting the stages done before it (the

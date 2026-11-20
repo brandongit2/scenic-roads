@@ -185,12 +185,6 @@ impl Progress {
         Done(self, None)
     }
 
-    /// A part of the step's one named item under way, done as the guard drops: what a pass that
-    /// isn't by region counts by (the hand-outs' unions).
-    pub fn part_on_drop(&self) -> Done<'_> {
-        Done(self, Some(u64::MAX))
-    }
-
     /// The step's item `name` (a region's id, a folder's path; its line says it, and its time is
     /// kept) under way, beside any others; done, its time kept, as the guard drops. Its parts:
     /// `Item::parts`, each done by `Item::part_on_drop`.
@@ -215,10 +209,10 @@ impl Progress {
         Item(self, key)
     }
 
-    /// A part of the item `key` (`u64::MAX`: the first under way) done.
+    /// A part of the item `key` done.
     fn part(&self, key: u64) {
         let mut s = self.state();
-        if let Some(u) = s.under.iter_mut().find(|u| u.key == key || key == u64::MAX) {
+        if let Some(u) = s.under.iter_mut().find(|u| u.key == key) {
             u.parts_done = (u.parts_done + 1).min(u.parts);
         }
     }

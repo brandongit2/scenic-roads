@@ -1368,17 +1368,12 @@ fn make_land(
     if let Some(d) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
         return Err(vec![problem("rg-ref", r, path, format!("{id}: region:{d} is held, and so this region with it"))]);
     }
-    // (Its parts read and cut into cells under a permit, `pace::par_each`; its cells take theirs.)
-    let (env, cells) = {
-        let _turn = pace::permit_unless_held();
-        let env = env_for(id, false, folder, ctx, made, others, out, needs)?;
-        let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
-        if !r.intersect.is_empty() {
-            let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
-            cells = cells.intersection(&i).copied().collect();
-        }
-        (env, cells)
-    };
+    let env = env_for(id, false, folder, ctx, made, others, out, needs)?;
+    let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
+    if !r.intersect.is_empty() {
+        let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
+        cells = cells.intersection(&i).copied().collect();
+    }
     item.parts(cells.len());
     type Got = (Cell, Area, Area, Option<Area>);
     let got: Vec<Result<Got, Problem>> = pace::par_map(cells.into_iter().collect(), |c| {
@@ -3379,8 +3374,6 @@ fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> 
         from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
     }
     let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
-    // (Dissolved and drawn under a permit, `pace::par_each`; its cells take theirs.)
-    let turn = pace::permit_unless_held();
     let tol = buildstore::coverage::draw_tolerance_m(&rings32(t));
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
         .polys
@@ -3393,15 +3386,14 @@ fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> 
                 .collect()
         })
         .collect();
-    drop(turn);
     let shape = |from: String, rings, water| Shape { from, country: country.to_string(), tolerance_m: 0, rings, water };
     let cells: Vec<(Cell, Area)> = t.cells.iter().map(|(c, a)| (*c, a.clone())).collect();
     let (mut land, mut water) = (TArea::default(), TArea::default());
-    for (c, a, l) in pace::par_map(cells, |(c, a)| {
+    for (c, w, l) in pace::par_map(cells, |(c, a)| {
         let l = a.intersect(&land_and_lakes(data, c).0);
-        (c, a, l)
+        (c, a.minus(&l), l)
     }) {
-        water.set(c, a.minus(&l));
+        water.set(c, w);
         land.set(c, l);
     }
     let shapes = [(from.clone(), land, false), (format!("{from} (water)"), water, true)]

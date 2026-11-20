@@ -6,8 +6,9 @@
 //! begins (jobrt::control::on_grant). The agent keeps a file (jobrt::control::THREADS_ENV, replaced
 //! whole by jobrt::control::grant, so a read never meets it emptied and falls back to every core)
 //! with the threads the job may use at the moment, and the check's pools are as wide as `width`
-//! (the Mac's cores), their tasks each taking a `permit` for as long as they run: no more tasks run
-//! at once than the file says, whichever threads the pool has. A change is seen within `POLL`.
+//! (the Mac's cores), their tasks each taking a `permit` for as long as they run, and the items of a
+//! `par_each` theirs, lent to the parallel maps inside them while those run: no more tasks run at
+//! once than the file says, whichever threads the pool has. A change is seen within `POLL`.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -18,10 +19,15 @@ use std::time::{Duration, Instant};
 pub const POLL: Duration = Duration::from_secs(1);
 
 thread_local! {
-    /// The permits this thread holds: a task it runs inside another (a pool thread waiting on a join
-    /// runs others' tasks) takes none, so a permit's holder never waits on a permit.
-    static HELD: Cell<usize> = const { Cell::new(0) };
+    /// The permit this thread holds: none (`FREE`), a task's (`TASK`: a parallel operation inside
+    /// it runs in order on it, so a permit's holder never waits on a permit), or an item's of
+    /// `par_each` (`ITEM`: lent to a parallel operation inside it while that runs).
+    static HELD: Cell<u8> = const { Cell::new(FREE) };
 }
+
+const FREE: u8 = 0;
+const TASK: u8 = 1;
+const ITEM: u8 = 2;
 
 struct State {
     active: usize,
@@ -38,9 +44,11 @@ pub struct Pace {
     freed: Condvar,
 }
 
-/// A task's right to run (`Pace::permit`), given back as it drops.
+/// A task's right to run (`Pace::permit`), given back as it drops: what the thread held before
+/// (`HELD`) held again.
 pub struct Permit<'a> {
     pace: &'a Pace,
+    before: u8,
 }
 
 impl Pace {
@@ -82,6 +90,15 @@ impl Pace {
     /// Waits until fewer tasks run than are allowed, then counts this one. Only a thread holding
     /// none asks (`par_map`).
     pub fn permit(&self) -> Permit<'_> {
+        self.take(TASK)
+    }
+
+    fn take(&self, held: u8) -> Permit<'_> {
+        self.wait_and_count();
+        Permit { pace: self, before: HELD.with(|h| h.replace(held)) }
+    }
+
+    fn wait_and_count(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             self.refresh(&mut s);
@@ -91,8 +108,27 @@ impl Pace {
             s = self.freed.wait_timeout(s, POLL).unwrap_or_else(|e| e.into_inner()).0;
         }
         s.active += 1;
-        HELD.with(|h| h.set(1));
-        Permit { pace: self }
+    }
+
+    fn uncount(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
+        self.freed.notify_one();
+    }
+
+    /// `f`, a parallel operation inside a `par_each` item, with the item's permit lent to it (its
+    /// tasks take theirs), and taken back after (however `f` ends: a panic too).
+    fn lend<R>(&self, f: impl FnOnce() -> R) -> R {
+        struct Back<'a>(&'a Pace);
+        impl Drop for Back<'_> {
+            fn drop(&mut self) {
+                self.0.wait_and_count();
+                HELD.with(|h| h.set(ITEM));
+            }
+        }
+        self.uncount();
+        HELD.with(|h| h.set(FREE));
+        let _back = Back(self);
+        f()
     }
 
     /// The tasks running under permits now.
@@ -103,9 +139,8 @@ impl Pace {
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
-        HELD.with(|h| h.set(0));
-        self.pace.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
-        self.pace.freed.notify_one();
+        HELD.with(|h| h.set(self.before));
+        self.pace.uncount();
     }
 }
 
@@ -134,32 +169,51 @@ pub fn par_map<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send
     global().par_map(items, f)
 }
 
-/// `f` on each of `items`, in order, in parallel, each item taking no permit of its own: for items
-/// whose work is itself parallel maps (a region's cells), which take theirs, so a large item's
-/// tasks spread over every thread allowed beside the small items'. The item's own work between
-/// them takes a permit (`permit_unless_held`, round it). Inside a task under a permit, one after
+/// `f` on each of `items`, in order, in parallel, for items whose work is itself parallel maps (a
+/// region's cells): each item under a permit, which it lends to each `par_map` inside it while that
+/// runs (its tasks take theirs), so a large item's tasks spread over every thread allowed beside
+/// the small items', and nothing runs beyond what is allowed. Inside a task or an item, one after
 /// another (`par_map`'s way).
 pub fn par_each<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
-    use rayon::prelude::*;
-    if HELD.with(|h| h.get()) > 0 {
-        return items.into_iter().map(f).collect();
-    }
-    items.into_par_iter().map(f).collect()
+    global().par_each(items, f)
 }
 
 impl Pace {
     /// `par_map` under this pace's permits: each task takes one as it starts, so an operation under
     /// way follows the file as it changes (more tasks at once after a raise, fewer after a cut, as
-    /// the tasks running end).
+    /// the tasks running end). Inside an item of `par_each`, with the item's permit lent to it.
     pub fn par_map<I: Send, R: Send>(&self, items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
         use rayon::prelude::*;
-        if HELD.with(|h| h.get()) > 0 {
+        let held = HELD.with(|h| h.get());
+        if held == TASK {
+            return items.into_iter().map(f).collect();
+        }
+        let each = || {
+            items
+                .into_par_iter()
+                .map(|x| {
+                    let _turn = self.permit();
+                    f(x)
+                })
+                .collect()
+        };
+        if held == ITEM {
+            self.lend(each)
+        } else {
+            each()
+        }
+    }
+
+    /// `par_each` under this pace's permits.
+    pub fn par_each<I: Send, R: Send>(&self, items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
+        use rayon::prelude::*;
+        if HELD.with(|h| h.get()) != FREE {
             return items.into_iter().map(f).collect();
         }
         items
             .into_par_iter()
             .map(|x| {
-                let _turn = self.permit();
+                let _item = self.take(ITEM);
                 f(x)
             })
             .collect()
@@ -304,6 +358,41 @@ mod tests {
             "cut: 2 at most, {:?}",
             most(cut + settle, usize::MAX)
         );
+        assert_eq!(pace.active(), 0);
+    }
+
+    /// `par_each`'s items, their own work and their cells' together, never run on more threads than
+    /// are allowed, on a pool three times as wide; and an item alone lends its permit to its cells,
+    /// which then take every thread allowed.
+    #[test]
+    fn items_at_once_and_their_cells_stay_within_the_threads_allowed() {
+        let (_d, f) = file("2");
+        let pace = Pace::new(Some(f), 2);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(6).build().unwrap();
+        let (now, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        // (A piece of work: counted while it runs; `meet`, it waits up to 2 s for two to have run at
+        // once.)
+        let work = |meet: bool| {
+            let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(n, Ordering::SeqCst);
+            let t = Instant::now();
+            std::thread::sleep(Duration::from_millis(5));
+            while meet && most.load(Ordering::SeqCst) < 2 && t.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            now.fetch_sub(1, Ordering::SeqCst);
+        };
+        let item = |cells: usize, meet: bool| {
+            work(false);
+            pace.par_map((0..cells).collect(), |_: usize| work(meet));
+            work(false);
+        };
+        pool.install(|| pace.par_each((0..8).collect(), |_: usize| item(6, false)));
+        assert!(most.load(Ordering::SeqCst) <= 2, "two at most: {}", most.load(Ordering::SeqCst));
+        assert_eq!(pace.active(), 0);
+        most.store(0, Ordering::SeqCst);
+        pool.install(|| pace.par_each(vec![0], |_: usize| item(8, true)));
+        assert_eq!(most.load(Ordering::SeqCst), 2, "the item's cells on both threads allowed");
         assert_eq!(pace.active(), 0);
     }
 
