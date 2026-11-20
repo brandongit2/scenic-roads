@@ -3,7 +3,7 @@
 # it checked; nothing is recorded when HEAD moved during the run, a file was written or appeared
 # then, or the checkout wasn't clean at the start. Its parts are stubs (cargo, guards.sh,
 # affected-tests.sh, check-reuse.py); the stub cargo's clippy can hold the run while the test
-# changes the checkout. Run by check.sh.
+# changes the checkout; and its check-running file, there while it runs, gone after. Run by check.sh.
 set -u
 setopt no_bg_nice   # (a run in the background: no nice, which the test Mac's utility priority refuses)
 here=${0:A:h}
@@ -85,4 +85,15 @@ rm new.txt
 run "an uncommitted edit" "uncommitted changes" 'print 2 > docs/a.md'
 g checkout -q docs/a.md
 run "a clean run after" recorded
+# While it runs, its git folder's check-running.<pid> holds its start time (report-guard.sh reads
+# it, #1522); no run leaves one, whatever way it ended (passed, reused, failed, not recorded).
+running() {
+  local f=( .git/check-running.<->(N) )
+  if (( ${#f} == 1 )) && [[ $(LC_ALL=C TZ=UTC ps -o lstart= -p ${f[1]##*.}) == $(<$f[1]) ]]; then ok "check-running names the live run"
+  else bad "while it runs: wanted one check-running.<pid> naming it; have: ${f[*]:-none}"; fi
+}
+w docs/b.md 1; g add -A; g commit -m running
+run "a run, its check-running file" recorded running
+f=( .git/check-running.*(N) )
+(( ! ${#f} )) && ok "no check-running file left by the runs" || bad "check-running files left: ${f[*]}"
 exit $fail

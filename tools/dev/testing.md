@@ -123,7 +123,7 @@ when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/tes
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/report-guard.zsh` when report-guard.sh (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records, its check-running file) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -259,6 +259,17 @@ holds when it names its commit's tree and every pass it reused from is recorded 
 (the reason given when none does). report-guard.sh, check-reuse.py and check.sh's own reuse of a
 tree checked before likewise take only a pass naming its commit's tree; passes recorded before
 #980 without one (a dirty checkout's, or one whose HEAD moved) vouch for nothing.
+
+SubagentStop fires at the end of every turn of a subagent, also one that only waits for a
+background run's notice, so report-guard.sh lets a stop through while that worktree's check.sh runs
+(#1522): check.sh writes `check-running.<pid>` in the checkout's own git folder
+(`git rev-parse --absolute-git-dir`) holding its start time and deletes it on exit; a file whose
+pid is gone or started at another time, or another worktree's, doesn't count. A hand-back still
+needs a pass while check.sh runs: a stop whose agent's last tool call in its transcript
+(`agent_transcript_path`) is `SubagentHandback`. What it can't tell apart: an agent reporting in its
+closing text rather than through SubagentHandback, while its check.sh runs, gets through; and the
+hook's input names no task of the agent's own (`background_tasks` lists the whole session's), so a
+running check.sh is the only sign of waiting it reads. Tested by `tools/dev/test/report-guard.zsh`.
 
 ## Whose checkout: git writes (#980, 6 Nov)
 
@@ -773,7 +784,7 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
 ```
 
 Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log`, `.claude/sweep-keep`
-(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`, `.git/check-tests/`.
+(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`, `.git/check-tests/`, `check-running.<pid>` in a checkout's git folder while its check.sh runs.
 
 ## The build page on a phone: touch-test.mjs and safari-sim.sh (#614, 23 Oct)
 
