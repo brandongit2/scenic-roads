@@ -1176,25 +1176,24 @@ fn n_most(lat: f64) -> f64 {
 /// row's latitude (radians, its size), the cells' middles at most `dx_rad` apart, and with a reach,
 /// none farther from its nearest than `decides`.
 ///
-/// `j` cells on, the cell's nearest of the first label is at most d1 + n1·J off (J = j·dx_rad),
-/// and each sample of another label s at least d − n_s·J, d ≥ `other` its distance from the cell:
-/// along a row, a sample's distance is a plane's (`length_with`'s radii fixed by its latitude).
-/// n_s is at most `n_most` at s's middle latitude, which lies within d / (2·m_least) of the row's,
-/// so at most `n_most(lat − d / (2·m_least))`: that grows with d by at most half `n_most(0)` /
-/// m_least a metre, so d − n_s·J grows with d while J is under 1.9, and then `other` bounds it.
-/// Past that the radius at its most anywhere, `n_most(0)`. A cell is taken only while the two stay
-/// apart by more than the distances' rounding (`1e-6` of them, and a millimetre): one at a tie is
-/// searched.
+/// It takes J = j·dx_rad of cells with d1 + J·(n_b + n1) < `other` (by more than the distances'
+/// rounding, `1e-6` of them and a millimetre: a cell at a tie is searched), n_b =
+/// `n_most(lat − other / (2·m_least))`. Were a sample s of another label as near a cell taken
+/// (k cells on, J_k ≤ J) as its nearest of the first label, d(p_k, s) ≤ d1 + n1·J_k, so:
+/// - s's latitude is within (d1 + n1·J) / m_least of the row's (the distance's latitude term), so
+///   the middle latitude `length_with` takes for s along the row (the same for every cell of it)
+///   lies within (d1 + n1·J) / (2·m_least) < `other` / (2·m_least) of the row's, and the
+///   parallel's radius there, n_s, is at most n_b;
+/// - along a row a sample's distance is a plane's (its radii fixed by its latitude), so
+///   d(p, s) ≤ d(p_k, s) + n_s·J_k ≤ d1 + n1·J + n_b·J < `other` ≤ d(p, s).
+/// So none is, however far the cells taken run (no bound on J needed).
 fn settled(d1: f64, other: f64, n1: f64, lat: f64, dx_rad: f64, decides: Option<f64>) -> i64 {
     let gap = other - d1 - (1e-6 * (d1 + other.min(1e9)) + 1e-3);
     if !(gap > 0.0) {
         return 0;
     }
     let m_least = A * (1.0 - F * (2.0 - F));
-    let near =
-        (gap / ((n_most(lat - other.min(1e9) / (2.0 * m_least)) + n1) * dx_rad)).floor().min((1.9 / dx_rad).floor());
-    let anywhere = (gap / ((n_most(0.0) + n1) * dx_rad)).floor();
-    let mut most = near.max(anywhere);
+    let mut most = (gap / ((n_most(lat - other.min(1e9) / (2.0 * m_least)) + n1) * dx_rad)).floor();
     if let Some(d) = decides.filter(|_| n1 > 0.0) {
         most = most.min(((d - d1) / (n1 * dx_rad)).floor());
     }
@@ -1797,6 +1796,28 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Near a pole, with another coast far off toward the equator, `settled` takes cells over
+    /// more than 2 rad of longitude (past 2·m_least / n_most(0), 1.98, where a bound by the
+    /// radius at the other's distance alone would no longer hold), and each is nearer the first.
+    #[test]
+    fn settled_takes_a_long_polar_run_soundly() {
+        let deg = 10_000_000.0;
+        for (lat, s_lat, ahead) in [(89.0f64, 30.0f64, 5.5f64), (-88.5, -20.0, 5.0), (89.5, 45.0, 4.0)] {
+            let y = (lat * deg) as i64;
+            let dx = ((1000.0 / radii(lat.to_radians()).1).to_degrees() * deg) as i64;
+            let (p, q) = ([-1_800_000_000i64, y], [-1_800_000_000 - dx / 3, y]);
+            let s = [p[0] + (ahead.to_degrees() * deg) as i64, (s_lat * deg) as i64];
+            let n1 = radii(((p[1] + q[1]) as f64 * 0.5e-7).to_radians()).1;
+            let dx_rad = (dx as f64 * 1e-7).to_radians();
+            let j = settled(length_m(p, q), length_m(p, s), n1, lat.to_radians().abs(), dx_rad, None);
+            assert!(j as f64 * dx_rad > 2.0, "{lat}°: {j} cells, {} rad", j as f64 * dx_rad);
+            for k in 1..=j {
+                let pk = [p[0] + k * dx, y];
+                assert!(length_m(pk, q) < length_m(pk, s), "{lat}°: cell {k} of {j}");
             }
         }
     }
