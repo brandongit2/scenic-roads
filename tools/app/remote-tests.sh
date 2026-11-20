@@ -48,10 +48,14 @@
 # RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL, CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_*
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
 # As many runs on the test Mac at once as its capacity's slots (capacity, below: from its cores and memory,
-# or ~/scenic-check/capacity there), each with its share of the cores as test threads; publish's run
-# (key `publish`, publish.sh's alone: SCENIC_PUBLISH) in a slot of its own besides, with every core (slots in ~/scenic-check/.slots, each
+# or ~/scenic-check/capacity there), each with its share of the cores the pool's jobs leave as test
+# threads (pool_busy); publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH) in a slot of
+# its own besides, which has the test Mac to itself (#1563, reserve_all): while it runs no other run
+# starts, it takes every check slot as it frees, and its tests start once the runs under way have
+# ended (wait_alone, called by its command; slots in ~/scenic-check/.slots, each
 # naming its process and its start time; a gone process's slot is freed); the rest wait for one, up
-# to 30 min, then refuse. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
+# to 30 min (behind publish's run, as long as it lasts), then refuse. A run on the test Mac itself
+# (no ssh, no copy: here_on_test_mac) takes a slot too. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
 # is its build folder's lock: freed only once nothing the run started is left, a run killed outright too.
 # The result: the test Mac's side ends with a line "@@remote-tests-status <exit>" (or "none <why>"), read
 # here and not shown. Without one (the connection failed, no tree, no slot), it refuses.
@@ -70,7 +74,8 @@
 # "connected", comes at once). Past a bound, the ssh is stopped and the run refused, saying why.
 # The test Mac, known two ways (owner, 31 Oct and 10 Nov): who it is, its LocalHostName, the pool's name
 # for a Mac (test_mac_name, tools/app/test-mac.zsh: SCENIC_TEST_MAC, the M4 by default), checked here before anything connects, so on it the
-# tests run here at once, with no ssh to itself (no 1Password approval, no 20 s probe); and how to
+# tests run here, in a slot of its capacity as any run (here_on_test_mac), with no ssh to itself (no
+# 1Password approval, no 20 s probe) nor copy; and how to
 # reach it from another Mac (SCENIC_TEST_HOST, an ssh alias, `m4` by default).
 host=${SCENIC_TEST_HOST:-m4}
 # The fresh-connection probe's bound in seconds (a test's shorter: SCENIC_TEST_PROBE_S).

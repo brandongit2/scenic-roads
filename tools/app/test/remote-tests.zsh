@@ -173,7 +173,8 @@ print 'slots=2' > $tmp/capacity; capacity $tmp/capacity 14 48
 [[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
 
 # Ended as a run ends, with a test's server left: it goes first, then the slot.
-rm -rf $fh; mkdir -p $fb; print 'slots=3' > $fb/capacity; hold_two; run_setup e1
+# (publish_wait 1 min: a publish run waiting for slots never freed ends its wait within the test.)
+rm -rf $fh; mkdir -p $fb; print $'slots=3\npublish_wait=1' > $fb/capacity; hold_two; run_setup e1
 out=$(run_remote e1 "print -r -- \$PWD > $tmp/where; sleep 300 & print \$! > $tmp/left")
 left=$(<$tmp/left)
 [[ $(<$tmp/where) == *"/.build/1/src" && $out == *"@@remote-tests-status 0"* ]] && ok "a run in its slot's folder" || no "a run in its slot's folder" "$(<$tmp/where): $out"
@@ -281,6 +282,9 @@ touch $tmp/pubend; wait $pp $cp
   && ok "the run behind publish goes once it ends, its slots all freed" || no "the run behind publish goes once it ends, its slots all freed" "$(cat $tmp/chkout; ls $fb/.slots)"
 [[ -z $(ls $fb/.slots) ]] && ok "nothing held after" || no "nothing held after" "$(ls $fb/.slots)"
 
+# (Alone, nothing behind it to free a gone run's slots: its own end frees them all.)
+out=$(run_remote publish "export SCENIC_PUBLISH=1; \$SCENIC_TEST_MAC_ALONE >/dev/null; ls $fb/.slots > $tmp/slotsheld")
+[[ $(<$tmp/slotsheld) == $'0\n1\n2\n3' && -z $(ls $fb/.slots) ]] && ok "publish's run ended: every slot it held freed" || no "publish's run ended: every slot it held freed" "$(<$tmp/slotsheld); $(ls $fb/.slots): $out"
 # Publish's run killed outright mid-wait: its slots are a gone run's, taken by the next run.
 mkdir -p $fb/.slots/3; print -r -- $holdme > $fb/.slots/3/owner; rm -f $tmp/pubgo
 run_remote publish "export SCENIC_PUBLISH=1; touch $tmp/pubgo; \$SCENIC_TEST_MAC_ALONE" >/dev/null 2>&1 &
@@ -311,6 +315,9 @@ kill -TERM $hp; wait $hp 2>/dev/null
 for i in {1..50}; do [[ -e $fb/.slots/1 ]] || break; sleep 0.1; done
 (( held == 0 )) && [[ ! -e $fb/.slots/1 ]] && ok "a run on the test Mac itself stopped: its slot freed" || no "a run on the test Mac itself stopped: its slot freed" "$held; $(ls $fb/.slots)"
 [[ -s $tmp/sl ]] && kill $(<$tmp/sl) 2>/dev/null
+# (remote-tests.sh itself on the test Mac: that way, not run outside the capacity.)
+out=$(SCENIC_THIS_MAC=tm SCENIC_TEST_MAC=tm SCENIC_TESTS_LOCAL_FILE=$tmp/no-marker HOME=$fh local_main h4 $tmp/here "cat $fb/.slots/1/owner" 2>&1)
+[[ $out == *"slot 1 of 3"*" h4"* ]] && ok "remote-tests.sh on the test Mac: its run in a slot" || no "remote-tests.sh on the test Mac: its run in a slot" "$out"
 # Behind publish's run, it waits too.
 rm -rf $fb/.slots/1; mkdir -p $fb/.slots/0; print -r -- "$holdme" > $fb/.slots/0/owner; rm -f $tmp/hran
 ( HOME=$fh here_on_test_mac h3 $tmp/here "touch $tmp/hran" > $tmp/hout 2>&1 ) &

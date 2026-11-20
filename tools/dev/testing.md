@@ -601,20 +601,42 @@ are its own for the disk rule and the drop below.
   and nextest versions and whether the NAS is mounted. A stopped run is stopped on the test Mac too.
 - The test Mac's capacity (#1539): as many runs at once as it has slots, the rest queued (30 min, then
   refused), each with its share of the cores as test threads (`NEXTEST_TEST_THREADS` and
-  `RUST_TEST_THREADS`): the checks' runs together stay within its cores. The slots: one per 4 cores
-  and per 12 GB of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots of 5 test threads), or as
-  `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`, either, each
+  `RUST_TEST_THREADS`): the checks' runs together stay within its cores. Every run takes a slot: a
+  check's, an agent's own key's, and one on the test Mac itself (#1563: there remote-tests.sh runs
+  the command in its own tree, no copy, but in a slot and with its share, freed as it ends). The slots: one per 4 cores
+  and per 12 GB of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots), or as
+  `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`,
+  `publish_threads=<n>`, `publish_wait=<minutes>`, any of them, each
   a whole number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last
   read; read by each run as it starts, and each line it doesn't take, or a key given again, printed
   with its value; a folder or unreadable file in its place said, and the capacity derived).
+  A run's share is of the cores the pool's jobs leave (#1563): they run at nice 0 and the tests at
+  nice 20, so what they keep busy the tests don't get. The pool's busy cores are read from `ps` as
+  the run starts (the `%cpu` of the Mac's `scenic agent` process and every process under it, a
+  decaying average over about a minute; read only), and a check's threads are those cores left over
+  its slots, rounded up, one at least (14 cores, the pool's jobs on 5: 3 test threads a slot).
   Lowered, the build folders of the slots above go at the next run, but one a live run holds: a
   slot whose run is gone is freed first, as when a slot is taken. Publish's run (key `publish`, publish.sh's alone: it
   is refused without SCENIC_PUBLISH) has a slot of its own besides, slot 0 with its own build folder,
-  and every core: it never waits behind a check and comes first, so while it runs the test Mac takes
-  more than its cores (publish's tests are its last word; the checks' beside it are slower). Each
+  and the test Mac to itself (#1563): it never waits behind a check and comes first; while slot 0 is
+  held no other run starts (it says "the test Mac is publish's run's (slot 0 since …): waiting for
+  it to end", that wait not counted in its 30 min), and publish's run takes every check slot as it
+  frees, so a run from a branch without #1563 waits too (every version since #969 takes a slot). Runs
+  under way when it starts go on to their end, and its tests wait for them: its command builds first
+  (`cargo nextest run --no-run`), then runs `$SCENIC_TEST_MAC_ALONE`, which waits until every check
+  slot is publish's (saying, at once and each minute, which runs it waits for: slot, key, since when),
+  then prints the test threads its tests take: the cores the pool's jobs leave then, half of them at
+  least (the lead counts at most half a Mac's cores as busy outside the pool:
+  `coord::sched::outside_cores`), or `publish_threads=` as set; past `publish_wait` (30 min by
+  default) its tests go on beside what is left, saying so. A run can't yield mid-test instead: a
+  stopped test's clock goes on, so nextest's bound and the tests' watchdogs fire as it resumes, and
+  nextest has no hold between tests its timer doesn't count. Its slots are freed with slot 0 as it
+  ends, by a signal too; killed outright, they name a gone process and the next run frees them. The
+  dev jobs page shows the wait as "the test Mac to publish alone" under publish's run, with the pool's
+  cores and the threads taken, and a run's wait behind it as "a test-Mac slot". Each
   run says its slot, the slots and its threads, and where each was set ("on the test Mac … slot 2 of
-  3, 5 test threads …; capacity: slots derived: …; threads derived: …"); the dev jobs page records
-  them on the run (`slots`, `threads`). The capacity holds only for runs from branches with #1539:
+  3, 5 test threads …; capacity: slots derived: …; threads derived: …; the pool's jobs keep … cores
+  busy"); the dev jobs page records them on the run (`slots`, `threads`). The capacity holds only for runs from branches with #1539:
   the test Mac's side of the script is sent with each run, so a branch not rebased onto it still
   runs in 3 slots, with nextest's own threads (every core).
   A caller's own `NEXTEST_TEST_THREADS` or `--test-threads` stands. Builds aren't shared out: cargo
@@ -628,7 +650,7 @@ are its own for the disk rule and the drop below.
   for an approval for ever. The probe (a fresh connection) has 20 s (`SCENIC_TEST_PROBE_S`, a test's shorter), the lock calls 60 s, and the run
   must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it is refused, saying why.
 - Runs here instead only on the test Mac itself (the M4 since 31 Oct; publish runs on the mini, so
-  its suite goes to the M4) and when the PM asks for the run here: `SCENIC_CHECK_LOCAL=1` (also
+  its suite goes to the M4: in a slot there, above) and when the PM asks for the run here: `SCENIC_CHECK_LOCAL=1` (also
   `SCENIC_TESTS_LOCAL=1`), or its `.claude/tests-local` ("Where a test run goes", above).
 - **Refused** otherwise, whatever keeps the run from the test Mac (the owner's rule: tests run on
   the M4; task #668's review found a run here in its place passing check.sh with nothing in its
@@ -649,7 +671,7 @@ fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 
-The suite runs as many at a time as the test Mac's slots (three on the M4), beside publish's, at nice 20 and utility priority, beside builds: what takes milliseconds
+The suite runs as many at a time as the test Mac's slots (three on the M4; none beside publish's tests, #1563), at nice 20 and utility priority, beside builds: what takes milliseconds
 idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
 that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
 through their dev-dependency on store, `features = ["testkit"]`):

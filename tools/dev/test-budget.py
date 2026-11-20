@@ -27,8 +27,9 @@ its attributes the settings, `alone` ([binary, test, seconds alone, median in th
 began and ended; the dashboard shows the latest (`/api/jobs/latest?kind=budget`). A measure that
 failed to measure (refused, cut short before a test ended: none timed of those chosen) doesn't count
 as the last for `every_h`, nor for `rest`. It runs `--test-threads 1`, one test at a time, in
-publish's slot on the test Mac, beside whatever else runs there (the pool's jobs, other slots'
-checks). It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
+publish's slot on the test Mac, beside the pool's jobs and the checks under way as it starts (none
+starts meanwhile: publish's slot has the test Mac to itself, tools/app/remote-tests.sh; it doesn't
+wait for those to end, as publish's suite does, within its max_min). It never fails a publish: a measure that can't run (the app away, the test Mac refusing)
 says why. With the dev job records off (`SCENIC_DEVJOB=0`) it measures nothing: its due time and its
 flags are those records.
 """
