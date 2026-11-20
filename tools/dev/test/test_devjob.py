@@ -18,7 +18,7 @@ import devjob  # noqa: E402
 
 T = 1_800_000_000.0
 # (Run under check.sh's recording wrap: the wraps these tests start aren't inside it.)
-os.environ.pop("SCENIC_DEVJOB_IN", None)
+os.environ.pop("SCENIC_DEVJOB_OUTER", None)
 
 
 def lines(text, t0=T, step=1.0):
@@ -257,7 +257,7 @@ class Wrap(unittest.TestCase):
         # (check.sh's `part tests` wraps remote-tests.sh, which wraps its test run.)
         with tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="here")
-            for k in ("SCENIC_DEVJOB", "SCENIC_DEVJOB_PARENT", "SCENIC_DEVJOB_IN"):
+            for k in ("SCENIC_DEVJOB", "SCENIC_DEVJOB_PARENT", "SCENIC_DEVJOB_OUTER"):
                 env.pop(k, None)
             inner = f"{sys.executable} {devjob.__file__} wrap --kind tests --name inner -- sh -c \"echo 'progress: 0/2 x (a)'; sleep 0.2; echo 'progress: 1/2 x (b)'\""
             r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "outer", "--", "sh", "-c", f"echo 'progress: 0/1 y (alone)'; {inner}"],

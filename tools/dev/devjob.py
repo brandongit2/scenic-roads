@@ -13,7 +13,7 @@ network, and nothing is lost while the app is away: what wasn't sent is sent by 
       (cargo test's and nextest's), remote-tests.sh's phases; and, whatever --parse says, the
       phases the job says in `progress:` lines (`phase`, one open a source; a test's, with
       --nocapture, under its suite: a long test read by its own stages; inside another wrap, its
-      progress is this one's, the outer leaving it out: SCENIC_DEVJOB_IN). A span's Mac is the one it ran on: the
+      progress is this one's, the outer leaving it out: SCENIC_DEVJOB_OUTER). A span's Mac is the one it ran on: the
       run on the test Mac and its compiles, suites and tests are that Mac's (its `ran_on`); the job
       itself is this Mac's, which says the test Mac's name (ran_on) as soon as the run starts there.
   devjob.py sampler      (started by the first live span; one a Mac) every TICK_S: sends the spool,
@@ -449,16 +449,17 @@ def wrap(argv):
     t_start = time.time()
     emit({"op": "start", "id": sid, "parent": parent, "kind": kind, "name": name, "mac": m, "t": round(t_start, 3), "attrs": attrs})
     live(sid, os.getpid())
-    # (A wrap inside this one marks SCENIC_DEVJOB_IN: it records the progress lines it passes on,
-    # nested under its own suites and runs, and this one leaves them out, so a phase is recorded
-    # once: check.sh's `part tests` wraps remote-tests.sh, which wraps its test run.)
+    # (A wrap inside this one marks SCENIC_DEVJOB_OUTER, this one's mark file: it records the
+    # progress lines it passes on, nested under its own suites and runs, and this one leaves them
+    # out, so a phase is recorded once: check.sh's `part tests` wraps remote-tests.sh, which wraps
+    # its test run. Not remote-tests.sh's SCENIC_DEVJOB_IN, its own run's mark.)
     inner = os.path.join(DIR, f"in-{sid}")
-    if os.environ.get("SCENIC_DEVJOB_IN"):
+    if os.path.isabs(os.environ.get("SCENIC_DEVJOB_OUTER", "")):
         try:
-            open(os.environ["SCENIC_DEVJOB_IN"], "a").close()
+            open(os.environ["SCENIC_DEVJOB_OUTER"], "a").close()
         except OSError:
             pass
-    env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid, SCENIC_DEVJOB_IN=inner)
+    env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid, SCENIC_DEVJOB_OUTER=inner)
     try:
         # (Every file the caller passed on, kept, as a shell does: check.sh's SCENIC_CARGO_SAY names
         # its own fd, and with it closed /dev/fd/<n> opened whatever took its number, a waiting
