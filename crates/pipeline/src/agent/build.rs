@@ -5284,9 +5284,15 @@ mod tests {
             let content = out.get(&target_logical("peaks", t)).unwrap().to_string();
             tiles.hold_asked(&content, Record::from_bytes(&root.join(&content).read().unwrap()).unwrap());
         };
-        let lo = |out: &Out, tiles: &TerrainTiles| -> Vec<String> {
+        // (`moved`: its record's lo packs not the manifest's: the warm pass worked its line out.)
+        let lo = |out: &Out, tiles: &TerrainTiles, moved: bool| -> Vec<String> {
             let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, tiles);
             crate::agent::idents::warm_peaks(&x);
+            if moved {
+                let rc = out.get(&target_logical("peaks", t)).unwrap();
+                let geo = crate::agent::idents::peaks_lo_geo(&out.manifest).0;
+                assert!(tiles.memo_found(&format!("asked peaks {t}"), &format!("{rc} {geo}")).is_some(), "warmed");
+            }
             let lines = crate::agent::steps::key_lines("peaks", t, &x).unwrap();
             lines.into_iter().filter(|l| l.starts_with("w terrain-lo ")).collect()
         };
@@ -5296,7 +5302,7 @@ mod tests {
         let unread = TerrainTiles::default();
         let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, &unread);
         assert_eq!(crate::agent::steps::key_lines("peaks", t, &x), None, "it waits while a lo pack's index isn't read");
-        let before = lo(&out, &tiles);
+        let before = lo(&out, &tiles, false);
         let packs_now: Vec<String> = packs
             .iter()
             .map(|(a, b)| format!("layers/terrain/lo/3-{a}-{b}"))
@@ -5304,20 +5310,20 @@ mod tests {
             .collect();
         assert_eq!(before, packs_now, "no record: every lo pack by content, as before");
         run(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles), before, "its first record moves no key");
+        assert_eq!(lo(&out, &tiles, false), before, "its first record moves no key");
         // Tiles it didn't read changed in both packs: the key kept, and kept by its run again.
         let outside = |x: u32, y: u32| if !read.contains(&(x, y)) { b"changed".to_vec() } else { first(x, y) };
         let local = put(&mut out, &mut tiles, &outside);
-        assert_eq!(lo(&out, &tiles), before, "a change outside what it read keeps the key");
+        assert_eq!(lo(&out, &tiles, true), before, "a change outside what it read keeps the key");
         run(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles), before);
+        assert_eq!(lo(&out, &tiles, false), before);
         // One it read changed: a new key, and its run's record keys as the plan worked it out.
         let inside = |x: u32, y: u32| if (x, y) == (160, 90) { b"changed again".to_vec() } else { outside(x, y) };
         let local = put(&mut out, &mut tiles, &inside);
-        let moved = lo(&out, &tiles);
+        let moved = lo(&out, &tiles, true);
         assert_ne!(moved, before, "a change in a tile it read moves the key");
         run(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles), moved, "one run per change");
+        assert_eq!(lo(&out, &tiles, false), moved, "one run per change");
     }
 
     /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:

@@ -212,18 +212,19 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      (a z6 tile's terrain digest, a target's asked line, the slope's tiles) is kept with what it
      was made from (`from`), which the key works out by reading the manifest itself before asking:
      a hit's reads are those. The deep answers are kept by the coverage and the declared sets the
-     key reads likewise. The caches warmed on rayon's threads (`warm_asked`, `warm_lakes`) read the
-     map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the compiler refuses one
-     captured there): each key reads again what finds its line (lake-depth's: its record and its
-     ring's hi packs, `asked_line`, `lake_ring_geo`). The terrain-targets cell
+     key reads likewise. The caches warmed on rayon's threads (`warm_asked`, `warm_lakes`,
+     `warm_peaks`) read the map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the
+     compiler refuses one captured there): each key reads again what finds its line (lake-depth's:
+     its record and its ring's hi packs, `asked_line`, `lake_ring_geo`; peaks': its record and the
+     lo packs' indexes, `peaks_lo_geo`). The terrain-targets cell
      (`TerrainTiles::memo("terrain-targets")`) is read by no key, and the terrain and slope keys
      it serves aren't derived in a plan that finds it, so they get no read set there: they are
      kept by that cell's digest until step 6a. The shadow plan (step 4) reads the cell where the
      plan left it and never writes it (its targets are made from its own keys, which are what it
      checks); when the plan couldn't keep it (a slope key unknown), the shadow works the targets
      out from its keys, kept or derived, as the plan does. Of the other caches the plan shares
-     (`KeyCtx::shadow`): the warm passes' marks ("lake-depth:asked warm", "coverage:asked warm")
-     it reads and never writes, skipping both passes (each key it derives finds its line as above);
+     (`KeyCtx::shadow`): the warm passes' marks ("lake-depth:asked warm", "coverage:asked warm",
+     "peaks:asked warm") it reads and never writes, skipping all three passes (each key it derives finds its line as above);
      the 3D buildings' tiles (`bld_tiles`, kept by the coverage's digest) it reads from either slot
      and writes only its own, so the plan's stays the plan's; the per-target `TerrainTiles::memo`
      answers (a function of what they were made from, which the key reads) it reads and writes as
