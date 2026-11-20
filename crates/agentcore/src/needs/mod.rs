@@ -1586,7 +1586,13 @@ mod tests {
             let c = Cost { job: job(k), ..run("depth", "mini", 1000, 100, &[]) };
             costs.insert(format!("depth 6/{k}/0"), c);
         }
-        let facts = |clean: bool, ginsn: f64| jobrt::timings::JobFacts { clean, ginsn, cpu_s: 100.0, explain: 1.0 };
+        let facts = |clean: bool, ginsn: f64| jobrt::timings::JobFacts {
+            clean,
+            ginsn,
+            cpu_s: 100.0,
+            explain: 1.0,
+            ..Default::default()
+        };
         // (Ten of them failed their checks, at a tenth of the time: none of those counts.)
         let mut records: Records = (0..10u64).map(|k| (format!("1-{k}"), facts(false, 0.0))).collect();
         for k in 0..10u64 {

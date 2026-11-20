@@ -331,8 +331,9 @@ from the first (`edit_held`).
   the step's card on the build page counts its targets by it): what is left of a run of it that stopped
   short (a pause, a lapse, a restart: its job's progress line's total and what its part made, over the
   time that took, kept on the history's "end", "done" or "fail" event as `progress`; `forecast::partials`:
-  its pace over its whole total where no later run of the step has counted a smaller total or begun past
-  the stop, the step redoing its target, else over what is left), else its needs on the lead's Mac (its
+  its pace over its whole total where no run of the step among the history's events took blocks from an
+  earlier run's resume log, its job's timings record says (`JobFacts::resumed`, `done.resumed`), the step
+  redoing its target, else over what is left), else its needs on the lead's Mac (its
   own run of the way its step runs now at the two Macs' speeds, else its step's needs model for its
   size: docs/pool.md §7.7, as the coordinator sizes it), else its step's mean over the targets measured
   (a shared step's), else what the lead's own jobs of the step took lately, else a first guess

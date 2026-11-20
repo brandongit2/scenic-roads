@@ -2216,6 +2216,7 @@ impl Coordinator {
                 batch_s: 0,
                 lefts: sched::Lefts::of(history.left_ratios()),
                 stopped: BTreeMap::new(),
+                event_jobs: Default::default(),
             },
             pass: String::new(),
             plan: 0,
@@ -2389,12 +2390,13 @@ impl Coordinator {
         let keep = self.shared.lock().unwrap_or_else(|e| e.into_inner()).keep.clone();
         keep.stop();
         self.wake.notify_one();
-        if let Some(rx) = self.closed.lock().unwrap().take() {
+        if let Some(rx) = self.closed.lock().unwrap_or_else(|e| e.into_inner()).take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
             rx.recv().ok();
         }
-        // (A viewer's scratch folder goes with it.)
-        let s = self.shared.lock().unwrap();
+        // (A viewer's scratch folder goes with it; its locks taken though a panic poisoned them, as
+        // a drop runs this while a panic unwinds, where a second panic aborts the process.)
+        let s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if s.viewer {
             std::fs::remove_dir_all(&s.dir).ok();
         }
@@ -4316,7 +4318,11 @@ fn phase_sharer(
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                 let p = crate::paces::Paces { starts: s.sched.paces.starts.clone(), ..paces };
                 s.sched.set_paces(p);
-                s.sched.set_records(records);
+                // (A job's record come saying it resumed blocks: its step's stopped runs resume.)
+                if s.sched.set_records(records) {
+                    let events = s.history.all();
+                    s.sched.set_stopped(&events);
+                }
             }
             *into.speeds.lock().unwrap_or_else(|e| e.into_inner()) = Some(speeds);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -13860,7 +13866,8 @@ mod tests {
     /// Task #1454: a target whose run stopped short is placed by what is left of it (its pace over
     /// the rest, crate::agent::forecast::partials, as the forecast takes it), not last as never
     /// measured: 3/1/3's run made 10 of 100 z6 tiles in 300 s, so 3,000 s are left (the step not
-    /// seen to resume), past 3/1/2's 900; once a run of it ends well, it has no time left.
+    /// seen to resume: no record of a run of it resuming), past 3/1/2's 900; once a run of it ends
+    /// well, it has no time left.
     #[test]
     fn placement_takes_a_stopped_run_by_its_time_left() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -13913,6 +13920,78 @@ mod tests {
         let events = s.history.all();
         s.sched.set_stopped(&events);
         assert!(s.sched.stopped.is_empty(), "{:?}", s.sched.stopped);
+    }
+
+    /// Task #1455: a job's record saying it resumed blocks, of a job the history names (no cost of
+    /// its own: its run stopped), is kept, and says so (`set_records` true), so the stopped run's
+    /// time left is what is left of it; a record of a job the history doesn't name isn't kept, and
+    /// the same records again change nothing.
+    #[test]
+    fn a_record_of_a_resumed_run_makes_its_steps_stops_resume() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        let progress = history::Progress {
+            target: Some("slope-hi 3/1/3".into()),
+            done: 10.0,
+            total: 100.0,
+            unit: "z6 tiles".into(),
+            secs: 300.0,
+            since: 0.0,
+        };
+        c.note(history::Event {
+            job: Some(jobrt::jobid::JobId { epoch: 1, n: 77 }),
+            step: Some("slope-hi".into()),
+            targets: vec!["3/1/3".into()],
+            ok: Some(false),
+            v: Some(cost_version("slope-hi")),
+            progress: Some(progress),
+            ..history::Event::new("fail")
+        });
+        let mut s = c.shared.lock().unwrap();
+        assert_eq!(s.sched.secs_of("slope-hi", "3/1/3", "m1"), Some(3000), "a redo");
+        let facts = |resumed| jobrt::timings::JobFacts { resumed, ..Default::default() };
+        let records: crate::needs::Records = [("1-77".to_string(), facts(3)), ("1-99".to_string(), facts(3))].into();
+        assert!(s.sched.set_records(records.clone()));
+        assert_eq!(s.sched.records.keys().collect::<Vec<_>>(), ["1-77"]);
+        let events = s.history.all();
+        s.sched.set_stopped(&events);
+        assert_eq!(s.sched.secs_of("slope-hi", "3/1/3", "m1"), Some(2700), "what is left");
+        assert!(!s.sched.set_records(records));
+    }
+
+    /// Task #1455: the lead's phase sharer, reading the timings log, hands the schedule its job
+    /// records, and where one says a stopped run resumed blocks, reads the history's stops again
+    /// (`phase_sharer`): a lead started on a history whose stopped run's record came in its log
+    /// reads it first as a redo (its stops read before any record), then as what is left of it.
+    #[test]
+    fn the_phase_sharer_reads_a_resumed_runs_record_into_its_steps_stops() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let job = jobrt::jobid::JobId { epoch: 1, n: 77 };
+        {
+            let (c, _) = start_for_test(&dir, "m4", "");
+            let progress = history::Progress {
+                target: Some("slope-hi 3/1/3".into()),
+                done: 10.0,
+                total: 100.0,
+                unit: "z6 tiles".into(),
+                secs: 300.0,
+                since: 0.0,
+            };
+            c.note(history::Event {
+                job: Some(job),
+                step: Some("slope-hi".into()),
+                targets: vec!["3/1/3".into()],
+                ok: Some(false),
+                v: Some(cost_version("slope-hi")),
+                progress: Some(progress),
+                ..history::Event::new("fail")
+            });
+            let done = Some(jobrt::timings::Done { resumed: 3, ..Default::default() });
+            c.add_timings(&jobrt::timings::RunRec { job: Some(job), wall_s: 30.0, done, ..Default::default() });
+        }
+        let (c, _) = start_for_test(&dir, "m4", "");
+        let left = || c.shared.lock().unwrap().sched.secs_of("slope-hi", "3/1/3", "m1");
+        store::testkit::eventually("the stopped run read as what is left of it", || left() == Some(2700));
     }
 
     /// Task #1163: each ask answered is kept (`Coordinator::answers`, what the lead's departure

@@ -304,6 +304,9 @@ pub struct Sched {
     /// target: crate::agent::forecast::partials of the history (`set_stopped`), so placement takes it
     /// by its time left, not as never measured (`secs_of`, task #1454).
     pub stopped: BTreeMap<String, BTreeMap<String, f64>>,
+    /// The jobs the history's events named at the last `set_stopped`: those of them that resumed
+    /// blocks keep their records (`set_records`).
+    pub event_jobs: BTreeSet<String>,
 }
 
 /// How jobs' progress estimates ended (task #1505 review): what was left in fact over what their
@@ -1208,15 +1211,22 @@ impl Sched {
     /// jobs the costs hold are kept, the only ones a model reads: the timings log's every job's
     /// would grow without end, with each forecast's input archived (crate::agent::fcinputs) and
     /// every model made again at each new job's. (A cost come after its record is read with it at
-    /// the next round's.)
-    pub fn set_records(&mut self, mut r: crate::needs::Records) {
+    /// the next round's.) Kept too: those of jobs the history's events name (`event_jobs`) that
+    /// resumed blocks, which tell the stopped runs' time left (`set_stopped`). Whether those
+    /// changed: the stopped runs' times are to be worked out again.
+    pub fn set_records(&mut self, mut r: crate::needs::Records) -> bool {
         let held: std::collections::BTreeSet<String> =
             self.costs.values().filter_map(|c| c.job).map(|j| j.to_string()).collect();
-        r.retain(|j, _| held.contains(j));
+        r.retain(|j, f| held.contains(j) || (f.resumed > 0 && self.event_jobs.contains(j)));
+        let resumed = |r: &crate::needs::Records| {
+            r.iter().filter(|(_, f)| f.resumed > 0).map(|(j, _)| j.clone()).collect::<Vec<_>>()
+        };
+        let again = resumed(&r) != resumed(&self.records);
         if r != self.records {
             self.records = r;
             self.needs_rev += 1;
         }
+        again
     }
 
     /// The needs model's percentiles and windows now (`tuning`): the models made again when they
@@ -1239,11 +1249,13 @@ impl Sched {
     }
 
     /// What is left of each target whose run stopped short, from the history's `events` (oldest
-    /// first; crate::agent::forecast::partials), each at the lead's pace by the Macs' speeds
-    /// (`paces`).
+    /// first; crate::agent::forecast::partials, a step resuming by its jobs' `records`), each at
+    /// the lead's pace by the Macs' speeds (`paces`); the jobs the events name kept
+    /// (`event_jobs`, for `set_records`).
     pub fn set_stopped(&mut self, events: &[crate::coord::history::Event]) {
+        self.event_jobs = events.iter().filter_map(|e| e.job).map(|j| j.to_string()).collect();
         let paces = &self.paces;
-        let left = crate::agent::forecast::partials(self.the_plan, events, &|secs, worker, _| {
+        let left = crate::agent::forecast::partials(self.the_plan, events, &self.records, &|secs, worker, _| {
             secs / worker.map_or(1.0, |w| paces.get(w))
         });
         self.stopped.clear();
@@ -3533,6 +3545,7 @@ impl Sched {
             batch_s: s.batch_s,
             lefts: Lefts { by: BTreeMap::new(), taken: s.lefts.clone() },
             stopped: s.stopped.clone(),
+            event_jobs: Default::default(),
         };
         sched.set_offers(s.offers.clone());
         sched

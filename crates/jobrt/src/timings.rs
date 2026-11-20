@@ -2368,8 +2368,8 @@ pub struct LogTail {
 
 /// What a run's record says for the needs model (agentcore::needs, task #1416), by its job's id
 /// (`LogTail::facts`): whether it's learned from (`learnable`), the instructions its processes
-/// retired over the CPU they counted, and how much slower than its needs its supply explains it ran
-/// (`explain`).
+/// retired over the CPU they counted, how much slower than its needs its supply explains it ran
+/// (`explain`), and the blocks it resumed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JobFacts {
@@ -2380,6 +2380,10 @@ pub struct JobFacts {
     /// At least 1: the cores it wanted over those its Mac had for it, times its waits' share of
     /// its time stretched by the NAS's answers over their best (`explain`).
     pub explain: f64,
+    /// The blocks it took from an earlier run's resume log (`Done::resumed`): its step resumes a
+    /// stopped target (agentcore's forecast::partials).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub resumed: u64,
 }
 
 /// How much slower than its needs run `r` ran by what its Mac supplied (`Supply`), 1 at least: the
@@ -2456,6 +2460,7 @@ impl LogTail {
                     ginsn: w.map_or(0.0, |w| w.insn as f64 / 1e9),
                     cpu_s: w.map_or(0.0, |w| w.cpu_s),
                     explain: explain(&r, self.nas_least.get(&r.host).copied()),
+                    resumed: r.done.as_ref().map_or(0, |d| d.resumed),
                 };
                 self.facts.insert(j.to_string(), f);
             }
@@ -3293,6 +3298,21 @@ mod tests {
         assert!(t.read(&log));
         assert!(!t.shares().contains_key("b"));
         assert_eq!(t.shares()["c"].runs, 3);
+    }
+
+    /// Task #1455: a run's facts say the blocks it resumed (its record's `done.resumed`), by its
+    /// job; a run resuming none says none.
+    #[test]
+    fn a_runs_facts_say_what_it_resumed() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("timings.jsonl");
+        let job = |n| Some(crate::jobid::JobId { epoch: 1, n });
+        let done = Some(Done { end: "paused".into(), resumed: 4, made: 6, ..Default::default() });
+        append(&log, &RunRec { job: job(1), done, ..share_run("a", true, 4.0, &[("x", 0.1, 0)]) }).unwrap();
+        append(&log, &RunRec { job: job(2), ..share_run("a", true, 4.0, &[("x", 0.1, 0)]) }).unwrap();
+        let mut t = LogTail::default();
+        assert!(t.read(&log));
+        assert_eq!((t.facts()["1-1"].resumed, t.facts()["1-2"].resumed), (4, 0));
     }
 
     /// Task #1418: each Mac's speed, measured from its clean runs' work alone: a step's

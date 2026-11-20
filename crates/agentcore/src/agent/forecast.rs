@@ -610,14 +610,15 @@ pub fn step_sums(
 /// way its step runs now, `Event::v`) sets it for its progress's target (a cost key, its step the
 /// event's: `CostKey::parse`; its one target when it names none). What is left is the part's
 /// `total` less `done` where the step resumes, the whole `total` where it doesn't: a step resumes
-/// when a later run of a stopped target counted a smaller total or began past where the stop was
-/// (measured from the records, so a step with no run since a stop is taken to redo its target:
-/// the longer time). A job that ended well clears its finished targets (`Event::targets`), or all
+/// when a run of it among the events took blocks from an earlier run's resume log (its job's
+/// record in `records`, `JobFacts::resumed`), so a step with no such run is taken to redo its
+/// target: the longer time. A job that ended well clears its finished targets (`Event::targets`), or all
 /// its job's when it lists none, a later stop replaces it, and a not-ok "done" that finished some
 /// targets keeps the stop of the rest. `at` puts a time of a worker's at the lead's pace (`at_lead`).
 pub fn partials(
     the_plan: &dyn crate::agent::seam::Plan,
     events: &[crate::coord::history::Event],
+    records: &crate::needs::Records,
     at: &dyn Fn(f64, Option<&str>, &str) -> f64,
 ) -> BTreeMap<(String, String), f64> {
     struct Stop {
@@ -628,9 +629,13 @@ pub fn partials(
     }
     let mut jobs: BTreeMap<jobrt::jobid::JobId, Vec<String>> = BTreeMap::new();
     let mut stops: BTreeMap<(String, String), Stop> = BTreeMap::new();
+    let resumed: BTreeSet<&str> = records.iter().filter(|(_, f)| f.resumed > 0).map(|(j, _)| j.as_str()).collect();
     let mut resumes: BTreeSet<String> = BTreeSet::new();
     for e in events {
         let (Some(job), Some(step)) = (e.job, e.step.as_deref()) else { continue };
+        if !resumed.is_empty() && !resumes.contains(step) && resumed.contains(job.to_string().as_str()) {
+            resumes.insert(step.to_string());
+        }
         match e.kind.as_str() {
             "start" | "lease" => {
                 jobs.insert(job, e.targets.clone());
@@ -661,12 +666,9 @@ pub fn partials(
                     (None, [t]) => t,
                     _ => continue,
                 };
-                let at_key = (step.to_string(), target.to_string());
-                if stops.get(&at_key).is_some_and(|was| p.total < was.total || (p.since > 0.0 && p.since >= was.done)) {
-                    resumes.insert(step.to_string());
-                }
                 let s_per_unit = p.secs / (p.done - p.since);
-                stops.insert(at_key, Stop { done: p.done, total: p.total, s_per_unit, worker: e.worker.clone() });
+                let stop = Stop { done: p.done, total: p.total, s_per_unit, worker: e.worker.clone() };
+                stops.insert((step.to_string(), target.to_string()), stop);
             }
             _ => {}
         }
@@ -3045,18 +3047,19 @@ mod tests {
     /// Task #1449, the first source of a target's time: a run that stopped short says how far it got
     /// (available-bathymetry on 18 Nov: 2,169 s paused, its z6 tiles made and to make): its pace
     /// (past what its first beat said) over what is left, put at the lead's by its worker. The
-    /// whole total where no later run showed the step resuming (it redoes its target), the rest of
-    /// it where one did. Its progress's target is a cost key of the event's step; its one target
+    /// whole total where no run of the step among the events resumed blocks (it redoes its
+    /// target), the rest of it where one did. Its progress's target is a cost key of the event's step; its one target
     /// when it names none.
     #[test]
     fn a_stopped_runs_pace_gives_the_time_left_of_its_target() {
         let plan = crate::agent::seam::for_tests();
         let none = |_: f64, _: Option<&str>, _: &str| unreachable!();
-        assert!(partials(plan, &[], &none).is_empty());
+        let no_records = crate::needs::Records::new();
+        assert!(partials(plan, &[], &no_records, &none).is_empty());
         let key = |s: &str, t: &str| (s.to_string(), t.to_string());
         let bathy = key("available", "available-bathymetry");
         let half = |s: f64, w: Option<&str>, _: &str| if w == Some("m1") { s / 0.5 } else { s };
-        let at = |e: &[crate::coord::history::Event]| partials(plan, e, &half);
+        let at = |e: &[crate::coord::history::Event]| partials(plan, e, &no_records, &half);
         // (800 of 2,000 tiles in 2,169 s: 2.711 s each; a step not seen to resume redoes all 2,000.)
         let lease = stopped("lease", 1, "available", &["available-bathymetry"]);
         let fail = at_progress(stopped("fail", 1, "available", &[]), None, (800.0, 2000.0, 0.0, 2169.0));
@@ -3084,11 +3087,22 @@ mod tests {
         for e in [nothing, all, old] {
             assert!(at(&[lease.clone(), e]).is_empty());
         }
-        // (A later run of it that counted a smaller total shows the step resuming: what is left.)
+        // (Task #1455: a run of the step among the events whose record says it resumed blocks shows
+        // the step resuming: what is left. A later stop with a smaller total no longer does, nor a
+        // record of a job the events don't name, nor one that resumed none.)
         let l3 = stopped("lease", 3, "available", &["available-bathymetry"]);
         let again = at_progress(stopped("fail", 3, "available", &[]), None, (500.0, 1200.0, 0.0, 1000.0));
-        let got = at(&[lease.clone(), fail.clone(), l3.clone(), again]);
-        assert_eq!(got.get(&bathy), Some(&(700.0 * 1000.0 / 500.0)));
+        let twice = [lease.clone(), fail.clone(), l3.clone(), again];
+        assert_eq!(at(&twice).get(&bathy), Some(&(1200.0 * 1000.0 / 500.0)), "stopped twice: a redo");
+        let facts = |resumed| jobrt::timings::JobFacts { resumed, ..Default::default() };
+        let records = |r: &[(&str, u64)]| r.iter().map(|&(j, n)| (j.to_string(), facts(n))).collect();
+        let with =
+            |r: &crate::needs::Records| partials(plan, &[lease.clone(), fail.clone()], r, &half).get(&bathy).copied();
+        assert_eq!(with(&records(&[("1-1", 4)])), Some(1200.0 * 2169.0 / 800.0), "its own run resumed");
+        assert_eq!(partials(plan, &twice, &records(&[("1-3", 4)]), &half).get(&bathy), Some(&(700.0 * 1000.0 / 500.0)));
+        for r in [records(&[("1-9", 4)]), records(&[("1-1", 0)])] {
+            assert_eq!(with(&r), Some(redo), "{r:?}");
+        }
         // (A run that ended well clears its finished targets: all its job's when it lists none, only
         // those it lists otherwise; and a done that finished only some keeps the stop of the rest.)
         let ok = |t: &[&str]| crate::coord::history::Event { ok: Some(true), ..stopped("done", 3, "available", t) };

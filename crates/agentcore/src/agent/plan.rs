@@ -2564,7 +2564,7 @@ impl Planner {
             }
         };
         // (What is left of each target whose run stopped short, at the pace it ran at.)
-        let stopped = forecast::partials(self.o.the_plan, &events, &|secs, worker, _| {
+        let stopped = forecast::partials(self.o.the_plan, &events, &records, &|secs, worker, _| {
             at_lead(&crate::coord::Cost {
                 secs: secs.round() as u64,
                 worker: worker.map(str::to_string),
