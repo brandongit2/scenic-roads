@@ -389,7 +389,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                             None => Some(make()),
                             Some(kp) => kp.get_or_make(
                                 super::kept::RESOLVED,
-                                key,
+                                &format!("{id} {key}"),
                                 make,
                                 |(res, needs), p| {
                                     super::kept::result(p, res, super::kept::resolved);

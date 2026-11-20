@@ -254,6 +254,23 @@ impl Regions {
         Regions { ctx, ..Default::default() }
     }
 
+    /// Its resolutions kept as pieces in the lasting folder `dir` too (a scratch check's `--keep`,
+    /// kept::Lasting), held to `cap_mb` once done (`kept_lasting`).
+    /// `files`: what the check reads besides the records that their names don't tell (a scratch
+    /// check's declarations and the files they name, its land file: `read::check_folder`).
+    pub fn keep_lasting(&self, dir: &std::path::Path, cap_mb: u64, files: &str) -> Result<()> {
+        // (What the pieces' keys don't name: the other passes' outline sets, which a region
+        // pinned to one is compared with, and those files.)
+        let others = self.ctx.as_ref().map_or("", |c| c.others_names.as_str());
+        self.kept.open_lasting(kept::Lasting::open(dir, &format!("others {others}\n{files}"), cap_mb)?)
+    }
+
+    /// By stage (kept::stage_name), the pieces this check took (kept before) and made; and the
+    /// lasting folder held to its cap, when it keeps one (kept::Lasting::sweep).
+    pub fn kept_lasting(&self) -> (BTreeMap<u8, (usize, usize)>, Option<Result<kept::Swept>>) {
+        (self.kept.counts(), self.kept.sweep_lasting())
+    }
+
     /// The steps of the last resolve made, each with its time, and its slowest named items (a
     /// region's land or water, a remainder): empty before one is made.
     pub fn last_steps(&self) -> Steps {
@@ -973,3 +990,5 @@ mod reuse_tests;
 mod tests;
 #[cfg(test)]
 mod water_tests;
+#[cfg(test)]
+mod keep_tests;

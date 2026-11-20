@@ -462,7 +462,10 @@ pub fn coverage_of_folder(
 /// `only` (region ids, or folders and files of the folder): only those checked, with the regions
 /// their findings need (`Only`), and only their findings kept. How far it is goes out as
 /// `progress:` lines (its stages; within the resolve its steps, `regions::progress`), and each
-/// stage is a timings phase; the report says each step's time and the slowest regions.
+/// stage is a timings phase; the report says each step's time and the slowest regions. `keep`: a
+/// lasting folder of the resolution's pieces and its cap in MB (super::kept::Lasting): those whose
+/// reads are as they were taken, the rest made and kept, the folder held to its cap after.
+#[allow(clippy::too_many_arguments)]
 pub fn check_folder(
     root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
@@ -471,6 +474,7 @@ pub fn check_folder(
     land: Option<&Path>,
     geometry: Option<&Path>,
     only: &[String],
+    keep: Option<(&Path, u64)>,
 ) -> Result<serde_json::Value> {
     use jobrt::jobs::stage;
     use jobrt::timings::phase;
@@ -517,6 +521,9 @@ pub fn check_folder(
         None => None,
     };
     let mut checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
+    if let Some((d, mb)) = keep {
+        checks.keep_lasting(d, mb, &read_besides(root, declarations, land)?)?;
+    }
     drop(ph);
     eprintln!(
         "regions-check: datasets read in {:.0} s, footprint {} MB, peak resident {} MB",
@@ -590,6 +597,23 @@ pub fn check_folder(
     for s in &steps.0 {
         eprintln!("regions-check: {}: {:.1} s, {} of {}", s.step.what(), s.secs, s.done, s.total);
     }
+    let (counts, swept) = checks.kept_lasting();
+    if keep.is_some() {
+        for (stage, (taken, made)) in &counts {
+            eprintln!("regions-check: pieces of {}: {taken} taken as kept, {made} made", super::kept::stage_name(*stage));
+        }
+    }
+    if let (Some(s), Some((d, mb))) = (swept, keep) {
+        let s = s?;
+        eprintln!(
+            "regions-check: {} holds {} pieces, {:.0} MB (its cap {mb} MB); {} deleted, {:.0} MB, the least recently used",
+            d.display(),
+            s.files,
+            s.bytes as f64 / 1e6,
+            s.deleted,
+            s.deleted_bytes as f64 / 1e6
+        );
+    }
     stage(4, STAGES, "regions-check (the report)");
     let _ph = phase("the report");
     findings.extend(out.problems.iter().map(super::problem_finding));
@@ -648,6 +672,34 @@ pub fn check_folder(
         "steps": steps.0.iter().map(|s| serde_json::json!({"step": s.step.what(), "s": (s.secs * 10.0).round() / 10.0, "done": s.done, "total": s.total})).collect::<Vec<_>>(),
         "slowest": steps.1.iter().map(|(s, id, secs)| serde_json::json!({"step": s.what(), "region": id, "s": (secs * 10.0).round() / 10.0})).collect::<Vec<_>>(),
     }))
+}
+
+/// What a scratch check reads besides the records that their content names don't tell, for its
+/// lasting pieces' keys (super::kept::Lasting): each declaration's bytes, the length and time
+/// written of each dataset file they name, and of the land file. (The records' are named by their
+/// content; a declaration names its dataset by its source and version.)
+fn read_besides(root: &store::nasfs::NasRoot, declarations: Option<&Path>, land: Option<&Path>) -> Result<String> {
+    let stat = |m: std::io::Result<std::fs::Metadata>| -> String {
+        m.map_or_else(|e| format!("({e})"), |m| format!("{} {:?}", m.len(), m.modified().ok()))
+    };
+    let mut out = Vec::new();
+    if let Some(d) = declarations {
+        let mut names: Vec<_> = std::fs::read_dir(d).with_context(|| format!("list {}", d.display()))?.collect::<std::io::Result<_>>()?;
+        names.sort_by_key(|e| e.file_name());
+        for e in names.iter().filter(|e| e.path().is_file()) {
+            out.push(format!("{:?} {}", e.file_name(), blake3::hash(&std::fs::read(e.path())?).to_hex()));
+        }
+        let s = crate::inputs::sources::Sources::of_folder(d)?;
+        for role in super::data::ROLES {
+            if let Ok(p) = s.role(role).and_then(|src| src.param_str("path")) {
+                out.push(format!("{role} {p} {}", stat(root.join(p).metadata())));
+            }
+        }
+    }
+    if let Some(p) = land {
+        out.push(format!("land {} {}", p.display(), stat(std::fs::metadata(p))));
+    }
+    Ok(out.join("\n"))
 }
 
 /// Each accepted region's cells (`tiles::cells_of` each ring's box), by id: from its drawn

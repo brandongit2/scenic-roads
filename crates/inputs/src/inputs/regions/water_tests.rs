@@ -11,13 +11,13 @@ use super::tests::outlines;
 use super::*;
 use std::collections::HashMap;
 
-const PASS: &str = "2026-09-28";
+pub(super) const PASS: &str = "2026-09-28";
 
 fn e7(v: f64) -> i64 {
     (v * 1e7).round() as i64
 }
 
-fn bx(w: f64, s: f64, e: f64, n: f64) -> Vec<geom::Ring> {
+pub(super) fn bx(w: f64, s: f64, e: f64, n: f64) -> Vec<geom::Ring> {
     vec![vec![[e7(w), e7(s)], [e7(e), e7(s)], [e7(e), e7(n)], [e7(w), e7(n)]]]
 }
 
@@ -178,7 +178,7 @@ fn boxes_areas_and_wide_buffers() {
 pub(super) struct World {
     pub(super) _d: tempfile::TempDir,
     pub(super) o: buildstore::outlines::Outlines,
-    data: Datasets,
+    pub(super) data: Datasets,
 }
 
 pub(super) fn world() -> World {
@@ -191,7 +191,7 @@ fn world_with(north: f64) -> World {
 }
 
 /// The world with more land.
-fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
+pub(super) fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
     world_zones(north, more, HashMap::new())
 }
 
@@ -399,8 +399,8 @@ fn overlapping_water_or_an_uncovered_sea_is_an_error() {
 }
 
 /// Task #897: the regions' resolution paused after every piece kept (each region without water
-/// resolved, each with water's land and water), resumed each time, comes to the same as one never
-/// paused, each piece made once.
+/// resolved, each with water's land, water and stored shapes), resumed each time, comes to the same
+/// as one never paused, each piece made once.
 #[test]
 fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
     let w = world();
@@ -408,9 +408,10 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
     let mut files = all();
     files.retain(|f| f.0 != "far.toml" && f.0 != "_rules.toml");
     files.push(("old.toml", old));
-    // (Old's resolution and the regions with water's lands and waters: 12 pieces, each made once
-    // over the runs, the last, making none, not stopped.)
-    assert_eq!(paused_at_every_piece(&w, &files), 12, "each piece made once");
+    // (Old's resolution; the six regions with water's lands; the waters of the four with some (the
+    // slice's is none, the rest's the cover check's); the five's stored shapes, the rest's made last:
+    // 16 pieces, each made once over the runs, the last, making none, not stopped.)
+    assert_eq!(paused_at_every_piece(&w, &files), 16, "each piece made once");
 }
 
 /// A folder's remainder is a piece of its own (#1448 review): paused after it, a check takes it
@@ -425,9 +426,10 @@ fn a_remainder_is_kept_as_a_piece() {
     let mut files = vec![PINS, ("p/l.toml", l), ("p/r.toml", r)];
     let lands = paused_at_every_piece(&w, &files);
     files.push(("p/_remainder.toml", rem));
-    // (Each of l and r: its land and its water; then the remainder, one piece.)
+    // (Each of l and r: its land and its stored shapes (its water none); then the remainder, one
+    // piece, and the cells it reaches, another.)
     assert_eq!(lands, 4);
-    assert_eq!(paused_at_every_piece(&w, &files), lands + 1, "the remainder one piece");
+    assert_eq!(paused_at_every_piece(&w, &files), lands + 2, "the remainder one piece");
 }
 
 /// Folder `files` resolved, then again paused after every piece kept and resumed each time: the
@@ -463,7 +465,7 @@ fn paused_at_every_piece(w: &World, files: &[(&str, &str)]) -> usize {
         STOP_AFTER.set(Some(1));
         kept.open(d.path(), "a", true);
         let out = with(Some(&kept));
-        pieces += kept.made_here();
+        pieces += kept.made_keys().len();
         match kept.stopped() {
             Err(e) => {
                 assert!(jobrt::control::is_paused(&e), "{e:#}");

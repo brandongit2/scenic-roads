@@ -136,8 +136,9 @@
 //!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   catalogue                      publish a catalogue of the build manifest
-//!   regions-check --dir d [--declarations d] [--only ids] [--report f] [--geometry d]   the regions' check on a scratch
-//!                                folder, in memory: findings and sizes. Reads only
+//!   regions-check --dir d [--declarations d] [--only ids] [--report f] [--geometry d] [--keep d [--keep-mb n]]
+//!                                the regions' check on a scratch folder, in memory: findings and
+//!                                sizes. Reads only, but for the pieces it keeps in --keep's folder
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
 //! `-h`) on any step prints its usage and does nothing; a flag the step doesn't take or an argument
@@ -347,7 +348,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // [--declarations <folder of source declarations>] [--report <file.json>]: the regions'
         // check run on a scratch folder in memory, against the records' current pass (and the
         // datasets the declarations name, else the accepted ones): its findings and each region's
-        // size (inputs::inputs::regions::read::check_folder). Reads only; writes the report.
+        // size (inputs::inputs::regions::read::check_folder). Reads only; writes the report (and the
+        // pieces it keeps, with --keep).
         let dir = PathBuf::from(opt(&args, "--dir").context("--dir <folder of region files>")?);
         // (`--max-mb n`: stopped, saying so, once its footprint (compressed and swapped memory
         // included) passes n MB; else the regions' check's own limit.)
@@ -366,6 +368,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let only: Vec<String> = opt(&args, "--only")
             .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
+        // (`--keep <dir> [--keep-mb n]`: the resolution's pieces kept in a lasting folder, those
+        // whose reads are as they were taken back, the folder held to n MB after, the least recently
+        // used deleted first: kept::Lasting.)
+        let keep_mb = match opt(&args, "--keep-mb") {
+            Some(v) => v.parse::<u64>().context("--keep-mb <n>: a whole number of MB")?,
+            None => ::inputs::inputs::regions::kept::KEEP_MB,
+        };
+        let keep = opt(&args, "--keep").map(PathBuf::from);
         let rep = ::inputs::inputs::regions::read::check_folder(
             &root,
             &m,
@@ -374,6 +384,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             land.as_deref(),
             geometry.as_deref(),
             &only,
+            keep.as_deref().map(|d| (d, keep_mb)),
         )?;
         let n = rep["findings"].as_array().map_or(0, Vec::len);
         println!(

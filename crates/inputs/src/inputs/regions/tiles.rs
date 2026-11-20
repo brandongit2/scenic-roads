@@ -662,6 +662,306 @@ fn get_made(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Made> {
     })
 }
 
+/// What a piece (a region's land or water, a folder's remainder: super::kept) reads, digested as
+/// its key (task #1548): what the folder is resolved against (`Reads::new`), the files it reads
+/// (`files`), the regions it names, whole (`refs`), and the areas of the others it reads, cell by
+/// cell, in the cells it's made in (`cells`). The code that makes it is the kept pieces' own key
+/// (super::kept::Lasting). Pieces reading the same have one key; a piece whose reads changed has
+/// another, so an edit makes again only the pieces reading it.
+struct Reads {
+    h: blake3::Hasher,
+    buf: Vec<u8>,
+}
+
+impl Reads {
+    /// What every piece of `folder` reads: what it's resolved against (the pass, the outline
+    /// set's, the extract's, the land's and the datasets' names) and the pins.
+    fn new(folder: &Folder, ctx: &super::resolve::Context, what: &str) -> Reads {
+        let a = super::resolve::Against::of(ctx);
+        let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
+        for s in [what, a.names, a.pass.unwrap_or("-"), &format!("{:?}", folder.pins), a.data] {
+            r.text(s);
+        }
+        r
+    }
+
+    fn n(&mut self, v: i64) {
+        self.buf.extend(v.to_le_bytes());
+        if self.buf.len() > 1 << 16 {
+            self.h.update(&self.buf);
+            self.buf.clear();
+        }
+    }
+
+    fn text(&mut self, s: &str) {
+        self.n(s.len() as i64);
+        self.buf.extend(s.as_bytes());
+    }
+
+    fn area(&mut self, a: &Area) {
+        self.n(a.polys.len() as i64);
+        for poly in &a.polys {
+            self.n(poly.len() as i64);
+            for ring in poly {
+                self.n(ring.len() as i64);
+                for p in ring {
+                    self.n(p[0]);
+                    self.n(p[1]);
+                }
+            }
+        }
+    }
+
+    fn tarea(&mut self, t: &TArea) {
+        self.n(t.cells.len() as i64);
+        for (c, a) in &t.cells {
+            self.n(c.0);
+            self.n(c.1);
+            self.area(a);
+        }
+    }
+
+    /// The file at `path`, as `read` (what the piece reads of it: some of its keys as parsed, or its
+    /// bytes' hash), and the shapes its `parts` name (each its file's bytes' hash).
+    fn file(&mut self, folder: &Folder, path: &str, read: &str, parts: &[&Part]) {
+        self.text(path);
+        self.text(read);
+        let mut shapes: Vec<&str> =
+            parts.iter().filter_map(|p| if let Part::Shape(n) = p { Some(n.as_str()) } else { None }).collect();
+        shapes.sort();
+        shapes.dedup();
+        for n in shapes {
+            self.text(n);
+            self.text(&format!("{:?}", folder.shapes.get(n).map(|s| (&s.0, folder.hashes.get(&s.0)))));
+        }
+    }
+
+    /// The regions `parts` name (`region:`, `land:`, `group:`'s members but `id`) and the members
+    /// `more`, each whole: whether the folder has it, and its land, water and lakes as made, or its
+    /// area as stored (one without water), as they are now.
+    fn refs(
+        &mut self,
+        parts: &[&Part],
+        more: &[String],
+        id: &str,
+        folder: &Folder,
+        made: &BTreeMap<String, Made>,
+        others: &BTreeMap<String, TArea>,
+    ) {
+        let mut ids: Vec<String> = more.to_vec();
+        for p in parts {
+            match p {
+                Part::Region(d) | Part::Land(d) => ids.push(d.clone()),
+                Part::Group(g) => {
+                    self.text(&format!("group {g}"));
+                    let ms = folder.members(g, id);
+                    for m in &ms {
+                        self.text(m);
+                    }
+                    ids.extend(ms);
+                }
+                _ => {}
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        for d in &ids {
+            self.text(d);
+            self.n(folder.regions.contains_key(d).into());
+            match (made.get(d), others.get(d)) {
+                (Some(m), _) => {
+                    self.text("made");
+                    self.tarea(&m.land);
+                    self.tarea(&m.water);
+                    self.tarea(&m.lakes);
+                }
+                (None, Some(t)) => {
+                    self.text("stored");
+                    self.tarea(t);
+                }
+                (None, None) => self.text("none"),
+            }
+        }
+    }
+
+    /// The cells `cells`, and in each the others' pieces (`by_cell`'s: each region's id and its
+    /// piece's digest there).
+    fn cells(&mut self, cells: &BTreeSet<Cell>, by_cell: &ByCell) {
+        self.n(cells.len() as i64);
+        for c in cells {
+            self.n(c.0);
+            self.n(c.1);
+            for (id, h) in by_cell.get(c).map_or(&[][..], Vec::as_slice) {
+                self.text(id);
+                self.buf.extend(h.as_bytes());
+            }
+            self.n(-1);
+        }
+    }
+
+    /// The key: the piece's name (a region's id, a remainder's file) and the digest.
+    fn key(mut self, name: &str) -> String {
+        self.h.update(&self.buf);
+        format!("{name} {}", self.h.finalize().to_hex())
+    }
+}
+
+/// Regions' pieces by cell: each region's id and its piece's digest there.
+type ByCell = HashMap<Cell, Vec<(String, blake3::Hash)>>;
+
+/// `areas`' pieces by cell (`Reads::cells`), in id order.
+fn pieces_by_cell<'a>(areas: impl Iterator<Item = (&'a String, &'a TArea)>) -> ByCell {
+    let all: Vec<(&String, Cell, &Area)> = areas.flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (id, *c, a))).collect();
+    let mut by: ByCell = HashMap::new();
+    for (id, c, h) in pace::par_map(all, |(id, c, a)| {
+        let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
+        r.area(a);
+        r.h.update(&r.buf);
+        (id, c, r.h.finalize())
+    }) {
+        by.entry(c).or_default().push((id.clone(), h));
+    }
+    by
+}
+
+/// Piece `stage` of key `key` (super::kept, when the check keeps them and the piece has a key),
+/// with what the extract lacks as its parts were read (into `needs`): kept, else `make`'s, kept
+/// when it says its key holds every cell it read (`within`: else said, and made again next time).
+/// Given up once a pause came (its region held, nothing said; the check stops).
+fn piece<T>(
+    ctx: &super::resolve::Context,
+    stage: u8,
+    key: Option<&str>,
+    needs: &mut BTreeSet<Id>,
+    make: impl FnOnce(&mut BTreeSet<Id>) -> (Result<T, Vec<Problem>>, bool),
+    enc: impl Fn(&mut jobrt::resume_log::Put, &T),
+    dec: impl Fn(&mut jobrt::resume_log::Get) -> anyhow::Result<T>,
+) -> Result<T, Vec<Problem>> {
+    let (Some(k), Some(key)) = (ctx.kept, key) else { return make(needs).0 };
+    if k.stopping() {
+        return Err(Vec::new());
+    }
+    let dec = |g: &mut jobrt::resume_log::Get| Ok((super::kept::get_result(g, &dec)?, super::kept::get_ids(g)?));
+    if let Some((r, more)) = k.take(stage, key, dec) {
+        needs.extend(more);
+        return r;
+    }
+    let mut more = BTreeSet::new();
+    let (r, within) = make(&mut more);
+    let v = (r, more.into_iter().collect::<Vec<Id>>());
+    if within {
+        k.keep(stage, key, &v, |(r, more), p| {
+            super::kept::result(p, r, &enc);
+            super::kept::ids(p, more);
+        });
+    } else {
+        eprintln!("regions: the {} piece {key} read cells its key doesn't name: not kept", super::kept::stage_name(stage));
+    }
+    needs.extend(v.1);
+    v.0
+}
+
+/// The cells part `p` of region `r` can be anywhere in (`support`'s, or more), told without
+/// reading its parts into cells: from the boxes of what its leaves read (a leaf's cells lie in its
+/// box's), the regions it names as made or stored. `whole`: whether a region it names is read
+/// whole (its water and lakes too: `Src::Refs`'s), not its land alone.
+#[allow(clippy::too_many_arguments)]
+fn key_cells(
+    p: &Part,
+    r: &Region,
+    folder: &Folder,
+    ctx: &super::resolve::Context,
+    data: &super::data::Datasets,
+    made: &BTreeMap<String, Made>,
+    others: &BTreeMap<String, TArea>,
+    whole: &dyn Fn(&Part) -> bool,
+) -> BTreeSet<Cell> {
+    let of = |q: &Part| key_cells(q, r, folder, ctx, data, made, others, whole);
+    let boxed = |b: Option<[i64; 4]>| -> BTreeSet<Cell> {
+        b.map_or_else(BTreeSet::new, |b| cells_of([b[0], b[1], b[2] + 1, b[3] + 1]).map(|(x, y)| (wrap(x).0, y)).collect())
+    };
+    let rings = |rs: &[Vec<Pt>]| boxed(geom::bbox_of(rs.iter().flatten()));
+    let refs = |ids: Vec<String>, whole: bool| {
+        let mut out = BTreeSet::new();
+        for id in ids {
+            match made.get(&id) {
+                Some(m) => {
+                    out.extend(m.land.cells.keys());
+                    if whole {
+                        out.extend(m.water.cells.keys());
+                        out.extend(m.lakes.cells.keys());
+                    }
+                }
+                None => out.extend(others.get(&id).into_iter().flat_map(|t| t.cells.keys())),
+            }
+        }
+        out
+    };
+    match p {
+        Part::Earth => (-90..90).flat_map(|x| (-45..45).map(move |y| (x, y))).collect(),
+        Part::Box(b, _) => cells_of(*b).collect(),
+        Part::Rest => BTreeSet::new(),
+        Part::Union(ps) => ps.iter().flat_map(of).collect(),
+        Part::Minus(ps) => of(&ps[0]),
+        Part::Intersect(ps) => {
+            let mut it = ps.iter().map(of);
+            let first = it.next().unwrap_or_default();
+            it.fold(first, |a, b| a.intersection(&b).copied().collect())
+        }
+        Part::Nearest { of: q, .. } | Part::Cut { of: q, .. } => of(q),
+        Part::Buffer { of: q, m, .. } => {
+            let base: BTreeSet<Cell> = match &**q {
+                Target::Part(q) => of(q),
+                Target::Line(l) => match r.lines.get(l) {
+                    Some(super::file::Line::Coords(c)) => {
+                        geom::bbox_of(geom::unwrap(c).iter()).map(|b| cells_of(b).collect()).unwrap_or_default()
+                    }
+                    // (Its ways' line, as joined: anywhere.)
+                    Some(super::file::Line::Ways(_)) => return of(&Part::Earth),
+                    None => BTreeSet::new(),
+                },
+            };
+            let mut out = BTreeSet::new();
+            for c in base {
+                let (dx, dy) = reach(c, *m);
+                for x in c.0 - dx..=c.0 + dx {
+                    for y in (c.1 - dy).max(-45)..=(c.1 + dy).min(44) {
+                        out.insert((wrap(x).0, y));
+                    }
+                }
+            }
+            out
+        }
+        Part::Osm(id) => match ctx.outlines.and_then(|o| o.by_id(*id)) {
+            Some(rec) => boxed(Some(rec.bbox.map(i64::from))),
+            None => match ctx.extract.and_then(|e| e.relation(*id)) {
+                Some(Some(rel)) => {
+                    rings(&rel.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect::<Vec<_>>())
+                }
+                _ => BTreeSet::new(),
+            },
+        },
+        Part::OsmWay(w) => match ctx.extract.and_then(|e| e.way(*w)) {
+            Some(Some(way)) => boxed(geom::bbox_of(way.line.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>().iter())),
+            _ => BTreeSet::new(),
+        },
+        Part::Shape(n) => match folder.shapes.get(n) {
+            Some((_, Ok(polys))) => rings(&super::shapes::flat(polys)),
+            _ => BTreeSet::new(),
+        },
+        Part::Eez(k) => {
+            let mut out = data.eez.get(k).map(|rs| rings(rs)).unwrap_or_default();
+            out.extend(data.internal.get(k).map(|rs| rings(rs)).unwrap_or_default());
+            out
+        }
+        Part::Ts12(k) => data.ts12.get(k).map(|rs| rings(rs)).unwrap_or_default(),
+        Part::NeLake(k) => data.lakes.get(k).map(|l| rings(&l.0)).unwrap_or_default(),
+        Part::Land(d) => refs(vec![d.clone()], false),
+        Part::Region(d) => refs(vec![d.clone()], whole(p)),
+        Part::Group(g) => refs(folder.members(g, &r.id), whole(p)),
+    }
+}
+
 // ---- the whole --------------------------------------------------------------------------------------
 
 /// Every region with water resolved (those without, `resolve`'s, as they were, those of them `held`
@@ -733,12 +1033,12 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     let mut made: BTreeMap<String, Made> = BTreeMap::new();
     // (Held: the regions without water `resolve` held, and those with it as they're held here.)
     let mut held: BTreeSet<String> = plain_held.clone();
-    let whole = super::resolve::whole_key(folder, ctx);
     // (What the extract lacks, as the regions without water name it: the held report's needs, so
     // the lead makes the extract; `out` is read by the waves, so added to it after.)
     let mut needs: BTreeSet<Id> = BTreeSet::new();
     // (The cells the remainders' `of` reach: there each region's outline is kept for them.)
-    let keep = remainder_cells(folder, ctx, &others, out);
+    let supports = remainder_supports(folder, ctx, &others, out);
+    let keep: BTreeSet<Cell> = supports.values().flatten().copied().collect();
     trace("land");
     // 1. Land, in waves by what outlines name.
     let progress = &ctx.progress;
@@ -765,31 +1065,13 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             }
             break;
         }
-        // (Each region's land kept as a piece, task #897, by the folder's key; given up once a
-        // pause came. The wave's regions several at once, each its cells several at once: none
+        // (Each region's land kept as a piece, task #897, by what it reads (`Reads`); given up once
+        // a pause came. The wave's regions several at once, each its cells several at once: none
         // reads another's.)
-        let res: Vec<(String, Result<Made, Vec<Problem>>, Vec<Id>)> = pace::par_each(wave, |id| {
+        let res: Vec<(String, Result<Made, Vec<Problem>>, BTreeSet<Id>)> = pace::par_each(wave, |id| {
             let item = progress.item(&id);
-            let make = || {
-                let mut more = BTreeSet::new();
-                let m = make_land(&id, folder, ctx, data, &made, &others, out, &held, &keep, &item, &mut more);
-                (m, more.into_iter().collect::<Vec<Id>>())
-            };
-            let (m, more) = match ctx.kept {
-                None => make(),
-                Some(k) => k
-                    .get_or_make(
-                        super::kept::LAND,
-                        &format!("{whole} {id}"),
-                        make,
-                        |(m, more), p| {
-                            super::kept::result(p, m, put_made);
-                            super::kept::ids(p, more);
-                        },
-                        |g| Ok((super::kept::get_result(g, get_made)?, super::kept::get_ids(g)?)),
-                    )
-                    .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
-            };
+            let mut more = BTreeSet::new();
+            let m = land(&id, folder, ctx, data, &made, &others, out, &held, &keep, &item, &mut more);
             (id, m, more)
         });
         for (id, m, more) in res {
@@ -811,7 +1093,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     // (Before the remainders: the land in no region that touches the coastline, in the cells they reach,
     // for the coast step to tell what a remainder cut off the coast from what never had one.)
     let coastal = coastal_free_land(data, &made, &others, &keep);
-    let taken = remainders(folder, ctx, data, &whole, &mut made, &others, out, &mut held, &mut needs);
+    // (The regions without water's pieces by cell, read by the remainders' and waters' keys.)
+    let others_by_cell = if ctx.kept.is_some() { pieces_by_cell(others.iter()) } else { ByCell::new() };
+    let taken =
+        remainders(folder, ctx, data, &mut made, &others, &others_by_cell, &supports, out, &mut held, &mut needs);
     for m in made.values_mut() {
         m.outline = TArea::default();
     }
@@ -858,27 +1143,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             .map(|id| {
                 let item = progress.item(id);
                 trace(&format!("water of {id} begins"));
-                let make = || {
-                    let mut more = BTreeSet::new();
-                    let w = make_water(id, folder, ctx, data, &made, &others, out, &item, &mut more);
-                    (w, more.into_iter().collect::<Vec<Id>>())
-                };
-                let (w, more) = match ctx.kept {
-                    None => make(),
-                    Some(k) => k
-                        .get_or_make(
-                            super::kept::WATER,
-                            &format!("{whole} {id}"),
-                            make,
-                            |(w, more), p| {
-                                super::kept::result(p, w, put_tarea);
-                                super::kept::ids(p, more);
-                            },
-                            |g| Ok((super::kept::get_result(g, get_tarea)?, super::kept::get_ids(g)?)),
-                        )
-                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
-                };
-                needs.extend(more);
+                let w = water(id, folder, ctx, data, &made, &others, &others_by_cell, out, &item, &mut needs);
                 trace(&format!("water of {id} ends"));
                 (id.clone(), w)
             })
@@ -1009,12 +1274,40 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         let comps: Vec<Vec<Stretch>> = batch.iter().map(|(id, _)| component_polys(&areas[*id])).collect();
         let names: Vec<&str> = batch.iter().map(|(id, _)| id.as_str()).collect();
         let item = progress.items(&names.join(", "), batch.len());
-        let moves: Vec<(usize, usize, String)> = {
+        // (Each handing region's moves a piece (super::kept), keyed by what they read: its area and
+        // its units' members' areas, as they are now. Those kept are taken; the rest measured.)
+        let keys: Vec<Option<String>> = batch
+            .iter()
+            .map(|(id, units)| {
+                ctx.kept.map(|_| {
+                    let mut k = Reads::new(folder, ctx, "hand-out");
+                    k.tarea(&areas[*id]);
+                    for (to, ms) in units {
+                        k.text(to);
+                        for m in ms {
+                            k.text(m);
+                            k.tarea(&areas[m]);
+                        }
+                        k.n(-1);
+                    }
+                    k.key(id)
+                })
+            })
+            .collect();
+        let had: Vec<Option<Vec<(usize, String)>>> = keys
+            .iter()
+            .map(|k| Some(ctx.kept?.take(super::kept::HAND_OUT, k.as_ref()?, get_moves)?))
+            .collect();
+        let mut moves: Vec<(usize, usize, String)> = {
             // (Counted by cell, the units' unions' and the stretches': a large stretch, or a
             // hand-out to a folder of many regions, says how far it is as it goes.)
             let joined: Vec<Vec<(&String, Vec<&TArea>)>> = batch
                 .iter()
-                .map(|(_, units)| {
+                .zip(&had)
+                .map(|((_, units), had)| {
+                    if had.is_some() {
+                        return Vec::new();
+                    }
                     units
                         .iter()
                         .filter(|(_, ms)| ms.len() > 1)
@@ -1027,7 +1320,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
                 .flatten()
                 .map(|(_, ts)| ts.iter().flat_map(|t| t.cells.keys()).collect::<BTreeSet<_>>().len())
                 .sum();
-            item.parts(union_cells + comps.iter().flatten().map(Vec::len).sum::<usize>());
+            let measured = comps.iter().zip(&had).filter(|(_, h)| h.is_none()).flat_map(|(c, _)| c);
+            item.parts(union_cells + measured.map(Vec::len).sum::<usize>());
             let unions: Vec<BTreeMap<&String, TArea>> = joined
                 .into_iter()
                 .map(|j| j.into_iter().map(|(to, ts)| (to, union_of(&ts, &item))).collect())
@@ -1038,12 +1332,22 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
                 .map(|((_, units), u)| units.keys().map(|m| (m, u.get(m).unwrap_or(&areas[m]))).collect())
                 .collect();
             // (Each member's boxes by cell, made once: every stretch reads them.)
-            let boxes: Vec<Vec<HashMap<Cell, [i64; 4]>>> =
-                theirs.iter().map(|ts| pace::par_map(ts.iter().map(|(_, t)| *t).collect(), boxes_of)).collect();
+            let boxes: Vec<Vec<HashMap<Cell, [i64; 4]>>> = theirs
+                .iter()
+                .zip(&had)
+                .map(|(ts, had)| match had {
+                    Some(_) => Vec::new(),
+                    None => pace::par_map(ts.iter().map(|(_, t)| *t).collect(), boxes_of),
+                })
+                .collect();
             // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell),
             // and where it goes.
-            let work: Vec<(usize, usize)> =
-                comps.iter().enumerate().flat_map(|(b, cs)| (0..cs.len()).map(move |k| (b, k))).collect();
+            let work: Vec<(usize, usize)> = comps
+                .iter()
+                .enumerate()
+                .filter(|(b, _)| had[*b].is_none())
+                .flat_map(|(b, cs)| (0..cs.len()).map(move |k| (b, k)))
+                .collect();
             pace::par_map(work, |(b, k)| {
                 let comp = piece_of(&areas[batch[b].0], &comps[b][k]);
                 let mut edge: Vec<f64> = vec![0.0; theirs[b].len()];
@@ -1065,6 +1369,17 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
             .flatten()
             .collect()
         };
+        for (b, k) in keys.iter().enumerate().filter(|(b, _)| had[*b].is_none()) {
+            if let (Some(kept), Some(key)) = (ctx.kept, k) {
+                let mine: Vec<(usize, String)> =
+                    moves.iter().filter(|x| x.0 == b).map(|(_, k, m)| (*k, m.clone())).collect();
+                kept.keep(super::kept::HAND_OUT, key, &mine, put_moves);
+            }
+        }
+        for (b, h) in had.into_iter().enumerate() {
+            moves.extend(h.into_iter().flatten().map(|(k, m)| (b, k, m)));
+        }
+        moves.sort();
         // Applied region by region, cell by cell: taken from the handing region, given to each
         // member (no two of the run's regions share one: each one's as it would be alone).
         let handed: Vec<String> = batch.iter().map(|(id, _)| (*id).clone()).collect();
@@ -1152,9 +1467,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         }
     }
     // (Several regions at once, each its cells several at once: none reads another's.)
-    let stored =
-        pace::par_each(todo, |(id, r, t, _one)| (id, store(r, countries.get(id).map_or("", String::as_str), t, data)));
-    for (id, s) in stored {
+    let made = pace::par_each(todo, |(id, r, t, _one)| {
+        (id, stored(id, r, countries.get(id).map_or("", String::as_str), t, data, folder, ctx))
+    });
+    for (id, s) in made {
         put(out.resolved.get_mut(id).unwrap(), s);
     }
     if let Some(id) = rest_id {
@@ -1350,8 +1666,12 @@ fn env_of<'a>(
     Ok(env)
 }
 
+/// Region `id`'s land (`make_land`), a piece (super::kept) keyed by what it reads, told before
+/// its parts are read (`key_cells`): its outline, `minus` and `intersect` as parsed, its lines,
+/// the shapes they name, the regions they name (their land as made, or as stored), and the cells
+/// among its own its outline is kept in for the remainders (`keep`'s).
 #[allow(clippy::too_many_arguments)]
-fn make_land(
+fn land(
     id: &str,
     folder: &Folder,
     ctx: &super::resolve::Context,
@@ -1368,12 +1688,59 @@ fn make_land(
     if let Some(d) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
         return Err(vec![problem("rg-ref", r, path, format!("{id}: region:{d} is held, and so this region with it"))]);
     }
-    let env = env_for(id, false, folder, ctx, made, others, out, needs)?;
-    let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
-    if !r.intersect.is_empty() {
-        let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
-        cells = cells.intersection(&i).copied().collect();
-    }
+    let whole = |_: &Part| false;
+    let cells_of_key = |ps: &[Part]| -> BTreeSet<Cell> {
+        ps.iter().flat_map(|p| key_cells(p, r, folder, ctx, data, made, others, &whole)).collect()
+    };
+    let within = keyed(r, folder, ctx).then(|| {
+        let mut cells = cells_of_key(&r.outline);
+        if !r.intersect.is_empty() {
+            cells = cells.intersection(&cells_of_key(&r.intersect)).copied().collect();
+        }
+        cells
+    });
+    let key = within.as_ref().map(|cells| {
+        let parts = r.parts_of(false);
+        let mut k = Reads::new(folder, ctx, "land");
+        k.file(folder, path, &format!("{:?}\n{:?}\n{:?}\n{:?}", r.outline, r.minus, r.intersect, r.lines), &parts);
+        k.refs(&parts, &[], id, folder, made, others);
+        let kept: BTreeSet<Cell> = cells.intersection(keep).copied().collect();
+        k.cells(&kept, &ByCell::new());
+        k.key(id)
+    });
+    piece(ctx, super::kept::LAND, key.as_deref(), needs, |needs| {
+        let env = match env_for(id, false, folder, ctx, made, others, out, needs) {
+            Ok(env) => env,
+            Err(ps) => return (Err(ps), true),
+        };
+        let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
+        if !r.intersect.is_empty() {
+            let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
+            cells = cells.intersection(&i).copied().collect();
+        }
+        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+        (make_land(id, r, path, data, &env, cells, keep, item), ok)
+    }, put_made, get_made)
+}
+
+/// Whether region `r`'s pieces are keyed (`Reads`): not when it's pinned to another pass than the
+/// build's (its problem then reads the other passes' outlines and the regions it names: told
+/// whenever it's resolved).
+fn keyed(r: &Region, folder: &Folder, ctx: &super::resolve::Context) -> bool {
+    ctx.kept.is_some() && folder.pin(r).is_some() && folder.pin(r) == ctx.pass
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_land(
+    id: &str,
+    r: &Region,
+    path: &str,
+    data: &super::data::Datasets,
+    env: &Env,
+    cells: BTreeSet<Cell>,
+    keep: &BTreeSet<Cell>,
+    item: &super::progress::Item,
+) -> Result<Made, Vec<Problem>> {
     item.parts(cells.len());
     type Got = (Cell, Area, Area, Option<Area>);
     let got: Vec<Result<Got, Problem>> = pace::par_map(cells.into_iter().collect(), |c| {
@@ -1428,18 +1795,9 @@ fn make_land(
     Ok(m)
 }
 
-/// The cells the folders' remainders' `of` reach.
-fn remainder_cells(
-    folder: &Folder,
-    ctx: &super::resolve::Context,
-    others: &BTreeMap<String, TArea>,
-    out: &Outcome,
-) -> BTreeSet<Cell> {
-    remainder_supports(folder, ctx, others, out).into_values().flatten().collect()
-}
-
-/// By folder, the cells its remainder's `of` reaches (one whose parts can't be read: none; the
-/// remainders say why).
+/// By folder, the cells its remainder's `of` reaches, its parts read with no region with water made
+/// (one whose parts can't be read: none; the remainders say why). Each a piece (super::kept), keyed
+/// by what it reads: its file, the shapes it names and the regions without water it names.
 fn remainder_supports(
     folder: &Folder,
     ctx: &super::resolve::Context,
@@ -1447,14 +1805,48 @@ fn remainder_supports(
     out: &Outcome,
 ) -> BTreeMap<String, BTreeSet<Cell>> {
     let none = BTreeMap::new();
-    let mut cells = BTreeMap::new();
-    for (dir, (path, rem)) in &folder.remainders {
+    let all: Vec<(&String, &(String, super::file::Remainder))> = folder.remainders.iter().collect();
+    pace::par_map(all, |(dir, (path, rem))| {
         let r = rem.as_region();
-        if let Ok(env) = env_of(path, &r, false, folder, ctx, &none, others, out, &mut BTreeSet::new()) {
-            cells.insert(dir.clone(), support(&rem.of, &env));
-        }
+        let make = || -> Option<Vec<Cell>> {
+            let env = env_of(path, &r, false, folder, ctx, &none, others, out, &mut BTreeSet::new()).ok()?;
+            Some(support(&rem.of, &env).into_iter().collect())
+        };
+        let cells = match ctx.kept.filter(|_| keyed(&r, folder, ctx)) {
+            None => make(),
+            Some(k) => {
+                let parts = r.parts_of(false);
+                let mut key = Reads::new(folder, ctx, "support");
+                key.file(folder, path, folder.hashes.get(path).map_or("-", String::as_str), &parts);
+                key.refs(&parts, &[], &r.id, folder, &none, others);
+                // (Given up once a pause came: the check stops.)
+                k.get_or_make(super::kept::SUPPORT, &key.key(path), make, put_cells, get_cells).flatten()
+            }
+        };
+        cells.map(|c| (dir.clone(), c.into_iter().collect()))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn put_cells(v: &Option<Vec<Cell>>, p: &mut jobrt::resume_log::Put) {
+    p.u8(v.is_some().into());
+    for c in v.iter().flatten() {
+        p.u64(c.0 as u64);
+        p.u64(c.1 as u64);
     }
-    cells
+}
+
+fn get_cells(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Option<Vec<Cell>>> {
+    if g.u8()? == 0 {
+        return Ok(None);
+    }
+    let mut v = Vec::new();
+    while !g.0.is_empty() {
+        v.push((g.u64()? as i64, g.u64()? as i64));
+    }
+    Ok(Some(v))
 }
 
 /// 1b. The folders' declared remainders (`_remainder.toml`, docs/inputs.md §6.1.3 "Remainders"),
@@ -1469,15 +1861,16 @@ fn remainder_supports(
 /// meet another folder's remainder's past `HAIR_KM2` where neither folder holds the other (which is
 /// whose can't be told), whose rest no region of it can be nearest (none has land), or whose `of` a
 /// held region's outline may reach (what that region would take can't be told) holds its regions,
-/// saying why. Each remainder is kept as a piece (task #897), by the folder's whole key.
+/// saying why. Each remainder is kept as a piece (task #897), by what it reads (`remainder`).
 #[allow(clippy::too_many_arguments)]
 fn remainders(
     folder: &Folder,
     ctx: &super::resolve::Context,
     data: &super::data::Datasets,
-    whole: &str,
     made: &mut BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
+    others_by_cell: &ByCell,
+    supports: &BTreeMap<String, BTreeSet<Cell>>,
     out: &mut Outcome,
     held: &mut BTreeSet<String>,
     needs: &mut BTreeSet<Id>,
@@ -1491,7 +1884,6 @@ fn remainders(
     // (Each remainder taken so far: its folder, its file and its pieces' land and lakes by cell, in
     // the cells a later one's `of` reaches whose folder neither holds nor is held by its, for that
     // one to meet; the rest of its pieces aren't kept.)
-    let supports = remainder_supports(folder, ctx, others, out);
     let mut given: Vec<(String, String, BTreeMap<Cell, Area>)> = Vec::new();
     for (k, (dir, (path, rem))) in order.iter().enumerate() {
         let shared: BTreeSet<Cell> = order[k + 1..]
@@ -1517,33 +1909,23 @@ fn remainders(
         };
         let pieces = match why {
             Some(w) => Err(vec![remainder_problem(dir, path, Vec::new(), format!("{path}: {w}"))]),
-            None => {
-                let make = || {
-                    let mut more = BTreeSet::new();
-                    let v = remainder_pieces(
-                        dir, path, rem, &members, folder, ctx, data, made, others, out, held, &given, &item, &mut more,
-                    );
-                    (v, more.into_iter().collect::<Vec<Id>>())
-                };
-                let (v, more) = match ctx.kept {
-                    None => make(),
-                    Some(k) => k
-                        .get_or_make(
-                            super::kept::REMAINDER,
-                            &format!("{whole} {path}"),
-                            make,
-                            |(v, more), p| {
-                                super::kept::result(p, v, put_pieces);
-                                super::kept::ids(p, more);
-                            },
-                            |g| Ok((super::kept::get_result(g, get_pieces)?, super::kept::get_ids(g)?)),
-                        )
-                        // (Given up once a pause came: its regions held, nothing said.)
-                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
-                };
-                needs.extend(more);
-                v
-            }
+            None => remainder(
+                dir,
+                path,
+                rem,
+                &members,
+                folder,
+                ctx,
+                data,
+                made,
+                others,
+                others_by_cell,
+                out,
+                held,
+                &given,
+                &item,
+                needs,
+            ),
         };
         match pieces {
             Ok(v) => {
@@ -1610,6 +1992,19 @@ fn remainder_problem(dir: &str, path: &str, found: Vec<String>, message: String)
         files: vec![path.to_string()],
         message,
     }
+}
+
+/// A hand-out's moves as kept: each stretch moved (its place in the region's) and to whom.
+fn put_moves(v: &Vec<(usize, String)>, p: &mut jobrt::resume_log::Put) {
+    p.u64(v.len() as u64);
+    for (k, m) in v {
+        p.u64(*k as u64);
+        p.bytes(m.as_bytes());
+    }
+}
+
+fn get_moves(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Vec<(usize, String)>> {
+    (0..g.count(16)?).map(|_| Ok((usize::try_from(g.u64()?)?, String::from_utf8(g.bytes()?)?))).collect()
 }
 
 /// A remainder's pieces as kept (`remainders`).
@@ -1698,11 +2093,13 @@ fn nested(a: &str, b: &str) -> bool {
     a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
-/// A remainder's pieces (`remainders`): (the region, the cell, its piece: what's free of `of` there,
-/// sea and all, cut to the land only with its region's outline). `given`: the remainders taken
-/// before it, their folders, files and pieces.
+/// A remainder's pieces (`remainder_pieces`), a piece (super::kept) keyed by what it reads, told
+/// before its parts are read (`key_cells`): its file and the shapes it names, its members (whole,
+/// as made), the regions its parts name, the held regions whose outline may reach it, and in each
+/// cell its `of` may reach every region's outline and every region without water there, and the
+/// pieces there of the remainders taken before it that `remainder_pieces` meets.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn remainder_pieces(
+fn remainder(
     dir: &str,
     path: &str,
     rem: &super::file::Remainder,
@@ -1712,6 +2109,7 @@ fn remainder_pieces(
     data: &super::data::Datasets,
     made: &BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
+    others_by_cell: &ByCell,
     out: &Outcome,
     held: &BTreeSet<String>,
     given: &[(String, String, BTreeMap<Cell, Area>)],
@@ -1719,27 +2117,87 @@ fn remainder_pieces(
     needs: &mut BTreeSet<Id>,
 ) -> Result<Vec<(String, Cell, Area)>, Vec<Problem>> {
     let r = rem.as_region();
-    let mut env = env_of(path, &r, false, folder, ctx, made, others, out, needs)?;
-    for m in members {
-        env.leaves.insert(format!("region:{m}"), Src::Refs(vec![m.clone()], true));
-    }
-    let cells: BTreeSet<Cell> = support(&rem.of, &env);
-    // (A held region whose outline may reach the remainder's cells: what it would have taken is
-    // free here, and would go to the folder's regions.)
-    for h in held.iter().filter(|h| !members.contains(h)) {
-        let Some((_, hr)) = folder.regions.get(h) else { continue };
-        let meets = outline_reach(hr, folder, ctx, &mut BTreeSet::new()).is_none_or(|c| !c.is_disjoint(&cells));
-        if meets {
-            return Err(vec![remainder_problem(
-                dir,
-                path,
-                vec![h.clone()],
-                format!(
-                    "{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"
-                ),
-            )]);
+    let held_out: Vec<&String> = held.iter().filter(|h| !members.contains(h)).collect();
+    // (Its members are read whole, other regions it names by their land: `env_of`'s, and below.)
+    let whole = |p: &Part| matches!(p, Part::Region(d) if members.contains(d));
+    let within: Option<BTreeSet<Cell>> =
+        keyed(&r, folder, ctx).then(|| key_cells(&rem.of, &r, folder, ctx, data, made, others, &whole));
+    let key = within.as_ref().map(|cells| {
+        let parts = r.parts_of(false);
+        let mut k = Reads::new(folder, ctx, "remainder");
+        k.file(folder, path, folder.hashes.get(path).map_or("-", String::as_str), &parts);
+        for m in members {
+            k.text(m);
         }
-    }
+        k.refs(&parts, members, &r.id, folder, made, others);
+        for h in &held_out {
+            k.text(h);
+            let reach = folder.regions.get(*h).map(|(_, hr)| outline_reach(hr, folder, ctx, &mut BTreeSet::new()));
+            k.text(&format!("{:?}", reach.map(|c| c.map(|c| c.intersection(cells).copied().collect::<Vec<Cell>>()))));
+        }
+        k.cells(cells, others_by_cell);
+        // (Every region's outline in its cells, and the earlier remainders' pieces there.)
+        let outlines = made.iter().map(|(id, m)| (id.as_str(), "outline", &m.outline.cells));
+        let earlier = given.iter().filter(|(d, _, _)| !nested(dir, d)).map(|(d, p, g)| (d.as_str(), p.as_str(), g));
+        for (a, b, by) in outlines.chain(earlier) {
+            let there: Vec<(&Cell, &Area)> = cells.iter().filter_map(|c| Some((c, by.get(c)?))).collect();
+            if !there.is_empty() {
+                k.text(a);
+                k.text(b);
+                for (c, x) in there {
+                    k.n(c.0);
+                    k.n(c.1);
+                    k.area(x);
+                }
+                k.n(-1);
+            }
+        }
+        k.key(path)
+    });
+    piece(ctx, super::kept::REMAINDER, key.as_deref(), needs, |needs| {
+        let mut env = match env_of(path, &r, false, folder, ctx, made, others, out, needs) {
+            Ok(env) => env,
+            Err(ps) => return (Err(ps), true),
+        };
+        for m in members {
+            env.leaves.insert(format!("region:{m}"), Src::Refs(vec![m.clone()], true));
+        }
+        let cells: BTreeSet<Cell> = support(&rem.of, &env);
+        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+        // (A held region whose outline may reach the remainder's cells: what it would have taken is
+        // free here, and would go to the folder's regions.)
+        for h in &held_out {
+            let Some((_, hr)) = folder.regions.get(*h) else { continue };
+            let meets = outline_reach(hr, folder, ctx, &mut BTreeSet::new()).is_none_or(|c| !c.is_disjoint(&cells));
+            if meets {
+                let message = format!(
+                    "{path}: {h} is held, and its outline may reach the remainder's: what it would take can't be told"
+                );
+                return (Err(vec![remainder_problem(dir, path, vec![(*h).clone()], message)]), ok);
+            }
+        }
+        (remainder_pieces(dir, path, rem, members, data, made, others, &env, &r, cells, given, item), ok)
+    }, put_pieces, get_pieces)
+}
+
+/// A remainder's pieces (`remainders`): (the region, the cell, its piece: what's free of `of` there,
+/// sea and all, cut to the land only with its region's outline). `given`: the remainders taken
+/// before it, their folders, files and pieces.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn remainder_pieces(
+    dir: &str,
+    path: &str,
+    rem: &super::file::Remainder,
+    members: &[String],
+    data: &super::data::Datasets,
+    made: &BTreeMap<String, Made>,
+    others: &BTreeMap<String, TArea>,
+    env: &Env,
+    r: &Region,
+    cells: BTreeSet<Cell>,
+    given: &[(String, String, BTreeMap<Cell, Area>)],
+    item: &super::progress::Item,
+) -> Result<Vec<(String, Cell, Area)>, Vec<Problem>> {
     let cells: Vec<Cell> = cells.into_iter().collect();
     item.parts(cells.len());
     // (The pieces; the `by` parts' overlaps (km², on land and lakes); the land and lakes `of` shares
@@ -2279,14 +2737,19 @@ fn coast(
     }
 }
 
+/// Region `id`'s water (`make_water`), a piece (super::kept) keyed by what it reads, told before
+/// its parts are read (`key_cells`): its `water` as parsed, its lines, the shapes they name, the
+/// regions they name (whole, as made, or as stored), and in each cell it may be made in the regions
+/// without water there (`others_by_cell`).
 #[allow(clippy::too_many_arguments)]
-fn make_water(
+fn water(
     id: &str,
     folder: &Folder,
     ctx: &super::resolve::Context,
     data: &super::data::Datasets,
     made: &BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
+    others_by_cell: &ByCell,
     out: &Outcome,
     item: &super::progress::Item,
     needs: &mut BTreeSet<Id>,
@@ -2295,10 +2758,42 @@ fn make_water(
     if r.water.is_empty() {
         return Ok(TArea::default());
     }
-    let env = env_for(id, true, folder, ctx, made, others, out, needs)?;
-    trace(&format!("water of {id}: its parts read"));
-    let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
-    trace(&format!("water of {id}: {} cells", cells.len()));
+    // (In its water, `region:` and `group:` read a region whole, `land:` its land: `env_of`.)
+    let whole = |p: &Part| !matches!(p, Part::Land(_));
+    let within: Option<BTreeSet<Cell>> = keyed(r, folder, ctx)
+        .then(|| r.water.iter().flat_map(|p| key_cells(p, r, folder, ctx, data, made, others, &whole)).collect());
+    let key = within.as_ref().map(|cells| {
+        let parts = r.parts_of(true);
+        let mut k = Reads::new(folder, ctx, "water");
+        k.file(folder, path, &format!("{:?}\n{:?}", r.water, r.lines), &parts);
+        k.refs(&parts, &[], id, folder, made, others);
+        k.cells(cells, others_by_cell);
+        k.key(id)
+    });
+    piece(ctx, super::kept::WATER, key.as_deref(), needs, |needs| {
+        let env = match env_for(id, true, folder, ctx, made, others, out, needs) {
+            Ok(env) => env,
+            Err(ps) => return (Err(ps), true),
+        };
+        trace(&format!("water of {id}: its parts read"));
+        let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
+        trace(&format!("water of {id}: {} cells", cells.len()));
+        let ok = within.as_ref().is_none_or(|w| cells.is_subset(w));
+        (make_water(id, r, path, data, &env, cells, others, item), ok)
+    }, put_tarea, get_tarea)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_water(
+    id: &str,
+    r: &Region,
+    path: &str,
+    data: &super::data::Datasets,
+    env: &Env,
+    cells: BTreeSet<Cell>,
+    others: &BTreeMap<String, TArea>,
+    item: &super::progress::Item,
+) -> Result<TArea, Vec<Problem>> {
     item.parts(cells.len());
     let got: Vec<Result<(Cell, Area), Problem>> = pace::par_map(cells.into_iter().collect(), |c| {
         let _part = item.part_on_drop();
@@ -3406,6 +3901,99 @@ fn store(r: &Region, country: &str, t: &TArea, data: &super::data::Datasets) -> 
 
 /// A region's stored shapes and drawing (`store`).
 type Stored = (Vec<Shape>, BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>);
+
+/// `store`'s, a piece (super::kept) keyed by what it reads: the region's outline as its file has it
+/// (what its shapes are said to be from), its country and its area.
+#[allow(clippy::too_many_arguments)]
+fn stored(
+    id: &str,
+    r: &Region,
+    country: &str,
+    t: &TArea,
+    data: &super::data::Datasets,
+    folder: &Folder,
+    ctx: &super::resolve::Context,
+) -> Stored {
+    let make = || store(r, country, t, data);
+    let Some(k) = ctx.kept else { return make() };
+    let mut key = Reads::new(folder, ctx, "stored");
+    key.text(&format!("{:?}\n{:?}\n{:?}", r.outline, r.intersect, r.minus));
+    key.text(country);
+    key.tarea(t);
+    // (Given up once a pause came: stored empty, the check stops.)
+    k.get_or_make(super::kept::STORED, &key.key(id), make, put_stored, get_stored).unwrap_or_default()
+}
+
+fn put_stored((shapes, drawn): &Stored, p: &mut jobrt::resume_log::Put) {
+    p.u64(shapes.len() as u64);
+    for s in shapes {
+        p.bytes(s.from.as_bytes());
+        p.bytes(s.country.as_bytes());
+        p.u32(s.tolerance_m);
+        p.u8(s.water.into());
+        p.u64(s.rings.len() as u64);
+        for ring in &s.rings {
+            p.u64(ring.len() as u64);
+            for pt in ring {
+                p.u32(pt[0] as u32);
+                p.u32(pt[1] as u32);
+            }
+        }
+    }
+    p.u64(drawn.len() as u64);
+    for (from, polys) in drawn {
+        p.bytes(from.as_bytes());
+        p.u64(polys.len() as u64);
+        for poly in polys {
+            p.u64(poly.len() as u64);
+            for ring in poly {
+                p.u64(ring.len() as u64);
+                for pt in ring {
+                    p.u64(pt[0].to_bits());
+                    p.u64(pt[1].to_bits());
+                }
+            }
+        }
+    }
+}
+
+fn get_stored(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Stored> {
+    let text = |g: &mut jobrt::resume_log::Get| -> anyhow::Result<String> { Ok(String::from_utf8(g.bytes()?)?) };
+    let mut shapes = Vec::new();
+    for _ in 0..g.count(30)? {
+        let (from, country, tolerance_m) = (text(g)?, text(g)?, g.u32()?);
+        let water = match g.u8()? {
+            0 => false,
+            1 => true,
+            t => anyhow::bail!("a shape's water tagged {t}"),
+        };
+        let mut rings = Vec::new();
+        for _ in 0..g.count(8)? {
+            let n = g.count(8)?;
+            rings.push((0..n).map(|_| Ok([g.u32()? as i32, g.u32()? as i32])).collect::<anyhow::Result<Vec<_>>>()?);
+        }
+        shapes.push(Shape { from, country, tolerance_m, rings, water });
+    }
+    let mut drawn = BTreeMap::new();
+    for _ in 0..g.count(16)? {
+        let from = text(g)?;
+        let mut polys = Vec::new();
+        for _ in 0..g.count(8)? {
+            let mut poly = Vec::new();
+            for _ in 0..g.count(8)? {
+                let n = g.count(16)?;
+                poly.push(
+                    (0..n)
+                        .map(|_| Ok([f64::from_bits(g.u64()?), f64::from_bits(g.u64()?)]))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                );
+            }
+            polys.push(poly);
+        }
+        drawn.insert(from, polys);
+    }
+    Ok((shapes, drawn))
+}
 
 /// `store`'s, put in the region's resolution.
 fn put(res: &mut Resolved, (shapes, drawn): Stored) {
