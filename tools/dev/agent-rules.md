@@ -133,6 +133,9 @@ rely on the agent.
   tasks, as one piece of work: one slot, one builder, one branch, one review, one merge and publish.
   A small task blocked by, or conflicting with, work under way is left out. Each task keeps its own
   board item, events and close.
+- **A batch is chosen when it starts, never before** (owner, 20 Nov): read the board right then and
+  take the four next small tasks by priority as they stand. Don't plan, name or hold a next batch
+  ahead of time, on the board, in notes or in reports.
 - **The board enforces it:** a task in flight is working, backgrounded, integrating or in review;
   waiting on you isn't, as a task often waits on the owner before it starts. Moving a task into a
   status in flight from one that isn't (queued, waiting, done, abandoned), or into working from any
