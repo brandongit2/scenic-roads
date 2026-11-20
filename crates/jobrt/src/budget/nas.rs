@@ -140,15 +140,20 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   the counted Mac missing its deadlines; or its
 ///   answers judged rising past `Tuning::slow`): the window drops to `Tuning::decrease` of the
 ///   weight in use at once, never under `Tuning::step`; the slow start's threshold is set there.
-///   Missed deadlines with the disks read within the target and the pool's jobs all together
-///   moving under a step as measured are **not the NAS's doing** (`Reading::missed_outside`: a
-///   Mac's own link or session; cutting the pool's work relieves nothing): the cut stands a
-///   `span_s` (the answers had one to show it over), then is taken back at the first reading with
-///   the answers back under `Tuning::slow` and nothing congested (`State::undo`, the first of
-///   such cuts in a row's): the window back to what it was, no further than one job past the load
-///   the readings tested (as it grows), its threshold and hold-off as before. Congested by the
-///   NAS's doing meanwhile, nothing is taken back. Its stand-in ratio (`RATIO_MOST`) isn't kept
-///   among the answers judged (`Seen`).
+///   Missed deadlines with the disks read well under the target (`QUIET_SHARE` of it) and the
+///   pool's jobs all together moving under a step as measured are **not the NAS's doing**
+///   (`Reading::missed_outside`: a Mac's own link or session; cutting the pool's work relieves
+///   nothing): the cut stands a `span_s` (the answers had one to show it over), then is taken back
+///   at the first reading with the answers back under `Tuning::slow` and nothing congested
+///   (`State::undo`, the first of such cuts in a row's): the window back to what it was, no
+///   further than one job past the load the readings tested (as it grows), its hold-off as before,
+///   the cut's threshold kept (it grows on a step a cadence). Congested by the NAS's doing
+///   meanwhile, nothing is taken back. Its stand-in ratio (`RATIO_MOST`) isn't kept among the
+///   answers judged (`Seen`). A stall of the pool's own that the disks and the measured share
+///   don't show looks the same, so the rule bounds it: taken back with the weight in use fallen
+///   under what the misses came at, the window goes back a step under that weight, and misses
+///   there or heavier are then the NAS's doing (`State::stall`), cut as any, until the pool has
+///   run there a span without missing: one cut taken back per such stall, not one per job.
 ///   The jobs running go on, and nothing more that's paced starts until enough of them end. No new
 ///   cut until the weight in use has fallen to the window and its answers had a `span_s` since to
 ///   show it (store::aimd's once a window: a cut compounding on readings of the jobs out before it
@@ -241,15 +246,31 @@ pub struct State {
     /// congested by the NAS's doing since).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo: Option<Undo>,
+    /// The least weight in use missed deadlines were judged not the NAS's doing at (`Pace::read`):
+    /// were it the pool's doing after all, a stall the disks and the measured share don't show,
+    /// misses there or heavier are the NAS's doing, until the pool has run there a span with
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stall: Option<Stall>,
+}
+
+/// The weight in use missed deadlines were judged not the NAS's doing at (`State::stall`), and
+/// since when the pool has run at it or heavier without missing them (None: not since the last
+/// miss there, or not there since).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Stall {
+    pub load: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clear_at: Option<u64>,
 }
 
 /// The pacing's state a cut on missed deadlines not the NAS's doing went from (`State::undo`): its
-/// window, slow start's threshold, and its last cut and settling before it.
+/// window, and its last cut and settling before it; and the least weight in use the misses came at
+/// since (`State::stall` once taken back).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Undo {
     pub window: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub threshold: Option<f64>,
+    pub load: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,6 +293,7 @@ impl Default for State {
             lone_n: 0,
             seen: Vec::new(),
             undo: None,
+            stall: None,
         }
     }
 }
@@ -703,6 +725,10 @@ pub const FLOOR_S: u64 = 24 * 3600;
 /// The window's additive step, its least, and the least a job is paced at, by default
 /// (thousandths of the NAS).
 pub const STEP: u32 = 50;
+/// The share of the disks' target (`Target`) under which they're quiet enough that missed
+/// deadlines aren't judged their doing (`Pace::read`): well under it, not merely within it, as a
+/// NAS near its target may stall its sessions before its disks show it.
+pub const QUIET_SHARE: f64 = 0.5;
 /// The window once congested, by default: this share of the weight in use.
 pub const DECREASE: f64 = 0.5;
 /// The growth's cadence, by default (s).
@@ -1045,10 +1071,24 @@ impl Pace {
         // relieves nothing: the cut is taken back (`back`, below), and its ratio, `RATIO_MOST` for
         // an answer that never came, isn't judged among the answers.)
         let missed = counted.as_ref().is_some_and(|a| a.missed);
-        let disks_quiet =
-            busiest.is_some_and(|b| b < f64::from(s.pct)) && self.load.is_some_and(|l| l <= f64::from(s.pct));
+        let quiet = f64::from(s.pct) * QUIET_SHARE;
+        let disks_quiet = busiest.is_some_and(|b| b < quiet) && self.load.is_some_and(|l| l < quiet);
         let still = used.zip(own).is_some_and(|(u, o)| u.saturating_add(o) < k.step);
-        let missed_outside = missed && disks_quiet && still;
+        // (But at the weight in use such misses came at before, or heavier (`State::stall`), the
+        // NAS's doing: a stall of the pool's own the disks and the measured share don't show
+        // comes back there, an outside one whatever the load; that weight forgotten once the pool
+        // has run there a span without missing.)
+        let at_stall = self.st.stall.is_some_and(|x| s.in_use >= x.load);
+        let missed_outside = missed && disks_quiet && still && !at_stall;
+        if let Some(u) = self.st.undo.as_mut().filter(|_| missed_outside) {
+            u.load = u.load.min(s.in_use);
+        }
+        self.st.stall = match self.st.stall {
+            Some(x) if !at_stall || missed => Some(Stall { clear_at: None, ..x }),
+            Some(Stall { clear_at: Some(c), .. }) if t >= c + k.span_s => None,
+            Some(x) => Some(Stall { clear_at: x.clear_at.or(Some(t)), ..x }),
+            None => None,
+        };
         let prev = self.prev_in_use;
         if s.in_use > prev {
             if self.rose_at.is_none_or(|r| t >= r + k.span_s + k.grow_s) {
@@ -1164,10 +1204,16 @@ impl Pace {
             _ if back && st.undo.is_some() => {
                 let u = st.undo.take().unwrap();
                 // (The window back no further than one job past the load its readings tested, as
-                // it grows; the rest of the way grown as before the cut: its threshold, and its
-                // hold-off, as they were.)
-                st.window = st.window.max(u.window.min(ceiling)).min(f64::from(WHOLE));
-                (st.threshold, st.cut_at, st.settled_at) = (u.threshold, u.cut_at, u.settled_at);
+                // it grows, and a step under the weight the misses came at (`State::stall`): it
+                // grows past that a step a cadence, the cut's threshold kept, its hold-off as it
+                // was; a miss there again is the NAS's doing and cuts as any.)
+                let stalled = s.in_use < u.load;
+                let under = if stalled { f64::from(u.load) - step } else { f64::INFINITY };
+                st.window = st.window.max(u.window.min(ceiling).min(under)).min(f64::from(WHOLE));
+                (st.cut_at, st.settled_at) = (u.cut_at, u.settled_at);
+                if stalled {
+                    st.stall = Some(Stall { load: u.load, clear_at: None });
+                }
                 Verdict::Grew
             }
             Some(h) => Verdict::Held(h),
@@ -1180,12 +1226,8 @@ impl Pace {
                 // (Missed deadlines alone, not the NAS's doing: the state before kept to take back,
                 // the first of such cuts in a row's; any other cut kept nothing, above.)
                 if outside_only && st.undo.is_none() {
-                    st.undo = Some(Undo {
-                        window: st.window,
-                        threshold: st.threshold,
-                        cut_at: st.cut_at,
-                        settled_at: st.settled_at,
-                    });
+                    st.undo =
+                        Some(Undo { window: st.window, load: s.in_use, cut_at: st.cut_at, settled_at: st.settled_at });
                 }
                 st.window = st.window.min(to).max(step);
                 st.threshold = Some(to);
@@ -2711,20 +2753,22 @@ mod tests {
         assert!(cut_last(&readings(&mut q, &mut t, JUDGED, &slow, 300, None)));
     }
 
-    /// Task #1554: missed deadlines with the disks quiet and the pool's jobs all together moving
-    /// under a step aren't the NAS's doing. The cut stands a span (the answers had one to show it
-    /// over), then, the answers back under the knee, the window goes back to what it was, no
-    /// further than one job past the load the readings tested, its threshold and hold-off as before
-    /// (a restart between keeps it); the miss's stand-in ratio isn't judged among the answers. With
-    /// the pool moving a step or the disks not read, the cut stands as any cut.
+    /// Task #1554: missed deadlines with the disks well under their target and the pool's jobs all
+    /// together moving under a step aren't the NAS's doing. The cut stands a span (the answers had
+    /// one to show it over), then, the answers back under the knee, the window goes back to what it
+    /// was, no further than one job past the load the readings tested, its hold-off as before, the
+    /// cut's threshold kept (a restart between keeps it); the miss's stand-in ratio isn't judged
+    /// among the answers. With the pool moving a step, the disks not read, or read within their
+    /// target but not well under it, the cut stands as any cut.
     #[test]
     fn a_deadline_cut_not_the_nass_doing_is_taken_back() {
-        let case = |moving: u32, read: bool| {
+        let case = |moving: u32, busy: Option<f64>| {
             let mut p = Pace::default();
             (p.st.window, p.st.threshold) = (400.0, Some(400.0));
-            let busy = read.then_some(&QUIET[..]);
+            let disks = busy.map(|b| [b]);
             let go = |p: &mut Pace, t: u64, a: Answer| {
                 let m = jobs(moving);
+                let busy = disks.as_ref().map(|d| &d[..]);
                 let s =
                     Sample { t, answers: &[a], blind: false, busy, pct: 85, in_use: 120, moving: &m, wants: Some(250) };
                 p.read(&s, &Tuning::default())
@@ -2742,16 +2786,169 @@ mod tests {
             go(&mut q, 10 + SPAN_S, ans("m1", 5.0, 5.0));
             (cut, outside, why, seen, within, w, q.window(), q.st.threshold, q.st.cut_at)
         };
-        let (cut, outside, why, seen, within, w, back, th, cut_at) = case(10, true);
+        let (cut, outside, why, seen, within, w, back, th, cut_at) = case(10, Some(QUIET[0]));
         assert_eq!((cut, outside, w), (Verdict::Cut, true, 60), "held within a span: {within:?}");
         assert!(why.is_some_and(|w| w.contains("missing its deadlines from m1, not its doing")));
         assert!(!seen.contains(&RATIO_MOST), "{seen:?}");
-        assert_eq!((back, th, cut_at), (370, Some(400.0), None), "back to 400, one job of 250 past the 120 in use");
-        for (moving, read) in [(STEP, true), (10, false)] {
-            let (cut, outside, _, seen, _, w, back, th, _) = case(moving, read);
-            assert_eq!((cut, outside, w), (Verdict::Cut, false, 60), "moving {moving}, the disks read {read}");
-            assert!(back < 370 && th == Some(60.0) && seen.contains(&RATIO_MOST), "{back} {th:?}");
+        assert_eq!((back, th, cut_at), (370, Some(60.0), None), "back to 400, one job of 250 past the 120 in use");
+        // (The disks at half their target: within it, not well under it.)
+        let half = f64::from(DEFAULT_TARGET_PCT) * QUIET_SHARE;
+        for (moving, busy) in [(STEP, Some(QUIET[0])), (10, None), (10, Some(half))] {
+            let (cut, outside, _, seen, _, w, back, _, _) = case(moving, busy);
+            assert_eq!((cut, outside, w), (Verdict::Cut, false, 60), "moving {moving}, the disks at {busy:?}");
+            assert!(back < 370 && seen.contains(&RATIO_MOST), "{back}");
         }
+    }
+
+    /// Task #1554's review: a cut on missed deadlines judged not the NAS's doing, taken back with
+    /// the weight in use fallen under what the misses came at, goes back a step under that weight,
+    /// and a miss there again is the NAS's doing (a stall of the pool's own the disks and the
+    /// measured share don't show), cut as any, nothing kept to take back, until the pool has run
+    /// there a span without missing. Taken back with the weight still there and no miss, it goes
+    /// all the way back.
+    #[test]
+    fn a_take_back_that_stalls_the_nas_again_is_not_taken_back_twice() {
+        let go = |p: &mut Pace, t: u64, in_use: u32, missed: bool| {
+            let m = jobs(if missed { 0 } else { in_use });
+            let a = [Answer { missed, ..ans("m1", 5.0, 5.0) }];
+            let s = Sample {
+                t,
+                answers: &a,
+                blind: false,
+                busy: Some(&QUIET),
+                pct: 85,
+                in_use,
+                moving: &m,
+                wants: Some(100),
+            };
+            p.read(&s, &Tuning::default())
+        };
+        let mut p = Pace::default();
+        (p.st.window, p.st.threshold) = (800.0, Some(400.0));
+        go(&mut p, 0, 700, false);
+        assert_eq!(go(&mut p, 10, 700, true), Verdict::Cut);
+        assert!(p.last.as_ref().unwrap().missed_outside);
+        assert_eq!(p.st.undo.map(|u| u.load), Some(700));
+        // (A job ended, and the misses with it. Taken back a span after the cut, to 650.)
+        assert_eq!(go(&mut p, 10 + SPAN_S, 600, false), Verdict::Grew);
+        assert_eq!((p.window(), p.st.stall), (650, Some(Stall { load: 700, clear_at: None })));
+        assert_eq!(p.st.threshold, Some(350.0), "the cut's threshold: it grows on a step a cadence");
+        // (At 700 again, missing: the NAS's doing.)
+        let t = 10 + SPAN_S + 10 * GROW_S;
+        assert_eq!(go(&mut p, t, 700, true), Verdict::Cut);
+        assert!(!p.last.as_ref().unwrap().missed_outside && p.st.undo.is_none());
+        assert_eq!(p.window(), 350);
+        // (Run at 700 a span without missing: forgotten.)
+        let mut q = Pace::default();
+        q.st.stall = Some(Stall { load: 700, clear_at: None });
+        for i in 0..=SPAN_S / READ_EVERY_S {
+            go(&mut q, i * READ_EVERY_S, 700, false);
+        }
+        assert_eq!(q.st.stall, None);
+        // (Taken back with the 700 still in use and no miss: back to the 800 it was.)
+        let mut r = Pace::default();
+        (r.st.window, r.st.threshold) = (800.0, Some(400.0));
+        go(&mut r, 0, 700, false);
+        go(&mut r, 10, 700, true);
+        go(&mut r, 10 + SPAN_S, 700, false);
+        assert_eq!((r.window(), r.st.stall), (800, None));
+    }
+
+    /// What `stalls` came to: the readings stalled, the jobs started, and the cuts on missed
+    /// deadlines judged not the NAS's doing.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct Stalls {
+        stalled: usize,
+        starts: usize,
+        outside_cuts: usize,
+    }
+
+    /// The pool's jobs of 100 asked without end, each running `secs`, read every 10 s for 6 h: two
+    /// Macs (m1 at home, m6 away) answering near their floors, all missing their deadlines and
+    /// nothing moving while `stalled(t, in use)`, the disks at 20 % throughout.
+    fn stalls(secs: u64, stalled: fn(u64, u32) -> bool) -> Stalls {
+        let k = Tuning::default();
+        let mut p = Pace::default();
+        let macs = [("m1", true, 5.0), ("m6", false, 40.0)];
+        let mut running: Vec<(u64, usize)> = Vec::new();
+        let (mut out, mut seed) = (Stalls::default(), 0x2545_f491_u64);
+        for t in (0..6 * 3600).step_by(READ_EVERY_S as usize) {
+            running.retain(|&(end, _)| end > t);
+            let in_use = running.len() as u32 * 100;
+            let stall = stalled(t, in_use);
+            out.stalled += usize::from(stall);
+            let answers: Vec<Answer> = (macs.iter())
+                .map(|&(mac, home, best)| Answer {
+                    home,
+                    missed: stall,
+                    ..ans(mac, best * (1.0 + 0.2 * draw(&mut seed)), best)
+                })
+                .collect();
+            let moving: Vec<(String, u32)> = (macs.iter().enumerate())
+                .map(|(i, m)| {
+                    let n = if stall { 0 } else { running.iter().filter(|j| j.1 == i).count() as u32 };
+                    (m.0.into(), n * 100)
+                })
+                .collect();
+            let busy = [20.0];
+            let s = Sample {
+                t,
+                answers: &answers,
+                blind: false,
+                busy: Some(&busy),
+                pct: 85,
+                in_use,
+                moving: &moving,
+                wants: Some(100),
+            };
+            if p.read(&s, &k) == Verdict::Cut && p.last.as_ref().unwrap().missed_outside {
+                out.outside_cuts += 1;
+            }
+            let l = Limits { window: p.window(), small: k.small, alone: p.lone(), ..Default::default() };
+            loop {
+                let in_use = running.len() as u32 * 100;
+                let heaviest = if running.is_empty() { 0 } else { 100 };
+                if !(Limits::fits_job(in_use, in_use, heaviest, 100, false, l.win()) && l.paced(in_use, 100)) {
+                    break;
+                }
+                running.push((t + secs, out.starts % macs.len()));
+                out.starts += 1;
+            }
+        }
+        out
+    }
+
+    /// Task #1554's review: a NAS stall of the pool's own doing that the disks (at 20 %) and the
+    /// measured share (nothing moving) don't show, whenever more than 600 is in use (or 300), jobs
+    /// of 100 asked without end for 6 h. Taking back every cut on its misses kept the pool in it
+    /// (1827 of 2160 readings with jobs of 600 s, main 53); taken back once, the load it went back
+    /// to stalling it again, it cuts as main does: summed over jobs of 450 to 800 s (the jobs'
+    /// lengths set when they end, and so where in a cycle the stalls fall), no more than a tenth
+    /// over main's readings stalled over 600 and no more over 300, one cut taken back each. And the
+    /// stalls the rule is for, outside ones, 40 s every 300 s (or 120 s) whatever the load: more
+    /// than twice main's jobs started. Main's (208683ca0, before the rule) by this simulation:
+    /// 1648 and 4822 readings stalled, 661 and 286 jobs started.
+    #[test]
+    fn a_stall_of_the_pools_own_the_disks_dont_show_is_cut_as_main_cuts_it() {
+        let secs = [600, 450, 500, 550, 650, 700, 750, 800];
+        let all = |f: fn(u64, u32) -> bool| {
+            let each: Vec<Stalls> = secs.iter().map(|&s| stalls(s, f)).collect();
+            let sum = each.iter().fold(Stalls::default(), |a, x| Stalls {
+                stalled: a.stalled + x.stalled,
+                starts: a.starts + x.starts,
+                outside_cuts: a.outside_cuts.max(x.outside_cuts),
+            });
+            eprintln!("{:?} {sum:?}", each.iter().map(|x| (x.stalled, x.starts)).collect::<Vec<_>>());
+            sum
+        };
+        let over_600 = all(|_, u| u > 600);
+        assert!(over_600.stalled * 10 <= 1648 * 11 && over_600.outside_cuts <= 1, "{over_600:?}");
+        let over_300 = all(|_, u| u > 300);
+        assert!(over_300.stalled <= 4822 && over_300.outside_cuts <= 1, "{over_300:?}");
+        let every_300 = all(|t, _| t % 300 < 40);
+        assert!(every_300.starts >= 2 * 661, "{every_300:?}");
+        let every_120 = all(|t, _| t % 120 < 40);
+        assert!(every_120.starts >= 2 * 286, "{every_120:?}");
     }
 
     /// A restarted lead takes its kept state up when it's younger than `restore_s`: the window,
@@ -2780,6 +2977,7 @@ mod tests {
                 lone_n: 1,
                 seen: p.st.seen.clone(),
                 undo: None,
+                stall: None,
             }
         );
         assert_eq!(kept.seen.iter().map(|s| (s.used.unwrap(), s.ratio)).collect::<Vec<_>>(), readings);

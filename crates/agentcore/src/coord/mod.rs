@@ -14161,8 +14161,7 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 2,
-                seen: Vec::new(),
-                undo: None,
+                ..State::default()
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             (s.offers[0].clone(), s.lead_name.clone())
@@ -14295,8 +14294,7 @@ mod tests {
                 settled_at: Some(t),
                 lone_at: Some(t),
                 lone_n: 1,
-                seen: Vec::new(),
-                undo: None,
+                ..State::default()
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
             s.lead_name.clone()
