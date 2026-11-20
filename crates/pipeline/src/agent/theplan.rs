@@ -16,6 +16,7 @@ use roads::reach::Reaches;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -201,6 +202,7 @@ impl Plan for ThePlan {
             memo: RefCell::default(),
             shadow: RefCell::default(),
             shadowing: Cell::new(true),
+            planning: Arc::default(),
         })
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -352,6 +354,9 @@ struct Held {
     shadow: RefCell<Option<Shadowing>>,
     /// Whether each plan has its shadow made (off only in a test of what it costs).
     shadowing: Cell<bool>,
+    /// Whether `build::plan` is being made: a shadow waits for it to end before it starts, so the
+    /// two plans' peaks overlap only when a plan starts while a shadow runs.
+    planning: Arc<AtomicBool>,
 }
 
 /// What a shadow plan's keys read their context as, for the next one's diff: the manifest and the
@@ -420,9 +425,10 @@ impl Ask {
 }
 
 /// The plans' shadow (docs/incremental-planning.md §6, step 4): a worker, a thread of the plan
-/// part's own at the utility QoS, taking each plan's `Ask` (the latest: those it had no time for
-/// are skipped, the diff then spanning them) and holding what its shadow plans kept (`Kept`),
-/// none of it shared with the plan. Its line and any difference are logged.
+/// part's own at the utility QoS, taking each plan's `Ask` once no plan is being made (the
+/// latest: those it had no time for are skipped, the diff then spanning them) and holding what
+/// its shadow plans kept (`Kept`), none of it shared with the plan. Its line and any difference
+/// are logged.
 struct Shadowing {
     asks: Sender<Ask>,
     /// How many plans it was asked to shadow.
@@ -441,8 +447,9 @@ struct Kept {
 }
 
 impl Shadowing {
-    /// Its worker started; None, said, when no thread can be.
-    fn start() -> Option<Shadowing> {
+    /// Its worker started, each shadow begun only while no plan is being made (`planning`); None,
+    /// said, when no thread can be.
+    fn start(planning: Arc<AtomicBool>) -> Option<Shadowing> {
         let (asks, taken) = channel::<Ask>();
         #[cfg(test)]
         let (say, said) = channel();
@@ -451,6 +458,10 @@ impl Shadowing {
             agentcore::agent::forecast::low_priority();
             let mut kept: Option<Kept> = None;
             while let Ok(mut ask) = taken.recv() {
+                // (A plan being made: its end awaited, then the latest plan shadowed.)
+                while planning.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
                 let mut skipped = 0;
                 while let Ok(next) = taken.try_recv() {
                     (ask, skipped) = (next, skipped + 1);
@@ -807,7 +818,7 @@ impl Held {
     ) {
         let mut s = self.shadow.borrow_mut();
         if s.is_none() {
-            *s = Shadowing::start();
+            *s = Shadowing::start(self.planning.clone());
         }
         let Some(sh) = s.as_mut() else { return };
         debug_assert!(std::ptr::eq(publish.each, &r.covs.each[..]), "the plan publishes by the coverages' regions");
@@ -885,7 +896,9 @@ impl PlanHeld for Held {
                 let tiles = self.terrain_tiles(r.root, r.manifest);
                 nasread::PLAN.enter("build::plan");
                 let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
+                self.planning.store(true, Ordering::Relaxed);
                 let p = build::plan_with(&memo, cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
+                self.planning.store(false, Ordering::Relaxed);
                 if self.shadowing.get() {
                     let cpu = Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu));
                     nasread::PLAN.enter("its shadow's copy");

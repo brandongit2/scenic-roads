@@ -289,7 +289,8 @@ log's `incremental_digest_is_the_whole_digest` holds for its digest (docs/format
   plan used). Until step 5 the roles are the other way round (step 4, built): the full plan is
   the plan, made and used as before, and every plan has the incremental one made beside it, on
   the plan part's worker (theplan's `Shadowing`: a thread of its own at the utility QoS, its own
-  memo and kept keys, a copy of the plan's round), and compared with it; a difference is logged,
+  memo and kept keys, a copy of the plan's round, started once no `build::plan` is being made),
+  and compared with it; a difference is logged,
   each differing key by step and target with its key and the plan's and, for the first five, the
   lines of what it reads that changed since it was kept; the incremental state is then dropped,
   and the next shadow derives every key. After step 5, N counts time as well as plans (a shadow
