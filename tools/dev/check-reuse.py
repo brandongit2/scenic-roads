@@ -66,7 +66,7 @@ BUILD = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain
 # The scripts that run clippy, prod and tests (check.sh's lines, the test set, the shim, the test Mac's run, the
 # dev jobs' recorder wrapping them).
 # tools/dev/test/check-reuse.zsh checks they run no other repo script.
-RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-tests.sh",
+RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-tests.sh", "tools/dev/rustitems.py",
           "tools/dev/bin", "tools/app/remote-tests.sh", "tools/dev/devjob.zsh", "tools/dev/devjob.py"]
 # Every top-level entry of the repo, so a file under a new one is unknown (doubt: both parts run).
 # tools/dev/test/check-reuse.zsh checks every tracked file's entry is here.

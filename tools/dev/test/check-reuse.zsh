@@ -423,6 +423,65 @@ affected "a source outside the members: the members reaching it" m 'cargo test -
 m() { print '[[package' >> Cargo.lock }
 affected "a Cargo.lock it can't read: every member's tests, not a failure" m $wide "Cargo.lock can't be read"
 
+# -- affected-tests.sh: a module's users by what changed in it (#1539, tools/dev/rustitems.py). On a
+# toy repo: a's module m and b's module u using it, b in another crate (it sees m's pub items alone).
+traced() {  # traced <name> <the edit> <want commands, |-separated>
+  local d=$(mktemp -d) out
+  ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
+members = ["crates/a", "crates/b"]'
+    w crates/a/Cargo.toml '[package]
+name = "a"'; w crates/a/src/lib.rs 'pub mod m;'
+    w crates/a/src/m.rs '//! m.
+pub fn used() -> u8 { 1 }
+pub fn unused() -> u8 { 2 }
+fn helper() -> u8 { 3 }
+pub fn wrapper() -> u8 { helper() }
+pub fn quiet() -> u8 { 4 }
+pub struct S;
+impl S {
+    pub fn new() -> S { S }
+    pub fn run(&self) -> u8 { 5 }
+}
+#[cfg(test)]
+mod tests {
+    pub fn used() -> u8 { 6 }
+    #[test]
+    fn t() { assert_eq!(super::used(), 1) }
+}'
+    w crates/b/Cargo.toml '[package]
+name = "b"
+[dependencies]
+a = { path = "../a" }'; w crates/b/src/lib.rs 'pub mod u;'
+    w crates/b/src/u.rs 'use a::m::used;
+pub fn x() -> u8 { used() + a::m::wrapper() + a::m::S::new().run() }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { assert_eq!(super::x(), 7) }
+}'
+    print 'version = 4\n[[package]]\nname = "a"\nversion = "0.0.0"\n[[package]]\nname = "b"\nversion = "0.0.0"\ndependencies = ["a"]' > Cargo.lock
+    g add -A; g commit -m b0; $2; g add -A; g commit -m change
+    zsh $here/../affected-tests.sh HEAD 2>&1 ) > $d/out
+  out=$(grep -v '^#' $d/out); rm -rf $d
+  if [[ ${(j:|:)${(f)out}} == $3 ]]; then ok "affected-tests by name: $1"
+  else bad "affected-tests by name: $1: wanted $3; got:"; print -r -- $out | sed 's/^/    /'; fi
+}
+own='cargo test -p a --lib -- m::'; both="$own|cargo test -p b --lib -- u::"
+m() { sed -i '' 's/{ 2 }/{ 22 }/' crates/a/src/m.rs }
+traced "a function no user names: the module's own tests" m $own
+m() { sed -i '' 's/-> u8 { 1 }/-> u8 { 11 }/' crates/a/src/m.rs }
+traced "a function a user names: its tests too" m $both
+m() { sed -i '' 's/{ 3 }/{ 33 }/' crates/a/src/m.rs }
+traced "a private helper of a function a user names" m $both
+m() { sed -i '' 's|^//! m.|//! m, said again.|' crates/a/src/m.rs }
+traced "a comment alone: the module's own tests" m $own
+m() { sed -i '' 's/{ 6 }/{ 66 }/' crates/a/src/m.rs }
+traced "a test helper of the same name, which another crate never sees" m $own
+m() { sed -i '' 's/{ 5 }/{ 55 }/' crates/a/src/m.rs }
+traced "a method of a type the user names" m $both
+m() { print 'thread_local! { static X: u8 = 0; }' >> crates/a/src/m.rs }
+traced "a line outside every item: every user" m $both
+
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them
 w crates/b/src/main.rs 'fn main() {}'; w crates/c/src/lib.rs ''; w crates/c/tests/scan.rs ''

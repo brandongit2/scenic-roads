@@ -86,6 +86,18 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   the workspace's crates since #1084), their binaries and their integration tests.
   Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
+- Of those users, only the files naming what changed (#1539, `tools/dev/rustitems.py`): the changed
+  lines' items by name (a function, a type, an enum's variant, a method as `X::m` or `.m(` beside
+  `X`, a trait's or a trait impl's item by the trait and the type), and the module's items naming
+  them, until none more do (a private helper's change is its callers'). A file in another crate is
+  matched only against what it can see (`pub`, outside `#[cfg(test)]`). A change of comments alone
+  traces no user; a changed line outside every item (an inner attribute, a macro called at the top
+  level) traces every user, as before. A user left out says so in the `# why:` lines ("names …, but
+  none of what changed in it"). Over main's last 40 commits (20 Nov), one at a time: pipeline's
+  `agent::build::` tests ran for 16 of them, not 24; the tests selected went from 28,374 to 21,409,
+  their time (each test's median in publish's runs) from 38,218 s to 24,271 s. Missed, and
+  caught by publish's whole run: a method or field reached through a value whose type the user never
+  names, a method through an alias of its type, a trait method without the trait in scope.
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so
   `tests::` or `::` alone counts as a bare word. A single `--test`/`--bin` target may take bare names.
 - No full suites from agents or reviewers, and no `--workspace`. Reviewers (in the main checkout)

@@ -215,7 +215,7 @@ if has 'tools/dev/report-guard.sh' || has 'tools/dev/test/report-guard.zsh'; the
 else skip reportguard "report-guard.sh unchanged"; fi
 if has 'tools/dev/check.sh' || has 'tools/dev/test/check-prod.zsh'; then part prodtest zsh tools/dev/test/check-prod.zsh
 else skip prodtest "check.sh unchanged"; fi
-if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev/merge-ok.sh' || has 'tools/dev/test/check-reuse.zsh'; then
+if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev/rustitems.py' || has 'tools/dev/merge-ok.sh' || has 'tools/dev/test/check-reuse.zsh'; then
   part reuse zsh tools/dev/test/check-reuse.zsh
 else skip reuse "the reuse rule unchanged"; fi
 if has 'tools/dev/bin/*' || has 'tools/dev/test/shared-target.zsh'; then part sharedtarget zsh tools/dev/test/shared-target.zsh

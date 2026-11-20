@@ -10,6 +10,9 @@
 # `<crate>::<mod>`, the parent naming `<leaf>::`, a child using `super::`); the integration tests
 # under crates/<crate>/tests/ that name it, or that changed; other crates' modules naming
 # `<crate>::<mod>`, or `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916).
+# Of those users, only the files naming what changed in the module, by its items' names
+# (tools/dev/rustitems.py, #1539: a changed function, type, field, method, and the module's items
+# calling them); none for a change of comments alone; all for a line outside every item.
 # A file a module compiles in (include_str!, include_bytes! or include! outside a #[test] function)
 # runs that module's own tests. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
@@ -103,14 +106,18 @@ if args[:1] == ["--nextest"]:
             " ".join("-p " + c for c in group), " ".join(tg), expr))
     sys.exit()
 # (`--no-renames` throughout: a moved file's old path too, which a scan test's prefix may cover.)
+# (old, new: the trees the change goes between, new None for the working tree.)
 if not args:
     base = git("merge-base", "main", "HEAD").strip()
     changed = git("diff", "--no-renames", "--name-only", base).split() + git("ls-files", "--others", "--exclude-standard").split()
     what = "this branch against main (merge-base %s), working tree included" % base[:7]
+    old, new = base, None
 elif ".." in args[0]:
     changed = git("diff", "--no-renames", "--name-only", args[0]).split(); what = args[0]
+    old, new = args[0].split("..", 1)
 else:
     changed = git("diff", "--no-renames", "--name-only", args[0] + "^", args[0]).split(); what = "commit " + args[0][:9]
+    old, new = args[0] + "^", args[0]
 # Scan tests (#662): an integration test that reads the repo's files (write_sets, inputs_accessor,
 # cli …) says which with a `//! scans: <path prefix> …` line; any change under one (any kind of
 # file, deleted ones too) runs it whole. tools/app/guards.sh refuses a test file reading the repo
@@ -319,11 +326,40 @@ def compiled_into():
         _pathed[None] = []
     return _pathed
 
-def trace(c, path, kids, reason):
+# What a change to a file changed, by its items' names (#1539, tools/dev/rustitems.py): its users
+# naming none of them aren't traced. None: the whole module (a line outside every item).
+spec = importlib.util.spec_from_file_location("rustitems", os.environ["SCENIC_AFFECTED_HERE"] + "/rustitems.py")
+rustitems = importlib.util.module_from_spec(spec); spec.loader.exec_module(rustitems)
+def show(ref, f):
+    r = subprocess.run(["git", "show", "%s:%s" % (ref, f)], capture_output=True, text=True, errors="replace")
+    return r.stdout if r.returncode == 0 else ""
+def changed_names(f):
+    d = git("diff", "-U0", "--no-renames", old, *([new] if new else []), "--", f)
+    hunks = [(int(m[1]), int(m[2] or 1), int(m[3]), int(m[4] or 1))
+             for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", d, re.M)]
+    after = read(f) if new is None else show(new, f)
+    if not d.strip():   # (untracked: new whole)
+        hunks = [(0, 0, 1, after.count("\n") + 1)]
+    names = rustitems.changed(show(old, f), after, hunks)
+    if names is not None: names.crate = crate_of(f)
+    return names
+def short(names, n=6):
+    s = str(names).split(", ")
+    return ", ".join(s[:n]) + (" and %d more" % (len(s) - n) if len(s) > n else "")
+_blanked = {}
+def names_it(u, names):
+    """Whether file u names what changed (names None: the whole module, which it names)."""
+    if names is None: return True
+    if u not in _blanked: _blanked[u] = rustitems.blank(read(u))
+    # (Another crate's file sees only what is pub and not test code.)
+    return names.named_in(_blanked[u], cross=crate_of(u) != names.crate)
+
+def trace(c, path, kids, reason, names):
     """Add the tests of the files naming crate c's module `path` (kids: its submodules, whose
     users aren't its): its crate's `crate::<path>` (or `use crate::<parent>::{…<leaf>…}`), its
     binaries' `<c>::<path>`, the parent naming `<leaf>::`, a child using `super::`; every other
-    crate's `<c>::<path>` in its sources, and in its integration tests (each run whole)."""
+    crate's `<c>::<path>` in its sources, and in its integration tests (each run whole). Of
+    those, the files naming what changed in it (`names`, rustitems.changed's), all when None."""
     src = "crates/%s/src" % c
     segs = path.split("::"); parent, leaf = "::".join(segs[:-1]), segs[-1]
     pp = re.escape(parent + "::") if parent else ""
@@ -347,6 +383,10 @@ def trace(c, path, kids, reason):
         if h.startswith("crates/%s/tests/" % oc): named[h] = oc
         elif h.startswith("crates/%s/src/" % oc) and (oc != c or (has_lib(c) and h.startswith(src + "/bin/"))): users.add(h)
     for h in rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), tdirs, True): named[h] = crate_of(h)
+    for u in sorted((users - {mod_file(c, path)}) | set(named)):
+        if not names_it(u, names):
+            why.append("#   %s names %s's %s%s, but none of what changed in it (%s)" % (u, c, path, reason, short(names)))
+            users.discard(u); named.pop(u, None)
     for u in sorted(users - {mod_file(c, path)}): add_file(u, "uses %s's %s%s" % (c, path, reason))
     for t, oc in sorted(named.items()):
         tdir = "crates/%s/tests" % oc
@@ -380,11 +420,14 @@ for f in changed:
     if not path:
         if path == "": why.append("#   %s is the crate root: its own items' users aren't traced (a new `mod` line's file is in the diff)" % f)
         continue
+    names = changed_names(f)
+    if names is not None and not names:
+        why.append("#   %s: only comments or blank space changed: its users not traced" % f); continue
     d = "crates/%s/src/%s" % (c, path.replace("::", "/"))
     kids = sorted({k.removesuffix(".rs") for k in os.listdir(d) if k != "mod.rs"}) if os.path.isdir(d) else []
-    trace(c, path, kids, "")
+    trace(c, path, kids, "", names)
     for ac, ap in aliases(c, path):
-        trace(ac, ap, kids, " (%s's %s re-exported)" % (c, path))
+        trace(ac, ap, kids, " (%s's %s re-exported)" % (c, path), names)
 
 for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
 for f, p in included: add_file(f, "compiles in " + p)
