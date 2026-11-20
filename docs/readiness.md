@@ -13,7 +13,7 @@ Three places each encode what a target waits for, and the keys are a fourth:
 |---|---|---|
 | the planner (`agent::build`) | `build::waits` over `Step::reads` for terrain-lo, slope-*, trees-lo and unit (#864); hand-written orderings in `landmarks_work`, `bld_work`, `depth_work`, `polar_next`, the pass's world steps, the z6 tiles' wait for heritage-sites, reach and buildings | |
 | the forecast (`agent::forecast`) | `reads()` over the same declaration for the tiled steps; `chain_deps` (`Step::after` plus its own `pre` list: pois after trailends, peaks after summits, heritage after heritage-sites, and a `reads_terrain` flag that waits on *all* terrain); `UNITS_NEED`; the held-chain guard (#867: a chain job the offers lack waits on its stage's earlier chain jobs) | #863, #867 |
-| the page (`pageview`, `/api/tocome`) | the forecast's run, so whatever the forecast believes; waiting notes from `Reads::why` or hard-coded strings (`HERITAGE_WAIT`, …) | |
+| the page (`/api/swarm`'s forecast, `/api/tocome`) | the lead's forecast, so whatever it believes; waiting notes from `Reads::why` or hard-coded strings (`HERITAGE_WAIT`, …) | |
 | the keys (`build::*_key`) | each assembled by hand from versions, content names, digests and fingerprints | #832 (over-broad: coverage rings within 20 km); slope-lo reads the terrain root but nothing waits for it |
 
 `declared_reads_cover_the_keys` (#864) checks that a key's target inputs are declared reads, one

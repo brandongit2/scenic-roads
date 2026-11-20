@@ -2156,7 +2156,7 @@ impl Agent {
             switches: Default::default(),
             settings_written: None,
             broker: None,
-            pageview: pageview::PageView::new(o.the_plan),
+            pageview: pageview::PageView::new(),
             catalogues_view: None,
             built_view: None,
             pageview_reading: false,
@@ -4945,7 +4945,7 @@ impl Agent {
             pause: self.pause.clone(),
             held: self.hold().held.clone(),
             resources: Some(self.resources(root.as_ref())),
-            forecast: view.forecast.clone(),
+            forecast: view.forecast.as_deref().cloned(),
             publishing: view.publishing.clone(),
             timetables: view.timetables.clone(),
             catalogue: view.catalogue,
@@ -8517,7 +8517,7 @@ impl Agent {
             return None;
         }
         let view = self.plan.view.get();
-        Some(view.forecast.as_ref().map(placement::Placement::from_forecast).unwrap_or_default())
+        Some(view.forecast.as_deref().map(placement::Placement::from_forecast).unwrap_or_default())
     }
 
     /// Tasks brokered by every member (crate::agent::brokering) act in the pool; out of it, a member
@@ -8644,8 +8644,7 @@ impl Agent {
 
     /// The build page, each loop (docs/roles.md §3.3): the lead's alone. On the lead, its
     /// coordinator serves it from this Mac's views (crate::agent::pageview, cataloguesview,
-    /// builtview), the pageview told the lead, the members, this app and this Mac's lanes now, and
-    /// its pages' asks taken. On a member, its port (its broker, else a viewer alone started there)
+    /// builtview), the pageview told the lead and this app, and its pages' asks taken. On a member, its port (its broker, else a viewer alone started there)
     /// told where the page is (`member_page`).
     fn tend_pageview(&mut self, root: &store::nasfs::NasRoot) {
         if self.o.dry_run {
@@ -8727,22 +8726,9 @@ impl Agent {
         if self.pool_seen.is_none() || self.pool.is_none() {
             return;
         }
-        // (This Mac's lanes, only while a page asks: each slot's done targets are a read.)
-        let own = if self.pageview.wanted(now_s()) {
-            (0..self.slots.len())
-                .map(|k| pageview::OwnLane { name: self.worker_of(k), job: self.slot_job(k) })
-                .collect()
-        } else {
-            Vec::new()
-        };
         // (The lead's view: its own coordinator's, in process.)
         let lead: std::sync::Arc<dyn pageview::Lead> = coord;
-        self.pageview.set_inputs(pageview::Inputs {
-            app: self.app.clone(),
-            own,
-            keep: Some(self.o.home.join("pageview-waits.json")),
-            lead: pageview::LeadAt(Some(lead)),
-        });
+        self.pageview.set_inputs(pageview::Inputs { app: self.app.clone(), lead: pageview::LeadAt(Some(lead)) });
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());
             self.pageview_reading = true;
@@ -9470,9 +9456,6 @@ impl Agent {
                 co.set_page_regions(v.clone());
                 run.regions_handed = Some(key.clone());
             }
-        }
-        if let Some((b, _)) = &fc_bytes {
-            co.set_page_forecast(b);
         }
         // Into the forecasts' archive (fcarchive) with its input (fcinputs): handed to its thread,
         // which writes in batches. (The input at its own forecast's time: an older one than the
@@ -15357,14 +15340,14 @@ mod tests {
         put(&copy, &[1; 1000]);
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         // Work left: nothing stops a clear (task #814), and nothing is freed unasked.
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(false));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(false)));
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.caches_task.is_none() && copy.exists());
         // Nothing left, with or without a job having run here since: nothing is freed, none
         // started (no room target: nothing to free toward), whatever is free.
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         a.worked("unit 6/1/1");
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.caches_task.is_none() && copy.exists() && c.join("chm10/a.tif").exists());
         // A target the disk is short of: freed toward it, and only then.
@@ -15432,7 +15415,7 @@ mod tests {
             member: false,
         })
         .unwrap();
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         // A freeing under way (one that waits to be let go): the loop isn't held, and jobs start
         // meanwhile (what they use they hold: store::cachefile).
         let (go, wait) = std::sync::mpsc::channel::<()>();
@@ -15488,7 +15471,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         // (A process group of its own, as a job's.)
         let mut left =
             store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
@@ -15530,7 +15513,7 @@ mod tests {
             member: false,
         })
         .unwrap();
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         let (go, wait) = std::sync::mpsc::channel::<()>();
         a.caches_task = Some(CachesTask {
             ask: None,
@@ -15602,7 +15585,7 @@ mod tests {
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
         put(&c.join("unit-stages.json"), b"{}");
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
-        *a.planner().forecast.borrow_mut() = Some(forecast_now(false));
+        *a.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(false)));
         let asked = |home: &Path| home.join(room::CLEAR_REQUEST).exists() || home.join(room::CLEAR_TAKEN).exists();
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
         // use): not cleared, and why said; the ask taken up all the same.
@@ -15677,7 +15660,7 @@ mod tests {
             member: false,
         })
         .unwrap();
-        *dry.planner().forecast.borrow_mut() = Some(forecast_now(true));
+        *dry.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast_now(true)));
         dry.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(home.join(room::CLEAR_REQUEST).exists());
     }
@@ -15991,8 +15974,11 @@ mod tests {
         pass: Option<&str>,
     ) -> (Vec<JobSpec>, Vec<Waiting>, forecast::Forecast) {
         let p = a.planner();
-        *p.forecast.borrow_mut() =
-            Some(forecast::Forecast { at: now_s(), why: Some("STALE".into()), ..Default::default() });
+        *p.forecast.borrow_mut() = Some(std::sync::Arc::new(forecast::Forecast {
+            at: now_s(),
+            why: Some("STALE".into()),
+            ..Default::default()
+        }));
         *p.forecast_shape.borrow_mut() = Some(plan::Shape::Regions(None));
         let (mut w, mut held) = (Vec::new(), Holds::default());
         let jobs = p.region_jobs(root, pass, None, &mut w, &mut held);
@@ -16000,7 +15986,7 @@ mod tests {
         let t = std::time::Instant::now();
         loop {
             p.take_forecast();
-            if let Some(f) = p.forecast.borrow().clone() {
+            if let Some(f) = p.forecast.borrow().as_deref().cloned() {
                 return (jobs, w, f);
             }
             assert!(t.elapsed() < Duration::from_secs(60), "no forecast made");
@@ -16133,7 +16119,7 @@ mod tests {
             }),
         ));
         *p.forecast_shape.borrow_mut() = Some(old.clone());
-        *p.forecast.borrow_mut() = Some(forecast::Forecast { at: now_s(), ..Default::default() });
+        *p.forecast.borrow_mut() = Some(std::sync::Arc::new(forecast::Forecast { at: now_s(), ..Default::default() }));
         let (mut w, mut held) = (Vec::new(), Holds::default());
         p.region_jobs(&nas, None, None, &mut w, &mut held);
         assert!(p.forecast.borrow().is_none(), "the held forecast of another shape is cleared");
@@ -19030,11 +19016,11 @@ mod membership_tests {
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
         // On: told, the forecast's slack and speeds in it.
         set_placement(&lead, true);
-        *lead.planner().forecast.borrow_mut() = Some(forecast::Forecast {
+        *lead.planner().forecast.borrow_mut() = Some(std::sync::Arc::new(forecast::Forecast {
             done_at: Some(1000),
             steps: vec![forecast::StepFc { step: "slope-hi".into(), done_at: Some(1000), ..Default::default() }],
             ..Default::default()
-        });
+        }));
         lead.planner().publish();
         lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         // (The member's from the lead's settings, once its beat has fetched them.)

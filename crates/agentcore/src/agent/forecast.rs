@@ -526,9 +526,8 @@ fn curve(items: &[Item]) -> Vec<u32> {
     (0..n).map(|k| ends.partition_point(|&e| e <= (k as u64 * CURVE_S) as f64) as u32).collect()
 }
 
-/// A slot's job under way, as its lane's time left is worked out (`SlotJob::busy_s`): the lead's
-/// forecast (crate::agent's `forecast_now`) and each Mac's page data (crate::agent::pageview, its
-/// own lanes) alike.
+/// A slot's job under way, as its lane's time left is worked out (`SlotJob::busy_s`) for the lead's
+/// forecast (crate::agent::plan's `forecast_record`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SlotJob {
     pub step: String,
@@ -562,11 +561,6 @@ impl SlotJob {
             }
         };
         busy_s(self.eta.unwrap_or(0.0), left / speed.max(0.1))
-    }
-
-    /// What its lane runs (`Machine::running`): its step and targets.
-    pub fn running(&self) -> (String, usize) {
-        (self.step.clone(), self.targets.len().max(1))
     }
 }
 
@@ -1082,7 +1076,6 @@ impl ToCome {
     /// `f`'s tiles to come and runs (at `f.at`: the forecast's own, task #836), taken out of it:
     /// its `placed` dropped, its jobs' `item_job` handed back for the waits (`Waits::by_job`) with
     /// how many jobs there are; `machines` the lanes it was run on (each lane's Mac, else its name).
-    /// The lead's agent's and a pageview's alike.
     pub fn take(f: &mut Forecast, machines: &[Machine]) -> (ToCome, Vec<Option<u32>>, usize) {
         let macs: Vec<String> = machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
         let mut tc = ToCome::of(&f.placed, &macs, f.at);
@@ -2242,8 +2235,8 @@ fn offers(the_plan: &dyn crate::agent::seam::Plan, items: &[Item], order: &[Vec<
 /// The key the run's targets are offered under (no work of the run is done under it yet).
 const KEY: &str = "forecast";
 
-/// How often a forecast is made again at most: the lead's for its status (crate::agent), a page's
-/// view's on every Mac while its input is unchanged (crate::agent::pageview).
+/// How often a forecast is made again at most: the lead's, for its status and its build page
+/// (crate::agent::plan's `refresh_forecast`): the page's forecast is up to this old.
 pub const EVERY: Duration = Duration::from_secs(60);
 
 /// How long each of a forecast's three runs may compute (its own thread's CPU time, not wall

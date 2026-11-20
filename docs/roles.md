@@ -166,7 +166,7 @@ last written a day ago or more (a week for the history file; a folder by its new
 nothing a process of the Mac still writes goes (`room::member_leftovers`,
 `room::drop_member_leftovers`, by name: `room::is_member_leftover`):
 - the lead's: `status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`,
-  `pageview-waits.json`, `inputs-listing/` (the plan's, agent/plan.rs), `maplog/` (the map log's
+  `inputs-listing/` (the plan's, agent/plan.rs), `maplog/` (the map log's
   writer, agent/publish.rs `MAPLOG`), `plan-stall-sample-*.txt`, `costs.jsonl` and
   `costs-<n>.jsonl` (what the lead's own jobs' targets cost, `Agent::costs_path`; a member's jobs
   note theirs in their lease's folder), and in `coord/` the coordinator's files (`costs.json`,
@@ -174,8 +174,8 @@ nothing a process of the Mac still writes goes (`room::member_leftovers`,
   `timings.jsonl`, `store/`), which only a lead's coordinator reads, as its store's first fill (a
   broker read them at its start, and wrote the jobs' disks and fills back, until step 6);
 - written by nothing since the code that wrote them went: `loop-stall-sample-*.txt` (the loop
-  watchdog, cut by #871 step 6), `round.json` (the map update's old name, #209) and
-  `battery-floor.moved`.
+  watchdog, cut by #871 step 6), `round.json` (the map update's old name, #209),
+  `battery-floor.moved` and `pageview-waits.json` (the page view's kept waits, cut by #1487).
 - `coord/history.jsonl`, which a member's broker has not written since #1160 (the file an older
   app left, or the one a lead's coordinator wrote before the Mac handed over), last written a
   week ago or more, not a day (the history's own span).
@@ -346,7 +346,7 @@ one.) A member's threads (`sample`): `control`,
 `nas-write-0..3`, `nas-switch-0..1`, `jobs`, `pool`, five `coordinator` (its broker's server),
 `budgets-proxy`, `budgets-io` (2 on the M1, 17 on the M4: by the jobs' connections), `live-sampler`,
 `live-nas`, `memory-guard`, `app-update`. The lead's adds `plan`, `region-states`, `forecast`,
-`forecast-archive`, `pageview`, `pageview-lead`, `phase-shares`, `inputs-watch`, `maplog`,
+`forecast-archive`, `pageview-lead`, `phase-shares`, `inputs-watch`, `maplog`,
 `pool-store`, three more `coordinator`. The members' NAS status copies
 (`state/helpers/<host>.json`) were written at their agents' start alone (before the lead's first
 answer, #878 step 3's gate), none after; none at all since #1036 deleted the gate.

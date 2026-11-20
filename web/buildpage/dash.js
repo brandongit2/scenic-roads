@@ -459,8 +459,9 @@ const soloSteps = (x, groups) => (!x ? null : x.step != null ? [x.step] : groups
 
 // The queue (#622, #685): every tile the lead's last forecast places, on any Mac (`/api/tocome`:
 // forecast::ToCome), asked once a forecast (the status's `fc.at`, sent as `at`). This Mac's agent
-// answers from the forecast its pageview runs for the status (#836: the same `at`, on the lead and
-// every member); else (no pageview forecast yet) the lead's own, at its addresses. A lead change drops the old lead's answer at once.
+// answers with the tiles of the lead's forecast the status carries (#836, #1487: the same `at`, the
+// last or the one before); else (a member's, or none made yet) the lead's own, at its addresses. A
+// lead change drops the old lead's answer at once.
 // An answer with no tiles (the lead's agent just started: no forecast made yet, or no answer)
 // isn't kept as this forecast's: asked again after `TOCOME_AGAIN_MS`, the last one drawn meanwhile
 // (#833 review: it had been kept, the queue empty until the next forecast). The lead's answer may
@@ -487,8 +488,8 @@ function askToCome(m) {
     .then((v) => {
       const mine = toCome.lead === m.a.host;
       if (mine && !v?.macs) { toCome = { ...toCome, asking: false, again: Date.now() + TOCOME_AGAIN_MS, ans: v?.macs ? v : toCome.ans }; setTimeout(render, TOCOME_AGAIN_MS); return; }
-      // (An answer of another forecast than the status's (a pageview's first run not done yet
-      // after a restart, the lead's lagging): drawn meanwhile, asked again after
+      // (An answer of another forecast than the status's (a forecast taken in between the two
+      // asks, the lead's lagging): drawn meanwhile, asked again after
       // `TOCOME_AGAIN_MS` until one of this forecast comes, not kept as this forecast's (#863).)
       const exact = v?.at === m.fc?.at;
       toCome = { ...toCome, key: exact ? key : "", ans: mine ? v : null, asking: false, again: exact ? 0 : Date.now() + TOCOME_AGAIN_MS };

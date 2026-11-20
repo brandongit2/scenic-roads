@@ -602,8 +602,8 @@ pub struct Shared {
     /// without this lock (#1112 review: a handler holding it never holds up a connection).
     pub headers_max_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The page's view of the lead (crate::agent::pageview, the lead's in the pool): `/api/swarm`
-    /// and `/api/tocome` answered from it once it has the lead's view (the history's parts from
-    /// this coordinator's memory).
+    /// and `/api/regions` answered from it once it has the lead's view (the forecast, `page`, and
+    /// the history's parts from this coordinator's memory).
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
     /// This Mac's live store (crate::agent::live): `/api/live`. None: not given one (503).
     pub live: Option<Arc<crate::agent::live::Store>>,
@@ -629,9 +629,11 @@ pub struct Shared {
     /// (`REGION_STEPS_ASKING`). `/api/regions` with `steps`.
     pub region_steps: Option<Arc<serde_json::Value>>,
     pub region_steps_asked: Option<Instant>,
-    /// Each Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
-    /// `/api/tocome`. None: this Mac made none (a member's: the page asks the lead).
+    /// Each Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome), and in
+    /// the one before it: `/api/tocome` (a page that read the swarm's forecast just before a new one
+    /// came still gets its tiles). None: this Mac made none (a member's: the page asks the lead).
     pub tocome: Option<Arc<crate::agent::forecast::ToCome>>,
+    pub tocome_before: Option<Arc<crate::agent::forecast::ToCome>>,
     /// A viewer alone (`Coordinator::viewer`): a member's port with no broker (tasks brokered by
     /// every member off): its page (`page_at`), its live store and settings, nothing else.
     pub viewer: bool,
@@ -2173,6 +2175,7 @@ impl Coordinator {
             region_steps: None,
             region_steps_asked: None,
             tocome: None,
+            tocome_before: None,
             viewer,
             broker: mode == Mode::Broker,
             releases: None,
@@ -3560,9 +3563,11 @@ impl Coordinator {
         self.shared.lock().unwrap().region_steps_asked.is_some_and(|t| t.elapsed() < REGION_STEPS_ASKING)
     }
 
-    /// Each Mac's tiles to come in this Mac's last forecast (`Shared::tocome`).
+    /// Each Mac's tiles to come in this Mac's last forecast (`Shared::tocome`), the last one kept as
+    /// the one before.
     pub fn set_tocome(&self, t: Arc<crate::agent::forecast::ToCome>) {
-        self.shared.lock().unwrap().tocome = Some(t);
+        let mut s = self.shared.lock().unwrap();
+        s.tocome_before = s.tocome.replace(t);
     }
 
     /// The forecast's dependencies as the history's waits (history::WaitsBasis::next), worked out
@@ -3632,16 +3637,13 @@ impl Coordinator {
         pool_view(&self.shared.lock().unwrap(), status)
     }
 
-    /// The forecast's input its agent made (crate::agent::forecast::Record's bytes), for its page
-    /// (`page`); unreadable, said and not kept.
-    pub fn set_page_forecast(&self, bytes: &[u8]) {
-        match crate::agent::forecast::Record::from_bytes(bytes) {
-            Ok(r) => self.shared.lock().unwrap().page.forecast = Some((unix_ms(), Arc::new(r))),
-            Err(e) => eprintln!("coordinator: the forecast's input for the page: {e:#}"),
-        }
+    /// Its agent's forecast as its status has it (crate::agent::plan's `hold_forecast`), for its
+    /// page (`page`): handed as it's taken in, none once the plan's shape changed or it failed.
+    pub fn set_page_forecast(&self, f: Option<Arc<crate::agent::forecast::Forecast>>) {
+        self.shared.lock().unwrap().page.forecast = f;
     }
 
-    /// The forecast's input and the regions its agent handed it for its page, shared.
+    /// The forecast and the regions its agent handed it for its page, shared.
     pub fn page(&self) -> PageFiles {
         self.shared.lock().unwrap().page.clone()
     }
@@ -3784,19 +3786,6 @@ impl Coordinator {
     /// (`history_epoch`).
     pub fn history_answer(&self, since: u64, max: usize, data: bool) -> serde_json::Value {
         history_answer(&self.shared, since, max, data)
-    }
-
-    /// What a pageview's forecast works its waits out from (history::History::waits_basis_from),
-    /// the history's number now and its numbering (crate::agent::pageview::Lead::waits_basis).
-    pub fn history_waits_basis(&self, old: Arc<history::Waits>, set_at: u64) -> (history::WaitsBasis, u64, String) {
-        let s = self.shared.lock().unwrap();
-        let (b, seq) = s.history.waits_basis_from(old, set_at);
-        (b, seq, history_epoch(&s))
-    }
-
-    /// The history's last number by time `t` (history::History::seq_at).
-    pub fn history_seq_at(&self, t: u64) -> u64 {
-        self.shared.lock().unwrap().history.seq_at(t)
     }
 
     /// Its port.
@@ -4532,13 +4521,13 @@ fn making(why: &str) -> (u16, serde_json::Value) {
 }
 
 /// What the lead's agent hands its coordinator for its page (crate::agent::pageview, in process:
-/// `Coordinator::page`) besides its own state: the forecast's input (crate::agent::forecast::Record)
-/// and the page's regions (crate::agent::regionsview), each with when it was handed (unix ms), held
-/// once and shared, never copied (task #1335: the input as a JSON tree, copied into each view
-/// asked, was 35 MB asked of the allocator a forecast).
+/// `Coordinator::page`) besides its own state: its forecast as its status has it
+/// (crate::agent::forecast::Forecast, task #1487: the page's is the lead's own, never run again
+/// for it) and the page's regions (crate::agent::regionsview, with when they were handed, unix
+/// ms), held once and shared, never copied (task #1335).
 #[derive(Clone, Debug, Default)]
 pub struct PageFiles {
-    pub forecast: Option<(u64, Arc<crate::agent::forecast::Record<'static>>)>,
+    pub forecast: Option<Arc<crate::agent::forecast::Forecast>>,
     pub regions: Option<(u64, Arc<serde_json::Value>)>,
 }
 
@@ -5720,12 +5709,14 @@ fn route(
             // history's parts from this coordinator's memory, in and out of the pool.)
             // (The pause, from the lead's memory: its NAS mirror waits for the agent's next loop,
             // many seconds on a busy lead.)
-            let (pv, own) = {
+            // (Its forecast, the lead's agent's as it handed it (`PageFiles`): the status's, up to a
+            // forecast's `EVERY` old, the same `at` as `/api/tocome`'s.)
+            let (pv, own, forecast) = {
                 let s = shared.lock().unwrap();
-                (s.pageview.clone().filter(|p| p.active()), s.paused.clone())
+                (s.pageview.clone().filter(|p| p.active()), s.paused.clone(), s.page.forecast.clone())
             };
             if let Some(p) = pv {
-                return Ok(p.swarm().map_or_else(not_ready, |mut a| {
+                return Ok(p.swarm(forecast.as_deref()).map_or_else(not_ready, |mut a| {
                     a["pause"] = serde_json::to_value(own).unwrap_or_default();
                     history_swarm(shared, a["now"].as_u64().unwrap_or(0), &mut a);
                     (200, a)
@@ -5799,16 +5790,20 @@ fn route(
             // an error: the page asks the lead, or waits.
             // With the history's `epoch`, the numbering its `after` is in: this coordinator's
             // history's, the page's.
+            // The one of the forecast the page read (`{"at"}`, its status's: task #836), the last or
+            // the one before; else the last.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-            let (tc, epoch, pv) = {
+            let at = b["at"].as_u64();
+            let (tc, epoch) = {
                 let s = shared.lock().unwrap();
-                (s.tocome.clone(), history_epoch(&s), s.pageview.clone().filter(|p| p.active()))
+                let tc = [&s.tocome, &s.tocome_before]
+                    .into_iter()
+                    .flatten()
+                    .find(|t| Some(t.at) == at)
+                    .or(s.tocome.as_ref())
+                    .cloned();
+                (tc, history_epoch(&s))
             };
-            // (In the pool, this Mac's pageview's, of the forecast it runs for the swarm's answer
-            // (task #836): its `at` the page's status's (`{"at"}`, the one the page read).)
-            if let Some(a) = pv.as_ref().and_then(|p| p.tocome(b["at"].as_u64())) {
-                return Ok((200, a));
-            }
             Ok(tc.map_or_else(
                 || making("this Mac has made no forecast yet"),
                 |t| {
@@ -14886,7 +14881,7 @@ mod tests {
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
-        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let pv = crate::agent::pageview::PageView::new();
         let files: Arc<dyn crate::agent::pageview::Lead> = Arc::new(crate::agent::pageview::tests::Files(root.clone()));
         pv.set_inputs(crate::agent::pageview::Inputs {
             lead: crate::agent::pageview::LeadAt(Some(files)),
@@ -15386,12 +15381,13 @@ mod tests {
         assert_eq!(a["after"], serde_json::json!([]));
     }
 
-    /// (Task #836 review) In the pool, `/api/tocome` is this Mac's pageview's, of the run the
-    /// swarm's answer carries: asked with that `at`, that run's tiles, in the history's numbering
-    /// (the swarm's `epoch`, this coordinator's: task #1160), not the coordinator's own forecast,
-    /// set here too.
+    /// (Tasks #836, #1487) In the pool, the swarm's forecast is the lead's agent's own as its
+    /// coordinator holds it (never run again for the page), and `/api/tocome` that forecast's
+    /// tiles: asked with the `at` the page read, that one's (the last or the one before), else the
+    /// last; in the history's numbering (the swarm's `epoch`, this coordinator's: task #1160).
+    /// None held, none shown, whatever the status's file says.
     #[test]
-    fn in_the_pool_the_tiles_to_come_are_the_pageviews_run() {
+    fn in_the_pool_the_pages_forecast_and_tiles_to_come_are_the_leads_own() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
         let c = Arc::new(c);
@@ -15400,11 +15396,9 @@ mod tests {
             let r = raw(&addr, "POST", path, &[("Content-Type", "application/json")], b.to_string().as_bytes());
             serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
         };
-        c.set_tocome(Arc::new(crate::agent::forecast::ToCome { at: 5, ..Default::default() }));
-        std::fs::write(d.path().join("status.json"), r#"{"host":"m4"}"#).unwrap();
+        std::fs::write(d.path().join("status.json"), r#"{"host":"m4","forecast":{"at":1}}"#).unwrap();
         let now = unix_now();
-        c.set_page_forecast(&crate::agent::pageview::tests::record(now).bytes().unwrap());
-        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let pv = crate::agent::pageview::PageView::new();
         let lead: Arc<dyn crate::agent::pageview::Lead> = c.clone();
         pv.set_inputs(crate::agent::pageview::Inputs {
             lead: crate::agent::pageview::LeadAt(Some(lead)),
@@ -15412,17 +15406,36 @@ mod tests {
         });
         pv.touch();
         c.set_pageview(pv.clone());
-        // (Before the pageview's first run: the coordinator's.)
-        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now }))["at"], 5);
         assert!(pv.tick_lead(now));
-        crate::agent::pageview::tests::settle(&pv);
+        let placed = |target: &str| crate::agent::forecast::Placed {
+            lane: 0,
+            step: "unit".into(),
+            target: target.into(),
+            from: now + 60,
+            until: now + 120,
+        };
+        // (As the planner hands them over: the tiles to come, then the forecast.)
+        let hand = |at: u64, target: &str| {
+            c.set_tocome(Arc::new(crate::agent::forecast::ToCome::of(&[placed(target)], &["m4".to_string()], at)));
+            c.set_page_forecast(Some(Arc::new(crate::agent::forecast::Forecast { at, ..Default::default() })));
+        };
+        hand(now, "6/1/1");
         let sw = post("/api/swarm", serde_json::json!({}));
-        let at = sw["agent"]["forecast"]["at"].as_u64().unwrap();
-        let a = post("/api/tocome", serde_json::json!({ "at": at }));
-        assert_eq!(a["at"].as_u64(), Some(at), "{a}");
+        assert_eq!(sw["agent"]["forecast"]["at"].as_u64(), Some(now), "{sw}");
+        let a = post("/api/tocome", serde_json::json!({ "at": now }));
+        assert_eq!(a["at"].as_u64(), Some(now), "{a}");
         assert!(sw["epoch"].as_str().is_some_and(|e| e.starts_with("coordinator ")), "{sw}");
         assert_eq!(a["epoch"], sw["epoch"]);
-        assert!(a["macs"].as_object().is_some_and(|m| !m.is_empty()), "{a}");
+        assert_eq!(a["macs"]["m4"]["unit"][0][0], "6/1/1", "{a}");
+        // (A forecast 60 s on: the swarm's the new one; the one read before still answered.)
+        hand(now + 60, "6/1/2");
+        assert_eq!(post("/api/swarm", serde_json::json!({}))["agent"]["forecast"]["at"].as_u64(), Some(now + 60));
+        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now }))["at"].as_u64(), Some(now));
+        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now + 60 }))["at"].as_u64(), Some(now + 60));
+        assert_eq!(post("/api/tocome", serde_json::json!({}))["at"].as_u64(), Some(now + 60));
+        // (The plan's shape changed: none held, none shown, not the status file's.)
+        c.set_page_forecast(None);
+        assert!(post("/api/swarm", serde_json::json!({}))["agent"]["forecast"].is_null());
     }
 
     /// Task #1160: in the pool, the page's history (`/api/history`, and the swarm's `seq`, `epoch`
@@ -15441,8 +15454,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
         };
         let now = unix_now();
-        c.set_page_forecast(&crate::agent::pageview::tests::record(now).bytes().unwrap());
-        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let pv = crate::agent::pageview::PageView::new();
         let lead: Arc<dyn crate::agent::pageview::Lead> = c.clone();
         pv.set_inputs(crate::agent::pageview::Inputs {
             lead: crate::agent::pageview::LeadAt(Some(lead)),

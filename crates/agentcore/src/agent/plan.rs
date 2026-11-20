@@ -108,7 +108,7 @@ pub(super) struct PlanView {
     pub bad: Vec<(String, String)>,
     pub checklist: Vec<progress::Line>,
     pub built: BTreeMap<String, progress::RegionState>,
-    pub forecast: Option<forecast::Forecast>,
+    pub forecast: Option<std::sync::Arc<forecast::Forecast>>,
     pub publishing: Option<publish::PublishLine>,
     pub timetables: Option<inputs::inputs::gtfs::View>,
     pub catalogue: Option<CatalogueSeen>,
@@ -573,8 +573,9 @@ pub(super) struct Planner {
     pub(super) last_catalogue: std::cell::RefCell<Option<((String, u64), (BTreeMap<String, Vec<String>>, u64))>>,
     /// The regions the last plan would publish as built (seam::Planned::ready), for the checklist.
     pub(super) ready: std::cell::RefCell<Vec<String>>,
-    /// The last plan's forecast (crate::agent::forecast), for the status.
-    pub(super) forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// The last plan's forecast (crate::agent::forecast), for the status; its coordinator holds the
+    /// same for the build page (`hold_forecast`).
+    pub(super) forecast: std::cell::RefCell<Option<std::sync::Arc<forecast::Forecast>>>,
     /// What the forecast's plan was (`forecast_of`): the regions' work, or where the plan stopped
     /// short of it and its jobs (`Stopped`).
     pub(super) forecast_shape: std::cell::RefCell<Option<Shape>>,
@@ -1672,7 +1673,7 @@ impl Planner {
     /// last is `forecast::EVERY` old or none is held.
     fn refresh_forecast(&self, shape: Shape, make: impl FnOnce() -> forecast::Record<'static>) {
         if self.forecast_shape.replace(Some(shape.clone())).as_ref() != Some(&shape) {
-            *self.forecast.borrow_mut() = None;
+            self.hold_forecast(None);
         }
         self.take_forecast();
         let stale =
@@ -2932,9 +2933,10 @@ impl Planner {
         }
     }
 
-    /// The forecast run off the loop (`start_forecast`), taken in once it's done: the status's from
-    /// then, its record's bytes for the NAS. A fault in it costs the status its forecast, never the
-    /// agent.
+    /// The forecast run off the loop (`start_forecast`), taken in once it's done: the status's and
+    /// the build page's from then (its tiles to come and waits to its coordinator first, then the
+    /// forecast itself: `hold_forecast`), its record's bytes for the NAS. A fault in it costs the
+    /// status and the page their forecast, never the agent.
     pub(super) fn take_forecast(&self) {
         if !self.forecasting.borrow().as_ref().is_some_and(|(_, h)| h.is_finished()) {
             return;
@@ -2969,13 +2971,22 @@ impl Planner {
                     curves.push((f.at, f.curve.clone()));
                 }
                 drop(curves);
-                *self.forecast.borrow_mut() = Some(done.forecast);
+                self.hold_forecast(Some(std::sync::Arc::new(done.forecast)));
             }
             Err(_) => {
                 eprintln!("agent: the forecast failed; the status goes without it");
-                *self.forecast.borrow_mut() = None;
+                self.hold_forecast(None);
             }
         }
+    }
+
+    /// The forecast held for the status, and the same handed to its coordinator for the build page
+    /// (crate::coord::PageFiles: one forecast, the page's never another than the status's).
+    fn hold_forecast(&self, f: Option<std::sync::Arc<forecast::Forecast>>) {
+        if let Some(c) = &self.coord {
+            c.set_page_forecast(f.clone());
+        }
+        *self.forecast.borrow_mut() = f;
     }
 
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
@@ -4004,9 +4015,10 @@ mod tests {
 
     /// What the agent's other threads do with a plan's results, each measured alone
     /// (`frozen_plans_memory` with `SCENIC_FROZEN_THREADS`), after the plan's own threads are done:
-    /// the forecast's input archived (fcinputs) and its archive entry (fcarchive), both taken in
-    /// by the coordinator for the page, `/pool/view`'s and `/api/regions`' answers as bytes, the
-    /// page's own forecast (pageview) and the offers given again. A line each: its time, the bytes
+    /// the forecast's input archived (fcinputs) and its archive entry (fcarchive), the forecast
+    /// handed to the coordinator for the page and the swarm's answer made with it,
+    /// `/pool/view`'s and `/api/regions`' answers as bytes and the offers given again. A line each:
+    /// its time, the bytes
     /// it asked for, the most it held at once and each size's most summed (`allocs::climb`), and
     /// the process's reusable pages after.
     fn apart(p: &Planner, c: &crate::coord::Coordinator, forecast: Option<Out>) -> Vec<String> {
@@ -4034,7 +4046,6 @@ mod tests {
                 allocs::Memory::now().reusable >> 20
             ));
         };
-        let the_plan = crate::agent::seam::for_tests();
         if let Some(Out::Forecast(Some(bytes), entry)) = forecast {
             let given = fcinputs::Given { term: 1, at: now_s(), bytes: bytes.clone() };
             op(&format!("the forecast's input ({} KB) archived (fcinputs)", bytes.len() >> 10), &mut || {
@@ -4043,9 +4054,10 @@ mod tests {
             op("its archive entry (fcarchive)", &mut || {
                 fcarchive::compress(&serde_json::to_vec(&entry).unwrap()).unwrap();
             });
-            op("the forecast's input for the page (coordinator)", &mut || c.set_page_forecast(&bytes));
-            op("the page's own forecast (pageview)", &mut || {
-                forecast::Record::from_bytes(&bytes).unwrap().forecast(the_plan);
+            let f = p.forecast.borrow().clone();
+            op("the forecast handed to the coordinator for the page", &mut || c.set_page_forecast(f.clone()));
+            op("the forecast in the swarm's answer (pageview)", &mut || {
+                drop(serde_json::to_value(f.as_deref()).unwrap());
             });
         }
         if let Some((_, v)) = p.regions_view.borrow().clone() {

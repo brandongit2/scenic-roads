@@ -3111,23 +3111,23 @@ asks passed on are one-shot: the lead's store keeps them (below).
   last ones on the NAS (`state/build/term/<E>/forecast-input.json`, 31 Oct 2026, terms
   664-673): 10.6-11.8 MB of JSON, 0.84-0.98 MB
   compressed. Every time and speed in it is made finite before it's written (`Record::clamp`).
-  Handed to the lead's coordinator for its page (held once, shared with the page's data in
-  process: `Coordinator::page`) and to the forecast inputs' archive (§7.9).
+  Handed to the forecast inputs' archive (§7.9); the page never reads it (its forecast is the
+  lead's own, below).
 - **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
   docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
-  answers `/api/swarm` and `/api/tocome` from its pageview (`/api/steps` is the steps table), and
-  `/api/history` and the swarm's history parts (`seq`, `epoch`, `rates`) from its coordinator's
-  memory (task #1160: the history below); out of the pool the coordinator answers all from its
-  memory. While a page has asked in the last 60 s, a thread of the agent asks the lead's view every
-  2 s (its coordinator in process, as `POST /pool/view` answers): its coordinator's view, the pause
-  (on the lead the answer's is its coordinator's own), the Macs' addresses, and the lead's status
-  when it changed (the last status kept meanwhile); the forecast's input and the regions as its
-  coordinator holds them, shared (`Coordinator::page`: as JSON trees copied into each view, 35 MB
-  were asked of the allocator a forecast, task #1335);
+  answers `/api/swarm` from its pageview (`/api/steps` is the steps table), and the swarm's
+  forecast, `/api/tocome`, `/api/history` and the swarm's history parts (`seq`, `epoch`, `rates`)
+  from its coordinator's memory (task #1160: the history below); out of the pool the coordinator
+  answers all from its memory. While a page has asked in the last 60 s, a thread of the agent asks
+  the lead's view every 2 s (its coordinator in process, as `POST /pool/view` answers): its
+  coordinator's view, the pause (on the lead the answer's is its coordinator's own), the Macs'
+  addresses, and the lead's status when it changed (the last status kept meanwhile); the regions as
+  its coordinator holds them, shared (`Coordinator::page`: as JSON trees copied into each view,
+  35 MB were asked of the allocator a forecast, task #1335);
   with the lead down, the last view is kept and the answer says its age (`view_age_s`) and since
   when the lead isn't reached (`view_unreached`). The agent's loop hands it only what it holds
-  already (this Mac's app, its own coordinator): no NAS read on the loop or on any page's path, and
-  this Mac's lanes worked out only while a page asks. Until the lead's first view (a second or two
+  already (this Mac's app, its own coordinator): no NAS read on the loop or on any page's path.
+  Until the lead's first view (a second or two
   after a page first asks) a Mac answers the swarm 503, and the page says it's reading the build's
   state (quietly, not as an error) and asks again every 2 s, saying it as an error only after a
   minute of 503s (`sums.js` `notRead`; no retry while the page is hidden).
@@ -3152,15 +3152,17 @@ asks passed on are one-shot: the lead's store keeps them (below).
   by the events' time). `/api/tocome`'s `after` is in the same numbering. Older than the week, the
   history is in the NAS's archive (§7.5), which the page doesn't read (its schedule's
   "Older history" card says so); `scenic timings publish` and the forecast check read it.
-  The pageview's forecast is run from the lead's input, its time brought
-  to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
-  (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
-  running job too); a target missing from the cost table is a bug, logged once. It runs on a
-  thread of its own, again when the input changes or a minute has passed (`pageview::Runs`): the
-  answer carries the last one done. Times are given
-  the page as ages (`coord::ages`). The answer carries the app serving it (`app`). With a lead on
-  an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
-  leases, workers nor tasks, and the forecast is the one in the lead's status. A member with
+  The swarm's forecast is the lead's agent's own, the one its status carries (task #1487: never
+  run again for the page): as the planner takes in each forecast (`take_forecast`) it hands its
+  coordinator the tiles to come (with the waits) and then the forecast itself, shared
+  (`PageFiles::forecast`, `hold_forecast`); a forecast of another plan's shape is dropped whole
+  before any of that, and when the plan's shape changes (the regions' work, or a stop short of it)
+  or a forecast fails, the held one is cleared from the status and the page alike, so a stop's
+  forecast shows its reason and no finish on both. The lead makes one at most each
+  `forecast::EVERY` (a minute), so the page's forecast is up to a minute old (as the status's is),
+  its lanes as the lead's slots were when it was made. Times are given the page as ages
+  (`coord::ages`). The answer carries the app serving it (`app`). With a lead on an app from before
+  these records (no `view.json`), the answer has no leases, workers nor tasks. A member with
   neither a coordinator nor a broker answers its port from a viewer (`Coordinator::viewer`): the
   page sent to the lead as a broker sends it (docs/roles.md §3.3), its live store, settings and
   hold, every other call refused (its key's too); no state folder of the agent's (its token alone,
@@ -3351,21 +3353,18 @@ asks passed on are one-shot: the lead's store keeps them (below).
   lane's runs in order); `jobs`, how many jobs each run is (its `Stretch::cuts` and one), the jobs
   numbered in turn in the runs' order; and `deps`, [a, b] when an item of job b waits on one of
   job a (task #879: its declared reads, `steps::read_targets`, a release's; a set it reads whole by
-  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's history's (`coordinator <lead>`, the swarm's), in and out of the pool. In the pool the answer is the lead's pageview's (§10), worked out by the same lookup from its own run's items and the coordinator's history (`Coordinator::history_waits_basis`: its waits kept apart from the history's own, `History::waits_basis_from`; kept on the lead's disk, `<agent home>/pageview-waits.json`, written whole (`store::whole::write`) every 5 minutes at most, each number with its numbering's name, and read back for its first run after a start (task #863), so that run's `after` names the jobs finished since they were kept; none when no file is there, or it was kept over a day before). Measured on the 26 Oct 20:15
+  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's history's (`coordinator <lead>`, the swarm's), in and out of the pool. The history's waits are its memory alone: the first forecast after the lead's agent starts has none to look up, so its `after` names no job (the next one's does). Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
-  ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). In the pool (task #836) every Mac's port, the lead's too, answers from
-  its own pageview (§10, `PageView::tocome`): the tiles and runs of the very forecast run its
-  `/api/swarm` carries (the lead's record run there at now), so its `at` is the status's forecast's
-  and `after` is in that pageview's numbering, with its `epoch` (none before its history's first
-  read); the page sends the `at` it read (`{"at"}`) and gets that run's, the last or the one
-  before (a run ended between the two asks), else the last. The lead's agent's own (its forecast
-  thread's, the coordinator's numbering) had been one forecast off its page's status (seen
-  29 Oct: 1793299450 against 1793299556), so every page dropped its own Mac's answer and asked
-  the lead, whose port refuses an HTTP page's cross-origin read: the map drew only the running
-  jobs' tiles. A port with no pageview forecast yet answers its agent's own, or 200 with
-  `{making: why}` (it made none); the page takes its own Mac's answer only when its `at` is the
-  status's forecast's, else asks the lead's addresses; a lead change drops the old answer at
-  once and asks the new lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
+  ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). The answer is the coordinator's, from
+  the tiles to come its agent handed it with each forecast taken in (§10, the page's data: handed
+  before the forecast itself, task #1487), so its `at` is the one `/api/swarm`'s forecast has
+  (task #836: the page's forecast and its tiles had been made apart, one forecast off, seen 29 Oct,
+  so every page dropped its own Mac's answer); the coordinator keeps the last and the one before,
+  and the page sends the `at` it read (`{"at"}`) and gets that one's (a forecast taken in between
+  the two asks), else the last. A port whose agent made none (a member's, the lead's before its
+  first) answers 200 with `{making: why}`; the page takes its own Mac's answer only when its `at`
+  is the status's forecast's, else asks the lead's addresses; a lead change drops the old answer
+  at once and asks the new lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
   (3,618 targets placed, 3,615 tiles): about 62 KB (the Mac mini's 52 KB, 3,053 tiles, the M4's
   10 KB); held by the agent: ~150 KB.
   Every Mac's port also answers `POST /api/built` (no key; task #674) for the map's finished

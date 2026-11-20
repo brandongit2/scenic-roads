@@ -297,84 +297,12 @@ struct SeqT {
 /// The forecast's dependencies (crate::agent::forecast's items): each item (step, target), the
 /// items it waits on (`deps`, indices into `keys`) and the sets it waits on whole (`sets`, into
 /// `groups`, each a list of items).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Graph {
     pub keys: Vec<(String, String)>,
     pub deps: Vec<Vec<u32>>,
     pub sets: Vec<Vec<u32>>,
     pub groups: Vec<Vec<u32>>,
-}
-
-impl Graph {
-    /// The same waits in less (task #867, for `KeptWaits`): an item that waits on nothing, has
-    /// nothing `resolved` and that nothing waits on left out (what a next graph's items waited on
-    /// is read from the items it shares with this one: one with no waits adds none); the same
-    /// list of deps (two or more) that many items have, one set (`groups`) each names.
-    pub fn compact(&self, resolved: &HashMap<(String, String), BTreeMap<String, u64>>) -> Graph {
-        let n = self.keys.len();
-        let mut used = vec![false; n];
-        for i in 0..n {
-            let waits = !self.deps[i].is_empty()
-                || self.sets[i].iter().any(|&s| self.groups.get(s as usize).is_some_and(|g| !g.is_empty()));
-            if waits || resolved.contains_key(&self.keys[i]) {
-                used[i] = true;
-                for &d in &self.deps[i] {
-                    used[d as usize] = true;
-                }
-                for &s in &self.sets[i] {
-                    for &d in self.groups.get(s as usize).into_iter().flatten() {
-                        used[d as usize] = true;
-                    }
-                }
-            }
-        }
-        let mut new_of = vec![u32::MAX; n];
-        let mut keys = Vec::new();
-        for i in (0..n).filter(|&i| used[i]) {
-            new_of[i] = keys.len() as u32;
-            keys.push(self.keys[i].clone());
-        }
-        let map = |v: &[u32]| -> Vec<u32> { v.iter().map(|&d| new_of[d as usize]).collect() };
-        // (The sets named still, renumbered; a list of deps as long and as many times a set too.)
-        let mut group_of: HashMap<Vec<u32>, u32> = HashMap::new();
-        let mut groups: Vec<Vec<u32>> = Vec::new();
-        let mut old_group: HashMap<u32, u32> = HashMap::new();
-        let mut set_of = |v: Vec<u32>, groups: &mut Vec<Vec<u32>>| -> u32 {
-            *group_of.entry(v.clone()).or_insert_with(|| {
-                groups.push(v);
-                groups.len() as u32 - 1
-            })
-        };
-        // (A list only once is shorter inline than as a set.)
-        let mut times: HashMap<&[u32], usize> = HashMap::new();
-        for i in (0..n).filter(|&i| used[i] && self.deps[i].len() > 1) {
-            *times.entry(&self.deps[i][..]).or_default() += 1;
-        }
-        let (mut deps, mut sets) = (Vec::new(), Vec::new());
-        for i in (0..n).filter(|&i| used[i]) {
-            let mut s: Vec<u32> = Vec::new();
-            for &g in &self.sets[i] {
-                let k = match old_group.get(&g) {
-                    Some(&k) => k,
-                    None => {
-                        let k = set_of(map(self.groups.get(g as usize).map_or(&[][..], |v| v)), &mut groups);
-                        old_group.insert(g, k);
-                        k
-                    }
-                };
-                s.push(k);
-            }
-            let d = map(&self.deps[i]);
-            if d.len() > 1 && times.get(&self.deps[i][..]).is_some_and(|&t| t > 1) {
-                s.push(set_of(d, &mut groups));
-                deps.push(Vec::new());
-            } else {
-                deps.push(d);
-            }
-            sets.push(s);
-        }
-        Graph { keys, deps, sets, groups }
-    }
 }
 
 /// What the targets not yet started wait on: the last forecast's `Graph`, and for each of its items
@@ -395,9 +323,6 @@ pub struct Waits {
 pub struct WaitsBasis {
     old: std::sync::Arc<Waits>,
     built: HashMap<(String, String), u64>,
-    /// The new waits' `from`, when they're kept apart from a history (`History::waits_basis_from`;
-    /// else `History::set_waits` sets it).
-    from: Option<u64>,
 }
 
 impl WaitsBasis {
@@ -417,7 +342,7 @@ impl WaitsBasis {
                 resolved.insert(k.clone(), r);
             }
         }
-        Waits { graph, from: self.from.unwrap_or(0), index, resolved }
+        Waits { graph, from: 0, index, resolved }
     }
 }
 
@@ -438,49 +363,7 @@ fn last_per_step(
     }
 }
 
-/// Waits as kept on disk across a restart (a pageview's, task #863: crate::agent::pageview), its
-/// event numbers by who wrote them (member, its number there), stable across the numberings: when
-/// its graph was made (unix s), the graph, and what its items waited on that had finished.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct KeptWaits {
-    pub made_t: u64,
-    pub graph: Graph,
-    pub resolved: Vec<((String, String), Vec<(String, (String, u64))>)>,
-}
-
 impl Waits {
-    /// Whether it holds no graph (none made yet).
-    pub fn is_empty(&self) -> bool {
-        self.graph.keys.is_empty()
-    }
-
-    /// As kept (`KeptWaits`), made at `made_t`; `name` each number's writer and its number there
-    /// (one it can't name dropped).
-    pub fn keep(&self, made_t: u64, name: impl Fn(u64) -> Option<(String, u64)>) -> KeptWaits {
-        let resolved = self
-            .resolved
-            .iter()
-            .map(|(k, r)| (k.clone(), r.iter().filter_map(|(s, &n)| Some((s.clone(), name(n)?))).collect::<Vec<_>>()))
-            .filter(|(_, r)| !r.is_empty())
-            .collect();
-        KeptWaits { made_t, graph: self.graph.compact(&self.resolved), resolved }
-    }
-
-    /// Kept waits back in a numbering: `num` each writer's number's here (one not taken in
-    /// dropped), `from` this numbering's last number at its `made_t`.
-    pub fn from_kept(k: KeptWaits, from: u64, num: impl Fn(&str, u64) -> Option<u64>) -> Waits {
-        let index = k.graph.keys.iter().enumerate().map(|(i, key)| (key.clone(), i as u32)).collect();
-        let resolved = k
-            .resolved
-            .into_iter()
-            .map(|(key, r)| {
-                (key, r.into_iter().filter_map(|(s, (m, q))| Some((s, num(&m, q)?))).collect::<BTreeMap<_, _>>())
-            })
-            .filter(|(_, r)| !r.is_empty())
-            .collect();
-        Waits { graph: k.graph, from, index, resolved }
-    }
-
     /// For each of `jobs` jobs to come, the finished jobs its items waited on (the numbers `resolved` holds
     /// for them), per step the last, sorted: `item_job` each item's job (`forecast::Runs`).
     pub fn by_job(&self, item_job: &[Option<u32>], jobs: usize) -> Vec<Vec<u64>> {
@@ -622,15 +505,7 @@ impl History {
 
     /// What `next_waits` works from (taken under the coordinator's lock, worked out off it).
     pub fn waits_basis(&self) -> WaitsBasis {
-        WaitsBasis { old: self.waits.clone(), built: self.built.clone(), from: None }
-    }
-
-    /// `waits_basis` from waits kept apart from the history's own (`old`, made when its event
-    /// number was `set_at`: a pageview's, crate::agent::pageview, of the forecast it runs for the
-    /// page, never what this history's starts and leases name), and this history's number now: the
-    /// next set's.
-    pub fn waits_basis_from(&self, old: std::sync::Arc<Waits>, set_at: u64) -> (WaitsBasis, u64) {
-        (WaitsBasis { old, built: self.built.clone(), from: Some(set_at) }, self.seq)
+        WaitsBasis { old: self.waits.clone(), built: self.built.clone() }
     }
 
     /// The forecast's dependencies (`WaitsBasis::next`), what each start and lease from now on
@@ -658,11 +533,6 @@ impl History {
     /// The last event's number.
     pub fn seq(&self) -> u64 {
         self.seq
-    }
-
-    /// The highest number of an event kept at time `t` or before (unix s; 0: none).
-    pub fn seq_at(&self, t: u64) -> u64 {
-        self.events.iter().filter(|e| e.t <= t).map(|e| e.seq).max().unwrap_or(0)
     }
 
     /// How long each step's jobs go with nothing moving, as usual: the 90th percentile of the
@@ -1269,45 +1139,6 @@ mod tests {
         };
         let w = h.waits_basis().next(g2);
         assert_eq!(w.by_job(&[Some(0), Some(0), None], 2), vec![vec![s], vec![]]);
-    }
-
-    /// Kept waits compact (task #867): items with no waits nothing waits on left out, a list many
-    /// items share kept once; what each item waits on, as before.
-    #[test]
-    fn compact_waits_wait_on_the_same() {
-        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
-        let n = 50u32;
-        let mut keys: Vec<(String, String)> = (0..n).map(|i| k("pois", &format!("6/{i}/0"))).collect();
-        keys.extend((0..n).map(|i| k("peaks", &format!("6/{i}/0"))));
-        keys.push(k("idle", "x"));
-        keys.push(k("unit", "6/9/9"));
-        let all: Vec<u32> = (0..n).collect();
-        let mut deps: Vec<Vec<u32>> = vec![vec![]; n as usize];
-        deps.extend((0..n).map(|_| all.clone()));
-        deps.push(vec![]);
-        deps.push(vec![]);
-        let mut sets = vec![vec![]; keys.len()];
-        *sets.last_mut().unwrap() = vec![0];
-        let g = Graph { keys, deps, sets, groups: vec![vec![3, 4]] };
-        let mut resolved = HashMap::new();
-        resolved.insert(k("unit", "6/9/9"), BTreeMap::from([("terrain-hi".to_string(), 1u64)]));
-        let c = g.compact(&resolved);
-        assert!(!c.keys.contains(&k("idle", "x")), "{:?}", c.keys);
-        let size = |g: &Graph| serde_json::to_vec(g).unwrap().len();
-        assert!(size(&c) * 3 < size(&g), "{} vs {}", size(&c), size(&g));
-        // (The same finishes named for every item kept.)
-        let built: HashMap<(String, String), u64> =
-            [(k("pois", "6/7/0"), 9), (k("pois", "6/3/0"), 4), (k("pois", "6/4/0"), 7)].into_iter().collect();
-        let w = |g: Graph| {
-            let index = g.keys.iter().enumerate().map(|(i, key)| (key.clone(), i as u32)).collect();
-            Waits { graph: g, from: 0, index, resolved: resolved.clone() }
-        };
-        let (a, b) = (w(g.clone()), w(c));
-        for (key, &i) in &a.index {
-            let r = a.of(i, &built, &mut HashMap::new());
-            let r2 = b.index.get(key).map(|&j| b.of(j, &built, &mut HashMap::new())).unwrap_or_default();
-            assert_eq!(r, r2, "{key:?}");
-        }
     }
 
     #[test]

@@ -359,7 +359,7 @@ pub fn is_member_leftover(rel: &str) -> bool {
     let between =
         |pre: &str, suf: &str| rel.len() > pre.len() + suf.len() && rel.starts_with(pre) && rel.ends_with(suf);
     // The lead's: its status (other Macs ask its coordinator for it), its backups' local copy
-    // (agent::plan's `backup` job), GC's depth keep, its catalogues' record, its pageview's waits,
+    // (agent::plan's `backup` job), GC's depth keep, its catalogues' record,
     // the inputs' listing (agent::plan), the map log (agent::publish), the plan's stall samples, and
     // what its own jobs' targets cost (`Agent::costs_path`, a slot's: `costs.jsonl`,
     // `costs-<n>.jsonl`; a member's jobs note theirs in their lease's folder).
@@ -368,7 +368,6 @@ pub fn is_member_leftover(rel: &str) -> bool {
         "backups",
         super::gc::DEPTH_KEEP_FILE,
         super::PUBLISHED_FILE,
-        "pageview-waits.json",
         "inputs-listing",
         super::publish::MAPLOG,
         "costs.jsonl",
@@ -377,9 +376,9 @@ pub fn is_member_leftover(rel: &str) -> bool {
         || between(&format!("{}-", super::plan::STALL_SAMPLE), ".txt")
         || between("costs-", ".jsonl") && rel["costs-".len()..rel.len() - ".jsonl".len()].bytes().all(|b| b.is_ascii_digit())
         // Written by no code now: the loop watchdog's samples (#871 step 6), the map update's
-        // old name (#209) and the battery floor's move (#881).
+        // old name (#209), the battery floor's move (#881) and the pageview's kept waits (#1487).
         || between("loop-stall-sample-", ".txt")
-        || ["round.json", "battery-floor.moved"].contains(&rel)
+        || ["round.json", "battery-floor.moved", "pageview-waits.json"].contains(&rel)
 }
 
 /// The leftovers (`is_member_leftover`) in the agent's folder `home` last written `leftover_age`
