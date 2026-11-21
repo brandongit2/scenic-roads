@@ -1,5 +1,5 @@
-"""tools/dev/board.py: small tasks started five at a time (batch), and health.sh's flag on a batch of
-fewer than five while other small tasks waited, against a stand-in board (its items and events, the
+"""tools/dev/board.py: small tasks started two to five at a time (batch), one dropped from its batch
+(batch-drop), and health.sh's look at the batches, against a stand-in board (its items and events, the
 writes recorded; the board's own rules, such as refusing a lone small task's start, are tested in
 tools/devtools/test). Run by check.sh when board.py or this changes:
 python3 -m unittest discover -s tools/dev/test -p 'test_board.py'."""
@@ -116,13 +116,14 @@ class Health(Base):
         self.assertNotIn("<--", out)
         self.assertEqual(out.count("batch b"), 1, "a batch is listed once")
 
-    def test_a_short_batch_is_flagged_for_a_task_small_at_its_start_neither_taken_nor_named(self):
-        self.b.batch([1, 2], left="#3 (blocked by #4)")
+    def test_a_short_batch_is_fine_whatever_waits(self):
+        # (Owner, 21 Nov: two to five, whatever is ready; the queued ones left need no reason.)
+        self.b.batch([1, 2])
         self.b.task(3, priority=2)
-        self.b.task(4, priority=1)  # the blocker's number: not left out by being named in a reason
+        self.b.task(4, priority=1)
         out = self.small_part()
-        self.assertIn(f"batch {B} of 2 (#1 #2): these small tasks were queued when it started, 2026-11-20T02:00Z, and still are: #4 (P1)  <--", out)
-        self.assertNotIn("#3 (P2)", out)
+        self.assertIn(f"batch {B} of 2 (#1 #2): ok", out)
+        self.assertNotIn("<--", out)
 
     def test_no_false_flag_for_a_task_marked_small_after_the_batch_or_not_queued(self):
         self.b.batch([1, 2])
@@ -206,19 +207,6 @@ class Health(Base):
         self.assertIn(f"#4: its leaving of batch {B} is recorded already", run(self.b, "leave", "4", "x")[1])
         self.assertEqual(self.b.writes, [])
 
-    def test_the_tasks_a_short_batch_should_have_taken_are_those_queued_when_it_started(self):
-        self.b.batch([1, 2])
-        self.b.task(3, priority=1)  # under way then (in another batch), queued again since: not missed
-        self.b.event(3, "status", "Status Queued → Under way (by board.py)", T0)
-        self.b.event(3, "status", "Status Under way → Queued (by the page)", T2)
-        self.b.task(4, priority=2)  # queued then and now
-        self.b.task(5, priority=3)  # waiting on the owner then, queued since
-        self.b.event(5, "status", "Status Queued → Waiting on you (by the page)", T0)
-        self.b.event(5, "status", "Status Waiting on you → Queued (by the page)", T2)
-        self.b.task(7, priority=0, added=T2, small_at=T2)  # made after
-        out = self.small_part()
-        self.assertIn(f"batch {B} of 2 (#1 #2): these small tasks were queued when it started, 2026-11-20T02:00Z, and still are: #4 (P2)  <--", out)
-
     def test_parked_tasks_are_still_listed(self):
         self.b.task(1, status="backgrounded", small=False)
         self.b.event(1, "wait", "Waits on the rebuild.")
@@ -281,12 +269,11 @@ class Batch(Base):
         self.assertIn(says, err)
         self.assertEqual(self.b.writes, [], "nothing written")
 
-    def test_fewer_than_five_needs_every_other_queued_small_task_named_with_a_reason(self):
+    def test_two_to_five_whatever_waits_and_one_alone_only_with_none_queued(self):
         for n in range(1, 5):
             self.b.task(n, priority=n)
-        self.refused("1", "2", says="while these small tasks are queued: #3 (P3), #4 (P4)")
-        # (A blocker's number in a reason leaves nothing out: only an entry's leading #N does.)
-        self.refused("1", "2", "--left-out", "#3 (blocked by #4)", says="queued: #4 (P4);")
+        self.refused("1", says="#1 alone while these small tasks are queued: #2 (P2), #3 (P3), #4 (P4)")
+        # (--left-out, optional, is a note: each entry still a task's number and why.)
         self.refused("1", "2", "--left-out", "#3, #4 (conflicts with #8)", says="'#3' gives no reason")
         self.refused("1", "2", "--left-out", "blocked: #3, #4", says="doesn't start with the task's #number")
         self.refused("1", "2", "--left-out", "#2 (busy), #3 (x), #4 (y)", says="#2 is both in the batch and left out")
@@ -294,6 +281,15 @@ class Batch(Base):
         self.assertEqual(code, 0, err)
         self.assertIn("--left-out given 2 times: merged", err)
         self.assertIn("Left out: #3 (blocked by #9, #10); #4 conflicts with #8", {w[2]["text"] for w in self.posts()}.pop())
+        code, _, err = run(self.b, "batch", "3", "4")
+        self.assertEqual(code, 0, "two, with nothing left to name: " + err)
+        self.b.writes.clear()
+        self.b.task(9)
+        for n in range(1, 5):
+            self.b.items[f"i{n}"]["status"] = "done"
+        code, _, err = run(self.b, "batch", "9")
+        self.assertEqual(code, 0, "alone, with no other small task queued: " + err)
+        self.assertEqual(self.b.items["i9"]["status"], "working")
 
     def test_only_open_small_tasks_and_at_most_five(self):
         for n in range(1, 7):
@@ -374,13 +370,40 @@ class Batch(Base):
         for n in range(2, 6):
             self.b.task(n)
         self.b.task(6, status="waiting")  # (waiting: not a queued task the batch must take or name)
-        code, out, err = run(self.b, "batch", "1", "2", "3", "4")
-        self.assertEqual(code, 2, "queued #5 must be taken or named")
+        code, out, err = run(self.b, "batch", "1")
+        self.assertEqual(code, 2, "alone while #2 to #5 are queued")
         code, out, err = run(self.b, "batch", "1", "2", "3", "4", "5")
         self.assertEqual(code, 0, err)
         patch1 = [w[2] for w in self.b.writes if w[0] == "PATCH" and w[1] == "i1"]
         self.assertEqual(patch1[0]["status"], "working")
         self.assertIn("#1: started (it was waiting on you)", out)
+
+
+    def test_batch_drop_puts_one_member_back_to_queued_with_why_and_the_rest_goes_on(self):
+        self.b.batch([1, 2, 3, 4, 5])
+        self.b.task(6)
+        for args, says in (([B, "3"], "usage: board.py batch-drop"), ([B, "3", " "], "give why"),
+                           ([B, "99", "x"], "#99 isn't on the board"), ([B, "6", "x"], f"#6 is named by no start event of batch {B}"),
+                           (["b9-other", "3", "x"], "#3 is named by no start event of batch b9-other")):
+            code, _, err = run(self.b, "batch-drop", *args)
+            self.assertEqual(code, 2, (args, err))
+            self.assertIn(says, err)
+        self.assertEqual(self.b.writes, [], "nothing written")
+        code, out, err = run(self.b, "batch-drop", B, "3", "review: needs a new mechanism, filed as #9")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the rest of the batch goes on", out)
+        self.assertEqual(self.b.writes, [("PATCH", "i3", {"status": ""}),
+                                         ("POST", "i3", {"item": "i3", "kind": "note", "text": f"Left batch {B}: review: needs a new mechanism, filed as #9"})])
+        self.assertEqual([self.b.items[f"i{n}"]["status"] for n in (1, 2, 4, 5)], ["working"] * 4, "the rest kept")
+        # (The board drops a requeued task's batch.)
+        self.b.items["i3"].pop("batch")
+        self.b.writes.clear()
+        self.assertIn("dropped from batch", run(self.b, "batch-drop", B, "3", "again")[1])
+        self.assertEqual(self.b.writes, [], "run again: nothing more")
+        out = Health.small_part(self)
+        self.assertIn(f"batch {B} of 5 (#1 #2 #3 #4 #5): ok\n      #3 left (queued): review: needs a new mechanism, filed as #9", out)
+        self.b.items["i4"]["status"] = "abandoned"
+        self.assertIn("not in batch", run(self.b, "batch-drop", B, "4", "x")[2], "out of its work already: board.py leave's")
 
 
 if __name__ == "__main__":

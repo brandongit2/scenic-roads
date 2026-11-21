@@ -92,14 +92,13 @@ tools/dev/sweep-targets.sh
 tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
 # The board (tools/dev/board.py health): the parked tasks (backgrounded or integrating), each with its
 # last event, so every check looks again at what it waits on and affirms or corrects its status; and
-# the small tasks in flight by batch, judged by its start events: one naming fewer than five flagged
-# when a task queued now was queued and already small when it first started and is neither in it nor
-# named as left out, a member that left with no reason recorded (board.py leave), a task in it no
-# start names, a batch no start event records, and a small task in flight in no batch (small tasks
-# start five at a time, tools/dev/agent-rules.md, "Starting tasks").
+# the small tasks in flight by batch, judged by its start events, each member that left listed with
+# its reason: a member that left with no reason recorded (board.py batch-drop or leave), a task in
+# it no start names, a batch no start event records, and a small task in flight in no batch flagged
+# (small tasks start two to five at a time, tools/dev/agent-rules.md, "Starting tasks").
 python3 tools/dev/board.py health 2>&1
 print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
-print "== fill free slots by priority, classifying each task's size (small true or false) as you pick it; a small task next starts with the four next small ones, one slot, builder, branch and review: tools/dev/board.py batch <five numbers> (fewer only with --left-out '#N (why); …' for each other queued small one; agent-rules.md, \"Starting tasks\")"
+print "== fill free slots by priority, classifying each task's size (small true or false) as you pick it; a small task next starts with the next small ones ready and conflicting with nothing under way, two to five, one slot, builder, branch and review: tools/dev/board.py batch <the numbers> (alone only with no other small task queued; a finding drops one: board.py batch-drop <batch> <N> 'why'; agent-rules.md, \"Starting tasks\")"
 # (The PM's marker, #1398: while it is there, every agent's tests on this Mac run here, not on the test Mac.)
 [[ -e .claude/tests-local ]] && print -r -- "tests-local: agents' tests run on this Mac, not the test Mac, since $(stat -f %Sm .claude/tests-local) ($(head -1 .claude/tests-local)): delete .claude/tests-local once the test Mac is back"
 print "gates (.claude/gates.txt):"

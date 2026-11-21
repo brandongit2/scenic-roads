@@ -210,16 +210,16 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 
 ## Starting tasks (the PM)
 
-- **Small tasks start five at a time** (owner, 20 Nov). Every task's size is classified on the
-  board before it starts (its `small`: true, false, or unset until classified; the one definition is
-  `SMALL_MEANS` in `tools/devtools/schema.mjs`, read generously). A small task is never started
-  alone: when the next task picked is small, it starts with the four next highest-priority small
-  tasks, as one piece of work: one slot, one builder, one branch, one review, one merge and publish.
-  A small task blocked by, or conflicting with, work under way is left out. Each task keeps its own
-  board item, events and close.
+- **Small tasks start two to five at a time** (owner, 21 Nov). Every task's size is classified on
+  the board before it starts (its `small`: true, false, or unset until classified; the one
+  definition is `SMALL_MEANS` in `tools/devtools/schema.mjs`, read generously). When the next task
+  picked is small, it starts with the next highest-priority small tasks that are ready and conflict
+  with nothing under way, up to five in all, as one piece of work: one slot, one builder, one
+  branch, one review, one merge and publish. One starts alone only when no other small task is
+  queued. Each task keeps its own board item, events and close.
 - **A batch is chosen when it starts, never before** (owner, 20 Nov): read the board right then and
-  take the four next small tasks by priority as they stand. Don't plan, name or hold a next batch
-  ahead of time, on the board, in notes or in reports.
+  take the small tasks by priority as they stand. Don't plan, name or hold a next batch ahead of
+  time, on the board, in notes or in reports.
 - **The board enforces it:** a task in flight is working, backgrounded, integrating or in review;
   waiting on you isn't, as a task often waits on the owner before it starts. Moving a task into a
   status in flight from one that isn't (queued, waiting, done, abandoned), or into working from any
@@ -231,28 +231,26 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   requeue too, is refused like any start: "small task starting: start it through
   tools/dev/board.py batch"; a small task waiting before it ever started is "in no batch", and
   starts through board.py batch too.
-- **Start a batch with** `tools/dev/board.py batch <the five numbers> [--note '…']`: it sets each
-  one queued, or waiting and in no batch, working with the batch's id and gives each the same
-  `start` event ("Batch <id> of
-  small tasks: #a #b …"). Fewer than five is refused while another small task is queued, unless
-  `--left-out` names each with why: entries separated by commas or semicolons, each the task's
-  number then its reason (`--left-out '#1610 (blocked by #1600); #1611 (conflicts with #1534)'`),
-  only an entry's leading number counting; given twice, the lists are merged. Run again with the
-  same arguments, it finishes a batch cut short without a second event; a batch grown later is
-  recorded by running it with all of it. A small task already in flight in no batch is put in one
-  as it is, its status kept.
+- **Start a batch with** `tools/dev/board.py batch <two to five numbers> [--note '…']`: it sets
+  each one queued, or waiting and in no batch, working with the batch's id and gives each the same
+  `start` event ("Batch <id> of small tasks: #a #b …"). The queued small tasks it leaves need no
+  reason; `--left-out` is an optional note of them in the event (entries separated by commas or
+  semicolons, each the task's number then its reason: `--left-out '#1610 (blocked by #1600)'`;
+  given twice, the lists are merged). One task alone is refused while another small task is
+  queued. Run again with the same arguments, it finishes a batch cut short without a second event;
+  a batch grown later is recorded by running it with all of it. A small task already in flight in
+  no batch is put in one as it is, its status kept.
+- **A finding drops one task, not the batch:** `tools/dev/board.py batch-drop <batch> <num> '<why>'`
+  puts that member back to queued and records why on its item ("Left batch <id>: …"); the rest of
+  the batch goes on, its builder told to set that task's work aside.
 - **A batch's size is its start's:** every task its start events name, a member that left
-  included, and the tasks it should have taken are those queued and small when it first started.
-  A member leaves a started batch by going out of its work (queued again, abandoned) and
-  `tools/dev/board.py leave <num> '<why>'`, which records the one reason as a note on its item
-  ("Left batch <id>: …"). A member done in its batch has finished, not left; an archived one needs
-  no record.
-- **`tools/dev/health.sh` flags** a batch in flight whose start events name fewer than five when a
-  task queued now was queued and already small when it first started (its `smallAt`, set by the
-  board; its status events) and is neither in it nor named as left out; a member that left with no
-  reason recorded; a task in a batch no start event names; a batch with no start event recording it
-  (an id made up around board.py); and a small task in flight in no batch (one marked small while
-  under way; a waiting one isn't flagged).
+  included. A member that leaves otherwise (abandoned, say) gets its reason recorded with
+  `tools/dev/board.py leave <num> '<why>'`. A member done in its batch has finished, not left; an
+  archived one needs no record.
+- **`tools/dev/health.sh`** lists each batch in flight with each member that left and why, and
+  flags a member that left with no reason recorded; a task in a batch no start event names; a
+  batch with no start event recording it (an id made up around board.py); and a small task in
+  flight in no batch (one marked small while under way; a waiting one isn't flagged).
 
 ## Review
 

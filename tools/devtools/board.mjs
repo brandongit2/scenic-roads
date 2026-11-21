@@ -78,7 +78,7 @@ export function makeBoard(store, changed) {
   // A move checked: into a status in flight from one that isn't (queued, waiting, done, abandoned;
   // a new task is from queued), or into working from any other status. It needs the task's size
   // classified, and a small task's a batch: sent in the same request (tools/dev/board.py batch sends
-  // it: small tasks start five at a time, as one piece of work), or, unless it comes from queued,
+  // it: small tasks start two to five at a time, as one piece of work), or, unless it comes from queued,
   // the one it holds, so a batched task resumes as it is. Queued ↔ waiting, a closing, and moves
   // between statuses in flight other than into working, aren't checked.
   function sizeAndStart(doc, cur, sent, now) {
