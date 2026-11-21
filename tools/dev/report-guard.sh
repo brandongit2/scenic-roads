@@ -47,9 +47,10 @@ head=$(git -C $wt rev-parse HEAD 2>/dev/null) || exit 0
 [[ ${said[2]:-} == blocked ]] && exit 0
 for f in ${SCENIC_DEVJOB_DIR:-$HOME/Library/Logs/scenic/devjobs}/live/*(N.); do
   read -r pid st < $f 2>/dev/null || continue
-  [[ $pid == <-> && $st != *' sample' ]] || continue   # (" sample": a Mac sampled, no span)
+  [[ $pid == <-> ]] || continue
   now=$(LC_ALL=C TZ=UTC ps -o lstart= -p $pid 2>/dev/null) || continue
-  [[ ${(j: :)${=now}} == ${(j: :)${=st}} ]] || continue   # (as it started: a pid used again isn't it)
+  # (As it started: a pid used again isn't it; nor a Mac sampled with no span, "<start> sample".)
+  [[ ${(j: :)${=now}} == ${(j: :)${=st}} ]] || continue
   cwd=${${(M)${(f)"$(lsof -a -p $pid -d cwd -Fn 2>/dev/null)"}:#n*}#n}
   [[ -n $cwd && ( ${cwd:A} == ${wt:A} || ${cwd:A} == ${wt:A}/* ) ]] && exit 0
 done
