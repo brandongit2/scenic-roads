@@ -921,7 +921,12 @@ Mac's server (§6.1.9).
   (`tiles::key_cells`: an OSM relation's box in the outline set, a zone's, a shape's, a region's
   cells as made), never fewer than it reads; a piece made that read a cell its key doesn't name
   (none should) is said and not kept. A region pinned to another pass has no piece (its problem
-  reads the other passes). No setting changes what a piece makes (the threads, the memory guard and
+  reads the other passes). With `cover`, each cell's part of the cover check (`tiles::cover_cell`:
+  its pairs' shared area and its gap's pieces, measured) is a piece too (task #1572), keyed by
+  all the function is given (`tiles::CoverReads`, every field: the cell, each region's piece in it
+  and in the eight cells round it by its digest, the cell's land and its zones' water), so an edit
+  makes again only the cells whose pieces it changed and those beside them; the gaps are joined
+  across the cells and judged after, every check. No setting changes what a piece makes (the threads, the memory guard and
   the operations' budget only stop or pace a check), so none is in a key. In the pool the pieces go
   in the job's resume log (docs/pool.md, safe points) and in its Mac's lasting folder (task #1566:
   `regions-pieces/` in the agent's cache, on its local disk, its cap the build page's "Regions
@@ -1107,7 +1112,8 @@ check always runs whole.
 (§6.1.4, "Pieces") kept in a lasting folder, a file each (`kept::Lasting`), so a check after an
 edit takes every piece whose reads are as they were and makes only those reading the edit: the
 edited region's own, and those reading its area where they're made (its remainder, the waters
-naming it, a hand-out of it, the regions whose area changed with it, stored again). Its output is
+naming it, a hand-out of it, the regions whose area changed with it, stored again, and the cover
+check of the cells its area changed in and of those beside them). Its output is
 a full check's, byte for byte. A piece's file is named by its whole key: the pieces' format
 (`kept::FORMAT`), `RESOLUTION`, the regions' code digest as compiled (`inputs::code_of`), the other
 passes' outline sets, the files the check reads besides the regions' (the declarations' bytes,

@@ -29,7 +29,9 @@
 //!   open sea, which the `rest` region
 //!   takes (its part inside a 200-nmi zone an error, `rest-in-zone`); and a region's sea (its
 //!   water but the big lakes) touching none of its land (`stray`). Each at a point inside, naming the regions round it.
-//!   Regions without water are never changed.
+//!   Regions without water are never changed. Each cell's part (`cover_cell`) is a kept piece,
+//!   keyed by all it's given (`CoverReads`): an edit makes again only the cells whose pieces it
+//!   changed and those beside them.
 
 use super::extract::Id;
 use super::file::{Part, Region, Target};
@@ -1425,8 +1427,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     // (Every region's cells, moved together, not copied.)
     let mut all: BTreeMap<String, TArea> = others;
     all.extend(areas);
+    // (Every region's pieces by cell, digested, for the strays and the cover check.)
+    let index = if cover { index_of(&all) } else { Index::new() };
     if cover {
-        strays(&ids, folder, data, &lands, &all, &mut out.problems, &mut out.fit, progress);
+        strays(&ids, folder, data, &lands, &all, &index, &mut out.problems, &mut out.fit, progress);
         trace("the zones");
     }
     drop(lands);
@@ -1437,14 +1441,16 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
         data,
         &zones,
         &all,
+        &index,
         cover,
         rest_id.is_some(),
         &mut out.problems,
         &mut out.fit,
         ctx.window,
+        ctx.kept,
         progress,
     );
-    drop(zones);
+    drop((zones, index));
     trace_gaps("at the end", data, |c| all.values().map(|t| t.get(c)).filter(|a| !a.is_empty()).collect());
     trace("stored");
     // 6. Stored: every region with water, and the rest (those without, as they resolved).
@@ -3197,40 +3203,59 @@ fn edges_with(poly: &[Ring], idx: &SegIndex, len: &mut [f64]) {
     }
 }
 
-/// Which regions have a piece in each cell.
-fn by_cell(all: &BTreeMap<String, TArea>) -> HashMap<Cell, Vec<&String>> {
-    let mut index: HashMap<Cell, Vec<&String>> = HashMap::new();
-    for (id, t) in all {
-        for c in t.cells.keys() {
-            index.entry(*c).or_default().push(id);
-        }
+/// A region's piece in a cell: its id, the piece, and the piece's digest (`Reads::area`'s).
+type Owned<'a> = (&'a String, &'a Area, blake3::Hash);
+
+/// Each cell's pieces (`Owned`), in id order.
+type Index<'a> = HashMap<Cell, Vec<Owned<'a>>>;
+
+/// The regions' pieces by cell (`Index`), each digested once.
+fn index_of(all: &BTreeMap<String, TArea>) -> Index<'_> {
+    let pieces: Vec<(Cell, &String, &Area)> =
+        all.iter().flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (*c, id, a))).collect();
+    let mut index: Index = HashMap::new();
+    for (c, owned) in pace::par_map(pieces, |(c, id, a)| {
+        let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
+        r.area(a);
+        r.h.update(&r.buf);
+        (c, (id, a, r.h.finalize()))
+    }) {
+        index.entry(c).or_default().push(owned);
     }
     index
 }
 
-/// The segments of the regions' pieces (but `skip`'s) in cell `c` and of those round it meeting its
-/// box, shifted as they lie from it (an edge on a cell's side is shared with the cell across it),
-/// each owner numbered by its place in the list returned.
-fn pieces_round<'a>(
-    c: Cell,
-    all: &'a BTreeMap<String, TArea>,
-    index: &HashMap<Cell, Vec<&'a String>>,
-    skip: Option<&str>,
-) -> (Vec<&'a String>, SegIndex) {
-    let bx = cell_box(c);
-    let mut owners: Vec<&String> = Vec::new();
-    let mut idx = SegIndex::default();
+/// Cell `c` and the eight round it (the rows past the poles left out), west to east, south to
+/// north: each cell as wrapped, the longitude shift (E7) that brings it to where it lies from `c`,
+/// and its pieces.
+type Round<'a> = Vec<(Cell, i64, &'a [Owned<'a>])>;
+
+fn round_of<'a>(c: Cell, index: &'a Index<'a>) -> Round<'a> {
+    let mut round = Vec::new();
     for x in c.0 - 1..=c.0 + 1 {
         let (w, shift) = wrap(x);
         for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
-            for id in index.get(&(w, y)).into_iter().flatten().filter(|id| Some(id.as_str()) != skip) {
-                let k = owners.iter().position(|o| o == id).unwrap_or_else(|| {
-                    owners.push(id);
-                    owners.len() - 1
-                });
-                for r in all[*id].cells[&(w, y)].polys.iter().flatten() {
-                    idx.add(k, r, shift, bx);
-                }
+            round.push(((w, y), shift, index.get(&(w, y)).map_or(&[][..], Vec::as_slice)));
+        }
+    }
+    round
+}
+
+/// The segments of the pieces `round` holds of cell `c` (but `skip`'s) meeting its box, shifted
+/// as they lie from it (an edge on a cell's side is shared with the cell across it), each owner
+/// numbered by its place in the list returned.
+fn pieces_round<'a>(c: Cell, round: &Round<'a>, skip: Option<&str>) -> (Vec<&'a String>, SegIndex) {
+    let bx = cell_box(c);
+    let mut owners: Vec<&String> = Vec::new();
+    let mut idx = SegIndex::default();
+    for (_, shift, pieces) in round {
+        for &(id, a, _) in pieces.iter().filter(|p| Some(p.0.as_str()) != skip) {
+            let k = owners.iter().position(|o| *o == id).unwrap_or_else(|| {
+                owners.push(id);
+                owners.len() - 1
+            });
+            for r in a.polys.iter().flatten() {
+                idx.add(k, r, *shift, bx);
             }
         }
     }
@@ -3253,18 +3278,19 @@ fn largest(a: &Area) -> Option<(f64, Pt)> {
 /// wherever its shores are (a lake whose shores are another's: a border on the far shore). A region
 /// of water alone (a waters region, the rest) has no land for its water to touch: its stretches are
 /// its by its definition.
+#[allow(clippy::too_many_arguments)]
 fn strays(
     ids: &[String],
     folder: &Folder,
     data: &super::data::Datasets,
     lands: &BTreeMap<String, TArea>,
     all: &BTreeMap<String, TArea>,
+    index: &Index,
     problems: &mut Vec<Problem>,
     fit: &mut Fit,
     progress: &Progress,
 ) {
     progress.begin(Step::Strays, ids.len());
-    let index = by_cell(all);
     for id in ids {
         let item = progress.item(id);
         let Some(land) = lands.get(id).filter(|l| !l.is_empty()) else { continue };
@@ -3367,7 +3393,7 @@ fn strays(
             // (The regions round it: their segments in its cells and across their sides.)
             let mut len: BTreeMap<&String, f64> = BTreeMap::new();
             for (c, p) in &comp {
-                let (theirs, idx) = pieces_round(*c, all, &index, Some(id));
+                let (theirs, idx) = pieces_round(*c, &round_of(*c, index), Some(id));
                 let mut l = vec![0.0; theirs.len()];
                 for poly in &p.polys {
                     edges_with(poly, &idx, &mut l);
@@ -3432,6 +3458,285 @@ struct Gap {
     area: Area,
 }
 
+/// What the cover check reads of a cell (`cover_cell`, which reads nothing else): the cell, the
+/// regions' pieces in it and in the eight round it (`round_of`), its land (the coastline's, less
+/// the big lakes) and its zones' water. Its key (`key`) is all of it, so a cell whose reads are as
+/// they were takes its result as kept (super::kept, stage `COVER`): an edit makes again only the
+/// cells of the pieces it changed and those beside them.
+struct CoverReads<'a> {
+    c: Cell,
+    round: Round<'a>,
+    land: Area,
+    zone: Area,
+}
+
+impl CoverReads<'_> {
+    /// Every field, each piece by its digest: the cell's name (`x,y`) and the digest.
+    fn key(&self) -> String {
+        let CoverReads { c, round, land, zone } = self;
+        let mut k = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
+        k.n(c.0);
+        k.n(c.1);
+        k.n(round.len() as i64);
+        for (cell, shift, pieces) in round {
+            k.n(cell.0);
+            k.n(cell.1);
+            k.n(*shift);
+            k.n(pieces.len() as i64);
+            for (id, _, h) in pieces.iter() {
+                k.text(id);
+                k.buf.extend(h.as_bytes());
+            }
+        }
+        k.area(land);
+        k.area(zone);
+        k.key(&format!("{},{}", c.0, c.1))
+    }
+}
+
+/// Each pair of regions with area in a cell both have: the pair, its land and water (km²), its
+/// largest piece (km², a point inside), its land pieces that `solid_pieces` passes.
+type Pairs = Vec<((String, String), f64, f64, Option<(f64, Pt)>, Vec<(f64, Pt, [i64; 4])>)>;
+
+/// A cell's part of the cover check: its pairs, and its gap's pieces.
+type CellCover = (Pairs, Vec<Gap>);
+
+/// The cover check of the cell `r` reads (`cover_check`): what no region covers there, and each
+/// pair's area both have, measured.
+fn cover_cell(r: &CoverReads) -> CellCover {
+    let CoverReads { c, round, land, zone } = r;
+    let c = *c;
+    geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
+    let pieces: Vec<(&String, &Area)> =
+        round.iter().filter(|x| x.0 == c).flat_map(|x| x.2.iter().map(|&(id, a, _)| (id, a))).collect();
+    let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
+    let near = |a: &Option<[i64; 4]>, b: &Option<[i64; 4]>| match (a, b) {
+        (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
+        _ => false,
+    };
+    let mut pairs: Pairs = Vec::new();
+    for i in 0..pieces.len() {
+        for j in i + 1..pieces.len() {
+            if !near(&boxes[i], &boxes[j]) {
+                continue;
+            }
+            let o = pieces[i].1.intersect(pieces[j].1);
+            if o.is_empty() {
+                continue;
+            }
+            let on_land = o.intersect(land);
+            let l = geom::area_km2(&on_land);
+            let w = geom::area_km2(&o.minus(land));
+            let solid = solid_pieces(&on_land, c);
+            pairs.push(((pieces[i].0.clone(), pieces[j].0.clone()), l, w, largest(&o), solid));
+        }
+    }
+    let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
+    let gaps = geom::box_area(cell_box(c)).minus(&u);
+    // (Whether a gap is within 100 m of land, and the edge it shares with each region: read
+    // from an index of the segments, no buffer per gap.)
+    let (owners, pidx) = pieces_round(c, round, None);
+    let lidx = SegIndex::new(land.polys.iter().enumerate().flat_map(|(k, p)| p.iter().map(move |r| (k, r))));
+    let land_boxes: Vec<Option<[i64; 4]>> = land.polys.iter().map(|p| geom::bbox_of(p.iter().flatten())).collect();
+    let mut out: Vec<Gap> = Vec::new();
+    for poly in gaps.polys {
+        let gb = geom::bbox_of(poly.iter().flatten());
+        let touches = poly.iter().flatten().any(|v| lidx.within(*v, 100.0))
+            || poly.first().and_then(|r| r.first()).is_some_and(|v| {
+                land.polys.iter().zip(&land_boxes).any(|(lp, b)| near(b, &gb) && roadcore::geo::inside(lp, *v))
+            })
+            || land.polys.iter().zip(&land_boxes).any(|(lp, b)| {
+                near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| roadcore::geo::inside(&poly, *v))
+            });
+        let sides = sides(&poly, c);
+        let at = interior(&poly);
+        let mut len = vec![0.0f64; owners.len()];
+        edges_with(&poly, &pidx, &mut len);
+        let len = (0..owners.len()).filter(|&k| len[k] > 0.0).map(|k| (owners[k].clone(), len[k])).collect();
+        let g = Area { polys: vec![poly] };
+        let km2 = geom::area_km2(&g);
+        // (Each against only the zones' and the land's part round it: a cell has tens of
+        // thousands of gaps along a coast of islets, and the cell's land thousands of rings.)
+        let part = |a: &Area| -> Option<Area> {
+            let gb = g.bbox()?;
+            match near_part(a, gb) {
+                Some(n) if n.is_empty() => None,
+                Some(n) => Some(g.intersect(&n)),
+                None => Some(g.intersect(a)),
+            }
+        };
+        let (zone_km2, zone_at) = match part(zone) {
+            Some(z) => (geom::area_km2(&z), largest(&z)),
+            None => (0.0, None),
+        };
+        let (land_km2, land_at, land_box, solid) = match touches.then(|| part(land)).flatten() {
+            Some(on) => (
+                geom::area_km2(&on),
+                largest(&on),
+                geom::bbox_of(on.polys.iter().flatten().flatten()),
+                solid_pieces(&on, c),
+            ),
+            None => (0.0, None, None, Vec::new()),
+        };
+        out.push(Gap {
+            c,
+            sides,
+            km2,
+            zone_km2,
+            zone_at,
+            land_km2,
+            land_at,
+            solid,
+            land_box,
+            at,
+            touches,
+            len,
+            area: g,
+        });
+    }
+    (pairs, out)
+}
+
+fn put_f64(p: &mut jobrt::resume_log::Put, v: f64) {
+    p.u64(v.to_bits());
+}
+
+fn get_f64(g: &mut jobrt::resume_log::Get) -> anyhow::Result<f64> {
+    Ok(f64::from_bits(g.u64()?))
+}
+
+fn put_pt(p: &mut jobrt::resume_log::Put, v: Pt) {
+    p.u64(v[0] as u64);
+    p.u64(v[1] as u64);
+}
+
+fn get_pt(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Pt> {
+    Ok([g.u64()? as i64, g.u64()? as i64])
+}
+
+fn put_box(p: &mut jobrt::resume_log::Put, b: [i64; 4]) {
+    for v in b {
+        p.u64(v as u64);
+    }
+}
+
+fn get_box(g: &mut jobrt::resume_log::Get) -> anyhow::Result<[i64; 4]> {
+    Ok([g.u64()? as i64, g.u64()? as i64, g.u64()? as i64, g.u64()? as i64])
+}
+
+/// A size and a point inside, or none.
+fn put_at(p: &mut jobrt::resume_log::Put, v: Option<(f64, Pt)>) {
+    p.u8(v.is_some().into());
+    if let Some((k, at)) = v {
+        put_f64(p, k);
+        put_pt(p, at);
+    }
+}
+
+fn get_at(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Option<(f64, Pt)>> {
+    Ok(match g.u8()? {
+        0 => None,
+        1 => Some((get_f64(g)?, get_pt(g)?)),
+        t => anyhow::bail!("a point tagged {t}"),
+    })
+}
+
+fn put_solid(p: &mut jobrt::resume_log::Put, v: &[(f64, Pt, [i64; 4])]) {
+    p.u64(v.len() as u64);
+    for &(k, at, b) in v {
+        put_f64(p, k);
+        put_pt(p, at);
+        put_box(p, b);
+    }
+}
+
+fn get_solid(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Vec<(f64, Pt, [i64; 4])>> {
+    (0..g.count(56)?).map(|_| Ok((get_f64(g)?, get_pt(g)?, get_box(g)?))).collect()
+}
+
+/// A cell's cover check, as its piece keeps it (super::kept); every float by its bits, so a cell
+/// taken as kept is the cell made, to the bit.
+fn put_cover((pairs, gaps): &CellCover, p: &mut jobrt::resume_log::Put) {
+    p.u64(pairs.len() as u64);
+    for ((a, b), l, w, at, solid) in pairs {
+        p.bytes(a.as_bytes());
+        p.bytes(b.as_bytes());
+        put_f64(p, *l);
+        put_f64(p, *w);
+        put_at(p, *at);
+        put_solid(p, solid);
+    }
+    p.u64(gaps.len() as u64);
+    for g in gaps {
+        // (Every field named: one added is kept, or this fails to build. The cell is the key's.)
+        let Gap { c: _, sides, km2, zone_km2, zone_at, land_km2, land_at, solid, land_box, at, touches, len, area } = g;
+        for s in sides {
+            p.u64(s.len() as u64);
+            for &(a, b) in s {
+                p.u64(a as u64);
+                p.u64(b as u64);
+            }
+        }
+        put_f64(p, *km2);
+        put_f64(p, *zone_km2);
+        put_at(p, *zone_at);
+        put_f64(p, *land_km2);
+        put_at(p, *land_at);
+        put_solid(p, solid);
+        p.u8(land_box.is_some().into());
+        if let Some(b) = land_box {
+            put_box(p, *b);
+        }
+        put_pt(p, *at);
+        p.u8((*touches).into());
+        p.u64(len.len() as u64);
+        for (id, l) in len {
+            p.bytes(id.as_bytes());
+            put_f64(p, *l);
+        }
+        super::kept::area(p, area);
+    }
+}
+
+/// `put_cover`'s, of cell `c`.
+fn get_cover(g: &mut jobrt::resume_log::Get, c: Cell) -> anyhow::Result<CellCover> {
+    let s = |g: &mut jobrt::resume_log::Get| String::from_utf8(g.bytes()?).map_err(anyhow::Error::from);
+    let flag = |g: &mut jobrt::resume_log::Get| match g.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        t => anyhow::bail!("a flag tagged {t}"),
+    };
+    let mut pairs: Pairs = Vec::new();
+    for _ in 0..g.count(8)? {
+        pairs.push(((s(g)?, s(g)?), get_f64(g)?, get_f64(g)?, get_at(g)?, get_solid(g)?));
+    }
+    let mut gaps = Vec::new();
+    for _ in 0..g.count(8)? {
+        let mut sides: Sides = Default::default();
+        for side in &mut sides {
+            for _ in 0..g.count(16)? {
+                side.push((g.u64()? as i64, g.u64()? as i64));
+            }
+        }
+        gaps.push(Gap {
+            c,
+            sides,
+            km2: get_f64(g)?,
+            zone_km2: get_f64(g)?,
+            zone_at: get_at(g)?,
+            land_km2: get_f64(g)?,
+            land_at: get_at(g)?,
+            solid: get_solid(g)?,
+            land_box: if flag(g)? { Some(get_box(g)?) } else { None },
+            at: get_pt(g)?,
+            touches: flag(g)?,
+            len: (0..g.count(16)?).map(|_| Ok((s(g)?, get_f64(g)?))).collect::<anyhow::Result<_>>()?,
+            area: super::kept::get_area(g)?,
+        });
+    }
+    Ok((pairs, gaps))
+}
+
 /// With `cover`, cell by cell: each pair of regions' area both have, and what no region covers,
 /// joined across the cells' edges into stretches. Nothing is moved: an overlap past `HAIR_KM2`
 /// (summed over the cells) is an error (`overlap`), as is a stretch in no region past it (`gap`),
@@ -3447,11 +3752,13 @@ fn cover_check(
     data: &super::data::Datasets,
     zones: &TArea,
     all: &BTreeMap<String, TArea>,
+    index: &Index,
     cover: bool,
     rest: bool,
     problems: &mut Vec<Problem>,
     fit: &mut Fit,
     window: Option<&BTreeSet<Cell>>,
+    kept: Option<&super::kept::Kept>,
     progress: &Progress,
 ) -> TArea {
     if !cover && !rest {
@@ -3475,101 +3782,17 @@ fn cover_check(
         }
         return t;
     }
-    type Pairs = Vec<((String, String), f64, f64, Option<(f64, Pt)>, Vec<(f64, Pt, [i64; 4])>)>;
-    let index = by_cell(all);
     progress.begin(Step::Cover, cells.len());
-    let done: Vec<(Pairs, Vec<Gap>)> = pace::par_map(cells, |c| {
+    let done: Vec<CellCover> = pace::par_map(cells, |c| {
         let _one = progress.one_on_drop();
-        geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
-        let pieces: Vec<(&String, &Area)> = all.iter().filter_map(|(id, t)| t.cells.get(&c).map(|a| (id, a))).collect();
-        let land = land_and_lakes(data, c).0;
-        let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
-        let near = |a: &Option<[i64; 4]>, b: &Option<[i64; 4]>| match (a, b) {
-            (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
-            _ => false,
-        };
-        let mut pairs: Pairs = Vec::new();
-        for i in 0..pieces.len() {
-            for j in i + 1..pieces.len() {
-                if !near(&boxes[i], &boxes[j]) {
-                    continue;
-                }
-                let o = pieces[i].1.intersect(pieces[j].1);
-                if o.is_empty() {
-                    continue;
-                }
-                let on_land = o.intersect(&land);
-                let l = geom::area_km2(&on_land);
-                let w = geom::area_km2(&o.minus(&land));
-                let solid = solid_pieces(&on_land, c);
-                pairs.push(((pieces[i].0.clone(), pieces[j].0.clone()), l, w, largest(&o), solid));
-            }
+        let r = CoverReads { c, round: round_of(c, index), land: land_and_lakes(data, c).0, zone: zones.get(c) };
+        match kept {
+            None => cover_cell(&r),
+            // (Given up once a pause came: the check stops, keeping nothing of its outcome.)
+            Some(k) => k
+                .get_or_make(super::kept::COVER, &r.key(), || cover_cell(&r), put_cover, |g| get_cover(g, c))
+                .unwrap_or_default(),
         }
-        let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
-        let gaps = geom::box_area(cell_box(c)).minus(&u);
-        let zone = zones.get(c);
-        // (Whether a gap is within 100 m of land, and the edge it shares with each region: read
-        // from an index of the segments, no buffer per gap.)
-        let (owners, pidx) = pieces_round(c, all, &index, None);
-        let lidx = SegIndex::new(land.polys.iter().enumerate().flat_map(|(k, p)| p.iter().map(move |r| (k, r))));
-        let land_boxes: Vec<Option<[i64; 4]>> = land.polys.iter().map(|p| geom::bbox_of(p.iter().flatten())).collect();
-        let mut out: Vec<Gap> = Vec::new();
-        for poly in gaps.polys {
-            let gb = geom::bbox_of(poly.iter().flatten());
-            let touches = poly.iter().flatten().any(|v| lidx.within(*v, 100.0))
-                || poly.first().and_then(|r| r.first()).is_some_and(|v| {
-                    land.polys.iter().zip(&land_boxes).any(|(lp, b)| near(b, &gb) && roadcore::geo::inside(lp, *v))
-                })
-                || land.polys.iter().zip(&land_boxes).any(|(lp, b)| {
-                    near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| roadcore::geo::inside(&poly, *v))
-                });
-            let sides = sides(&poly, c);
-            let at = interior(&poly);
-            let mut len = vec![0.0f64; owners.len()];
-            edges_with(&poly, &pidx, &mut len);
-            let len = (0..owners.len()).filter(|&k| len[k] > 0.0).map(|k| (owners[k].clone(), len[k])).collect();
-            let g = Area { polys: vec![poly] };
-            let km2 = geom::area_km2(&g);
-            // (Each against only the zones' and the land's part round it: a cell has tens of
-            // thousands of gaps along a coast of islets, and the cell's land thousands of rings.)
-            let part = |a: &Area| -> Option<Area> {
-                let gb = g.bbox()?;
-                match near_part(a, gb) {
-                    Some(n) if n.is_empty() => None,
-                    Some(n) => Some(g.intersect(&n)),
-                    None => Some(g.intersect(a)),
-                }
-            };
-            let (zone_km2, zone_at) = match part(&zone) {
-                Some(z) => (geom::area_km2(&z), largest(&z)),
-                None => (0.0, None),
-            };
-            let (land_km2, land_at, land_box, solid) = match touches.then(|| part(&land)).flatten() {
-                Some(on) => (
-                    geom::area_km2(&on),
-                    largest(&on),
-                    geom::bbox_of(on.polys.iter().flatten().flatten()),
-                    solid_pieces(&on, c),
-                ),
-                None => (0.0, None, None, Vec::new()),
-            };
-            out.push(Gap {
-                c,
-                sides,
-                km2,
-                zone_km2,
-                zone_at,
-                land_km2,
-                land_at,
-                solid,
-                land_box,
-                at,
-                touches,
-                len,
-                area: g,
-            });
-        }
-        (pairs, out)
     });
     let mut gaps: Vec<Gap> = Vec::new();
     for (pairs, g) in done {

@@ -197,6 +197,105 @@ fn another_code_or_resolution_makes_every_piece_again() {
     assert_eq!(check(&w, &f, d.path(), &now).0, set(&[]));
 }
 
+/// Task #1572: the cells round water_tests' small world (its regions in the cells from 0° to 6°,
+/// the disputed zone's from 4°): the cover check's window here.
+fn cover_window() -> BTreeSet<tiles::Cell> {
+    (-3..=4).flat_map(|x| (-2..=3).map(move |y| (x, y))).collect()
+}
+
+/// `files` (with `cover`) checked in the cells of `cover_window` as a new process would, its
+/// pieces kept in the lasting folder `dir` as code `code` makes them: the cells whose cover check it
+/// made, and how many it took; its outcome (the regions, the findings, how they fit, to the bit)
+/// the same as a check keeping nothing.
+fn cover_check(w: &World, files: &[(&str, String)], dir: &Path, code: &str) -> (BTreeSet<tiles::Cell>, usize) {
+    let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+    let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
+    let others = BTreeMap::new();
+    let window = cover_window();
+    let run = |kept: Option<&Kept>| {
+        let ctx = resolve::Context {
+            pass: Some(PASS),
+            outlines: Some(&w.o),
+            extract: None,
+            others: &others,
+            memo: None,
+            kept,
+            reuse: None,
+            names: String::new(),
+            data: Some(&w.data),
+            progress: Default::default(),
+            window: Some(&window),
+        };
+        resolve::resolve(&folder, &ctx)
+    };
+    let kept = Kept::default();
+    kept.open_lasting(Lasting::open_as(dir, "context", 1_000, code).unwrap()).unwrap();
+    let out = run(Some(&kept));
+    kept.stopped().unwrap();
+    let fresh = run(None);
+    assert_eq!(out.resolved, fresh.resolved, "as a check keeping nothing");
+    assert_eq!(out.problems, fresh.problems);
+    assert_eq!(format!("{:?}", out.fit), format!("{:?}", fresh.fit), "how they fit, to the bit");
+    assert!(!fresh.fit.gaps.is_empty(), "the open sea's stretches measured");
+    let made = kept
+        .made_keys()
+        .into_iter()
+        .filter(|(s, _)| *s == kept::COVER)
+        .map(|(_, k)| {
+            let (x, y) = k.split(' ').next().unwrap().split_once(',').unwrap();
+            (x.parse().unwrap(), y.parse().unwrap())
+        })
+        .collect();
+    (made, kept.counts().get(&kept::COVER).map_or(0, |c| c.0))
+}
+
+fn cover_files() -> Vec<(&'static str, String)> {
+    super::water_tests::all().into_iter().map(|(p, t)| (p, t.to_string())).collect()
+}
+
+/// The cells within one of `c` (the 3 × 3 round it).
+fn round(c: tiles::Cell) -> BTreeSet<tiles::Cell> {
+    (c.0 - 1..=c.0 + 1).flat_map(|x| (c.1 - 1..=c.1 + 1).map(move |y| (x, y))).collect()
+}
+
+/// Task #1572: a cell's cover check is kept as a piece, keyed by everything it reads (its pieces
+/// and those round it, its land, its zones' water): nothing changed, every cell's is taken; an
+/// edit changing pieces in one cell makes again that cell's and its eight neighbours' (whose own
+/// pieces are as they were, but read the edited cell's), and no other.
+#[test]
+fn a_cells_cover_check_is_made_again_only_where_it_or_a_neighbour_changed() {
+    let w = super::water_tests::world();
+    let d = tempfile::tempdir().unwrap();
+    let mut f = cover_files();
+    let window = cover_window();
+    assert_eq!(cover_check(&w, &f, d.path(), CODE), (window.clone(), 0), "every cell made");
+    assert_eq!(cover_check(&w, &f, d.path(), CODE), (BTreeSet::new(), window.len()), "nothing changed: all taken");
+    // The island's sea narrowed: its piece, and A's and B's (less the island's), in the cell
+    // from 0°, 0° alone.
+    let isl = f.iter().position(|x| x.0 == "w/isl.toml").unwrap();
+    f[isl].1 = f[isl].1.replace("12 nmi", "6 nmi");
+    let (made, taken) = cover_check(&w, &f, d.path(), CODE);
+    assert_eq!(made, round((0, 0)), "the edited cell and its neighbours");
+    assert_eq!(taken, window.len() - 9);
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, BTreeSet::new(), "as kept after");
+    // Back as it was: every cell as kept before.
+    assert_eq!(cover_check(&w, &cover_files(), d.path(), CODE).0, BTreeSet::new());
+}
+
+/// Task #1572: another code (or `RESOLUTION`) makes every cell's cover check again; the first's are
+/// still taken after.
+#[test]
+fn another_code_makes_every_cells_cover_check_again() {
+    let w = super::water_tests::world();
+    let d = tempfile::tempdir().unwrap();
+    let f = cover_files();
+    let all = cover_window();
+    let now = kept::code_key(RESOLUTION, crate::inputs::code_of(module_path!()));
+    assert_eq!(cover_check(&w, &f, d.path(), &now).0, all);
+    assert_eq!(cover_check(&w, &f, d.path(), &kept::code_key(RESOLUTION, "another digest")).0, all, "another code");
+    assert_eq!(cover_check(&w, &f, d.path(), &now), (BTreeSet::new(), all.len()));
+}
+
 /// The stage and name of the piece a lasting file holds (its whole key's last line).
 fn piece_of(file: &Path) -> (String, String) {
     let b = std::fs::read(file).unwrap();

@@ -1,6 +1,7 @@
 //! The regions' check's resolutions kept as pieces (task #897; docs/pool.md §7.2): each region
 //! without water resolved (`resolve::resolve_one`, by its memo key), and each region with water's
 //! land, the folders' remainders and its water (`tiles`, each by what it reads: `tiles::Reads`),
+//! and each cell's part of the cover check (`tiles::CoverReads`, all the cell's check is given),
 //! kept as it's made in the job's scratch (jobrt::resume_log::Pieces), each a safe point. A check
 //! resumed after a pause takes what its last kept, by the same keys (a digest of everything a
 //! resolution reads), so it resolves to the same geometry and holds the same files.
@@ -43,6 +44,8 @@ pub const STORED: u8 = 5;
 pub const HAND_OUT: u8 = 6;
 /// The cells a folder's remainder reaches (`tiles::remainder_supports`).
 pub const SUPPORT: u8 = 7;
+/// A cell's part of the cover check (`tiles::cover_cell`).
+pub const COVER: u8 = 8;
 
 /// What each stage is called (`Kept::counts`).
 pub fn stage_name(stage: u8) -> &'static str {
@@ -54,6 +57,7 @@ pub fn stage_name(stage: u8) -> &'static str {
         STORED => "stored",
         HAND_OUT => "hand-out",
         SUPPORT => "remainder's cells",
+        COVER => "cover check's cell",
         _ => "?",
     }
 }
