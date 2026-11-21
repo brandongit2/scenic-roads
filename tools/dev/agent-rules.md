@@ -69,8 +69,11 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   its headings are a `grep -n '^#'` away).
 - **Wait on a long run with one background command** (the Bash tool's `run_in_background`) and
   end your turn: its notification wakes you when it exits. Not a poll loop in slices
-  (`for i in $(seq 1 19); do …; sleep 9; done`, one turn each), and while a check.sh of your
-  worktree runs, report-guard lets your stop through.
+  (`for i in $(seq 1 19); do …; sleep 9; done`, one turn each).
+- **While a background run works, end your turn; don't poll it** (its output file, a `grep` in a
+  loop, a `sleep` then a look): Claude Code moves a foreground wait to the background after 180 s,
+  so each poll is another turn. report-guard lets your stop through while a check.sh,
+  remote-tests.sh or `devjob.py wrap` run works in your worktree.
 - **When a command is moved to the background** (a foreground one past its time), wait for its
   notification; never start it again beside it.
 - **The bounded waits the hooks accept**, when a wait must be a loop:
@@ -106,9 +109,17 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   `tools/dev/git-guard.py`).
 - End commit messages with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Run `zsh tools/dev/check.sh` in your worktree before reporting, and report only after it prints
-  PASS. `tools/dev/report-guard.sh` keeps an agent with unchecked commits working (a stop passes
-  while that worktree's check.sh runs, whoever started it) but can't recall a report already
-  delivered: the gate that holds is `tools/dev/merge-ok.sh`, which the PM runs before a merge.
+  PASS. `tools/dev/report-guard.sh` keeps an agent with unchecked commits working but can't recall
+  a report already delivered: the gate that holds is `tools/dev/merge-ok.sh`, which the PM runs
+  before a merge. A stop passes while a dev job run (check.sh, remote-tests.sh, a `devjob.py wrap`
+  run) works in that worktree, whoever started it; while the PM holds runs; and when your last
+  message says what blocks you.
+- **Blocked, say so and stop:** when your work waits on another task or on something you can't
+  change (the M4 away, an owner's answer), end with `Blocked on #N` or `Blocked on: <what>` and
+  hand back, without a check.sh you know will fail.
+- **The PM's hold:** while the main checkout's `.git/hold-runs` exists (the PM writes why in it,
+  and deletes it to end the hold), start no check.sh, remote-tests.sh or measurement run; a stop
+  passes meanwhile.
 - Don't merge, push or publish: the PM does.
 
 ## The work

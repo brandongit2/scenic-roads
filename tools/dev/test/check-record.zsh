@@ -3,7 +3,7 @@
 # it checked; nothing is recorded when HEAD moved during the run, a file was written or appeared
 # then, or the checkout wasn't clean at the start. Its parts are stubs (cargo, guards.sh,
 # affected-tests.sh, check-reuse.py, remote-tests.sh); the stub cargo's clippy can hold the run
-# while the test changes the checkout; its check-running file, there while it runs, gone after; its
+# while the test changes the checkout; its live span, its process in the checkout while it runs; its
 # stop at a failed part (#1524): fmt formatting a file, or guards failing, and clippy, prod and the
 # tests don't run; and its tests' key, <worktree>.check, free while its agent's own run holds the
 # worktree's. Run by check.sh.
@@ -59,7 +59,8 @@ run() {
   rm -f $tmp/started $tmp/go $tmp/hold
   [[ -n $during ]] && : > $tmp/hold
   before=$(cat $passed 2>/dev/null | wc -l)
-  HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1 &
+  # (Recorded only with $djon set: into $tmp/home's spool, the app's port a closed one.)
+  HOME=$tmp/home SCENIC_DEVJOB=${djon:-0} SCENIC_BOARD=http://127.0.0.1:9 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1 &
   pid=$!
   if [[ -n $during ]]; then
     for i in {1..600}; do [[ -e $tmp/started ]] && break; sleep 0.1; done
@@ -104,17 +105,25 @@ rm new.txt
 run "an uncommitted edit" "uncommitted changes" 'print 3 > docs/a.md'
 g checkout -q docs/a.md
 run "a clean run after" recorded
-# While it runs, its git folder's check-running.<pid> holds its start time (report-guard.sh reads
-# it, #1522); no run leaves one, whatever way it ended (passed, reused, failed, not recorded).
+# While it runs, its span is live (devjob.zsh's live file: its pid and start time), its process
+# working in the checkout: what report-guard.sh reads (#1522, #1576); none left after.
+dj=$tmp/home/Library/Logs/scenic/devjobs
 running() {
-  local f=( .git/check-running.<->(N) )
-  if (( ${#f} == 1 )) && [[ $(LC_ALL=C TZ=UTC ps -o lstart= -p ${f[1]##*.}) == $(<$f[1]) ]]; then ok "check-running names the live run"
-  else bad "while it runs: wanted one check-running.<pid> naming it; have: ${f[*]:-none}"; fi
+  local f pid st n=0
+  for f in $dj/live/*(N.); do
+    read -r pid st < $f
+    [[ ${(j: :)${=$(LC_ALL=C TZ=UTC ps -o lstart= -p $pid)}} == $st && \
+       ${${(M)${(f)"$(lsof -a -p $pid -d cwd -Fn)"}:#n*}#n} == ${tmp:A}/r ]] && (( ++n ))
+  done
+  (( n )) && ok "its span is live, its process in the checkout" || bad "while it runs: no live span of a process in ${tmp:A}/r: $(cat $dj/live/*(N) 2>&1)"
 }
 w docs/b.md 1; g add -A; g commit -m running
-run "a run, its check-running file" recorded running
-f=( .git/check-running.*(N) )
-(( ! ${#f} )) && ok "no check-running file left by the runs" || bad "check-running files left: ${f[*]}"
+djon=1 run "a run, its live span" recorded running
+f=( $dj/live/*(N) )
+(( ! ${#f} )) && ok "no live span left by the run" || bad "live spans left: ${f[*]}"
+# (The sampler it started ends once nothing is live: waited for, before the scratch folder goes.)
+zmodload zsh/system
+for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f lk $dj/sampler.lock 2>/dev/null && break; sleep 0.1; done
 
 # The stop at a failed part (#1524): fmt formatting a file, or guards failing, and the parts of
 # minutes (clippy, prod, the tests) don't run, each saying why; the run fails and records nothing.

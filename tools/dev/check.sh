@@ -29,7 +29,7 @@
 #   gitguard  tools/dev/test/git-guard.zsh (whose checkout a git write goes to), when the git guard,
 #             shell-guard.sh or shellwords.py changed
 #   record    tools/dev/test/check-record.zsh (this script on a toy repo: what it records, its
-#             check-running file, its stop at a failed part, its tests' key), when it changed
+#             live span, its stop at a failed part, its tests' key), when it changed
 #   reportguard tools/dev/test/report-guard.zsh (the SubagentStop hook's verdicts), when it changed
 #   prodtest  tools/dev/test/check-prod.zsh (this script's clippy and prod on a toy workspace, real cargo),
 #             when it changed
@@ -75,8 +75,8 @@
 # key, base, test set and what it reused in $(git rev-parse --git-common-dir)/check-passed, which
 # the SubagentStop hook (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read; otherwise it
 # says why it records nothing. Exit 0 only when all passed and the pass is recorded.
-# While it runs, $(git rev-parse --absolute-git-dir)/check-running.<pid> holds its start time
-# (report-guard.sh reads it).
+# While it runs, its run's span is live, its process working in the checkout (report-guard.sh lets
+# that worktree's agent stop meanwhile).
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -110,14 +110,8 @@ source ${0:A:h}/devjob.zsh
 dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstatus=stopped djwhy=
 export SCENIC_DEVJOB_PARENT=$djrun
 # (zsh runs no EXIT trap on a signal: a TERM or INT ends it by exit, so the run is ended "stopped".)
-trap '[[ -n ${holdpid:-} ]] && kill $holdpid 2>/dev/null; [[ -n ${running:-} ]] && rm -f $running; dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
+trap '[[ -n ${holdpid:-} ]] && kill $holdpid 2>/dev/null; dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
 trap 'exit 143' TERM; trap 'exit 130' INT
-# While it runs, a file in this checkout's own git folder names it (#1522): report-guard.sh lets a
-# worktree agent's stop through while that worktree's check.sh runs (the agent waits on it). Named
-# by the pid and holding the process's start time, so a pid since reused doesn't count; deleted on
-# exit (a run killed by KILL leaves it, and its dead pid doesn't count either).
-running=$(git rev-parse --absolute-git-dir)/check-running.$$
-LC_ALL=C TZ=UTC ps -o lstart= -p $$ > $running
 # (`--no-renames`: a moved file is its old path and its new one, as check-reuse.py reads X; with
 # renames, 6f4's move of agent/settings.rs hid the old path the sweep's test is run by.)
 changed=( ${(f)"$(git diff --no-renames --name-only $base; git ls-files --others --exclude-standard)"} )

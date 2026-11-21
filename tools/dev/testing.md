@@ -157,7 +157,7 @@ when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/tes
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/report-guard.zsh` when report-guard.sh (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records, its check-running file, its stop at a failed part, its tests' key) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed, `tools/dev/test/next-check.zsh` when health.sh's list step (`tools/dev/next-check.zsh`) changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/report-guard.zsh` when report-guard.sh (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records, its live span, its stop at a failed part, its tests' key) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed, `tools/dev/test/next-check.zsh` when health.sh's list step (`tools/dev/next-check.zsh`) changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -315,10 +315,16 @@ tree checked before likewise take only a pass naming its commit's tree; passes r
 
 SubagentStop fires at the end of every turn of a subagent, also one that only waits for a
 background run's notice. report-guard.sh keeps an agent with unchecked commits working, and lets a
-stop pass while that worktree's check.sh runs (#1522): check.sh writes `check-running.<pid>` in the
-checkout's own git folder (`git rev-parse --absolute-git-dir`) holding its start time and deletes it
-on exit; an empty file, one whose pid is gone or started at another time, or another worktree's,
-doesn't count. A check.sh started by anyone in that worktree counts. The hook can't stop a report
+stop pass (#1522, #1576):
+- while a live dev job span's process works in that worktree: a check.sh, a remote-tests.sh or a
+  `devjob.py wrap` run, started by anyone (a file of this Mac's dev jobs' live folder naming a
+  process still running as it started, whose working folder is the worktree or in it; an empty
+  file, one whose pid is gone or started at another time, or another worktree's, doesn't count);
+- while the PM holds runs: the main checkout's `.git/hold-runs` exists, its text saying why;
+- when the agent's last message says what blocks it: `blocked on #N` (or `blocked by`, `waiting
+  on`/`for`, `waits on`/`for` #N), or `blocked on: <what>`.
+
+The hook can't stop a report
 already delivered (SubagentHandback delivers it before the stop): the gate that holds is
 merge-ok.sh before a merge. Tested by `tools/dev/test/report-guard.zsh`.
 
@@ -956,7 +962,7 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
 ```
 
 Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log`, `.claude/sweep-keep`
-(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`, `.git/check-tests/`, `check-running.<pid>` in a checkout's git folder while its check.sh runs.
+(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`, `.git/check-tests/`, `.git/hold-runs` (the PM's, while it holds runs).
 
 ## The build page on a phone: touch-test.mjs and safari-sim.sh (#614, 23 Oct)
 
