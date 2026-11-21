@@ -76,7 +76,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/agent/room.rs", "is_member_leftover", "\"inputs-listing\",", "the lead's inputs listing named as a leftover a member removes (docs/agent-parts.md §9.5), never read"),
     ("crates/agentcore/src/agent/plan.rs", "take", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/agentcore/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
-    ("crates/agentcore/src/agent/mod.rs", "is_paced", "Some(\"inputs\" | \"trees\")", "the `inputs` step's name"),
+    ("crates/agentcore/src/agent/mod.rs", "PACED", "[\"inputs\", \"trees\"]", "the `inputs` step's name"),
     ("crates/agentcore/src/agent/plan.rs", "plan_unchecked","w.step == \"inputs\"", "the `inputs` step's name"),
     ("crates/agentcore/src/agent/plan.rs", "plan_regions", "\"inputs/keys.env can't be read now\"", "inputs/keys.env (not inputs, §2)"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
