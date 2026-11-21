@@ -13890,6 +13890,8 @@ mod tests {
             |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 0)], job: None };
         c.offer("p", vec![offer("pack", "6/1/1"), offer("pack", "6/1/2"), offer("pack", "6/1/3")]);
         let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        // (m3 does the step well: m2's failures are its own, toward its brake.)
+        did_pack(&c, "m3");
         // (Each failed in turn: one held, the next ask is granted the next.)
         for _ in 0..3 {
             let g = w2.ask(&every_ask("m2", "pack", 24_000, 50_000)).unwrap().expect("granted");
@@ -13903,7 +13905,7 @@ mod tests {
             refused: Some("writes outside its step's names".into()),
         };
         c.merged(&[], &[refused]);
-        // (Three failed jobs of the step on m2 brake it there too: sched::brake_key.)
+        // (Three failed jobs of the step on m2, m3 doing it well, brake it there too: sched::Brakes.)
         assert_eq!(c.shared.lock().unwrap().failed.len(), 4, "all three failed on m2, and its brake");
         assert_eq!(c.shared.lock().unwrap().handoffs_refused.len(), 1);
         assert_eq!(c.clear_failed(Some("pack"), "6/1/1", "a test"), 2, "the target and its step's brake");
