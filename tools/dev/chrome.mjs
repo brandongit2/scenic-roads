@@ -19,7 +19,7 @@ export const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 
 /** Starts Chrome. `send(method, params, sessionId)` → its result; `on(method, fn, sessionId)`;
  * `page()` → a new tab's session ({send, on, close}); `close()`. A call still waiting when Chrome
- * goes is refused (never left hanging). */
+ * goes is refused (never left hanging); every refusal starts with the call's CDP method. */
 export async function launch({ flags = [] } = {}) {
   const profile = mkdtempSync(join(tmpdir(), "scenic-chrome-"));
   const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "--no-first-run",
@@ -31,21 +31,21 @@ export async function launch({ flags = [] } = {}) {
   chrome.stderr.on("data", (d) => (err = (err + d).slice(-2000)));
   const wait = new Map(), subs = new Map();
   let id = 0, buf = Buffer.alloc(0), ended = null;
-  const end = (why) => { if (ended) return; ended = why; for (const [, [, no]] of wait) no(new Error(why)); wait.clear(); };
+  const end = (why) => { if (ended) return; ended = why; for (const [, [, no, method]] of wait) no(new Error(`${method}: ${why}`)); wait.clear(); };
   chrome.once("error", (e) => end(`Chrome didn't start: ${e.message}`));
   chrome.once("exit", (c, s) => end(`Chrome exited (${s || c})${err ? `: ${err.trim().split("\n").at(-1)}` : ""}`));
   chrome.stdio[4].on("data", (d) => {
     buf = Buffer.concat([buf, d]);
     for (let i; (i = buf.indexOf(0)) >= 0; buf = buf.subarray(i + 1)) {
       const v = JSON.parse(buf.subarray(0, i).toString());
-      if (v.id && wait.has(v.id)) { const [ok, no] = wait.get(v.id); wait.delete(v.id); v.error ? no(new Error(`${v.error.message}${v.error.data ? `: ${v.error.data}` : ""}`)) : ok(v.result); }
+      if (v.id && wait.has(v.id)) { const [ok, no, method] = wait.get(v.id); wait.delete(v.id); v.error ? no(new Error(`${method}: ${v.error.message}${v.error.data ? `: ${v.error.data}` : ""}`)) : ok(v.result); }
       else if (v.method) for (const fn of subs.get(`${v.sessionId || ""} ${v.method}`) || []) fn(v.params);
     }
   });
   chrome.stdio[3].on("error", () => {});
   const send = (method, params = {}, sessionId) => new Promise((ok, no) => {
-    if (ended) return no(new Error(ended));
-    wait.set(++id, [ok, no]);
+    if (ended) return no(new Error(`${method}: ${ended}`));
+    wait.set(++id, [ok, no, method]);
     chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
   });
   const on = (method, fn, sessionId) => { const k = `${sessionId || ""} ${method}`; subs.set(k, [...(subs.get(k) || []), fn]); };

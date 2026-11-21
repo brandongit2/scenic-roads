@@ -1,11 +1,9 @@
 // Two-finger touch gestures over 3D terrain, measured (task #116): where the terrain point between
 // the fingers goes, and how far a pinch zooms. Driven through the Chrome DevTools Protocol.
 //
-// Start a Chrome with remote debugging and a scratch profile, and the app (a Vite dev server, or
-// the map server):
-//   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=18229 \
-//     --user-data-dir=<scratch>/chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist about:blank
-//   node tools/check/touch-gestures.mjs --port 18229 --url 'http://127.0.0.1:18221/' \
+// Start the app (a Vite dev server, or the map server); the script starts its own headless Chrome
+// on the GPU (tools/dev/chrome.mjs: over its debugging pipe, a throwaway profile, ended by its PID):
+//   node tools/check/touch-gestures.mjs --url 'http://127.0.0.1:18221/' \
 //     [--places mb,fuji,rockies,sea] [--zooms 12,15,17,18] [--pitches 0,45,70] [--gestures pinch,rotate,tilt,pan] [--out f.json]
 //
 // For each case it frames the place at the zoom (from the ground: cam3d.frame), hides the panels
@@ -20,11 +18,12 @@
 //     its distance from T; a tilt: a horizontal axis, how far ahead of T and how high).
 // The gestures: pinch (spread 120 → 240 px), rotate (turned 45°, 180 px apart), tilt (both
 // fingers 50 px down from 45° and up from 0°, side by side), pan (180 px apart, moved 120, 60 px).
+import { launch } from '../dev/chrome.mjs';
+
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => {
   if (a.startsWith('--')) acc.push([a.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
   return acc;
 }, []));
-const PORT = Number(args.port ?? 18229);
 const URL = String(args.url ?? 'http://127.0.0.1:18221/');
 const W = 1180, H = 820;
 const PLACES = {
@@ -41,20 +40,8 @@ const gestures = String(args.gestures ?? 'pinch,rotate,tilt,pan').split(',');
 // off the view centre (down and right), as a hand usually is. Set once the page is loaded.
 let MX = 0, MY = 0, OX = 0, OY = 0;
 
-const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json();
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-let seq = 0;
-const pending = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-});
-const send = (method, params = {}) => new Promise((res, rej) => {
-  const id = ++seq;
-  pending.set(id, (m) => (m.error ? rej(new Error(`${method}: ${m.error.message}`)) : res(m.result)));
-  ws.send(JSON.stringify({ id, method, params }));
-});
+const chrome = await launch({ flags: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const { send } = await chrome.page();
 const evaluate = async (expr, timeout = 120) => {
   const r = await send('Runtime.evaluate', { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true, timeout: timeout * 1000 });
   if (r.exceptionDetails) throw new Error(`page: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
@@ -223,6 +210,5 @@ try {
   }
 } finally {
   if (args.out) (await import('node:fs')).writeFileSync(String(args.out), JSON.stringify(results, null, 1));
-  ws.close();
-  await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {});
+  await chrome.close();
 }

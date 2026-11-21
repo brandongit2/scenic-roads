@@ -1680,7 +1680,10 @@ function regionCards(rows) {
 // in time and download.
 function regionRow(r, i) {
   const [st, cls] = rowState(r);
-  const above = r.crumbs?.slice(0, -1).join(" › ");
+  // (Its folders: the first, those between and the last, each its own span, so a phone's row puts
+  // them on one line of their own, the ones between cut short first: dash.css, `.crumbs`.)
+  const c = r.crumbs?.slice(0, -1) || [];
+  const above = c.length ? h("span", { class: "crumbs dim", title: c.join(" › ") }, [c[0], c.slice(1, -1).join(" › "), c.length > 1 ? c.at(-1) : ""].map((t, k) => (t ? h("span", k === 1 ? "mid" : null, `${t} › `) : null))) : null;
   const when = r.count ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · on the map ≈ ${clock(r.map_at)}` : ""}` : "";
   // (A segment a stage with work left here, named in it; its tiles and the words left on hover.)
   const b = r.built;
@@ -1690,7 +1693,7 @@ function regionRow(r, i) {
   const bar = h("span", { class: "sbar", title: [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · ") },
     stageParts(r).map((p) => h("i", { class: p.cls, title: p.title, style: { "--c": stageColour(p.g) } }, p.g)));
   const row = h("div", { class: `rrow${r.f && !r.count && r.on_map === true ? " done" : ""}${rp.lit === r.id ? " lit" : ""}`, role: "listitem", style: { top: `${i * ROW_H}px` } },
-    h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, st ? [" ", chip(st, cls)] : null),
+    h("span", "nm", above, r.name, st ? [" ", chip(st, cls)] : null),
     h("span", "when", when),
     h("span", "lw", r.f || r.fill ? bar : h("span", "lt", tiles)),
     h("span", "when", [r.secs ? `≈ ${dur(r.secs)} of work` : "", r.bytes != null ? size(r.bytes) : ""].filter(Boolean).join(" · ")));

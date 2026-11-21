@@ -363,7 +363,7 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: transparent; color: var(--dim); padding: 3px 9px; }
 .seg button.on { background: var(--primary-bg); color: var(--primary-fg); }
-/* Regions: the list, virtual (rows placed by their index, ROW_H = 40 px in dash.js, 104 px narrow),
+/* Regions: the list, virtual (rows placed by their index, ROW_H = 40 px in dash.js, 112 px narrow),
    as tall as the panel; its regions lit on the left panel's map. */
 .rpane { display: flex; flex-direction: column; min-width: 0; height: clamp(420px, calc(100dvh - 150px), 1400px); }
 .rpane .regbar { margin-bottom: 4px; }
@@ -462,6 +462,14 @@ button[disabled] { opacity: .5; }
   .kpi .macs > div, .stages .title, .d-xfer .xlog div, .gate .gh .files { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
   .rrow { height: 112px; grid-template-rows: auto auto; align-content: center; }
   .rrow .nm { white-space: normal; overflow: visible; overflow-wrap: break-word; }
+  /* (A region's folders on one line of their own above its name, which always shows whole: the
+     folders between the first and the last cut short first, to an ellipsis, then the last (the
+     nearest), the first kept to 40 % of the line, so a deep region
+     never wraps past its row's fixed height.) */
+  .rrow .crumbs { display: flex; white-space: nowrap; min-width: 0; overflow: hidden; }
+  .rrow .crumbs > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+  .rrow .crumbs > :first-child { flex-shrink: 0; max-width: 40%; }
+  .rrow .crumbs > .mid { flex-shrink: 1000; min-width: 1em; }
   .rrow .lw { flex-wrap: wrap; gap: 3px 8px; }
   /* (Too narrow for a stage's name in each segment: its name is on hover and in the region's card.) */
   .sbar > i { font-size: 0; height: 8px; padding: 0; }

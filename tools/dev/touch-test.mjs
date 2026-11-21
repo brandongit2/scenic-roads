@@ -61,7 +61,8 @@
 //                     Québec: 275,330), a solo held and let go: chrome-solo-zoom, chrome-nosolo-zoom
 //
 // The page comes from a read-only server on its own port (8097): web/buildpage at its root, and only the
-// reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
+// reading calls forwarded to this Mac's agent (127.0.0.1:8090: a member's 307 to its lead followed
+// by this server, never by the page); everything else is refused, so the
 // page can't act or set a setting. Its Pause is the test's own (#673): /api/pause is
 // answered here, never forwarded, and /api/swarm's `pause` is this server's (none until a press;
 // then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused.
@@ -69,7 +70,7 @@
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
 // before its scripts run, a POST to any /api/settings with a setting in its body recorded in
 // `window.__posted` and sent as a read ({}) instead; this server refuses such a body anyway.
-import { createServer, request } from "node:http";
+import { createServer } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, dirname } from "node:path";
@@ -136,8 +137,25 @@ const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
 const FLAG = arg("--flag", null)?.match(/^([^:]+):([^:]+):(.*)$/s)?.slice(1) ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
-// (A forwarded answer's headers, less the agent's page version: every answer says this server's.)
-const own = ({ "x-page-version": _, ...h }) => h;
+// A call forwarded to the agent, its answer to `res`: its status and body (`edit(body)` → the body
+// sent instead, on a 200), its headers less the agent's page version (every answer says this
+// server's) and those of the body as sent (fetch has decoded it). A redirect is followed here
+// (#1397): a member's agent answers the page's calls with a 307 to its lead, and a page sent there
+// would read the lead's own state, its pause the pool's and not this server's.
+async function forward(res, method, path, body, edit) {
+  try {
+    const r = await fetch(`http://${AGENT.host}:${AGENT.port}${path}`, { method, ...(body != null ? { headers: { "Content-Type": "application/json" }, body } : {}) });
+    const b = await r.text();
+    const out = r.status === 200 && edit ? edit(b) : b;
+    const skip = new Set(["x-page-version", "content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive"]);
+    res.writeHead(r.status, Object.fromEntries([...r.headers].filter(([k]) => !skip.has(k))));
+    res.end(out);
+  } catch (e) {
+    console.error(`touch-test server: ${path}: ${e.message}`);
+    res.writeHead(502);
+    res.end("{}");
+  }
+}
 function serve() {
   const srv = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
@@ -222,14 +240,8 @@ function serve() {
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
         }
-        const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => {
-          if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, own(r.headers)); return r.pipe(res); }
-          let b = "";
-          r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FLAG && o.agent) o.agent.flags = [...(o.agent.flags || []), { kind: FLAG[0], mac: FLAG[1], said: FLAG[2] }]; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
-        });
-        fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
-        fw.end(out);
+        // (The swarm's answer with this server's own: its pause, and the options' changes.)
+        forward(res, "POST", url.pathname, out, call === "swarm" && ((b) => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FLAG && o.agent) o.agent.flags = [...(o.agent.flags || []), { kind: FLAG[0], mac: FLAG[1], said: FLAG[2] }]; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); return JSON.stringify(o); }));
       });
       return;
     }
@@ -237,9 +249,7 @@ function serve() {
     // (A job's view, a GET (#1105), forwarded as it is: the lead's to answer.)
     if (req.method === "GET" && /^\/api\/job\/[^/]+$/.test(url.pathname)) {
       if (JOB) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(readFileSync(JOB)); }
-      const fw = request({ ...AGENT, method: "GET", path: url.pathname }, (r) => { res.writeHead(r.statusCode, own(r.headers)); r.pipe(res); });
-      fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
-      return fw.end();
+      return forward(res, "GET", url.pathname);
     }
     if (req.method !== "GET" || url.pathname.startsWith("/api/")) { res.writeHead(403); return res.end(); }
     // (A job's page, /job/<id>: job.html, as the coordinator serves it.)
@@ -642,8 +652,9 @@ async function run() {
       const wide = await js(`(() => { const w = document.documentElement.clientWidth; const over = [...document.querySelectorAll(".panel:not([hidden]) *, header *, #mappane *, #tabs *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > w + 1 && !e.closest(".twrap, [style*='overflow']"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(" ").join(".") : "") + " →" + Math.round(e.getBoundingClientRect().right)); return [document.scrollingElement.scrollWidth, w, over]; })()`);
       check(`${tab}: no horizontal scroll`, wide[0] <= wide[1], wide[0] > wide[1] ? `page ${wide[0]} px wide in ${wide[1]}; past the edge: ${wide[2].join(", ")}` : "");
       // (No text cut off below 720 px, where the page wraps what won't fit (dash.css, #617); a
-      // desktop keeps labels on one line, ellipsis and all, as the owner asked: not checked there.)
-      const cut = NARROW ? await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`) : [];
+      // desktop keeps labels on one line, ellipsis and all, as the owner asked: not checked there.
+      // A region row's folders are cut short on purpose, its name whole: dash.css's `.crumbs`.)
+      const cut = NARROW ? await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && !e.closest(".rrow .crumbs") && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`) : [];
       if (NARROW) check(`${tab}: no text cut off`, !cut.length, cut.join("; "));
       // (Regions: the list's rows have one fixed height, so every row's text must fit it: walked through the whole list.)
       if (tab === "regions") {
@@ -694,8 +705,9 @@ async function run() {
       if (tab === "machines") for (let i = 0; i < 5 && machineW == null; i++) { machineW = (await js(charts))[0] ?? null; if (machineW == null) await sleep(1000); }
       if (tab === "nas") {
         await sleep(2000);
-        const n = await js(`[${charts}, document.querySelectorAll(".panel:not([hidden]) .d-nas .rate").length, document.querySelectorAll(".panel:not([hidden]) .d-nas .cbar, .panel:not([hidden]) .d-nas .chips").length, document.querySelector(".panel:not([hidden]) .d-nas .lhead")?.textContent || ""]`);
-        check("nas: every measure a chart, no gauges", n[1] === 9 && !n[2], `${n[1]} rows, ${n[2]} gauges; ${n[3].slice(0, 80)}`);
+        // (Each row its chart, however many measures the tab has.)
+        const n = await js(`[${charts}, document.querySelectorAll(".panel:not([hidden]) .d-nas .rate").length, document.querySelectorAll(".panel:not([hidden]) .d-nas .cbar, .panel:not([hidden]) .d-nas .chips").length, document.querySelector(".panel:not([hidden]) .d-nas .lhead")?.textContent || "", [...document.querySelectorAll(".panel:not([hidden]) .d-nas .rate")].filter((r) => ![...r.querySelectorAll("canvas")].some((c) => c.getClientRects().length)).length]`);
+        check("nas: every measure a chart, no gauges", n[1] > 0 && !n[4] && !n[2], `${n[1]} rows, ${n[4]} without a chart, ${n[2]} gauges; ${n[3].slice(0, 80)}`);
         check("nas: its charts as wide as the Machines tab's (±2 px: the cards' borders)", !n[0].length ? /asking|no live/.test(n[3]) : machineW != null && n[0].every((w) => Math.abs(w - machineW) <= 2), `${n[0].join(", ") || "none shown"} against ${machineW}`);
       }
       // (Activity: the websites' table ends in the robots.txt column, each row's cell a
@@ -722,37 +734,39 @@ async function run() {
       const inPop = (text) => js(`(() => { const b = [...document.querySelectorAll(".card-tip.pinned button")].find((e) => e.textContent === ${JSON.stringify(text)}); if (!b) return null; const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
       const posts = async () => +(await (await fetch(`http://127.0.0.1:${PORT}/__posts`)).text());
       const verdict = () => js(`document.querySelector(".verdict .say")?.textContent || ""`);
+      // (A button tapped where it is: missing, a failed check, the run going on.)
+      const press = async (find, text) => { const at = await find(text); if (at) await tap(...at); else check(`pause: the "${text}" button is there`, false, find === ctl ? "not in the header" : "not on the card"); };
       check("pause: the controls are there", (await until(`!!document.querySelector(".verdict .ctl button")`)) >= 0);
       const p0 = await posts();
-      await tap(...(await ctl("Pause at a safe point")));
+      await press(ctl, "Pause at a safe point");
       check("pause: a press opens a confirmation and asks nothing", (await until(pop("Pause at a safe point?"))) >= 0 && (await posts()) === p0 && !/Paused/.test(await verdict()), `${await js(`document.querySelectorAll(".card-tip.pinned").length`)} cards; ${await posts()} vs ${p0} posts; ${await verdict()}; ${errors.join(" / ").slice(0, 300)}`);
       await shot("chrome-pause-confirm");
-      await tap(...(await inPop("Cancel")));
+      await press(inPop, "Cancel");
       check("pause: Cancel closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
-      await tap(...(await ctl("Freeze now")));
+      await press(ctl, "Freeze now");
       check("pause: Freeze asks too", (await until(pop("Freeze every job now?"))) >= 0);
       check("pause: the card's focus is on Cancel", (await js(`document.activeElement?.textContent`)) === "Cancel");
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
       check("pause: Escape closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
-      await tap(...(await ctl("Freeze now")));
+      await press(ctl, "Freeze now");
       await until(pop("Freeze every job now?"));
       await sleep(900); // (a tap's own click on the veil within 800 ms is passed over)
       await tap(WIDTH - 12, 836);
       check("pause: a tap outside closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
-      await tap(...(await ctl("Pause at a safe point")));
+      await press(ctl, "Pause at a safe point");
       await until(pop("Pause at a safe point?"));
       const t0 = Date.now();
-      await tap(...(await inPop("Pause")));
+      await press(inPop, "Pause");
       const shown = await until(`(() => { const b = document.querySelector(".verdict .ctl button.pending"); return !!b && b.disabled && b.textContent === "Pausing…" && !document.querySelector(".card-tip.pinned") && [...document.querySelectorAll(".verdict .ctl button")].every((x) => x.disabled); })()`, 2000);
       check("pause: the press is pending at once (its words, the controls disabled, the card gone)", shown >= 0 && Date.now() - t0 < 2000 && !/Paused/.test(await verdict()), `${shown} ms`);
       await shot("chrome-pause-pending");
       const settled = await until(`/Paused/.test(document.querySelector(".verdict .say")?.textContent || "") && !document.querySelector(".verdict .ctl button.pending") && [...document.querySelectorAll(".verdict .ctl button")].some((x) => x.textContent === "Resume" && !x.disabled)`, 9000);
       check("pause: the header says Paused within seconds of the build's state, not at the next 10 s poll", settled >= 0, `${Date.now() - t0} ms after the press, lag ${PAUSE_LAG} ms`);
-      await tap(...(await ctl("Resume")));
+      await press(ctl, "Resume");
       check("resume: a press opens a confirmation and asks nothing more", (await until(pop("Resume the build?"))) >= 0 && (await posts()) === p0 + 1);
       await shot("chrome-resume-confirm");
       const t1 = Date.now();
-      await tap(...(await inPop("Resume")));
+      await press(inPop, "Resume");
       check("resume: pending at once", (await until(`document.querySelector(".verdict .ctl button.pending")?.textContent === "Resuming…"`, 2000)) >= 0 && /Paused/.test(await verdict()));
       const back = await until(`!/Paused/.test(document.querySelector(".verdict .say")?.textContent || "") && [...document.querySelectorAll(".verdict .ctl button")].some((x) => x.textContent === "Pause at a safe point" && !x.disabled)`, 9000);
       check("resume: the header drops Paused within seconds", back >= 0, `${Date.now() - t1} ms after the press`);
@@ -898,7 +912,11 @@ async function run() {
         if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
         else await mouse(2, 2);
       }
+      // (The forecast's jobs to come by step, as /api/tocome names its runs: a job of an untiled step,
+      // names-todo or inputs, has no tiles for a map.)
+      const comeTiled = nNext && (await js(`fetch("/api/tocome", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((a) => (a.runs || []).flat().map((n) => String(n).split(" ")[0]).filter((x) => ${JSON.stringify(tiled)}.includes(x)).length, () => -1)`));
       if (!nNext) console.log("INFO jobs card: no job to come in the forecast (the live build's state)");
+      else if (!comeTiled) console.log("INFO jobs card: no job to come of a tiled step in the forecast (the live build's state): a job to come's map not checked");
       else check("jobs card: a job to come names its targets, a world map of them (#834)", !!nc && steps.has(String(nc.title).split(/[ :]/)[0]) && nc.title.includes("/"), nc ? `${nc.kick} / ${nc.title}, map ${nc.map} px` : `none of ${Math.min(nNext, 40)} jobs to come shows a map of its tiles`);
       if (dc) check("jobs card: a drop to come says it's a drop, its step as the code names it (#837)", dc.does && steps.has(String(dc.kick).split(" ")[0]), `${dc.kick} / ${dc.title}`);
       else console.log("INFO jobs card: no drop to come in the forecast (the live build's state)");

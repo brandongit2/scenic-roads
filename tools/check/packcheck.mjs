@@ -4,14 +4,13 @@
 // make (bldfield.worker.ts: v, w and f from each byte of its tiles); R16F over every binade it reaches,
 // with the mantissas at each rounding boundary, of either sign, and random values to a million.
 //
-// Against a Chrome drawing on the real GPU, with remote debugging:
-//   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=9333 \
-//     --user-data-dir=<scratch>/chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist about:blank
-//   node tools/check/packcheck.mjs [--port 9333]
+// Against a headless Chrome of its own drawing on the real GPU (tools/dev/chrome.mjs: over its
+// debugging pipe, a throwaway profile, ended by its PID):
+//   node tools/check/packcheck.mjs
 import fs from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
+import { launch } from '../dev/chrome.mjs';
 
-const port = Number(process.argv.includes('--port') ? process.argv[process.argv.indexOf('--port') + 1] : 9333);
 const src = stripTypeScriptTypes(fs.readFileSync(new URL('../../web/src/packfloat.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
 
 const page = `${src}
@@ -78,20 +77,12 @@ const r11 = cmp(read(gl.R11F_G11F_B10F, T, rows, gl.FLOAT, rgb), read(gl.R11F_G1
 const h16 = cmp(read(gl.R16F, T, half.length / T, gl.FLOAT, half), read(gl.R16F, T, half.length / T, gl.HALF_FLOAT, packHalf(half)), 1);
 return { renderer: gl.getParameter(gl.RENDERER), r11, h16 };`;
 
-const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-const keep = setInterval(() => {}, 1000);
+const chrome = await launch({ flags: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 try {
-  const r = await new Promise((res) => {
-    ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id === 1) res(m); });
-    ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: `(() => { ${page} })()`, returnByValue: true } }));
-  });
-  console.log(JSON.stringify(r.result?.result?.value ?? r.result?.exceptionDetails ?? r.error, null, 1));
-  const v = r.result?.result?.value;
+  const r = await (await chrome.page()).send('Runtime.evaluate', { expression: `(() => { ${page} })()`, returnByValue: true });
+  console.log(JSON.stringify(r.result?.value ?? r.exceptionDetails, null, 1));
+  const v = r.result?.value;
   process.exitCode = v && !v.error && v.r11.bad === 0 && v.h16.bad === 0 ? 0 : 1;
 } finally {
-  clearInterval(keep);
-  ws.close();
-  await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(() => {});
+  await chrome.close();
 }

@@ -2,13 +2,11 @@
 // counted from Chrome's network log before and after a catalogue that changed one z6 (hi) pack.
 // Driven through the Chrome DevTools Protocol.
 //
-// Start a Chrome with remote debugging and a scratch profile, and the map server over a test root
-// of your own (--root, --home, --port: never the live server's) whose next catalogue `--publish`
-// writes (and the server then takes: a server over --root reads its catalogue at start, so the
-// command restarts it):
-//   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=18229 \
-//     --user-data-dir=<scratch>/chrome about:blank
-//   node tools/check/pack-versions.mjs --port 18229 --url 'http://127.0.0.1:18153/' \
+// Start the map server over a test root of your own (--root, --home, --port: never the live
+// server's) whose next catalogue `--publish` writes (and the server then takes: a server over
+// --root reads its catalogue at start, so the command restarts it); the script starts its own
+// headless Chrome (tools/dev/chrome.mjs: over its debugging pipe, a throwaway profile):
+//   node tools/check/pack-versions.mjs --url 'http://127.0.0.1:18153/' \
 //     --at -73.125,45.24,9.5 --pack 6/18/22 --publish '<command writing the next catalogue>'
 //
 // It frames `--at` (lng,lat,zoom: best a corner of four z6 packs), waits for the road tiles to
@@ -16,46 +14,38 @@
 // page ask (as it does every minute), and waits again. Passes when every road tile asked for after
 // the switch lies under `--pack`, and at least one did.
 import { execSync } from 'node:child_process';
+import { launch } from '../dev/chrome.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => {
   if (a.startsWith('--')) acc.push([a.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
   return acc;
 }, []));
-const PORT = Number(args.port ?? 18229);
 const URL_ = String(args.url ?? 'http://127.0.0.1:18153/');
 const [lng, lat, zoom] = String(args.at ?? '-73.125,45.24,9.5').split(',').map(Number);
 const PACK = String(args.pack ?? '6/18/22');
 const origin = new URL(URL_).origin;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json();
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-let seq = 0;
-const pending = new Map();
+const chrome = await launch();
+const page = await chrome.page();
+const { send } = page;
 const tiles = []; // [time, url]
 const seen = new Set();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  // Each worker (the road tiles are fetched from workers): its requests too.
-  if (m.method === 'Target.attachedToTarget') {
-    const sessionId = m.params.sessionId;
-    ws.send(JSON.stringify({ id: ++seq, sessionId, method: 'Network.enable', params: {} }));
-    ws.send(JSON.stringify({ id: ++seq, sessionId, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } }));
-    ws.send(JSON.stringify({ id: ++seq, sessionId, method: 'Runtime.runIfWaitingForDebugger', params: {} }));
-  }
-  // (Once each: a worker's request can be reported by its page too.)
-  if (m.method === 'Network.requestWillBeSent' && m.params.request.url.includes('/tiles/roads/') && !seen.has(m.params.requestId)) {
-    seen.add(m.params.requestId);
-    tiles.push([Date.now(), m.params.request.url]);
-  }
-});
-const send = (method, params = {}) => new Promise((res, rej) => {
-  const id = ++seq;
-  pending.set(id, (m) => (m.error ? rej(new Error(`${method}: ${m.error.message}`)) : res(m.result)));
-  ws.send(JSON.stringify({ id, method, params }));
-});
+// The road tiles asked for in a session: the page's, and each worker's under it (the road tiles are
+// fetched from workers), attached as it starts. (Once each: a worker's request can be reported by
+// its page too.)
+const watch = (on) => {
+  on('Network.requestWillBeSent', (p) => {
+    if (!p.request.url.includes('/tiles/roads/') || seen.has(p.requestId)) return;
+    seen.add(p.requestId);
+    tiles.push([Date.now(), p.request.url]);
+  });
+  on('Target.attachedToTarget', ({ sessionId }) => {
+    watch((m, fn) => chrome.on(m, fn, sessionId));
+    for (const [m, p] of [['Network.enable', {}], ['Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }], ['Runtime.runIfWaitingForDebugger', {}]]) chrome.send(m, p, sessionId).catch(() => {});
+  });
+};
+watch(page.on);
 const evaluate = async (expr) => {
   const r = await send('Runtime.evaluate', { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error(`page: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
@@ -100,8 +90,7 @@ const after = tiles.splice(0);
 const outside = after.filter(([, u]) => packOf(zxy(u)) !== PACK);
 console.log(`catalogue ${n1}: ${after.length} road tile requests; outside ${PACK}: ${outside.length}`);
 for (const [, u] of after) console.log(`  ${new URL(u).pathname}${new URL(u).search}  (${packOf(zxy(u))})`);
-await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {});
-ws.close();
+await chrome.close();
 const ok = after.length > 0 && outside.length === 0;
 console.log(ok ? 'PASS' : 'FAIL');
 process.exit(ok ? 0 : 1);

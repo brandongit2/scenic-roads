@@ -1002,7 +1002,9 @@ Every brief that changes web/buildpage runs both and looks at the screenshots. N
 that changes anything: the page opens from a read-only server (`touch-test.mjs --serve`,
 port 8097) that serves web/buildpage (a job's page at `/job/<id>` too) and forwards only the reading
 calls (swarm, steps, regions, settings with `{}`, history, live, timings, a job's `GET /api/job/<id>`)
-to this Mac's agent on 127.0.0.1:8090, refusing the rest.
+to this Mac's agent on 127.0.0.1:8090, refusing the rest. A member's agent answers those with a 307 to
+its lead: the server follows it itself, so the page reads through it alone and its Pause stays the
+test's (#1397). A button the Pause checks can't find is a failed check, the run going on.
 - `node tools/dev/touch-test.mjs [--out DIR]` (35–55 s on the M1): headless Chrome as a 390×844 phone (DPR 3,
   mobile, 5 touch points, iPhone user agent), real touches through CDP. Each tab: no sideways
   scroll (else the elements past the edge), no console errors, a screenshot (`chrome-<tab>.png`,
