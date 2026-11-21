@@ -2893,6 +2893,7 @@ mod tests {
             // (Each target live, as its step runs it: on SCENIC_THREADS_FILE's threads as they
             // change, jobrt::control::on_grant_live; without the file, as it is.)
             let (r, last) = jobrt::control::on_grant_live(|| {
+                eprintln!("{}/{}/{} begins", if hi { 6 } else { PACK_Z }, t.0, t.1);
                 let r = match &mut batch {
                     Some(b) => {
                         let r = build(b, &mut w, t);
