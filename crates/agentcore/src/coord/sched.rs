@@ -864,6 +864,14 @@ fn disk_with(a: &Ask, less: u64, more: u64) -> std::borrow::Cow<'_, Ask> {
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
 pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
 
+/// Whether jobs of `step` keep to the threads they're granted, so fewer threads hold less memory:
+/// the steps honouring their threads (`THREADS_HONOURED`) and the paced ones (crate::agent::PACED:
+/// their threads file read every second). Such a job's memory is read at the threads it's granted
+/// (`Sched::mem_threads`, `pack`, `lease_need`).
+pub(super) fn keeps_threads(step: &str) -> bool {
+    THREADS_HONOURED.contains(&step) || crate::agent::PACED.contains(&step)
+}
+
 /// A cold start's provisional memory (MB) from `mb`, the most its step's runs of its latest earlier
 /// way measured or it was offered with: times 3/2 (task #499; `Sched::provisional`, the forecast's
 /// packing too).
@@ -1179,6 +1187,49 @@ impl Sched {
         targets.into_iter().filter_map(|t| b.cores(step, t)).map(|c| c.grant).max().unwrap_or(0)
     }
 
+    /// The threads a job of `step` over `targets` has its memory read at where its Mac's room for
+    /// it is `room_mb` (MB): those it starts on (`start_threads`); for a step whose jobs keep to the
+    /// threads they're granted (`keeps_threads`), whose job there passes `room_mb`, the most fewer
+    /// whose memory fits, else one, the least it could start on (task #1582: the regions check,
+    /// 4.6 GB on the one thread it ran on, its start's thread more booked at its whole peak, 9.0 GB
+    /// on two, waited hours on a lead with 4.6 GB for a new job). It's granted that many threads
+    /// at most, its memory read there (`pack`), and its agent grows it past them only where its Mac's
+    /// memory covers each (its `thread_mb`, docs/pool.md §7.1, Threads controlled live). A cold
+    /// start (no measure): those it starts on.
+    pub(super) fn mem_threads(&self, step: &str, targets: &[String], room_mb: u64) -> u32 {
+        let start = self.start_threads(step, targets.iter().map(String::as_str));
+        if start <= 1 || !keeps_threads(step) {
+            return start;
+        }
+        (1..=start)
+            .rev()
+            .find(|&t| self.job_need_on(step, targets, Some(t)).is_some_and(|m| m.mem_mb <= room_mb))
+            .unwrap_or(1)
+    }
+
+    /// The threads the memory of a job of `step` over `targets` granted `granted` threads to start
+    /// on was read at: those for a step whose jobs keep to their threads (`keeps_threads`:
+    /// `mem_threads`, or fewer for the cores left), else those it starts on by the cost book
+    /// (`start_threads`) or `granted` where more.
+    fn read_at<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>, granted: u32) -> u32 {
+        if keeps_threads(step) && granted > 0 {
+            granted
+        } else {
+            self.start_threads(step, targets).max(granted)
+        }
+    }
+
+    /// `measured` on the threads its memory fits `room_mb` on (`mem_threads`).
+    pub(super) fn measured_in(&self, step: &str, target: &str, room_mb: u64) -> Option<Measured> {
+        let ts = [target.to_string()];
+        self.measures(step, target, Some(self.mem_threads(step, &ts, room_mb))).1
+    }
+
+    /// `job_need` on the threads its memory fits `room_mb` on (`mem_threads`).
+    pub(super) fn job_need_in(&self, step: &str, targets: &[String], room_mb: u64) -> Option<Measured> {
+        self.job_need_on(step, targets, Some(self.mem_threads(step, targets, room_mb)))
+    }
+
     /// `target` of `step`'s memory by the book (a step never measured: its offered guess, `lease_mem`)
     /// and `measured`, on `threads` (None: its own `start_threads`): the memory a job of it is
     /// admitted and packed at (crate::needs::Book::mem: its step's runs' `needs-mem-pct` percentile
@@ -1470,17 +1521,18 @@ impl Sched {
     }
 
     /// Leased job `l`'s (of `step` over `targets`) packing need on its worker (`pack_need_on`: its
-    /// memory on the threads its grant was read at, the threads it starts on by the cost book or
-    /// those it was granted where more, a resumed job's the whole Mac's) and its measured time
-    /// there as it ran its threads (`batch_secs`), kept (`kept_leases`): each ask packs beside
-    /// every job its Mac holds.
+    /// memory on the threads its grant was read at: those it started on for a step whose jobs keep
+    /// to their threads (`keeps_threads`), else the threads it starts on by the cost book or those
+    /// it was granted where more, a resumed job's the whole Mac's) and its measured time there as
+    /// it ran its threads (`batch_secs`), kept (`kept_leases`): each ask packs beside every job its
+    /// Mac holds.
     fn lease_need(&self, l: &Lease, step: &str, targets: &[(String, String)]) -> (Need, Option<u64>) {
         if let Some(n) = self.kept_lease(l, |k| k.need) {
             return n;
         }
         let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
         let start = if l.start_threads > 0 { l.start_threads } else { l.threads };
-        let on = self.start_threads(step, ts.iter().map(String::as_str)).max(start);
+        let on = self.read_at(step, ts.iter().map(String::as_str), start);
         let got = (
             self.pack_need_on(step, &ts, Some(on)),
             self.batch_secs(step, ts.iter().map(String::as_str), &l.worker, 0).map(|s| s.0),
@@ -1737,6 +1789,18 @@ impl Sched {
     /// docs/pool.md §7.1, Threads controlled live).
     pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
         self.pack_need_on(step, targets, None)
+    }
+
+    /// `pack_need` where its Mac's room for it is `room_mb` (MB): its memory on the threads it fits
+    /// on (`mem_threads`) and its grant within them, its busy cores too.
+    pub(super) fn pack_need_in(&self, step: &str, targets: &[String], room_mb: u64) -> Need {
+        let on = self.mem_threads(step, targets, room_mb);
+        let mut n = self.pack_need_on(step, targets, Some(on));
+        if let Some(c) = n.cores.as_mut().filter(|c| on > 0 && c.grant > on) {
+            c.grant = on;
+            c.busy_tenths = c.busy_tenths.map(|b| b.min(on * 10));
+        }
+        n
     }
 
     /// `pack_need` with its memory on `threads` (None: those it starts on, `job_need_on`).
@@ -2182,7 +2246,7 @@ impl Sched {
                     continue;
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
-                let n = self.pack_need(&o.step, &ts);
+                let n = self.pack_need_in(&o.step, &ts, room_o.mem_mb);
                 if beside && n.cold && (cold_here || self.no_figure(&o.step, &ts)) {
                     cold_why.get_or_insert_with(|| {
                         if cold_here {
@@ -2314,7 +2378,11 @@ impl Sched {
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
             // (A cold start's too: its step unmeasured, its cache's fill may be.)
             let fill = self.cache_fill(&o.step, &caches, a) + copies.spent(&o.step);
-            let m = n.m;
+            // (A job keeping to its threads: its memory on those it's granted, `read_at`.)
+            let m = match keeps_threads(&o.step) && !n.cold {
+                true => self.job_need_on(&o.step, &ts, Some(threads)).unwrap_or(n.m),
+                false => n.m,
+            };
             runs.push(self.run_of(&o.step, &ts, &a.worker, Measured { disk_mb: m.disk_mb + fill, ..m }, busy));
             grants.push(self.grant(a, o, pick, threads, m.mem_mb, fill, clock));
             held += 1;
@@ -2334,8 +2402,8 @@ impl Sched {
         (grants, why)
     }
 
-    /// What each thread a job of `step` over `targets`, admitted at `mem_mb` on `on` threads (its
-    /// `start_threads`, or those it was granted where more), adds to its memory past them (MB), and
+    /// What each thread a job of `step` over `targets`, admitted at `mem_mb` on `on` threads (those
+    /// its memory was read at, `read_at`), adds to its memory past them (MB), and
     /// the threads its memory covers: its targets' most (crate::needs::Book::thread_mb: a target's
     /// own run's peak over its threads, at least its step's fitted memory per thread; one never
     /// run, its step's memory per thread, fitted over its runs' sizes and threads, else its runs'
@@ -2381,7 +2449,7 @@ impl Sched {
         if l.threads <= start {
             return 0;
         }
-        let on = self.start_threads(step, targets.clone());
+        let on = self.read_at(step, targets.clone(), start);
         let (per, covered) = self.thread_mb(step, targets, mem_mb, on);
         per * u64::from(l.threads.saturating_sub(start.max(covered)))
     }
@@ -2468,7 +2536,7 @@ impl Sched {
             let at = self.sizing_threads(&o.step, first, ask_cores(a));
             self.batch_secs(&o.step, ts.iter().map(String::as_str), &a.worker, at)
         });
-        let on = self.start_threads(&o.step, ts.iter().map(String::as_str));
+        let on = self.read_at(&o.step, ts.iter().map(String::as_str), threads);
         let (thread_mb, covered) = self.thread_mb(&o.step, ts.iter().map(String::as_str), mem_mb, on);
         let why = ts.first().and_then(|t| {
             self.placed.lock().unwrap_or_else(|e| e.into_inner()).why.remove(&(
@@ -2537,22 +2605,26 @@ impl Sched {
     ) -> Option<(Measured, Vec<String>)> {
         let job_disk = self.job_floor(&o.step);
         let fits = |m: &Measured, r: &Ask| m.mem_mb <= r.mem_mb && r.disk_mb.is_none_or(|d| m.disk_mb <= d);
-        let (m, ts) = if o.job.is_some() {
+        // (Each on the threads it fits that room on, `mem_threads`.)
+        let need = |ts: &[String], r: &Ask| {
+            let m = self.job_need_in(&o.step, ts, r.mem_mb)?;
+            Some(Measured { disk_mb: m.disk_mb.max(job_disk), ..m })
+        };
+        let ts: Vec<String> = if o.job.is_some() {
             if !self.own_open(o, whole, now) {
                 return None;
             }
-            let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
-            (self.job_need(&o.step, &ts)?, ts)
+            o.targets.iter().map(|t| t.0.clone()).collect()
         } else {
-            let t = self.pick_run(o, whole, now, false).into_iter().next()?.0;
-            (self.measured(&o.step, &t)?, vec![t])
+            vec![self.pick_run(o, whole, now, false).into_iter().next()?.0]
         };
-        let m = Measured { disk_mb: m.disk_mb.max(job_disk), ..m };
-        (fits(&m, whole) && !fits(&m, room)).then_some((m, ts))
+        let m = need(&ts, whole)?;
+        (fits(&m, whole) && !need(&ts, room).is_some_and(|r| fits(&r, room))).then_some((m, ts))
     }
 
     /// The offered targets (not held by a job nor done) whose measure (`measured`, its step's disk
-    /// floor among its disk; the lead's own planned job's whole, `job_need`) fits no Mac in `macs`
+    /// floor among its disk; the lead's own planned job's whole, `job_need`; each on the threads it
+    /// fits the most memory among them on, `mem_threads`) fits no Mac in `macs`
     /// that runs its step at its best (`best_room`, by its last ask): past its memory or its disk
     /// on each (a Mac whose ask bounds no disk, on its memory alone, as `pack` grants it); one
     /// `TooBig` an offer with any, with the Mac of the most memory at its best among them. Targets not measured say nothing.
@@ -2580,11 +2652,15 @@ impl Sched {
                 .collect();
             let job_disk = self.job_floor(&o.step);
             let big: Vec<(String, Measured)> = if o.job.is_some() {
-                self.job_need(&o.step, &open).filter(&past).map(|m| (String::new(), m)).into_iter().collect()
+                self.job_need_in(&o.step, &open, mac_mem_mb)
+                    .filter(&past)
+                    .map(|m| (String::new(), m))
+                    .into_iter()
+                    .collect()
             } else {
                 open.iter()
                     .filter_map(|t| {
-                        let m = self.measured(&o.step, t)?;
+                        let m = self.measured_in(&o.step, t, mac_mem_mb)?;
                         Some((t.clone(), Measured { disk_mb: m.disk_mb.max(job_disk), ..m }))
                     })
                     .filter(|(_, m)| past(m))
@@ -2618,10 +2694,9 @@ impl Sched {
         for &(o, fill, copies) in offers {
             let (held, done) = (self.held_of(&o.step, now), self.done_of(&o.step));
             let job_disk = self.job_floor(&o.step);
-            let own = o
-                .job
-                .as_ref()
-                .and_then(|_| self.job_need(&o.step, &o.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()));
+            let own = o.job.as_ref().and_then(|_| {
+                self.job_need_in(&o.step, &o.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>(), room.mem_mb)
+            });
             for (t, k, _) in &o.targets {
                 if held.contains(t) {
                     r.held += 1;
@@ -2636,7 +2711,7 @@ impl Sched {
                         }
                     }
                 } else if r.blocked.is_none() {
-                    let m = if o.job.is_some() { own } else { self.measured(&o.step, t) };
+                    let m = if o.job.is_some() { own } else { self.measured_in(&o.step, t, room.mem_mb) };
                     let past =
                         |m: &Measured| m.mem_mb > room.mem_mb || room.disk_mb.is_some_and(|d| m.disk_mb > d + copies);
                     match m.map(|m| Measured { disk_mb: m.disk_mb.max(job_disk) + fill, ..m }).filter(past) {
@@ -2886,7 +2961,7 @@ impl Sched {
             return Vec::new();
         }
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
-        let fits = match self.job_need(&o.step, &ts) {
+        let fits = match self.job_need_in(&o.step, &ts, a.mem_mb) {
             Some(m) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
             None => self.cold_fits(&o.step, &ts, a, now),
         };
@@ -2972,7 +3047,7 @@ impl Sched {
             // (Its wait noted only when this asker would take it but for the budget: a target no
             // asker can take never ages into holding room, `nas_reserved`.)
             open(t, k)
-                && match self.measured(&o.step, t) {
+                && match self.measured_in(&o.step, t, a.mem_mb) {
                     Some(m) => fits(&m),
                     // (A cold start: by its provisional need (`provisional`), while no job of its
                     // step is under way anywhere (the lead's own held by a lease too): one learns
@@ -3003,7 +3078,9 @@ impl Sched {
         };
         let Some(start) = start else { return Vec::new() };
         let first = &o.targets[start];
-        let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
+        let Some(m0) = self.measured_in(&o.step, &first.0, a.mem_mb) else {
+            return vec![(first.0.clone(), first.1.clone())];
+        };
         let mut pick = vec![(first.0.clone(), first.1.clone())];
         // (Its time as `batch_secs` sums it, target by target, at the threads it'd be granted.)
         let threads = self.sizing_threads(&o.step, &first.0, ask_cores(a));
@@ -3021,13 +3098,13 @@ impl Sched {
         // beside one starting on many runs on the many.)
         let mut names: Vec<String> = vec![first.0.clone()];
         for (t, k, _) in &o.targets[start + 1..] {
-            let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
+            let (Some(s), Some(m)) = (secs, self.measured_in(&o.step, t, a.mem_mb)) else { break };
             let Some((more, _)) = self.secs_on(&o.step, t, &a.worker, threads) else { break };
             names.push(t.clone());
             if pick.len() >= JOB_MAX
                 || !open(t, k)
                 || !fits(&m)
-                || self.job_need(&o.step, &names).is_none_or(|b| b.mem_mb > a.mem_mb)
+                || self.job_need_in(&o.step, &names, a.mem_mb).is_none_or(|b| b.mem_mb > a.mem_mb)
                 || !nas_fits(t, &load)
                 || s + more > self.batch_len()
                 || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)

@@ -1285,6 +1285,16 @@ the cautious limit; the memory guard and brake (§7.1, The memory floor) stand b
   Mac's last ask is weighed by, what flags it too big. A target with its own run: that peak plus
   its memory per thread past the threads it ran on; else its floor or its place's figure, grown to
   those threads by its step's model; else its step's model.
+- **Fewer threads where memory is short** (`Sched::mem_threads`, task #1582): a job of a step
+  whose jobs keep to the threads they're granted (`sched::keeps_threads`: the steps honouring
+  their threads and the paced ones, the input checks and tree cover) whose memory on its start
+  threads passes the room is read on the most fewer that fit, down to one, and granted that many
+  at most; its memory on the threads it's granted (fewer again for the cores left) is what it's
+  packed, counted and held at, and its grant covers those threads alone. A target measured on 1
+  thread with 0.7 cores busy starts on 2 by the cost book, its second thread at its whole peak (the
+  regions check: 4.6 GB on 1, 9.0 GB on 2); where the room fits 4.6 GB alone it starts on 1, and
+  its agent grows it only where the Mac's memory covers the next thread. What room is held for
+  it, the words of a refusal and too big's flag read it on the threads that room fits.
 - **A job's targets together** (`Sched::job_need`): a job is admitted at the most of its targets'
   memory, all on the threads the most of them starts on, and targets are added only while that
   fits the room.
@@ -1292,7 +1302,9 @@ the cautious limit; the memory guard and brake (§7.1, The memory floor) stand b
   `Grant::thread_covers`); its agent grows it only within the Mac's room by that (§7.1, Threads
   controlled live), and the lead counts each thread grown at it, so a grow never takes room a grant
   beside it was admitted in.
-- **Held**: the lead counts a job it holds at its grant's figure; a job resumed on the Mac holding
+- **Held**: the lead counts a job it holds at its grant's figure (one keeping to its threads, on
+  the threads it was granted; another, on its start threads by the cost book or those it was
+  granted where more); a job resumed on the Mac holding
   its progress is granted, admitted and counted on the whole Mac's threads.
 - **When the memory guard acts** on a job holding past the memory it was admitted at, its estimate
   is flagged in the act's words ("its estimate flagged: it held past the 4.0 GB it was admitted

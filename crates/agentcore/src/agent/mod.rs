@@ -791,10 +791,14 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     }
 }
 
-/// Whether `spec`'s job is paced (inputs::inputs::pace: its threads file read every second, `Agent::watch_threads`): an input check (the
-/// `inputs` step's), or tree cover (`trees`, task #606: its blocks take the cores the Mac has idle).
+/// The paced steps (inputs::inputs::pace: a job's threads file read every second,
+/// `Agent::watch_threads`): the input checks (`inputs`), and tree cover (`trees`, task #606: its
+/// blocks take the cores the Mac has idle).
+pub const PACED: [&str; 2] = ["inputs", "trees"];
+
+/// Whether `spec`'s job is paced (`PACED`).
 fn is_paced(spec: &JobSpec) -> bool {
-    matches!(step_of(&spec.id).as_deref(), Some("inputs" | "trees"))
+    step_of(&spec.id).is_some_and(|s| PACED.contains(&s.as_str()))
 }
 
 /// This Mac's cores.

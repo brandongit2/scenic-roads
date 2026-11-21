@@ -11311,6 +11311,42 @@ mod tests {
         }
     }
 
+    /// Task #1582: a job of a step keeping to its granted threads (an input check, paced), short of
+    /// memory on the threads it would start on, starts on fewer, its memory read there. The lead's
+    /// regions check of 19 Nov: 4,590 MB on 1 thread, 0.7 cores busy, so the cost book starts it on
+    /// 2 and books the second at its whole peak, 9,180 MB, past the 4.6 GB the lead had for a new
+    /// job for hours. Granted on its 1 thread at its peak, each thread grown past it reserved at
+    /// that peak; where the room fits 2, on 2.
+    #[test]
+    fn a_job_short_of_memory_on_its_start_threads_starts_on_fewer() {
+        let ask = |mem_mb: u64| {
+            let (_d, c, _w, _clock) = every((0, 0));
+            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 4_389_031)].into();
+            let v = cost_version("inputs");
+            let cost = Cost { peak_mb: 4_590, secs: 6_199, worker: None, v, sizes, ..Default::default() };
+            c.add_costs(&[(cost_key("inputs", "inputs/regions"), cost)]);
+            assert_eq!(
+                c.shared.lock().unwrap().sched.start_threads("inputs", ["inputs/regions"]),
+                2,
+                "its busy 0.7 and a thread more"
+            );
+            let own = Offer {
+                step: "inputs".into(),
+                targets: vec![("inputs/regions".into(), "k".into(), 0)],
+                job: Some("inputs inputs/regions".into()),
+            };
+            c.offer("p", vec![own]);
+            let a = Ask { can: vec!["inputs".into()], ..every_ask("m4", "inputs", mem_mb, 100_000) };
+            let g = c.ask_own(&a, &BTreeSet::new(), 0);
+            let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+            g.map(|g| (g.threads, g.peak_mb, g.thread_mb, g.thread_covers)).ok_or(why)
+        };
+        assert_eq!(ask(4_700), Ok((1, 4_590, 4_590, 1)), "on its 1 thread, at its measured peak");
+        assert_eq!(ask(10_000), Ok((2, 9_180, 4_590, 2)), "room for 2: on 2");
+        let why = ask(4_000).expect_err("past its room even on 1 thread");
+        assert!(why.contains("needs 4.5 GB of memory"), "its least, on 1 thread: {why}");
+    }
+
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:
     /// not granted again on its next ask.
     #[test]
