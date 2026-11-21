@@ -349,9 +349,9 @@ their hold holds).
 busy now, not what its step's past runs did: each Mac's agent decides them for its own jobs about
 once a minute; the lead keeps placement and memory admission, and counts each job at what its agent
 says it runs on. The agent writes the threads in a file of the job's slot (`SCENIC_THREADS_FILE`,
-replaced whole). Steps that take it as each target begins (slope-hi, slope-deep, terrain-hi,
-lake-depth: `control::on_grant`) run that target on a pool that wide; a change waits for the next
-target. A live target (terrain-deep's: `control::on_grant_live`, task #1550) reads the file every
+replaced whole). Steps that take it as each target begins (lake-depth: `control::on_grant`) run
+that target on a pool that wide; a change waits for the next target. A live target (terrain-deep's,
+task #1550; terrain-hi's, slope-hi's and slope-deep's, task #1557: `control::on_grant_live`) reads the file every
 second as it runs (`control::Live`): its work runs on threads as many as the Mac's cores, each
 taking a turn of the target's (`store::waits::Turns`, as many as the file says now) for the work
 it does, so a grow is taken within `POLL` plus `store::waits::RECHECK` (2 s at most) and a cut as the turns held are given back, inside
@@ -362,9 +362,18 @@ way to it. Other steps keep their starting grant. The thread count changes no ou
 
 Rayon's pools can't be resized and have no hook between a worker's jobs, so a pool can't hold its
 threads to a count that changes: a step goes live by putting its parallel work under the target's
-turns. terrain-deep's level pipeline (`terrain_pack`'s tile making, `terrain_base`'s sampling and
-its passes on the outside pool) does; terrain-hi, slope-hi, slope-deep, lake-depth, bld-fetch and
-pyramids-fill don't yet, and a one-target job of theirs keeps its start grant to its end.
+turns: `control::on_turn_threads` (threads of the outside pool, each computing on a turn, the
+pool's others helping their parallel work on one) and `control::par_map` (a list's items so, each
+on a turn) are the shared ways. terrain-deep's and terrain-hi's level pipeline (`terrain_pack`'s
+tile making, `terrain_base`'s sampling and its passes on the outside pool) and terrain-hi's offered
+subtrees' reads (`terrain_task::cut`, `par_map`) do; so does the slope's pyramid (slope-hi's and
+slope-deep's: `slope_pack::Pyramid`, its parallel levels on the outside pool, each tile made on a
+turn once its children are). Left on their start grant, as they gain nothing from more threads:
+lake-depth (its lakes read and its small lakes' z10 tiles made one after another, each a piece of
+its resume log, on one thread but for its water's decoding), bld-fetch (`TRANSFERS`, 3, downloads at once) and
+pyramids-fill (its fetches as many at once as the host's limit lets, `store::ahead::NET_THREADS`):
+both of those wait on the network, which more threads don't shorten, and the agent never grows a
+job waiting a quarter of its minute.
 
 - **What the agent measures** (`Agent::watch_threads`): each job's CPU time and the wall time it
   waited on the NAS and the network (an instant counts as waiting when any of its threads is in

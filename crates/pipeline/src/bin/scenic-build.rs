@@ -1258,8 +1258,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let mut pool = base_pool(&out, 6, &[(t.x, t.y)])?;
                 pyramids_arg(&mut pool, &args);
                 let levels = terrain::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
+                // (On its threads file's grant as it changes, as its terrain-hi target runs it:
+                // jobrt::control::on_grant_live; without the file, as it is.)
                 let (hi, mid) = with_fills(&raw, &pool, &cov, &sets, &keys, |tiles, src| {
-                    terrain::terrain_pack::make_piece_from(tiles, src, levels, deep.clone())
+                    jobrt::control::on_grant_live(|| {
+                        terrain::terrain_pack::make_piece_from(tiles, src, levels, deep.clone())
+                    })
                 })?;
                 (hi, Some(mid))
             };
@@ -2662,6 +2666,16 @@ fn note_failed(e: &anyhow::Error) {
     for k in keys {
         note_cost_line(&p, &k, "its failure", &serde_json::json!({ "unit": k, "failed": true }));
     }
+}
+
+/// Target `target` of `step`, `f`, run live: on its job's grant as it changes, within the target
+/// (jobrt::control::on_grant_live; its work computes on the target's turns), its live part's end
+/// noted once `f` returns (`note_live_ended`). terrain-deep's, terrain-hi's, slope-hi's and
+/// slope-deep's targets run so.
+fn live_target(step: &str, target: &str, f: impl FnOnce() -> Result<()> + Send) -> Result<()> {
+    jobrt::control::on_grant_live(f)?;
+    note_live_ended(&agentcore::coord::cost_key(step, target));
+    Ok(())
 }
 
 /// Target `target` of `step` run as a drop (its "none" key, pipeline::agent::build::is_none_key):
@@ -5925,8 +5939,8 @@ fn terrain_pieces_from(
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, "terrain-hi", || ())?;
         jobrt::jobs::part(k, &names);
-        // (On its job's grant as it begins: jobrt::control::on_grant.)
-        jobrt::control::on_grant(|| -> Result<()> {
+        // (Live: its level pipeline and its offers' reads on the target's turns.)
+        live_target("terrain-hi", &t.slash(), || -> Result<()> {
             let c = cost_start("terrain-hi", &t.slash());
             let offers = match ahead.take() {
                 Some(o) => o,
@@ -6011,9 +6025,8 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
             landing.safe_point(out, STEP, || ())?;
             jobrt::jobs::part(k, &names);
-            // (On its job's grant as it changes, within the target: jobrt::control::on_grant_live;
-            // its work computes on the target's turns, terrain::terrain_pack's level pipeline.)
-            jobrt::control::on_grant_live(|| -> Result<()> {
+            // (Live: its work computes on the target's turns, terrain::terrain_pack's level pipeline.)
+            live_target(STEP, &t.slash(), || -> Result<()> {
                 let c = cost_start(STEP, &t.slash());
                 let fetched = buildstore::fetch::fetched_bytes();
                 let levels = td::levels(&cov, &sets, (t.x, t.y));
@@ -6042,7 +6055,6 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
                 );
                 landing.then(out, STEP, &t.slash(), said, c)
             })?;
-            note_live_ended(&agentcore::coord::cost_key(STEP, &t.slash()));
         }
         Ok(())
     })?;
@@ -6216,8 +6228,8 @@ fn slope_pieces(
             eprintln!("slope-hi {}: the coverage has left it; {n} files dropped", t.slash());
             continue;
         }
-        // (On its job's grant as it begins: jobrt::control::on_grant.)
-        jobrt::control::on_grant(|| -> Result<()> {
+        // (Live: its pyramid's tiles made on the target's turns, terrain::slope_pack::Pyramid.)
+        live_target("slope-hi", &t.slash(), || -> Result<()> {
             let c = cost_start("slope-hi", &t.slash());
             let r = landing.after(out, |out| {
                 batch.build_hi(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| {
@@ -6439,8 +6451,8 @@ fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
             eprintln!("{STEP} {}: no deep level or no data there; {n} files dropped", t.slash());
             continue;
         }
-        // (On its job's threads as it begins: a change takes the next target, jobrt::control::on_grant.)
-        jobrt::control::on_grant(|| -> Result<()> {
+        // (Live: its pyramid's tiles made on the target's turns, terrain::slope_pack::Pyramid.)
+        live_target(STEP, &t.slash(), || -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             let r = landing.after(out, |out| {
                 batch.build_deep(out, (t.x, t.y), &|what, done, total| jobrt::jobs::report(done, total, what))
@@ -7412,6 +7424,148 @@ mod tests {
     /// done) and nothing after it, and the job's copies are deleted; the rest made after, the same
     /// bytes as a batch made at one go. An upload that fails: no target from it on is noted done or
     /// named, the job fails; made again, the same bytes. (In processes of their own: a pause exits.)
+    /// Terrain for three z10 tiles of z6 tile 6/28/16 in `root` (its fixture's work in `scratch`):
+    /// its hi pack (their z12 tiles) and a deep pack each (z13 tiles), each tile its own hill.
+    fn slope_terrain(root: &std::path::Path, scratch: &std::path::Path) {
+        use det::Det;
+        let root = store::nasfs::NasRoot::local_for_test(root);
+        let mut out = super::Out::unbound(&root, scratch).unwrap();
+        let tile = |z: u8, x: u32, y: u32| {
+            let e: Vec<f32> = (0..256 * 256)
+                .map(|p| {
+                    ((p % 256) as f32 * 0.37 + (p / 256) as f32 * 1.9 + x as f32 * 7.0 - y as f32 * 3.0 + z as f32)
+                        .dsin()
+                        * 40.0
+                        + 300.0
+                })
+                .collect();
+            let b = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
+            let n = b.len() as u32;
+            (z, x, y, b, n)
+        };
+        let hi: Vec<_> = (1792..1804).flat_map(|x| (1024..1028).map(move |y| tile(12, x, y))).collect();
+        terrain::layers::write_pack(
+            &mut out,
+            "terrain",
+            "terrarium-png",
+            false,
+            "hi",
+            (6, 28, 16),
+            &mut hi.into_iter(),
+        )
+        .unwrap();
+        for x in 448..451u32 {
+            let deep: Vec<_> = (x * 8..x * 8 + 2).flat_map(|x| (2048..2050).map(move |y| tile(13, x, y))).collect();
+            terrain::layers::write_pack(
+                &mut out,
+                "terrain",
+                "terrarium-png",
+                false,
+                "deep",
+                (10, x, 256),
+                &mut deep.into_iter(),
+            )
+            .unwrap();
+        }
+        out.save().unwrap();
+    }
+
+    /// Task #1557: terrain-hi's, slope-hi's and slope-deep's targets run live, as terrain-deep's
+    /// (`live_target`): on a job's threads file, each target's costs line says it begins live and,
+    /// once its live part ends, `live: false`; its outputs are those of a run without the file. Each
+    /// step's own loop (terrain-hi's over a synthetic z6 tile's raw tiles, the slopes' over
+    /// `slope_terrain`), in a process of its own (the threads file and the target are the process's).
+    #[test]
+    fn the_live_steps_targets_run_live_making_the_same_outputs() {
+        const CHILD: &str = "SCENIC_TEST_LIVE_STEP";
+        // (The child: "<step> <folder>", the step's targets made in <folder>/root.)
+        if let Some(v) = std::env::var_os(CHILD) {
+            let v = v.into_string().unwrap();
+            let (step, dir) = v.split_once(' ').unwrap();
+            let dir = std::path::Path::new(dir);
+            let root = store::nasfs::NasRoot::local_for_test(&dir.join("root"));
+            let mut out = super::Out::unbound(&root, &dir.join("scratch")).unwrap();
+            let none = super::BTreeSet::new();
+            match step {
+                "terrain-hi" => {
+                    let (t, cov, raw) = terrain::terrain_task::testkit::test_piece(&dir.join("piece"));
+                    let src = terrain::terrain_pack::Sources {
+                        sets: terrain::terrain_zoom::test_world_ref(),
+                        ..Default::default()
+                    };
+                    let ts = [super::TileId { z: 6, x: t.0, y: t.1 }];
+                    super::terrain_pieces_from(&mut out, &cov, &ts, &none, &raw, &src, &Default::default()).unwrap();
+                }
+                "slope-hi" => {
+                    let b = roadcore::geo::tile_box(6, 28, 16);
+                    let place = format!("place:{},{},5", (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+                    let cov = buildstore::coverage::Coverage::fixture(
+                        &[buildstore::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![place] }],
+                        None,
+                        &dir.join("cov"),
+                    )
+                    .unwrap();
+                    super::slope_pieces(&mut out, &cov, &[super::TileId { z: 6, x: 28, y: 16 }], &none).unwrap();
+                }
+                "slope-deep" => {
+                    let ts: Vec<super::TileId> = [448, 449].map(|x| super::TileId { z: 10, x, y: 256 }).to_vec();
+                    super::slope_deep_batch(&mut out, &ts, &[true, true]).unwrap();
+                }
+                s => panic!("{s}"),
+            }
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        for (step, targets) in [
+            ("terrain-hi", &["6/34/30"][..]),
+            ("slope-hi", &["6/28/16"][..]),
+            ("slope-deep", &["10/448/256", "10/449/256"][..]),
+        ] {
+            // (Its targets made in a folder of its own: with a threads file of 2 (`live`) or none.)
+            let run = |name: &str, live: bool| -> std::collections::BTreeMap<String, String> {
+                let dir = d.path().join(format!("{step}-{name}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                if step != "terrain-hi" {
+                    slope_terrain(&dir.join("root"), &dir.join("fixture"));
+                }
+                let mut c = store::spawn::command(std::env::current_exe().unwrap());
+                c.args(["--exact", "tests::the_live_steps_targets_run_live_making_the_same_outputs"])
+                    .env(CHILD, format!("{step} {}", dir.display()))
+                    .env_remove(jobrt::control::DONE_ENV)
+                    .env_remove(jobrt::control::CONTROL_ENV)
+                    .env_remove("SCENIC_COSTS")
+                    .env_remove(jobrt::control::THREADS_ENV);
+                if live {
+                    let f = dir.join("threads");
+                    jobrt::control::grant(&f, 2).unwrap();
+                    c.env(jobrt::control::THREADS_ENV, &f).env("SCENIC_COSTS", dir.join("costs.jsonl"));
+                }
+                let out = store::spawn::output(&mut c).unwrap();
+                let said = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && said.contains(" 1 passed"),
+                    "{step}: {said}{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let root = store::nasfs::NasRoot::local_for_test(&dir.join("root"));
+                buildstore::records::read_manifest(&root).unwrap().into_iter().collect()
+            };
+            let plain = run("plain", false);
+            assert!(run("live", true) == plain, "{step}: the same outputs live");
+            let costs = std::fs::read_to_string(d.path().join(format!("{step}-live/costs.jsonl"))).unwrap();
+            let lines: Vec<serde_json::Value> = costs.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+            for t in targets {
+                let key = agentcore::coord::cost_key(step, t);
+                let said: Vec<(Option<bool>, Option<u64>)> = lines
+                    .iter()
+                    .filter(|l| l["unit"] == key.as_str() && l.get("live").is_some())
+                    .map(|l| (l["live"].as_bool(), l["threads"].as_u64()))
+                    .collect();
+                assert_eq!(said, [(Some(true), Some(2)), (Some(false), None)], "{key}: {costs}");
+            }
+        }
+    }
+
     #[test]
     fn a_slope_deep_batch_lands_each_target_beside_the_next() {
         use std::io::Write;
@@ -7429,51 +7583,7 @@ mod tests {
             return;
         }
         let d = tempfile::tempdir().unwrap();
-        // Terrain for three z10 tiles of one z6 tile: its hi pack (their z12 tiles) and a deep pack
-        // each (z13 tiles), each tile its own hill.
-        let terrain = |root: &std::path::Path| {
-            use det::Det;
-            let root = store::nasfs::NasRoot::local_for_test(root);
-            let mut out = super::Out::unbound(&root, &d.path().join("fixture")).unwrap();
-            let tile = |z: u8, x: u32, y: u32| {
-                let e: Vec<f32> = (0..256 * 256)
-                    .map(|p| {
-                        ((p % 256) as f32 * 0.37 + (p / 256) as f32 * 1.9 + x as f32 * 7.0 - y as f32 * 3.0 + z as f32)
-                            .dsin()
-                            * 40.0
-                            + 300.0
-                    })
-                    .collect();
-                let b = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
-                let n = b.len() as u32;
-                (z, x, y, b, n)
-            };
-            let hi: Vec<_> = (1792..1804).flat_map(|x| (1024..1028).map(move |y| tile(12, x, y))).collect();
-            terrain::layers::write_pack(
-                &mut out,
-                "terrain",
-                "terrarium-png",
-                false,
-                "hi",
-                (6, 28, 16),
-                &mut hi.into_iter(),
-            )
-            .unwrap();
-            for x in 448..451u32 {
-                let deep: Vec<_> = (x * 8..x * 8 + 2).flat_map(|x| (2048..2050).map(move |y| tile(13, x, y))).collect();
-                terrain::layers::write_pack(
-                    &mut out,
-                    "terrain",
-                    "terrarium-png",
-                    false,
-                    "deep",
-                    (10, x, 256),
-                    &mut deep.into_iter(),
-                )
-                .unwrap();
-            }
-            out.save().unwrap();
-        };
+        let terrain = |root: &std::path::Path| slope_terrain(root, &d.path().join("fixture"));
         let fifo = d.path().join("control");
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);

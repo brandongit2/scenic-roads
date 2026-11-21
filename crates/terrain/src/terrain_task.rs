@@ -134,12 +134,12 @@ pub fn cut(
     src: &Sources,
     path: &Path,
 ) -> Result<CutReport> {
-    use rayon::prelude::*;
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
     let reads: Vec<(u8, u32, u32)> = raw_read(levels).into_iter().collect();
-    let got: Vec<Result<Option<Vec<u8>>>> = reads.par_iter().map(|&(z, x, y)| raw.get(z, x, y).map(|r| r.0)).collect();
+    // (On the target's threads: a live terrain-hi target's on its turns, jobrt::control::par_map.)
+    let got: Vec<Result<Option<Vec<u8>>>> = jobrt::control::par_map(&reads, |&(z, x, y)| raw.get(z, x, y).map(|r| r.0));
     let tiles: Vec<(u8, u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
     let meta = Meta {
         fmt: FMT,
@@ -697,5 +697,63 @@ mod tests {
         assert!(RawSource::get(&inp, 12, 0, 0).is_err());
         let (a, b) = (gs[0][0], gs[1][0]);
         assert_eq!(parse_subtrees(&subtrees_arg(&[a, b])).unwrap(), [a, b]);
+    }
+
+    /// Task #1557: a live terrain-hi target's offered group (jobrt::control::on_grant_live) reads
+    /// its tiles for its task file on no more threads at once than its grant, and on all of them (2
+    /// at once on a grant of 2, each read 10 ms): the same file as cut outside a target. (In a
+    /// process of its own: the threads file and the target are the process's.)
+    #[test]
+    fn a_live_targets_offered_group_is_read_on_its_grant() {
+        if !crate::grant_tests::alone("terrain_task::tests::a_live_targets_offered_group_is_read_on_its_grant") {
+            return;
+        }
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        struct Counting<'a> {
+            inner: &'a dyn RawSource,
+            now: AtomicUsize,
+            most: AtomicUsize,
+        }
+        impl RawSource for Counting<'_> {
+            fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+                let n = self.now.fetch_add(1, SeqCst) + 1;
+                self.most.fetch_max(n, SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(10)); // (sleep ok: a read's work)
+                self.now.fetch_sub(1, SeqCst);
+                self.inner.get(z, x, y)
+            }
+            fn prefetch_each(
+                &self,
+                z: u8,
+                tiles: &[(u32, u32)],
+                turns: &crate::terrain_pack::Turns,
+                ready: crate::terrain_pack::Ready,
+            ) -> Result<usize> {
+                self.inner.prefetch_each(z, tiles, turns, ready)
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (t, cov, raw) = test_piece(d.path());
+        let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
+        let g = groups(&levels).remove(0);
+        let lv = levels_of(&levels, &g.iter().copied().collect(), true);
+        let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let counting = Counting { inner: &raw, now: AtomicUsize::new(0), most: AtomicUsize::new(0) };
+        let cut_at = |name: &str| {
+            let path = d.path().join(name).join(INPUT);
+            let c = cut(t, &g, &lv, &counting, &src, &path).unwrap();
+            (c.raw, std::fs::read(&path).unwrap())
+        };
+        let outside = cut_at("outside");
+        assert!(outside.0 > 4, "{} raw tiles", outside.0);
+        let f = d.path().join("threads");
+        jobrt::control::grant(&f, 2).unwrap();
+        std::env::set_var(jobrt::control::THREADS_ENV, &f);
+        counting.most.store(0, SeqCst);
+        let live =
+            crate::grant_tests::within("a live group's cut", || jobrt::control::on_grant_live(|| cut_at("live")));
+        std::env::remove_var(jobrt::control::THREADS_ENV);
+        assert!(live == outside, "the same task file");
+        assert_eq!(counting.most.load(SeqCst), 2, "on its grant's 2 at once, no more");
     }
 }

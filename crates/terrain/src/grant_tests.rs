@@ -389,8 +389,8 @@ fn a_live_levels_tiles_are_made_on_no_more_threads_than_its_grant() {
     assert_eq!(raw.most.load(Ordering::SeqCst), 2, "on its grant's 2 threads at once, no more");
 }
 
-/// Task #1550 review: a live target's sampling (crate::terrain_base's chunk threads, on the outside
-/// pool as wide as the Mac's cores) computes on no more threads at once than its grant, and on all
+/// Task #1550 review: a live target's sampling (crate::terrain_base's chunk threads,
+/// jobrt::control::on_turn_threads, on the outside pool as wide as the Mac's cores) computes on no more threads at once than its grant, and on all
 /// of them: one chunk thread whose passes (64 parallel tasks of 5 ms) the pool's other threads help
 /// with, each on a turn, on a grant of 2.
 #[test]
@@ -411,7 +411,7 @@ fn a_live_targets_sampling_passes_compute_on_no_more_threads_than_its_grant() {
                 now.fetch_sub(1, Ordering::SeqCst);
             })
         };
-        crate::terrain_base::on_chunk_threads(1, &turns, &|| {
+        jobrt::control::on_turn_threads(1, &turns, &|| {
             for _ in 0..2 {
                 turns.computing(pass);
             }

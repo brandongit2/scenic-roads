@@ -284,9 +284,10 @@ pub type Made = (u8, u32, u32, Vec<u8>);
 /// for once.
 ///
 /// Its parallelism: the children of the tiles
-/// within `PAR_LEVELS` of the call's tile are made in parallel (on `pool`'s threads), each tile
+/// within `PAR_LEVELS` of the call's tile are made in parallel (on `on_pool`'s threads), each tile
 /// below those levels' subtree on one thread alone, depth first, with no parallel call inside it,
-/// so a thread works on one subtree's chain at a time. Its values don't depend on the threads: a
+/// so a thread works on one subtree's chain at a time; each tile made on a turn of its target's
+/// (jobrt::control::turns), a live target's following its grant. Its values don't depend on the threads: a
 /// pixel is `mean4` of its four children's in a fixed order, each child's quadrant placed by its
 /// column and row (`compose`), and nothing is summed across tiles.
 pub struct Pyramid<'a> {
@@ -305,13 +306,20 @@ pub fn none_done(_: u8, _: u32, _: u32) -> Option<Option<Vec<Px>>> {
 /// The levels under a pyramid's tile whose children are made in parallel: 64 subtrees below them.
 pub const PAR_LEVELS: u8 = 3;
 
-/// The most threads a pyramid's build uses (`on_pool`): its target's up to this.
+/// The most threads a pyramid's build uses outside a live target (`on_pool`): its target's up to
+/// this.
 pub const THREADS: usize = 16;
 
-/// A pyramid's build on the threads its target runs on (its job's grant now:
-/// jobrt::control::on_grant), at most `THREADS`: past them, on a pool `THREADS` wide. (Not a pool
-/// made at the job's first target and kept: a change of its threads is taken at the next target, task #948.)
+/// A pyramid's build on the threads its target runs on: a live target's (jobrt::control::
+/// on_grant_live, task #1557) on the outside pool, as wide as the Mac's cores, each tile made on a
+/// turn of the target's (`Pyramid::node`), so on as many at once as its grant now; another's on its
+/// job's grant as it began (jobrt::control::on_grant), at most `THREADS`: past them, on a pool
+/// `THREADS` wide. (Not a pool made at the job's first target and kept: a change of its threads is
+/// taken at the next target, task #948.)
 fn on_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if jobrt::control::is_live() {
+        return jobrt::control::on_outside_pool(f);
+    }
     if rayon::current_num_threads() <= THREADS {
         return f();
     }
@@ -323,7 +331,8 @@ fn on_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 impl Pyramid<'_> {
     /// Tile (z, x, y) and those under it among `tiles` (none past `MAX_Z`); its quadrant.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> Option<Vec<Px>> {
-        on_pool(|| self.node(z, x, y, z + PAR_LEVELS))
+        let turns = jobrt::control::turns();
+        on_pool(|| self.node(z, x, y, z + PAR_LEVELS, &turns))
     }
 
     /// The tiles `tops` at zoom `z`, each with those under it among `tiles` (`tile`), the tops in
@@ -342,6 +351,7 @@ impl Pyramid<'_> {
         let carry = jobrt::resume_log::StopCarry::here();
         // (The first keep that stops the run: no top begun after it.)
         let stop: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        let turns = jobrt::control::turns();
         let top = |&(x, y): &(u32, u32)| -> Option<Vec<Px>> {
             if stop.lock().unwrap().is_some() {
                 return None;
@@ -353,7 +363,7 @@ impl Pyramid<'_> {
                 return q;
             }
             let mine = Mutex::new(Vec::new());
-            let q = Pyramid { out: &mine, ..*self }.node(z, x, y, z);
+            let q = Pyramid { out: &mine, ..*self }.node(z, x, y, z, &turns);
             let made = mine.into_inner().unwrap();
             if let Err(e) = carry.on(|| pieces.lock().unwrap().keep(b, &put_top(&made, &q))) {
                 stop.lock().unwrap().get_or_insert(e);
@@ -371,8 +381,10 @@ impl Pyramid<'_> {
         }
     }
 
-    /// `tile`: its children in parallel above zoom `par_until`, one after another from it.
-    fn node(&self, z: u8, x: u32, y: u32, par_until: u8) -> Option<Vec<Px>> {
+    /// `tile`: its children in parallel above zoom `par_until`, one after another from it; its own
+    /// making (its shading, the children's means, its coding) on a turn of `turns`, taken once its
+    /// children are made, so no thread holds one while it waits on another's work.
+    fn node(&self, z: u8, x: u32, y: u32, par_until: u8, turns: &store::waits::Turns) -> Option<Vec<Px>> {
         if let Some(q) = (self.done)(z, x, y) {
             return q;
         }
@@ -384,12 +396,13 @@ impl Pyramid<'_> {
         } else {
             Vec::new()
         };
-        let one = |&(cx, cy): &(u32, u32)| self.node(z + 1, cx, cy, par_until).map(|q| ((cx, cy), q));
+        let one = |&(cx, cy): &(u32, u32)| self.node(z + 1, cx, cy, par_until, turns).map(|q| ((cx, cy), q));
         let kids: Vec<((u32, u32), Vec<Px>)> = if z < par_until {
             kids.par_iter().filter_map(one).collect()
         } else {
             kids.iter().filter_map(one).collect()
         };
+        let _turn = turns.take();
         (self.tick)();
         let v = compose(&kids, || (self.own)(z, x, y))?;
         drop(kids);
@@ -996,7 +1009,9 @@ fn build_hi_with(
         failed: Default::default(),
     };
     let done = |z: u8, x: u32, y: u32| if z == FIRST_Z { deep.take(x, y) } else { None };
-    let order = mids_order(mids.keys().copied().collect(), rayon::current_num_threads().min(THREADS));
+    // (On the target's threads as it begins: a live target's grant now, jobrt::control::in_force.)
+    let threads = jobrt::control::in_force().unwrap_or_else(rayon::current_num_threads);
+    let order = mids_order(mids.keys().copied().collect(), threads.min(THREADS));
     let (hi, lo) = mids_ahead.beside(&order, MIDS_AHEAD / 2, MIDS_AHEAD, read_mids, || {
         terr.reading_ahead(&want, || piece(&terrain, &tiles, &done, t, &count))
     });
@@ -2260,6 +2275,160 @@ mod tests {
         assert!(above == first.iter().filter(|m| m.0 < 2).cloned().collect::<Vec<_>>());
     }
 
+    /// Task #1557: a live target's pyramid (slope-hi's and slope-deep's: jobrt::control::
+    /// on_grant_live, its parallel levels on the outside pool, as wide as the Mac's cores) makes
+    /// its tiles on no more threads at once than its grant, and on all of them: 2 at once on a
+    /// grant of 2, as tops (a slope-deep target's) too; begun on 1 and grown to 3 once its first tile
+    /// is made, 1 at once until then and 3 after, on 3 at its end; the same tiles each time as made
+    /// outside a target. (In a process of its own: the threads file and the target are the
+    /// process's.)
+    #[test]
+    fn a_live_pyramid_makes_its_tiles_on_its_grant_as_it_changes() {
+        if !crate::grant_tests::alone("slope_pack::tests::a_live_pyramid_makes_its_tiles_on_its_grant_as_it_changes") {
+            return;
+        }
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let (now, most, made) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+        // (Each tile's own shading 5 ms of work, counted while it runs.)
+        let own = |z: u8, x: u32, y: u32| -> Option<Vec<Px>> {
+            let n = now.fetch_add(1, SeqCst) + 1;
+            most.fetch_max(n, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(5)); // (sleep ok: a tile's work)
+            now.fetch_sub(1, SeqCst);
+            made.fetch_add(1, SeqCst);
+            (z >= 3 || (x + y) % 3 != 0).then(|| {
+                (0..TS * TS).map(|i| Px::of_gradient((i % 97) as f32 * 0.01 + z as f32, (x + y) as f32 * 0.1)).collect()
+            })
+        };
+        // (Some 900 tiles: over 4 s on 1 thread, past the 2 s a grow takes to be seen.)
+        let mut tiles = HashSet::new();
+        for z in 0..=5u8 {
+            for x in 0..1u32 << z {
+                for y in 0..1u32 << z {
+                    if z < 3 || (x + 2 * y) % 7 != 0 {
+                        tiles.insert((z, x, y));
+                    }
+                }
+            }
+        }
+        let run = || {
+            let out = Mutex::new(Vec::new());
+            Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &none_done }.tile(0, 0, 0);
+            let mut v = out.into_inner().unwrap();
+            v.sort_by_key(|m| (m.0, m.1, m.2));
+            v
+        };
+        let tops: Vec<(u32, u32)> = (0..4u32).flat_map(|x| (0..4u32).map(move |y| (x, y))).collect();
+        let as_tops = || {
+            let out = Mutex::new(Vec::new());
+            Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &none_done }
+                .tops(2, &tops, &mut jobrt::resume_log::Pieces::none())
+                .unwrap();
+            let mut v = out.into_inner().unwrap();
+            v.sort_by_key(|m| (m.0, m.1, m.2));
+            v
+        };
+        let first = run();
+        assert!(first.len() > 800, "{}", first.len());
+        let first_tops = as_tops();
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        std::env::set_var(jobrt::control::THREADS_ENV, &f);
+        crate::grant_tests::within("a live pyramid", || {
+            jobrt::control::grant(&f, 2).unwrap();
+            most.store(0, SeqCst);
+            assert!(jobrt::control::on_grant_live(run) == first);
+            assert_eq!(most.swap(0, SeqCst), 2, "on its grant's 2 at once, no more");
+            assert!(jobrt::control::on_grant_live(as_tops) == first_tops);
+            assert_eq!(most.swap(0, SeqCst), 2, "its tops on its grant's 2 at once, no more");
+            if std::thread::available_parallelism().map_or(0, |n| n.get()) >= 3 {
+                jobrt::control::grant(&f, 1).unwrap();
+                made.store(0, SeqCst);
+                let (tiles, at_end, before) = jobrt::control::on_grant_live(|| {
+                    std::thread::scope(|s| {
+                        // (The grow, once its first tile is made: what ran at once until then.)
+                        let grower = s.spawn(|| {
+                            while made.load(SeqCst) == 0 {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                // (sleep ok: a test's look)
+                            }
+                            let before = most.load(SeqCst);
+                            jobrt::control::grant(&f, 3).unwrap();
+                            before
+                        });
+                        let tiles = run();
+                        (tiles, jobrt::control::in_force(), grower.join().unwrap())
+                    })
+                });
+                assert!(tiles == first, "the same tiles grown within the target");
+                assert_eq!((before, most.load(SeqCst), at_end), (1, 3, Some(3)), "on 1, then grown: 3 at once");
+            }
+        });
+        std::env::remove_var(jobrt::control::THREADS_ENV);
+    }
+
+    /// Task #1557: a slope-deep and a slope-hi target run live, as their steps run them
+    /// (jobrt::control::on_grant_live, scenic-build's `live_target`): on 2 throughout, and begun on
+    /// 1 and grown to 3 as its tiles begin (on 3 at its end), the same deep pack and deep mid, hi
+    /// pack and mid, as made with no threads file at all. (In a process of its own: the threads
+    /// file and the target are the process's.)
+    #[test]
+    fn a_live_slope_target_grown_within_it_makes_the_same_bytes() {
+        if !crate::grant_tests::alone("slope_pack::tests::a_live_slope_target_grown_within_it_makes_the_same_bytes") {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        // (A slope-deep target (or slope-hi's, `hi`) made in a root of its own: on `start` threads
+        // (none: no file), grown to `grow` as its tiles begin, the grow seen before they're made;
+        // its outputs and the threads in force at its end.)
+        let made = |name: &str, hi: bool, start: Option<usize>, grow: Option<usize>| {
+            let r = d.path().join(name);
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&r.join("root")), &r.join("scratch")).unwrap();
+            terrain(&mut out, true);
+            match start {
+                Some(n) => {
+                    jobrt::control::grant(&f, n).unwrap();
+                    std::env::set_var(jobrt::control::THREADS_ENV, &f);
+                }
+                None => std::env::remove_var(jobrt::control::THREADS_ENV),
+            }
+            let grown = std::sync::atomic::AtomicBool::new(false);
+            let on = |_: &str, done: u64, _: u64| {
+                if let Some(m) = grow.filter(|_| done == 0 && !grown.swap(true, std::sync::atomic::Ordering::SeqCst)) {
+                    jobrt::control::grant(&f, m).unwrap();
+                    let seen = jobrt::control::POLL + store::waits::RECHECK + std::time::Duration::from_millis(200);
+                    std::thread::sleep(seen); // (sleep ok: the grow seen)
+                }
+            };
+            let at_end = jobrt::control::on_grant_live(|| {
+                match hi {
+                    true => Batch::hi(&out, &[(28, 16)]).build_hi(&mut out, (28, 16), false, &on).map(drop),
+                    false => Batch::deep(&out, &[(448, 256)]).build_deep(&mut out, (448, 256), &on).map(drop),
+                }
+                .unwrap();
+                jobrt::control::in_force()
+            });
+            out.save().unwrap();
+            std::env::remove_var(jobrt::control::THREADS_ENV);
+            let made: Vec<(String, String)> = out
+                .manifest
+                .into_iter()
+                .filter(|(l, _)| l.starts_with("layers/slope/") || l.starts_with("work/slope"))
+                .collect();
+            (made, at_end)
+        };
+        crate::grant_tests::within("live slope targets", || {
+            for hi in [false, true] {
+                let (none, at_end) = made(&format!("{hi}-none"), hi, None, None);
+                assert_eq!((none.len(), at_end), (2, None), "a pack and its mid, no threads file: {none:?}");
+                assert_eq!(made(&format!("{hi}-2"), hi, Some(2), None), (none.clone(), Some(2)), "on 2 (hi: {hi})");
+                assert_eq!(made(&format!("{hi}-grown"), hi, Some(1), Some(3)), (none, Some(3)), "grown (hi: {hi})");
+            }
+        });
+    }
+
     /// With terrain: an assembly over a lo pack an earlier run stored, holding tiles of a z6 tile
     /// that isn't its z6 tile (6/24/23's z6 tile and a z7 tile of it, another tile's bytes), comes
     /// out as a fresh build's assembly, byte for byte: nothing of the earlier run kept.
@@ -2649,7 +2818,9 @@ mod tests {
     /// `<into>` (a local folder of its own: never the root, nor the NAS), where a slope-hi z6 tile's
     /// deep mids are copied first. Each target's time and its outputs' content names (the same
     /// bytes either way), then the batch's wall, CPU, the share of its threads kept busy and its
-    /// peak footprint (sampled every 50 ms; past 4 GB it stops).
+    /// peak footprint (sampled every 50 ms; past 4 GB it stops). Each target live, as its step runs
+    /// it (jobrt::control::on_grant_live): with SCENIC_THREADS_FILE, on that file's threads as they
+    /// change, the threads it ended on and the most it was allowed said with it.
     /// SCENIC_SLOPE_MEASURE="<root> <into> deep|hi <x/y,…> [alone]"; unset, nothing. `#[ignore]`d,
     /// as it reads a real root (docs/nas-access.md §3, task #1446): `cargo nextest run -p terrain
     /// --run-ignored only slope_pack::tests::measure_a_slope_batch`, the variable before it.
@@ -2719,29 +2890,36 @@ mod tests {
         let mut before: Option<buildstore::out::Mark> = None;
         for &t in &ts {
             let (s, c) = (std::time::Instant::now(), cpu());
-            let r = match &mut batch {
-                Some(b) => {
-                    let r = build(b, &mut w, t);
-                    if let Some(m) = before.take() {
-                        w.save_upto(m).unwrap();
+            // (Each target live, as its step runs it: on SCENIC_THREADS_FILE's threads as they
+            // change, jobrt::control::on_grant_live; without the file, as it is.)
+            let (r, last) = jobrt::control::on_grant_live(|| {
+                let r = match &mut batch {
+                    Some(b) => {
+                        let r = build(b, &mut w, t);
+                        if let Some(m) = before.take() {
+                            w.save_upto(m).unwrap();
+                        }
+                        before = Some(w.mark());
+                        r
                     }
-                    before = Some(w.mark());
-                    r
-                }
-                None => {
-                    let r = build(&mut batch_of(&[t]), &mut w, t);
-                    w.save().unwrap();
-                    r
-                }
-            };
+                    None => {
+                        let r = build(&mut batch_of(&[t]), &mut w, t);
+                        w.save().unwrap();
+                        r
+                    }
+                };
+                (r, jobrt::control::in_force())
+            });
             let (wall, cpu) = (s.elapsed().as_secs_f64(), cpu() - c);
             println!(
-                "{}/{}/{}: {} tiles, {wall:.1} s, CPU {cpu:.1} s ({:.0} % of {threads} threads)",
+                "{}/{}/{}: {} tiles, {wall:.1} s, CPU {cpu:.1} s ({:.2} cores busy; on {} threads at its end, {} at most)",
                 if hi { 6 } else { PACK_Z },
                 t.0,
                 t.1,
                 r.deep_tiles + r.hi_tiles + r.lo_tiles,
-                100.0 * cpu / wall / threads as f64
+                cpu / wall,
+                last.unwrap_or(threads),
+                jobrt::control::most_allowed().unwrap_or(threads)
             );
         }
         w.save().unwrap();

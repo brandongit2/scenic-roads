@@ -1328,6 +1328,77 @@ pub fn turns() -> store::waits::Turns {
     }
 }
 
+/// `run` on `k` threads of the outside pool at once (`on_outside_pool`; each takes a turn of `turns`
+/// for its own computing), the pool's other threads, and those whose `run` ended, helping their
+/// parallel work on a turn each until every one has ended: one task a thread of the pool (rayon's
+/// broadcast), so no more than `k` runs at once, and no thread computes off a turn. A live target's
+/// parallel work (`on_grant_live`) goes on its grant's threads so: terrain's base sampling's chunks
+/// (task #1550) and `par_map`. The first failure.
+pub fn on_turn_threads(
+    k: usize,
+    turns: &store::waits::Turns,
+    run: &(dyn Fn() -> anyhow::Result<()> + Sync),
+) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // (The threads still running.)
+    let running = AtomicUsize::new(k);
+    struct Ran<'a>(&'a AtomicUsize);
+    impl Drop for Ran<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Release);
+        }
+    }
+    let each = |b: rayon::BroadcastContext<'_>| {
+        let r = if b.index() < k {
+            let _ran = Ran(&running);
+            run()
+        } else {
+            Ok(())
+        };
+        // (A thread of the pool with nothing left of its own helps the parallel work of those still
+        // running, as the pool's idle thread it would be would steal it, but on a turn: the job
+        // stays on its grant's cores at the work's tail too. Task #1097 review: helping on none, a
+        // level's tail ran on up to twice them.)
+        while running.load(Ordering::Acquire) > 0 {
+            let t = turns.take();
+            if rayon::yield_now() != Some(rayon::Yield::Executed) {
+                drop(t);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        r
+    };
+    on_outside_pool(|| rayon::broadcast(each).into_iter().collect::<anyhow::Result<()>>())
+}
+
+/// `f` of each of `items`, in their order, computed in parallel on the target's threads: a live
+/// target's (`on_grant_live`) on as many threads of the outside pool as the Mac's cores (`width`),
+/// each item on a turn of the target's (`turns`), so no more at once than its grant now, a grow
+/// taken and a cut given back between items (`on_turn_threads`); elsewhere `items`' parallel
+/// iterator on this thread's pool (an `on_grant` target's, its grant wide). The same results
+/// whatever the threads: each item's own.
+pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(t) = live_target() else { return items.par_iter().map(f).collect() };
+    let next = AtomicUsize::new(0);
+    let got: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let run = || -> anyhow::Result<()> {
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(x) = items.get(i) else { return Ok(()) };
+            let r = {
+                let _turn = t.turns.take();
+                f(x)
+            };
+            *got[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        }
+    };
+    // (`run` never fails: a panic of `f` goes on through the broadcast.)
+    let _ = on_turn_threads(t.most.min(items.len()), &t.turns, &run);
+    got.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).expect("each item computed")).collect()
+}
+
 thread_local! {
     /// This thread's own pool of one thread (`on_outside_pool`, a live target's work from a thread of
     /// no pool), made as it's first asked for.
@@ -1938,5 +2009,86 @@ mod tests {
         let w = write(vec![vec![b"dr", b"ai"], vec![b"n\n"]]);
         assert_eq!(ear.heard(&chan), Some(Say::Drain));
         w.join().unwrap();
+    }
+
+    /// Task #1557: `par_map` in a live target computes its items on no more threads at once than
+    /// the grant, and on all of them (items of 20 ms on a grant of 2: 2 at once); begun on 1 and
+    /// grown to 3 once its first item is done, 1 at once until then and 3 after; the same results,
+    /// in order, as outside a target. On a grant of 1, items whose work is parallel too (each a
+    /// rayon pass) are done, not waiting forever on a turn. (In a process of its own: the file's
+    /// variable and the target are the process's.)
+    #[test]
+    fn par_map_keeps_a_live_target_to_its_grant_as_it_changes() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "control::tests::par_map_keeps_a_live_target_to_its_grant_as_it_changes"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        std::env::set_var(THREADS_ENV, &f);
+        // (200 items of 20 ms: 4 s on 1 thread, past the 2 s a grow takes to be seen.)
+        let items: Vec<u64> = (0..200).collect();
+        let (now, most, done) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+        let work = |&i: &u64| {
+            let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(n, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20)); // (sleep ok: an item's work)
+            now.fetch_sub(1, Ordering::SeqCst);
+            done.fetch_add(1, Ordering::SeqCst);
+            i * i
+        };
+        let outside = par_map(&items, |i| i * i);
+        assert_eq!(outside, items.iter().map(|i| i * i).collect::<Vec<_>>());
+        grant(&f, 2).unwrap();
+        let on2 = on_grant_live(|| par_map(&items, &work));
+        assert_eq!((on2, most.swap(0, Ordering::SeqCst)), (outside.clone(), 2), "on its grant's 2 at once, no more");
+        if cores() >= 3 {
+            grant(&f, 1).unwrap();
+            done.store(0, Ordering::SeqCst);
+            let (made, grown_to, before) = on_grant_live(|| {
+                std::thread::scope(|s| {
+                    // (The grow, once the first item is done: what ran at once until then.)
+                    let grower = s.spawn(|| {
+                        while done.load(Ordering::SeqCst) == 0 {
+                            std::thread::sleep(Duration::from_millis(1)); // (sleep ok: a test's look)
+                        }
+                        let before = most.load(Ordering::SeqCst);
+                        grant(&f, 3).unwrap();
+                        before
+                    });
+                    let made = par_map(&items, &work);
+                    (made, in_force(), grower.join().unwrap())
+                })
+            });
+            assert_eq!((made, grown_to), (outside, Some(3)));
+            assert_eq!((before, most.load(Ordering::SeqCst)), (1, 3), "on 1, then grown within the target: 3 at once");
+        }
+        // (A deadlock fails here in seconds, not at the test runner's timeout.)
+        grant(&f, 1).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let sums =
+                on_grant_live(|| par_map(&[1u64, 2, 3, 4], |&k| (0..1000u64).into_par_iter().map(|i| i * k).sum()));
+            drop(tx.send(sums));
+        });
+        let sums: Vec<u64> =
+            rx.recv_timeout(Duration::from_secs(10)).expect("nested parallel work on a grant of 1: deadlocked"); // (bound ok: a deadlock's, the work instant)
+        assert_eq!(sums, [499_500, 999_000, 1_498_500, 1_998_000]);
+        std::env::remove_var(THREADS_ENV);
     }
 }
