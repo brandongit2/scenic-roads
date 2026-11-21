@@ -556,7 +556,8 @@ cores ×1; the last: cores: 0.5 of 8 left, a job of unit takes 1.0
 
 - **Every step to every member** (`crate::agent::every`): all but the lead's own steps
   (`every::LEAD_ONLY`: map updates, prunes, `bld-fetch`, the answer-keeping steps, the worldwide
-  steps) go to any member whose measured room fits, the lead among them.
+  steps) go to any member whose measured room fits, the lead among them. Planned: all but the
+  lead's duties by fit (§7.10).
 - **The lead's own steps by grant too** (`Agent::offer_plan`): the lead offers its whole plan in
   order, and a step kept to the lead is granted only to the current lead's member asking in
   process (`every::grants`); a member's ask never gets one. One job of such a step runs at a time,
@@ -1531,6 +1532,138 @@ a run without a budget takes 23 s of wall (607 s looking each up again at every 
 no run is cut at `BUDGET` (the slowest a median 6.5 s, at most 12.3 s). The listing of the work,
 once for the three runs and outside the budget, takes a median 13 s.
 
+### 7.10 Planned: the lead's steps on members
+
+**Planned** (task #1249's design): nothing in this section is built. A step is the lead's alone
+when `every::offered` says no (`crates/agentcore/src/agent/every.rs:53-60`), and the lead's own
+planned jobs (`Offer::job`, `agent/plan.rs:1062-1077`) are granted to the lead alone
+(`every::grants`, `every.rs:84-86`, applied in `Sched::pack`, `coord/sched.rs:2238`). A member's
+grant carries only a step, its targets and the pass (`Granted::Job`), from which the member builds
+the command (`Agent::step_cmd`, `agent/mod.rs:3186-3219`); an own job's command is the lead's plan's
+(`JobSpec::cmd`), with the lead's paths and the inputs it was planned with.
+
+**What keeps each step to the lead** (paths under `crates/`; `every.rs` is
+`agentcore/src/agent/every.rs`, `steps.rs` is `pipeline/src/agent/steps.rs`):
+
+| Steps | Kept by | Why | Change |
+| --- | --- | --- | --- |
+| `names-todo` | `LEAD_ONLY` (`agentcore/src/agent/every.rs:44`) | writes `inputs/translations/todo/` and `inputs/descriptions/todo/` in place, outside the records (`landmarks/src/namestodo.rs:1002-1053`: 207 files, 923 MB on 21 Nov); planned with the accepted indexes as arguments (`pipeline/src/agent/build.rs:470-492`) | a writer's lease; a portable own job |
+| `timetables-todo` | `LEAD_ONLY` (`every.rs:45`) | writes `inputs/timetables/gtfs/todo/` outside the records (`roads/src/timetables.rs:287-291`: 2 files, 5.8 MB); its report goes through the records (`pipeline/src/agent/steps.rs:2539-2541`) | as `names-todo` |
+| `inputs` | `LEAD_ONLY` (`every.rs:43`) | reads its unit's listing from a file on the lead's disk (`inputs-listing/`, `agentcore/src/agent/plan.rs:3517-3556`); only the lead lists (docs/inputs.md §4.2); its outputs go through the records (`steps.rs:2304-2306`) | the listing carried by the grant |
+| `rail`, `rail-feeds`, `ferries`, `stations`, `roadunits`, `marks`, `overlays`, `terrain-water`, `terrain-root`, `slope-root`, `depth-root`, `polar-root` | worldwide: `names_target` false (`every.rs:91-108`, `-root` at `every.rs:107`; checked at `every.rs:57`) | one target, the step's name, so the lead's own job; planned with the inputs chosen then as arguments (`rail-feeds`' `--feeds-index`, `rail`'s and `ferries`' `--gtfs-index`: `agentcore/src/agent/plan.rs:2321-2345`); outputs through the records | a portable own job, by fit |
+| `items`, `heritage`, `heritage-sites` | `ANSWERED` (`steps.rs:1967`; rows at `steps.rs:1535`, `1552`, `1079`; checked at `every.rs:56`), and worldwide | keep the pass's answers in the Mac's cache and as one archive a pass on the NAS (`agentcore/src/answers.rs:1-28`), seeded by the lead's agent as it starts (`answers.rs:725-761`, `agent/mod.rs:1886-1888`); a job stopped by a signal doesn't keep them (`answers.rs:8-9`); `heritage-sites` is also a run alone (`steps.rs:1079-1082`) and the heritage chain reads an 11 GB clip of the pass in the cache (`pipeline/src/bin/scenic-build.rs:3830-3875`) | keep at a stop; then a portable own job, by fit |
+| `bld-fetch`, `pyramids-fill`, `planet-fetch` | `LEAD_ONLY` (`every.rs:36-38`) | fetch outside the records under `sources/`; one Mac's fetcher holds a host to its limit (`every.rs:26-31`) | none |
+| `catalog`, `catalog-held` | `LEAD_ONLY` (`every.rs:33-34`) | map updates: the map and its log are on the lead's disk (§2) | none |
+| `prune` | `LEAD_ONLY` (`every.rs:35`) | its gate is the lead's agent's sweep (`every.rs:26-27`) | none |
+| `gc`, `redo` | `LEAD_ONLY`, runs alone (`every.rs:40-41`; `steps.rs:1697`, `1702`) | GC removes NAS files nothing holds; a redo's entry is merged only by the lead whose member it is (§7.3) | none |
+| `backup` | `LEAD_ONLY` (`every.rs:42`) | copies files of the lead's app folder too, and mirrors to the lead (`agentcore/src/agent/backup.rs:1-5`) | none |
+| `osm-pass`, `regions-extract` | `LEAD_ONLY`, runs alone (`every.rs:39`, `46`; `steps.rs:904`, `1053`) | whole-planet reads; the pass is offered only to the Mac holding its progress (`agentcore/src/agent/resume.rs:53`) | none |
+| `pass-sets`, `outlines`, `trailends`, `reach`, `buildings`, `summits`, `labels`, `polar-points`, `lakefill`, `water`, `regions-land` | runs alone (`every.rs:58`; rows `steps.rs:925-1066`) | whole-build runs of the pass, planned from it with its arguments (`agentcore/src/agent/plan.rs:1790-1812`) | none |
+| `spoken` | by name (`every.rs:59`) | a pass step planned with the pass's arguments, as above | none |
+
+**The mechanism: portable own jobs.** Every change above but the last rows' rests on it.
+
+- An own job's grant carries the arguments its plan chose that aren't the Mac's (content names:
+  the accepted indexes, the pass's date, the inputs check's unit): `Offer` and `Granted::Job` gain
+  them. Every Mac builds the command from step, targets and those arguments by one function, the
+  lead's own run too, so the two can't differ (as the write-sets, §7.3). The Mac's paths
+  (`--root`, `--scratch`, `--cache`, `--raw`, `--dem`) stay each Mac's own (`step_args`).
+- `every::offered` keeps to the lead only the steps of a duty (the rows above with no change); an
+  own job of any other step is granted by fit, as an offered step's: memory, disk, cores, a cold
+  start's rule, the NAS budget, and placement's finish-soonest (§7.2). Always by fit rather than
+  "a member when the lead can't": the lead's room held for a big job (`room_wait`) is what kept
+  `names-todo` waiting on 21 Nov while the M4 was idle.
+- Its hand-off is any member's (§7.3): the merge checks the lease's targets and the write-set.
+- The caches such a step reads whole (`rail`'s pairs, `terrain-root`'s raw tiles, the heritage
+  chain's clip, the answers' copies) count in placement's cache preference (`CACHE_PREFER`) as the
+  shared caches do: the Mac holding them is preferred, a cold one taking the job only where it
+  still finishes sooner.
+
+**The to-do lists: one writer by lease.** The answers' lease (`answers.rs:763-772`,
+`/pool/lease/answers`) becomes one of named NAS writers' leases, `/pool/lease/<name>`, with one a
+to-do folder (`todo-<unit>`). The job takes its folder's lease before its first write into `todo/`
+and checks it is still its own before each file (`Lease::ours`, as the answers' keep does); a
+holder that lapses (10 minutes unrenewed) or that the lead can't confirm writes nothing more. So
+each `todo/` file has one writer at a time, on whichever Mac.
+
+- Not through the records: the lists are 923 MB a run in 207 files. Through the records each run
+  would write them twice (a content-named copy, then the copy into `todo/` the translators read:
+  some 11 GB more over the 12 runs of 6–21 Nov), make 414 creates a run at the NAS's 20–55 a
+  second, and give GC each run's old lists to remove. Nothing in the build reads `todo/` (the
+  inputs' listing and the backup skip it: docs/inputs.md §4.2, `agent/backup.rs:10`), so the
+  records would gain nothing.
+- `names-todo` reads the map through the lead (`coordwire::map_now`,
+  `crates/coordwire/src/lib.rs:59-68`), the map's files on the NAS and the accepted versions its
+  arguments name: all of it reachable from a member.
+
+**The inputs checks: the listing in the grant.** The lead still lists, alone. The listing a check
+was planned with (`inputs::inputs::Planned`) is served by the lead (`GET /pool/listing/<name>`), and
+the member's agent fetches it into the slot's folder before the job starts. The check's outputs go
+through the records already.
+
+**The answer-keeping steps.** Their answers already reconcile across Macs under the lead's lease
+(`answers.rs:11-28`): a member's first run takes the NAS's archive (4.4 MB the items', 16.5 MB the
+heritage chain's, on 21 Nov). What is left: a job stopped by a signal (a drain, the memory guard)
+doesn't keep, so what it fetched stays in that Mac's cache until that Mac runs the step again, and
+another Mac asks for it again under the Wikimedia budget. A job stopping at a safe point keeps its
+answers first; then `ANSWERED` leaves `every::offered`. Not handed off through the records: each
+archive is written whole a few times a run under the lease, and making two Macs' answers one
+(`reconcile`) needs both sides, which a hand-off the lead merges wouldn't have. The seed stays the
+lead's: it sends the lead's cached answers where the NAS lacks them.
+
+**Risks.**
+
+- **One writer per NAS file** (§2, principle 3): the records as today; `todo/` by its lease; the
+  answers by theirs. Nothing else moves outside the records.
+- **The map log:** map updates stay the lead's; `names-todo` reads the map through the lead.
+- **GC:** nothing new to remove: the moved steps' outputs are record names as now, and the to-do
+  lists are no records. Carried resume logs as now (§7.2, Resuming).
+- **The NAS's small files:** `names-todo` writes its 207 files whichever Mac runs it; the lease's
+  check before each is an ask of the agent's proxy, not a NAS call; no probe per file is added; a
+  member never lists the inputs folders.
+- **Memory on members:** a target's measured peaks and floors hold on any Mac (§7.7). The needs of
+  6–21 Nov, by the leases and the lead's status: `names-todo` 9.1–9.3 GB (and 7.1 GB of disk),
+  `marks` 5.8 GB, `inputs` and `roadunits` 4.6 GB, `items` and the heritage chain 3.9–4.0 GB, `rail`
+  3.7 GB. The M4 (48 GB) fits each; the M1
+  (16 GB) gets one only when its own room fits, as any job. The memory guard covers them as pool
+  jobs.
+- **Caches on a cold member:** the heritage chain's 11 GB clip is made from about a fifth of the
+  filtered planet, read from the NAS; the cache preference keeps it where it is unless another Mac
+  still finishes sooner.
+- **The simulators and lints:** `sim::place`'s "lead-only steps on the lead" checks the duties
+  alone; `tests/grant_rules.rs` keeps the rule inside the scheduler.
+
+**Measured, 6–21 Nov** (the lead's `agent/coord/history.jsonl`, its agent log's "the grants
+departed" lines, its status, and task #1215):
+
+- `names-todo`: room held for it on the mini at 9.1 GB with 0.1–2.0 GB left, 17 Nov 21–23Z;
+  0.8 GB short on 12 Nov 18:35Z; on 21 Nov at 12:02Z 4.4 GB short (6.0 GB available), the mini's
+  slot free and the M4 idle. 12 runs, 5 of them unfinished, 3.1 h in all.
+- `inputs`: 364 runs, 68 h on the mini, regions checks of up to 11.5 h at up to 4.6 GB; its grants
+  held back by the room left on 16 Nov 07–08Z; on 21 Nov at 12:02Z the M4 idle, its status "work
+  left only the lead runs: inputs".
+- `rail`: 0.8 GB short at 10.5 GB on 12 Nov 18:35Z, before #1215's fix to the memory measure;
+  since, its leases at 3.7 GB and no wait recorded.
+- `heritage-sites`: 1.7–3.4 GB short at 10.7 GB on 12 Nov 17:55Z, before that fix; since, its
+  leases at 3.9 GB and no wait recorded.
+- `timetables-todo`, `items`, `heritage` and the other worldwide steps: no wait recorded.
+- `catalog`, which stays the lead's: room held for it at 2.9 GB in 10 hours of 17–19 Nov.
+
+**Order**, each sized:
+
+1. Named NAS writers' leases, the answers' lease made the first of them: small. No win alone.
+2. Portable own jobs granted by fit, `names-todo` and `timetables-todo` moved onto them with their
+   folders' leases: not small. Win: `names-todo`'s waits above; `timetables-todo` has none of its
+   own and rides along.
+3. The inputs checks on members, their listing served by the lead: not small. Win: `inputs`'
+   waits above.
+4. The worldwide steps by fit, their caches counted by placement: small once 2 is in. No measured
+   win since #1215's fix (`rail`'s one wait came before it).
+5. The answer-keeping steps: a stop keeps its answers, then by fit: not small. No measured win
+   since #1215's fix (`heritage-sites`' one wait came before it).
+
+The steps of a duty stay the lead's.
+
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
@@ -1845,7 +1978,8 @@ member's heartbeat shows the app that has it. A role is read as the agent starts
 `state/pool/slots` is read by no current app but stays `on` on the NAS for older apps, and
 `state/pool/enabled` and `state/pool/budgets` are read by no app.
 
-Planned: resuming the terrain's and the slope's z6 tiles. Packing a terrain z6 tile's fetched raw
+Planned: resuming the terrain's and the slope's z6 tiles; the lead's steps but its duties on
+members (§7.10). Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
