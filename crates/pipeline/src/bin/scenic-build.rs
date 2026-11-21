@@ -2624,12 +2624,17 @@ fn note_landing(key: &str) {
 }
 
 /// Notes that the target whose cost key is `key` failed as the job went on (a z6 tile set aside,
-/// `set_aside`; a landing that failed under the next target's failure, `Landing::after`;
-/// `SCENIC_COSTS`, a `failed` line saying `also`): held against this Mac whatever ends the job,
-/// beside what its end names (agentcore::agent::memguard::Targets::also).
-fn note_also(key: &str) {
+/// `set_aside`, `aside`; a landing that failed under the next target's failure, `Landing::after`;
+/// `SCENIC_COSTS`, a `failed` line saying `also`, and `aside`): held against this Mac whatever
+/// ends the job, beside what its end names (agentcore::agent::memguard::Targets::also, `aside`:
+/// a server's fault, not the Mac's).
+fn note_also(key: &str, aside: bool) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    note_cost_line(&p, key, "its failure", &serde_json::json!({ "unit": key, "failed": true, "also": true }));
+    let mut line = serde_json::json!({ "unit": key, "failed": true, "also": true });
+    if aside {
+        line["aside"] = true.into();
+    }
+    note_cost_line(&p, key, "its failure", &line);
 }
 
 /// The target uploading beside the next one's work (`Landing::then`): the uploads put off before
@@ -4728,7 +4733,7 @@ fn set_aside(aside: &mut Vec<(TileId, String)>, u: TileId, e: anyhow::Error) -> 
         return Err(jobrt::control::failed_on(e, "unit", &[&u.slash()]));
     }
     eprintln!("unit {}: set aside, the job goes on with its other z6 tiles: {e:#}", u.slash());
-    note_also(&agentcore::coord::cost_key("unit", &u.slash()));
+    note_also(&agentcore::coord::cost_key("unit", &u.slash()), true);
     aside.push((u, format!("{e:#}")));
     Ok(())
 }
@@ -6289,7 +6294,7 @@ impl Landing {
                     eprintln!("{l:#}");
                     if let Some(f) = jobrt::control::failed_of(&l) {
                         for t in &f.targets {
-                            note_also(&agentcore::coord::cost_key(&f.step, t));
+                            note_also(&agentcore::coord::cost_key(&f.step, t), false);
                         }
                     }
                 }
@@ -7349,7 +7354,8 @@ mod tests {
         assert_eq!(jobrt::control::failed_of(&e).map(|f| f.targets.clone()), Some(vec!["6/17/22".to_string()]));
         note_failed(&anyhow::anyhow!("the pass's reaches"));
         let t = agentcore::agent::memguard::targets(&costs);
-        assert_eq!((t.failed, t.also), (vec![key("6/1/4")], vec!["6/5/18".to_string()]));
+        let set_aside_ones = vec!["6/5/18".to_string()];
+        assert_eq!((t.failed, t.also, t.aside), (vec![key("6/1/4")], set_aside_ones.clone(), set_aside_ones));
     }
 
     /// Task #1567 review: an upload put off by a target landing beside the next one's work, failing
@@ -7397,7 +7403,8 @@ mod tests {
         assert_eq!((t.failed, t.open), (vec![key("6/1/1")], vec![key("6/1/2")]), "the uploading one's, not the next's");
         let r: anyhow::Result<()> = landing.after(&mut out, |_| anyhow::bail!("its work failed"));
         assert_eq!(format!("{:#}", r.unwrap_err()), "its work failed", "the next one's own failure returned");
-        assert_eq!(agentcore::agent::memguard::targets(&costs).also, [key("6/1/1")], "its landing noted failed");
+        let t = agentcore::agent::memguard::targets(&costs);
+        assert_eq!((t.also, t.aside), (vec![key("6/1/1")], Vec::new()), "its landing noted failed, not set aside");
     }
 
     /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.

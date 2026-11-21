@@ -1859,13 +1859,16 @@ function eventText(m, e, k = 1) {
       return e.ok ? [`${who} finished ${job} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${job} ${e.note || "stopped"}${t.length ? ` (${S.counted(e.step, t.length)} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
     }
     case "lease": return [`${who} took ${what}`, "dim"];
-    case "done": return [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
+    // (One that failed after some: its note, the brake it put its Mac under, when it did.)
+    case "done": return e.ok === false ? [`${who} handed back ${what} and failed${e.note ? `: ${e.note}` : ""}`, "bad"] : [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
+    // (A Mac's failed jobs of a step kept the whole step from it, its note how long: coord::sched::Brakes.)
+    case "brake": return [e.note || `${e.step} kept from ${who}`, "bad"];
     case "fail": return [`${who}'s ${what} ${/^stopped/.test(e.note) ? e.note : `failed: ${e.note}`}`, /^stopped/.test(e.note) ? "warn" : "bad"];
     case "lapse": return [`${who} went quiet: its lease on ${e.note || what} lapsed and the work is offered again`, "warn"];
     // (The lead's merge refused a hand-off: its work isn't in the records, offered again.)
     case "refused": return [`${who}'s hand-off of ${what} was refused (${e.note}): offered again`, "bad"];
     // (A page's "Try again": the target's failures and back-off forgotten; its note who asked.)
-    case "retry": return [`A retry of ${what || t[0] || "a job"} was asked${e.note ? ` by ${e.note}` : ""}: its failures forgotten`, "ok"];
+    case "retry": return t[0] === "*" ? [`A retry of ${e.step} on the Macs braked on it was asked${e.note ? ` by ${e.note}` : ""}: their brakes let go`, "ok"] : [`A retry of ${what || t[0] || "a job"} was asked${e.note ? ` by ${e.note}` : ""}: its failures forgotten`, "ok"];
     case "task": return [k > 1 ? `${who} did ${plural(k, "task")}` : `${who} did a task${t[0] ? ` (${t[0]})` : ""} in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-back": return [`${who}: a task given back (${e.note})`, "warn"];
@@ -1883,7 +1886,7 @@ function eventText(m, e, k = 1) {
   }
 }
 
-const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
+const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || e.kind === "brake" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
   // (A job's start is shown only while it runs: once it's ended, its end says it all.)
@@ -1906,8 +1909,11 @@ function feed(m, events, seen) {
     if (d !== day) { out.append(h("div", "day", d === new Date().toDateString() ? "Today" : d)); day = d; }
     const [text, cls] = eventText(m, r.e, r.k);
     // (A failure: tried again now, its back-off forgotten.)
+    // (A brake: its step's brakes let go on every Mac, `*` its target, coord::sched::brake_key.)
     const again = r.e.kind === "fail" && r.e.step && r.e.targets?.length && !/^stopped/.test(r.e.note || "")
-      ? h("button", { class: "quiet", title: "Forget its failures and back-off: it's offered and run again now", onclick: () => act({ retry: { step: r.e.step, target: r.e.targets[0] } }, `try ${r.e.targets[0]} again`) }, "Try again") : null;
+      ? h("button", { class: "quiet", title: "Forget its failures and back-off: it's offered and run again now", onclick: () => act({ retry: { step: r.e.step, target: r.e.targets[0] } }, `try ${r.e.targets[0]} again`) }, "Try again")
+      : r.e.kind === "brake" && r.e.step
+        ? h("button", { class: "quiet", title: "Let the step's brakes go on every Mac: offered to them again now", onclick: () => act({ retry: { step: r.e.step, target: "*" } }, `try ${r.e.step} again on the Macs braked on it`) }, "Try again") : null;
     out.append(h("div", { class: isNew(r.e, seen) ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text), again));
   }
   if (!rows.length) out.append(h("div", "dim", events.length ? "Nothing of that kind lately." : "Nothing yet."));

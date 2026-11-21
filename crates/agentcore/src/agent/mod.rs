@@ -372,6 +372,21 @@ fn failed_on(
     (held, said)
 }
 
+/// Why a failed job of `step` held on `held` (`failed_on`) isn't its Mac's fault, for its end
+/// (crate::coord::Fail::excused: not toward the Mac's brake on the step): one the memory guard
+/// stopped (`guard_stopped`, a squeeze by the Mac's other work), or one whose every target held
+/// is a z6 tile set aside (memguard::Targets::aside, a server giving no answer); else none.
+fn excused(t: &memguard::Targets, step: &str, held: &[String], guard_stopped: bool) -> &'static str {
+    let aside = |h: &String| t.aside.iter().any(|k| *k == crate::coord::cost_key(step, h));
+    if guard_stopped {
+        crate::coord::SQUEEZED
+    } else if !held.is_empty() && held.iter().all(aside) {
+        crate::coord::SOURCE_DOWN
+    } else {
+        ""
+    }
+}
+
 /// A slot's files' suffix in the agent's folder: none for the first, `-2`, `-3`, … after
 /// (`job.json`, `job-2.json`, …; `scratch/`, `scratch-2/`, …).
 fn slot_suffix(k: usize) -> String {
@@ -3223,7 +3238,8 @@ impl Agent {
         }
         let guard_stopped = self.slots[k].guard_stopped;
         // (Held, the targets it's held on: those it failed on, or none for every one not done.)
-        let failed_on = if outcome.holds(guard_stopped) { self.failed_on(k, done).0 } else { Vec::new() };
+        let (failed_on, _, excused) =
+            if outcome.holds(guard_stopped) { self.failed_on(k, done) } else { Default::default() };
         // An own job's timings, taken whichever way it ends (none left for the slot's next job).
         let own_timings = self.slots[k].timings_out.take();
         // (A member's job's tasks, at this Mac's broker: gone with it.)
@@ -3239,7 +3255,7 @@ impl Agent {
                     // not done, kept from this Mac as a member's are, the lead's backoff,
                     // `finish_failed`.)
                     if outcome.holds(guard_stopped) {
-                        c.finish_failed(id, done, &failed_on);
+                        c.finish_failed(id, done, &failed_on, excused);
                     } else {
                         c.finish(id, done);
                     }
@@ -3287,7 +3303,7 @@ impl Agent {
                 if local {
                     if let Some(c) = &self.coord {
                         if outcome.holds(guard_stopped) {
-                            c.finish_failed(id, done, &failed_on);
+                            c.finish_failed(id, done, &failed_on, excused);
                         } else {
                             c.finish(id, done);
                         }
@@ -3336,6 +3352,7 @@ impl Agent {
                             job_disk_mb: job_disk,
                             failed,
                             failed_on: failed_on.clone(),
+                            excused: if failed { excused.to_string() } else { String::new() },
                             journaled: pooled,
                             timings,
                             ..Default::default()
@@ -3363,6 +3380,7 @@ impl Agent {
                                 disks,
                                 job_disk_mb: job_disk,
                                 failed_on,
+                                excused: if back { String::new() } else { excused.to_string() },
                                 ..Default::default()
                             }))
                         }
@@ -6248,11 +6266,17 @@ impl Agent {
 
     /// Slot `k`'s job's `failed_on`, as its costs file says (`slot_costs`), `done` of its targets
     /// done: none for a job of no record.
-    fn failed_on(&self, k: usize, done: &[(String, String)]) -> (Vec<String>, String) {
+    fn failed_on(&self, k: usize, done: &[(String, String)]) -> (Vec<String>, String, &'static str) {
+        let guard_stopped = self.slots[k].guard_stopped;
         let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) else {
-            return (Vec::new(), String::new());
+            return (Vec::new(), String::new(), if guard_stopped { crate::coord::SQUEEZED } else { "" });
         };
-        failed_on(&memguard::targets(&self.slot_costs(k)), &w.step, &w.targets, done)
+        let t = memguard::targets(&self.slot_costs(k));
+        let (held, said) = failed_on(&t, &w.step, &w.targets, done);
+        let why = excused(&t, &w.step, &held, guard_stopped);
+        let said =
+            if why.is_empty() { said } else { format!("{said}; not toward this Mac's brake on the step: {why}") };
+        (held, said, why)
     }
 
     /// Where slot `k`'s job notes what its targets cost (`SCENIC_COSTS`): this Mac's own job's in
@@ -7886,7 +7910,7 @@ impl Agent {
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
         // (What of it is held, and how that was found, said: `failed_on`.)
         let held = outcome.holds(self.slots[k].guard_stopped);
-        let (failed, said) = if held { self.failed_on(k, done) } else { Default::default() };
+        let (failed, said, excused) = if held { self.failed_on(k, done) } else { Default::default() };
         let note = [how, said.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("; ");
         let e = crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
@@ -7897,6 +7921,7 @@ impl Agent {
             ok: Some(ok),
             held,
             failed,
+            excused: excused.to_string(),
             what,
             note,
             ..crate::coord::history::Event::new("end")
@@ -21900,6 +21925,19 @@ mod membership_tests {
             "the one set aside isn't under way"
         );
         assert_eq!(held(&[&a, &b, &c, also]), unknown);
+        // (Task #1567 review: a failure that isn't the Mac's isn't toward its brake: one held on
+        // z6 tiles set aside alone, a server's fault, or one the memory guard stopped.)
+        let aside = |t: &str| format!("{{\"unit\":\"{t}\",\"failed\":true,\"also\":true,\"aside\":true}}");
+        let why = |lines: &[&str], guard_stopped: bool| {
+            let (on, _) = held(lines);
+            excused(&memguard::targets(&p), "unit", &on, guard_stopped)
+        };
+        let (s1, s2) = (aside("6/5/18"), aside("6/17/22"));
+        assert_eq!(why(&[&a, &s1, &b, &s2, &failed("6/5/18"), &failed("6/17/22")], false), crate::coord::SOURCE_DOWN);
+        assert_eq!(why(&[&a, &s1, &b, &failed("6/17/22")], false), "", "another failed beside");
+        assert_eq!(why(&[&a, &s1, &b, &c], false), "", "every target not done held");
+        assert_eq!(why(&[&a, &b, &failed("6/17/22")], false), "");
+        assert_eq!(why(&[&a, &b, &failed("6/17/22")], true), crate::coord::SQUEEZED);
     }
 
     /// Task #815: a member paused (or away) through a change of lead kept its way to the old lead's

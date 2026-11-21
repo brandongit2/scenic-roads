@@ -1114,11 +1114,10 @@ impl Sched {
         self.held_by(worker, &cost_key(step, t), now) || self.braked(worker, step, now)
     }
 
-    /// Whether `step` is kept whole from `worker` (its brake, `brake_key`: jobrt::backoff's
-    /// `step-brake-jobs` of its jobs of the step failed there within `step-brake-minutes`), as a
-    /// target's failure holds it.
+    /// Whether `step` is kept whole from `worker`'s Mac (its brake, `brake_key`, by Mac:
+    /// crate::paces::mac_of; `Brakes`), as a target's failure holds it.
     pub(super) fn braked(&self, worker: &str, step: &str, now: Instant) -> bool {
-        self.held_by(worker, &brake_key(step), now)
+        self.held_by(crate::paces::mac_of(worker), &brake_key(step), now)
     }
 
     /// Whether `failed`'s entry of `worker` and `key` holds now.
@@ -3607,9 +3606,70 @@ impl Sched {
 }
 
 /// The key of a Mac's brake on `step` in `Sched::failed` (its "target" `*`, no target's: a
-/// cost key of unit is its z6 tile alone).
+/// cost key of unit is its z6 tile alone), the Mac its worker (crate::paces::mac_of).
 pub fn brake_key(step: &str) -> String {
     format!("{step} *")
+}
+
+/// Each Mac's failed jobs of each step lately and its last good job of each, toward its brake on
+/// the step (jobrt::backoff::Backoff::brakes, its `step-brake-jobs` within `step-brake-minutes`),
+/// by Mac (crate::paces::mac_of: its second job's its own): the lead's (`Shared::brakes`), counted
+/// again from its history at its start (`seed_backoff`). A brake is for a faulty Mac, not a
+/// faulty step or data: a failed job counts only while another Mac did a job of the step well
+/// within the window, and brakes only while one of those isn't braked on it itself, so the last
+/// Mac a step goes well on is never braked. A failure that isn't its Mac's (`excused`: stopped by
+/// the memory guard, z6 tiles set aside alone) isn't brought here.
+#[derive(Debug, Default)]
+pub struct Brakes {
+    /// (Mac, step) → its failed jobs' times counted (unix s).
+    fails: BTreeMap<(String, String), Vec<u64>>,
+    /// (step, Mac) → its last good job's time (unix s).
+    good: BTreeMap<(String, String), u64>,
+}
+
+impl Brakes {
+    /// A job of `step` done well on `worker` at `at` (unix s).
+    pub fn job_done(&mut self, worker: &str, step: &str, at: u64) {
+        let e = self.good.entry((step.to_string(), crate::paces::mac_of(worker).to_string())).or_insert(at);
+        *e = (*e).max(at);
+    }
+
+    /// A job of `step` failed on `worker` at `at` (unix s): whether it brakes the step on its Mac,
+    /// as `b` sets the brake, `braked` whether a Mac is braked on the step now.
+    pub fn job_failed(
+        &mut self,
+        b: &jobrt::backoff::Backoff,
+        worker: &str,
+        step: &str,
+        at: u64,
+        braked: impl Fn(&str) -> bool,
+    ) -> bool {
+        let mac = crate::paces::mac_of(worker);
+        let window = (b.brake_minutes * 60.0) as u64;
+        let others: Vec<&str> = self
+            .good
+            .range((step.to_string(), String::new())..)
+            .take_while(|((s, _), _)| s == step)
+            .filter(|((_, m), t)| m != mac && at.saturating_sub(**t) < window)
+            .map(|((_, m), _)| m.as_str())
+            .collect();
+        if others.is_empty() {
+            return false;
+        }
+        b.brakes(self.fails.entry((mac.to_string(), step.to_string())).or_default(), at)
+            && others.iter().any(|m| !braked(m))
+    }
+
+    /// A page's retry of `step`: its failed jobs counted afresh on every Mac.
+    pub fn forget(&mut self, step: &str) {
+        self.fails.retain(|(_, s), _| s != step);
+    }
+}
+
+/// The Mac and step of a job `e` ended well (an "end" or "done" ok), for `Brakes::job_done`.
+pub fn good_job(e: &super::history::Event) -> Option<(&str, &str)> {
+    let ok = matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true);
+    Some((e.worker.as_deref().filter(|_| ok)?, e.step.as_deref().filter(|s| !s.is_empty())?))
 }
 
 /// A brake on `step`, in words, as `b` sets it (the status's, the history's).

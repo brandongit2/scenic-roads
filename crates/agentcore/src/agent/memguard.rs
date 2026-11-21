@@ -395,6 +395,9 @@ pub struct Targets {
     pub live: bool,
     pub failed: Vec<String>,
     pub also: Vec<String>,
+    /// Of `also`, the z6 tiles set aside (a `failed` line saying `aside`: a server giving no
+    /// answer, not the Mac's fault).
+    pub aside: Vec<String>,
     pub open: Vec<String>,
 }
 
@@ -415,6 +418,9 @@ pub fn targets(costs: &Path) -> Targets {
             let into = if v["also"] == true { &mut t.also } else { &mut t.failed };
             if !into.iter().any(|f| f == key) {
                 into.push(key.to_string());
+            }
+            if v["aside"] == true && !t.aside.iter().any(|f| f == key) {
+                t.aside.push(key.to_string());
             }
         } else if v["landing"] == true {
             landing.push(key.to_string());

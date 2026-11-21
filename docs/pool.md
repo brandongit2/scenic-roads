@@ -763,19 +763,33 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   `failed` where it names any, "refused",
   "merged" and "retry" (a page's retry, `clear_failed`: its target's holds and refusals
   forgotten) events, in order, each hold from its event's time.
-- **A Mac failing a step's jobs is braked on it** (jobrt::backoff's `brakes`, `Sched::braked`):
-  `step-brake-jobs` (3) failed jobs of one step on one Mac within `step-brake-minutes` (120),
-  whatever targets they failed on, keep the whole step from that Mac as a target's failure keeps
-  the target: `backoff-start-hours` after the first brake, twice as long after each more, at most
-  `backoff-ceiling-hours`; a brake counts its jobs afresh. The failures counted are those that
-  hold targets above (a member's "fail" not interrupted, its "done" that failed, the lead's own
-  failed "end"). Each brake is a "brake" event, its note saying the Mac, the step, the settings
-  and the hold (the lead logs it too), and while it holds
-  the step's refusal to the Mac says "{step} kept from this Mac after … (step-brake-jobs,
-  step-brake-minutes)". A page's retry of the step lets it go, and a lead's start counts the
-  brakes and the failed jobs within the window again from the history (`seed_backoff`). Pool
+- **A Mac failing a step's jobs is braked on it** (`sched::Brakes`, jobrt::backoff's `brakes`,
+  `Sched::braked`), the brake being for a faulty Mac, not a faulty step or data:
+  `step-brake-jobs` (3) failed jobs of one step on one Mac (crate::paces::mac_of: its second
+  job's its own) within `step-brake-minutes` (120), whatever targets they failed on, keep the
+  whole step from that Mac as a target's failure keeps the target: `backoff-start-hours` after
+  the first brake, twice as long after each more, at most `backoff-ceiling-hours`; a brake counts
+  its jobs afresh. The failures counted are those that hold targets above (a member's "fail" not
+  interrupted, its "done" that failed, the lead's own failed "end"), and only those:
+  - made while another Mac did a job of the step well (an "end" or "done" ok) within the window:
+    a step failing on every Mac (a server's outage, targets bad wherever they run) brakes none;
+  - not excused (`Fail::excused`, the events' `excused`): a job the memory guard stopped (a
+    squeeze by the Mac's other work) or one held on z6 tiles set aside alone (a server giving no
+    answer, scenic-build's `{unit, failed, also, aside}` lines) counts nothing, its targets held
+    all the same.
+  A count reached brakes only while one of the Macs that did the step well isn't braked on it
+  itself: the last Mac a step goes well on is never braked. Each brake is a "brake" event, its
+  note saying the Mac, the step, the settings and the hold (the lead logs it too; the member's
+  "done" that braked it says it as its note), shown in the build page's feed with a "Try again";
+  while it holds the step's refusal to the Mac says "{step} kept from this Mac after …
+  (step-brake-jobs, step-brake-minutes)". A page's retry lets every Mac's brake on the step go
+  and counts their failed jobs afresh: a retry of a step's target, or the feed's of the brake
+  (its target `*`); a retry of a target of any step, for each step a hold of the target is of
+  (one held nowhere names none, so lets no brake go). A lead's start counts the brakes, the
+  failed jobs and the good ones within the window again from the history (`seed_backoff`). Pool
   settings, in the build page's "Backoff" (2 to 100 jobs, 5 to 1,440 min), taken from the next
-  failed job.
+  failed job. The build page has no view of the targets and steps held: the feed's events say
+  them.
 - **The lead's own work backs off too** (jobrt::backoff's `own_hold`): a job of the lead's agent
   that failed (its own work, a backup, a check, a region's step, besides the lead's hold above of
   those it took as offers) waits `own-retry-start-minutes` (10) before it is tried again, twice as

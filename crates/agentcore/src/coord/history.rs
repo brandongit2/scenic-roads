@@ -82,6 +82,11 @@ pub struct Event {
     /// event before task #1567, or a job that named none): every target not done is held.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<String>,
+    /// Why a failed job's failure isn't its Mac's fault (crate::coord::Fail::excused: stopped by
+    /// the memory guard, z6 tiles set aside alone), on the events `failed` is: not counted toward
+    /// its Mac's brake on its step (crate::coord::sched::Brakes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub excused: String,
     /// What the job does (its description), for a start and an end.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub what: String,
