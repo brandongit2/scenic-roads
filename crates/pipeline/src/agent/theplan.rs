@@ -377,9 +377,9 @@ fn reask_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
 /// Runs `work` as pass `pass` on a thread of its own, on the pass's pool (`reask_pool`; on that
 /// thread alone when none can be built). The pass ends as its work returns, an unwind too (the
 /// `Pass` dropped), a panic said as the plan part says its own and kept (`Pass::panicked`): no
-/// plan is kicked for it, no pass starts again until the agent does (a new app, or a restart),
-/// and the records it hadn't asked wait, said in the status: a panic of the code's own would only
-/// come again, every plan.
+/// plan is kicked for it, no pass starts again in this process, and the records it hadn't asked,
+/// and any due later, wait, said in the status: a panic in the code's own work would come again
+/// every plan, and after a restart too, until a fixed build runs.
 fn run_pass(
     pass: buildstore::asked::Pass,
     work: impl FnOnce() + Send + 'static,
@@ -395,7 +395,7 @@ fn run_pass(
             let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
             let why = why.unwrap_or_default();
             eprintln!(
-                "agent: the pass asking coverage records again panicked ({why}); those it hadn't asked wait until the agent restarts"
+                "agent: the pass asking coverage records again panicked ({why}); those it hadn't asked, and any due later, wait: a panic in its own work comes back after a restart, and needs a fixed build"
             );
             pass.panicked(why);
         }
@@ -1157,7 +1157,7 @@ impl PlanHeld for Held {
         if let Some(why) = &s.panicked {
             return Some(format!(
                 "the pass asking them again panicked ({why}) after {} of {}: the targets of those not asked \
-                 wait until the agent restarts",
+                 wait, and any due later: a panic in its own work comes back after a restart, and needs a fixed build",
                 s.done, s.total
             ));
         }
@@ -1436,7 +1436,7 @@ mod tests {
         drop(tiles);
         assert_eq!(held.kick(), None, "no plan kicked");
         let said = held.reasking().expect("said");
-        assert!(said.contains("panicked (a warm's)") && said.contains("until the agent restarts"), "{said}");
+        assert!(said.contains("panicked (a warm's)") && said.contains("needs a fixed build"), "{said}");
         let tiles = held.terrain_tiles(&root, &m);
         held.start_reask(&r, None, &tiles);
         let s = tiles.reask().now();

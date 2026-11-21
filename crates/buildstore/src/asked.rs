@@ -120,8 +120,9 @@ impl Record {
         serde_json::from_reader(std::io::BufReader::new(d)).map_err(|e| Unparsed(format!("not a coverage record: {e}")))
     }
 
-    /// The record at `p`, read and parsed as it's decoded (`Opened::read`), and its file's size.
-    pub fn read(p: &store::nasfs::NasPath) -> std::io::Result<(Option<Record>, u64)> {
+    /// The record at `p`, read and parsed as it's decoded (`Opened::read`), and its file's size
+    /// (None: the open's stat failed).
+    pub fn read(p: &store::nasfs::NasPath) -> std::io::Result<(Option<Record>, Option<u64>)> {
         let o = Record::open(p)?;
         let size = o.size();
         Ok((o.read()?, size))
@@ -137,8 +138,8 @@ impl Record {
 pub struct Opened(store::nasfs::NasFile);
 
 impl Opened {
-    /// Its file's size (bytes), as it was opened.
-    pub fn size(&self) -> u64 {
+    /// Its file's size (bytes), as it was opened; None when the open's stat failed.
+    pub fn size(&self) -> Option<u64> {
         self.0.opened_len()
     }
 
@@ -218,7 +219,8 @@ pub struct ReaskState {
     /// Passes ended.
     pub ended: u64,
     /// Why a pass panicked, when one did (`Pass::panicked`): no other starts in this process, and
-    /// the records it hadn't asked wait (a panic of the code's own would only come again).
+    /// the records it hadn't asked, and any due later, wait (a panic in the code's own work comes
+    /// again, after a restart too, until a fixed build runs).
     pub panicked: Option<String>,
     /// The records' memory in flight (bytes: `record_cost`, `admit`).
     pub in_flight: u64,
@@ -729,12 +731,12 @@ mod tests {
         let at = |name: &str| store::nasfs::NasPath::local_for_test(d.path().join(name));
         std::fs::write(d.path().join("rec"), &b).unwrap();
         let n = b.len() as u64;
-        assert_eq!(Record::read(&at("rec")).unwrap(), (Some(r), n));
+        assert_eq!(Record::read(&at("rec")).unwrap(), (Some(r), Some(n)));
         assert_eq!(record_cost(n), n * PARSED_PER_FILE_BYTE + PARSED_BASE);
         std::fs::write(d.path().join("not"), b"not a record").unwrap();
-        assert_eq!(Record::read(&at("not")).unwrap(), (None, 12));
+        assert_eq!(Record::read(&at("not")).unwrap(), (None, Some(12)));
         std::fs::write(d.path().join("cut"), &b[..b.len() / 2]).unwrap();
-        assert_eq!(Record::read(&at("cut")).unwrap(), (None, n / 2));
+        assert_eq!(Record::read(&at("cut")).unwrap(), (None, Some(n / 2)));
         assert!(Record::read(&at("gone")).is_err());
     }
 

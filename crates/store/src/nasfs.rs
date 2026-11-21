@@ -570,11 +570,11 @@ impl NasPath {
         let (f, len) = self.retry("open", || {
             self.call("open", |p| {
                 let f = std::fs::File::open(p)?;
-                let len = f.metadata().map_or(0, |m| m.len());
+                let len = f.metadata().map(|m| m.len()).ok();
                 Ok((f, len))
             })
         })?;
-        nasio::opened(&p, len, ms_since(t));
+        nasio::opened(&p, len.unwrap_or(0), ms_since(t));
         let mut f = NasFile::new(f, p, None, t, self.root.deadline());
         f.len = len;
         Ok(f)
@@ -1290,8 +1290,9 @@ pub struct NasFile {
     at: usize,
     /// Its reads, counted the NAS's or this Mac's cache's.
     reads: nasio::Reads,
-    /// Its length as it was opened to read (bytes; 0 opened to write).
-    len: u64,
+    /// Its length as it was opened to read (bytes; None opened to write, or when the open's stat
+    /// failed).
+    len: Option<u64>,
 }
 
 impl NasFile {
@@ -1305,7 +1306,7 @@ impl NasFile {
             buf: Vec::new(),
             at: 0,
             reads: nasio::Reads::default(),
-            len: 0,
+            len: None,
         }
     }
 
@@ -1425,8 +1426,9 @@ impl Seek for NasFile {
 }
 
 impl NasFile {
-    /// Its length as it was opened to read (bytes: the open's own stat; 0 opened to write).
-    pub fn opened_len(&self) -> u64 {
+    /// Its length as it was opened to read (bytes: the open's own stat; None opened to write, or
+    /// when that stat failed).
+    pub fn opened_len(&self) -> Option<u64> {
         self.len
     }
 

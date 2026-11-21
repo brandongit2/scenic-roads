@@ -539,8 +539,8 @@ impl TerrainTiles {
                 if let Some(h) = self.kept_head(c) {
                     return (*c, Ok(Some(h)));
                 }
-                let head =
-                    buildstore::asked::Record::read(&root.join(c)).map(|(r, size)| r.map(|r| Head::of(&r, size)));
+                let head = buildstore::asked::Record::read(&root.join(c))
+                    .map(|(r, size)| r.map(|r| Head::of(&r, size.unwrap_or(0))));
                 if let Ok(Some(h)) = &head {
                     self.keep_head(c, h);
                 }
@@ -568,7 +568,7 @@ impl TerrainTiles {
             // (One that can't be read now: tried again with the next load; one that doesn't
             // parse, held as such: its step re-runs once.)
             let (r, size) = match buildstore::asked::Record::read(&root.join(c)) {
-                Ok((r, size)) => (Some(r.map(std::sync::Arc::new)), size),
+                Ok((r, size)) => (Some(r.map(std::sync::Arc::new)), size.unwrap_or(0)),
                 Err(e) => {
                     eprintln!("agent: {c} can't be read now ({e:#})");
                     (None, 0)
@@ -662,7 +662,7 @@ impl TerrainTiles {
         let _r = store::keyread::recorded();
         let unread = |e: std::io::Error| Unread(format!("{c}: {e:#}"));
         let o = buildstore::asked::Record::open(&root.join(c)).map_err(unread)?;
-        let size = o.size();
+        let size = o.size().ok_or_else(|| Unread(format!("{c}: its size couldn't be read as it opened")))?;
         timed.sized(size);
         // (Held, by the pass's copy alone, while it's read, parsed and asked again: `f`.)
         let _a = self.room.as_ref().map(|room| {

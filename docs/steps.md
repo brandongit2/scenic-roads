@@ -1018,10 +1018,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   offered, and the status says "The coverage records: asked again … n of N", N those the probe
   found (`PlanHeld::reasking`); the pass's end kicks a plan, which finds the lines it put in the
   memo. A pass ends however its work returns (`asked::Pass`); one that panicked is said in the
-  agent's log and the status, kicks no plan, and no pass starts again until the agent restarts:
-  the records it hadn't asked wait (a panic of the code's own would only come again). The plan's
-  copies (its shadow's, the regions' counts') read no record while one runs; the shadow compares
-  nothing for a plan begun while one ran, or with one ended since, and says so. Each record asked
+  agent's log and the status, kicks no plan, and no pass starts again in that process: the
+  records it hadn't asked, and any due later, wait (a panic in the code's own work comes back
+  after a restart too, and needs a fixed build). The plan's copies (its shadow's, the regions'
+  counts') read no record while one runs; the shadow compares nothing for a plan begun while one
+  ran, with one ended since, or after one panicked (`stops_keys`), and says so. Each record asked
   again has its head kept with the test, the line it gave and its file's size
   (`TerrainTiles::answered`, a local file: its own line when it answered the same, else the new
   one), so the next start reads it no more, whether its target reran yet or not. The pass reads

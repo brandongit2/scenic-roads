@@ -214,11 +214,12 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      a hit's reads are those. The deep answers are kept by the coverage and the declared sets the
      key reads likewise. The caches warmed (`warm_world`, `warm_asked`, `warm_lakes`, `warm_peaks`)
      run, on the lead, on the pool of the pass asking records again off the plan's thread, or on
-     the plan's own when they take less than a plan (docs/steps.md §12). Those warmed on rayon's threads (`warm_asked`, `warm_lakes`,
-     `warm_peaks`) read the map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the
-     compiler refuses one captured there): each key reads again what finds its line (lake-depth's:
-     its record and its ring's hi packs, `asked_line`, `lake_ring_geo`; peaks': its record and the
-     lo packs' indexes, `peaks_geo`). The terrain-targets cell
+     the plan's own when they take less than a plan (docs/steps.md §12). Those warmed on rayon's
+     threads (`warm_asked`, `warm_lakes`, `warm_peaks`) read the map unrecorded
+     (`Reads::unrecorded_map`; the view isn't `Sync`, so the compiler refuses one captured there):
+     each key reads again what finds its line (lake-depth's: its record and its ring's hi packs,
+     `asked_line`, `lake_ring_geo`; peaks': its record and the lo packs' indexes, `peaks_geo`).
+     The terrain-targets cell
      (`TerrainTiles::memo("terrain-targets")`) is read by no key, and the terrain and slope keys
      it serves aren't derived in a plan that finds it, so they get no read set there: they are
      kept by that cell's digest until step 6a. The shadow plan (step 4) reads the cell where the
