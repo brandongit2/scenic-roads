@@ -63,6 +63,13 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   can't verify ("too complex to verify"), and the retry costs a second turn. Give paths in full
   (or `git -C <worktree>`) rather than `cd`: a `cd` out of the working folders is refused or
   asks too.
+- **Scripts go through the Write tool, even in scratch:** `cat > <scratch>/x.py <<'EOF'` is a
+  heredoc the worktree check refuses like any other; Write the file, then run it by its path.
+- **One git command per call:** `git add … && git commit … && zsh tools/dev/check.sh` is refused
+  as too complex to verify; send `git add`, `git commit` and the run as separate calls.
+- **The app's home is `~/scenic`** on every Mac (a link to `~/Library/Application Support/scenic`
+  that each Mac's agent makes as it starts, `agent::applink`): name `~/scenic/agent/…`, over ssh
+  too, never `Application\ Support`, whose space the worktree check refuses.
 - **Read the part of a file you need in one call:** find it with `grep -n`, then one Read with
   `offset` and `limit` round it, not successive `sed -n` slices of 40 lines, one turn each. Don't
   read a big file whole either: it stays in every later turn's context (testing.md is 900 lines;
@@ -117,6 +124,16 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 - **Blocked, say so and stop:** when your work waits on another task or on something you can't
   change (the M4 away, an owner's answer), end with `Blocked on #N` or `Blocked on: <what>` and
   hand back, without a check.sh you know will fail.
+- **Stop a check.sh a review has just made stale:** when a review, a relay or the PM's word arrives
+  while your check.sh runs, and it drops commits of that run's head or calls for a change to it,
+  stop the run at once (TaskStop on its background task, or a TERM to its exact PID: it ends
+  "stopped" on the dev jobs page, and its tests' run on the test Mac stops with it) and act on the
+  review first; run check.sh again on the new head.
+- **Set a held digest as the branch's last change:** a branch that changes code
+  `inputs::regions::RESOLUTION_CODE` or `inputs::elevation::RULE_CODES` covers sets them in its
+  last commit, after its last rebase on main, so two branches on that code don't wait on each
+  other. The value is printed on any Mac, no test run needed: a build of the inputs crate (`cargo
+  check -p inputs`) warns with it, and check.sh's guards part fails naming it.
 - **The PM's hold:** while the main checkout's `.git/hold-runs` exists (the PM writes why in it,
   and deletes it to end the hold), start no check.sh, remote-tests.sh or measurement run; a stop
   passes meanwhile.

@@ -42,7 +42,7 @@ print -r -- \"\$*\" >> $tmp/calls
 [[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtnoise ]] && { print -u2 'info: syncing channel updates for 1.98.1-aarch64-apple-darwin'; exit 0 }
 [[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtbroken ]] && { print formatted >> docs/a.md; print -r -- \$PWD/docs/a.md; print -u2 'error: this file contains an unclosed delimiter'; exit 1 }
 [[ \$1 == clippy && -e $tmp/hold ]] || exit 0
-: > $tmp/started
+print \$\$ > $tmp/started
 for i in {1..600}; do [[ -e $tmp/go ]] && exit 0; sleep 0.1; done
 exit 1"
 w README.md 1
@@ -124,6 +124,19 @@ f=( $dj/live/*(N) )
 # (The sampler it started ends once nothing is live: waited for, before the scratch folder goes.)
 zmodload zsh/system
 for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f lk $dj/sampler.lock 2>/dev/null && break; sleep 0.1; done
+# A TERM to check.sh's own pid stops the part it runs (#1580: a run a review made stale, its tests'
+# run on the test Mac with it), not only check.sh.
+w docs/b.md 2; g add -A; g commit -m stopped
+rm -f $tmp/started $tmp/go; : > $tmp/hold
+HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1 &
+pid=$!
+for i in {1..600}; do [[ -s $tmp/started ]] && break; sleep 0.1; done
+part=$(<$tmp/started)
+kill -TERM $pid; wait $pid; rc=$?
+for i in {1..50}; do kill -0 $part 2>/dev/null || break; sleep 0.1; done
+if (( rc == 143 )) && [[ -n $part ]] && ! kill -0 $part 2>/dev/null; then ok "a TERM to check.sh stops its running part"
+else bad "a TERM to check.sh: exit $rc, its part (${part:-never started}) $(kill -0 ${part:-0} 2>/dev/null && print 'still running')"; kill ${part:-0} 2>/dev/null; fi
+rm -f $tmp/hold
 
 # The stop at a failed part (#1524): fmt formatting a file, or guards failing, and the parts of
 # minutes (clippy, prod, the tests) don't run, each saying why; the run fails and records nothing.

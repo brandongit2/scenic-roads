@@ -76,7 +76,8 @@
 # the SubagentStop hook (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read; otherwise it
 # says why it records nothing. Exit 0 only when all passed and the pass is recorded.
 # While it runs, its run's span is live, its process working in the checkout (report-guard.sh lets
-# that worktree's agent stop meanwhile).
+# that worktree's agent stop meanwhile). A TERM stops it and the part it runs (#1580), the tests'
+# run on the test Mac with it: a run a review made stale is stopped so.
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -111,7 +112,7 @@ dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstat
 export SCENIC_DEVJOB_PARENT=$djrun
 # (zsh runs no EXIT trap on a signal: a TERM or INT ends it by exit, so the run is ended "stopped".)
 trap '[[ -n ${holdpid:-} ]] && kill $holdpid 2>/dev/null; dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
-trap 'exit 143' TERM; trap 'exit 130' INT
+trap '[[ -s $logs/part.pid ]] && kill -TERM $(<$logs/part.pid) 2>/dev/null; exit 143' TERM; trap 'exit 130' INT
 # (`--no-renames`: a moved file is its old path and its new one, as check-reuse.py reads X; with
 # renames, 6f4's move of agent/settings.rs hid the old path the sweep's test is run by.)
 changed=( ${(f)"$(git diff --no-renames --name-only $base; git ls-files --others --exclude-standard)"} )
@@ -139,7 +140,11 @@ part() {  # part [--parse <kinds>] <name> <command...>: runs it, its output to $
   if (( $+functions[$1] )); then dj_start part $name; fid=$REPLY
   else dj_wrap part $name ${parse:+--parse} ${parse:+$parse}; pre=( $reply ); fi
   # (zsh's time of the subshell: wall, and user + sys CPU of all it ran on this Mac.)
-  t=$( { TIMEFMT='%E %U %S'; time ( [[ -n $fid ]] && export SCENIC_DEVJOB_PARENT=$fid; $pre "$@" > $logs/$name.log 2>&1 ) } 2>&1 ); rc=$?
+  # (The subshell's pid in $logs/part.pid while it runs: the command's own, zsh execing a last
+  # command in place. A TERM to check.sh stops it too, #1580: its exit alone left the part running,
+  # the tests' run on the test Mac with it.)
+  t=$( { TIMEFMT='%E %U %S'; time ( print $sysparams[pid] > $logs/part.pid; [[ -n $fid ]] && export SCENIC_DEVJOB_PARENT=$fid; $pre "$@" > $logs/$name.log 2>&1 ) } 2>&1 ); rc=$?
+  rm -f $logs/part.pid
   [[ -n $fid ]] && { (( rc )) && dj_end $fid fail exit $rc || dj_end $fid ok }
   t=( ${${=t}%s} 0 0 0 ); t=$(printf '%.0f s, cpu %.0f s' ${t[1]} $(( t[2] + t[3] )))
   if (( rc == 0 )); then summary+="PASS  $name  ($t)"; print "PASS  ($t)"
