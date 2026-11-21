@@ -7,6 +7,7 @@
 #   dj_end <id> <status> [<attr> <value>]…     it ends: ok, fail, stopped, skip or reuse
 #   dj_span <kind> <name> <t0> <t1> <status> [<attr> <value>]…   a whole span (times: $EPOCHREALTIME's), its id in $REPLY
 #   dj_attr <id> [<attr> <value>]…              more of its attributes
+#   dj_where <id>                                its working folder, for report-guard.sh (#1576)
 #   dj_wrap                                      the command line prefix that runs a command as a
 #                                                span (devjob.py wrap), in $reply
 # A span is part of $SCENIC_DEVJOB_PARENT (a job exports its own id for what it runs: a check's part
@@ -74,8 +75,12 @@ dj_end() {
   local id=$1 st=$2; shift 2
   dj_attrs "$@"
   dj_emit "{\"op\":\"end\",\"id\":\"$id\",\"t\":$EPOCHREALTIME,\"status\":\"$st\",\"attrs\":$REPLY}"
-  rm -f $DJ_DIR/live/$id 2>/dev/null || :
+  rm -f $DJ_DIR/live/$id $DJ_DIR/where/$id 2>/dev/null || :
   dj_sampler
+}
+dj_where() {  # dj_where <id>: the live span's working folder, this shell's, which report-guard.sh reads (devjob.py WHERE)
+  dj_on && [[ -n ${1:-} ]] || return 0
+  { mkdir -p $DJ_DIR/where && print -r -- ${PWD:A} > $DJ_DIR/where/$1 } 2>/dev/null || :
 }
 dj_span() {
   dj_on || { REPLY=; return 0 }

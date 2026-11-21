@@ -118,25 +118,27 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 - Run `zsh tools/dev/check.sh` in your worktree before reporting, and report only after it prints
   PASS. `tools/dev/report-guard.sh` keeps an agent with unchecked commits working but can't recall
   a report already delivered: the gate that holds is `tools/dev/merge-ok.sh`, which the PM runs
-  before a merge. A stop passes while a dev job run (check.sh, remote-tests.sh, a `devjob.py wrap`
-  run) works in that worktree, whoever started it; while the PM holds runs; and when your last
-  message says what blocks you.
+  before a merge. A stop passes while a check.sh, a remote-tests.sh or a `devjob.py wrap` run of
+  its own works in that worktree, whoever started it (not a cargo or a server you started); while
+  the PM holds runs; and when your last message ends saying what blocks you.
 - **Blocked, say so and stop:** when your work waits on another task or on something you can't
-  change (the M4 away, an owner's answer), end with `Blocked on #N` or `Blocked on: <what>` and
+  change (the M4 away, an owner's answer), end with a line of its own in your last paragraph
+  beginning `Blocked on #N` or `Blocked on: <what>` (also `blocked by`, `waiting on`/`for`), and
   hand back, without a check.sh you know will fail.
 - **Stop a check.sh a review has just made stale:** when a review, a relay or the PM's word arrives
   while your check.sh runs, and it drops commits of that run's head or calls for a change to it,
-  stop the run at once (TaskStop on its background task, or a TERM to its exact PID: it ends
-  "stopped" on the dev jobs page, and its tests' run on the test Mac stops with it) and act on the
-  review first; run check.sh again on the new head.
+  stop the run at once (TaskStop on its background task, or a TERM to check.sh's exact PID: it
+  ends at once, "stopped" on the dev jobs page, with the whole process group of the part it was
+  running, the tests' run on the test Mac too) and act on the review first; run check.sh again on
+  the new head.
 - **Set a held digest as the branch's last change:** a branch that changes code
   `inputs::regions::RESOLUTION_CODE` or `inputs::elevation::RULE_CODES` covers sets them in its
   last commit, after its last rebase on main, so two branches on that code don't wait on each
   other. The value is printed on any Mac, no test run needed: a build of the inputs crate (`cargo
   check -p inputs`) warns with it, and check.sh's guards part fails naming it.
 - **The PM's hold:** while the main checkout's `.git/hold-runs` exists (the PM writes why in it,
-  and deletes it to end the hold), start no check.sh, remote-tests.sh or measurement run; a stop
-  passes meanwhile.
+  and deletes it to end the hold), start no check.sh, remote-tests.sh or measurement run (check.sh
+  refuses to start, saying why); a stop passes meanwhile.
 - Don't merge, push or publish: the PM does.
 
 ## The work
@@ -153,8 +155,9 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 - **No hand-kept figures:** a step's requirements are measured, enforced where used, or derived from
   the code.
 - **Measure a predicted gain before building it** (#1577): a task whose value is a predicted gain
-  (faster, less load, fewer turns) says "predicted gain" in its text or note, and its note carries
-  `Measure first: <the probe, or the records, that measure it>; dropped below <the figure>`. Its
+  (faster, less load, fewer turns) has a line beginning `Predicted gain:` (the estimate) in its
+  text or note, and its note a line `Measure first: <the probe, or the records, that measure it>;
+  dropped below <the figure>`. Its
   builder measures first, by that cheap probe or the records (the dev job records, the pool's
   history), before writing code, and stops there, reporting the figure, when it is below the line.
   The PM writes the line when filing the task; `tools/dev/board.py batch` refuses a member marked

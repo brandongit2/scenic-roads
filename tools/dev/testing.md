@@ -316,13 +316,18 @@ tree checked before likewise take only a pass naming its commit's tree; passes r
 SubagentStop fires at the end of every turn of a subagent, also one that only waits for a
 background run's notice. report-guard.sh keeps an agent with unchecked commits working, and lets a
 stop pass (#1522, #1576):
-- while a live dev job span's process works in that worktree: a check.sh, a remote-tests.sh or a
-  `devjob.py wrap` run, started by anyone (a file of this Mac's dev jobs' live folder naming a
-  process still running as it started, whose working folder is the worktree or in it; an empty
-  file, one whose pid is gone or started at another time, or another worktree's, doesn't count);
-- while the PM holds runs: the main checkout's `.git/hold-runs` exists, its text saying why;
-- when the agent's last message says what blocks it: `blocked on #N` (or `blocked by`, `waiting
-  on`/`for`, `waits on`/`for` #N), or `blocked on: <what>`.
+- while a check.sh, a remote-tests.sh or another `devjob.py wrap` of its own (no parent span) works
+  in that worktree, started by anyone: its span's working folder, written beside its live file
+  (`~/Library/Logs/scenic/devjobs/where/<span>`: devjob.py's wrap, check.sh's `dj_where`), is the
+  worktree or in it, and its live file names a process still running as it started. A cargo's span
+  (tools/dev/bin/cargo's), a part's, one whose pid is gone or started at another time, or another
+  worktree's, doesn't count;
+- while the PM holds runs: the main checkout's `.git/hold-runs` exists, its text saying why
+  (check.sh refuses to start meanwhile, saying it);
+- when a line of the last paragraph of the agent's last message (Claude Code's
+  `last_assistant_message`, else the transcript's last assistant text since the turn began) begins
+  `blocked on #N` (or `blocked by`, `waiting on`/`for`, `waits on`/`for`), or `blocked on: <what>`
+  (not "nothing" or "none").
 
 The hook can't stop a report
 already delivered (SubagentHandback delivers it before the stop): the gate that holds is

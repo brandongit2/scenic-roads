@@ -42,6 +42,7 @@ print -r -- \"\$*\" >> $tmp/calls
 [[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtnoise ]] && { print -u2 'info: syncing channel updates for 1.98.1-aarch64-apple-darwin'; exit 0 }
 [[ \"\$1 \$2\" == 'fmt --' && -e $tmp/fmtbroken ]] && { print formatted >> docs/a.md; print -r -- \$PWD/docs/a.md; print -u2 'error: this file contains an unclosed delimiter'; exit 1 }
 [[ \$1 == clippy && -e $tmp/hold ]] || exit 0
+sleep 300 & c=\$!; print \$c > $tmp/child; trap 'kill \$c 2>/dev/null' EXIT
 print \$\$ > $tmp/started
 for i in {1..600}; do [[ -e $tmp/go ]] && exit 0; sleep 0.1; done
 exit 1"
@@ -105,38 +106,49 @@ rm new.txt
 run "an uncommitted edit" "uncommitted changes" 'print 3 > docs/a.md'
 g checkout -q docs/a.md
 run "a clean run after" recorded
-# While it runs, its span is live (devjob.zsh's live file: its pid and start time), its process
-# working in the checkout: what report-guard.sh reads (#1522, #1576); none left after.
+# While it runs, its span is live (devjob.zsh's live file: its pid and start time), its working
+# folder the checkout: what report-guard.sh reads (#1522, #1576); none left after.
 dj=$tmp/home/Library/Logs/scenic/devjobs
 running() {
-  local f pid st n=0
-  for f in $dj/live/*(N.); do
-    read -r pid st < $f
-    [[ ${(j: :)${=$(LC_ALL=C TZ=UTC ps -o lstart= -p $pid)}} == $st && \
-       ${${(M)${(f)"$(lsof -a -p $pid -d cwd -Fn)"}:#n*}#n} == ${tmp:A}/r ]] && (( ++n ))
+  local f lp st n=0
+  for f in $dj/where/*(N.); do
+    [[ $(<$f) == ${tmp:A}/r && -e $dj/live/${f:t} ]] || continue
+    read -r lp st < $dj/live/${f:t}
+    [[ $lp == $pid ]] && (( ++n ))
   done
-  (( n )) && ok "its span is live, its process in the checkout" || bad "while it runs: no live span of a process in ${tmp:A}/r: $(cat $dj/live/*(N) 2>&1)"
+  (( n )) && ok "its span is live, its working folder the checkout" || bad "while it runs: no live span of it in ${tmp:A}/r: $(cat $dj/where/*(N) 2>&1)"
 }
 w docs/b.md 1; g add -A; g commit -m running
 djon=1 run "a run, its live span" recorded running
-f=( $dj/live/*(N) )
+f=( $dj/live/*(N) $dj/where/*(N) )
 (( ! ${#f} )) && ok "no live span left by the run" || bad "live spans left: ${f[*]}"
 # (The sampler it started ends once nothing is live: waited for, before the scratch folder goes.)
 zmodload zsh/system
 for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f lk $dj/sampler.lock 2>/dev/null && break; sleep 0.1; done
-# A TERM to check.sh's own pid stops the part it runs (#1580: a run a review made stale, its tests'
-# run on the test Mac with it), not only check.sh.
+# A TERM to check.sh's own pid ends it at once, and the whole process group of the part it runs
+# (#1580: a run a review made stale, its tests' run on the test Mac with it): the stub clippy and the
+# child it started.
 w docs/b.md 2; g add -A; g commit -m stopped
-rm -f $tmp/started $tmp/go; : > $tmp/hold
+rm -f $tmp/started $tmp/go $tmp/child; : > $tmp/hold
 HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh > $tmp/out 2>&1 &
 pid=$!
-for i in {1..600}; do [[ -s $tmp/started ]] && break; sleep 0.1; done
-part=$(<$tmp/started)
-kill -TERM $pid; wait $pid; rc=$?
-for i in {1..50}; do kill -0 $part 2>/dev/null || break; sleep 0.1; done
-if (( rc == 143 )) && [[ -n $part ]] && ! kill -0 $part 2>/dev/null; then ok "a TERM to check.sh stops its running part"
-else bad "a TERM to check.sh: exit $rc, its part (${part:-never started}) $(kill -0 ${part:-0} 2>/dev/null && print 'still running')"; kill ${part:-0} 2>/dev/null; fi
+for i in {1..600}; do [[ -s $tmp/started && -s $tmp/child ]] && break; sleep 0.1; done
+part=$(<$tmp/started) child=$(<$tmp/child)
+kill -TERM $pid
+gone() { local i; for i in {1..50}; do kill -0 $1 2>/dev/null || return 0; sleep 0.1; done; return 1 }
+gone $pid && ok "a TERM ends check.sh within 5 s" || bad "a TERM: check.sh ($pid) still running after 5 s"
+wait $pid; rc=$?
+if (( rc == 143 )) && [[ -n $part && -n $child ]] && gone $part && gone $child; then ok "a TERM to check.sh stops its running part's group"
+else bad "a TERM to check.sh: exit $rc, its part (${part:-never started}) $(kill -0 ${part:-0} 2>/dev/null && print 'still running'), its child (${child:-none}) $(kill -0 ${child:-0} 2>/dev/null && print 'still running')"; kill ${part:-0} ${child:-0} 2>/dev/null; fi
 rm -f $tmp/hold
+# The PM's hold (#1576): nothing run while the main checkout's .git/hold-runs is there.
+print "the M4 is overloaded" > .git/hold-runs
+: > $tmp/calls
+before=$(cat $passed 2>/dev/null | wc -l)
+out=$(HOME=$tmp/home SCENIC_DEVJOB=0 SCENIC_CHECK_LOCAL=1 zsh tools/dev/check.sh 2>&1); rc=$?
+if (( rc == 2 )) && [[ $out == *"the PM holds runs"*"the M4 is overloaded"* && ! -s $tmp/calls && $(cat $passed 2>/dev/null | wc -l) == $before ]]; then ok "the PM's hold: nothing run, saying why"
+else bad "the PM's hold: exit $rc, cargo calls $(wc -l < $tmp/calls): $out"; fi
+rm .git/hold-runs
 
 # The stop at a failed part (#1524): fmt formatting a file, or guards failing, and the parts of
 # minutes (clippy, prod, the tests) don't run, each saying why; the run fails and records nothing.

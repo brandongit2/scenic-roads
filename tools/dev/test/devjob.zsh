@@ -16,10 +16,13 @@ dj_start check $weird task 946 note $weird; root=$REPLY
 [[ -n $root && -e $s/live/$root ]] || fail "dj_start: no id or no live file"
 read -r pid rest < $s/live/$root
 [[ $pid == $$ ]] || fail "live file names $pid, not this shell ($$)"
+dj_where $root
+[[ $(<$s/where/$root) == ${PWD:A} ]] || fail "dj_where: $(cat $s/where/$root 2>&1), not ${PWD:A}"
 SCENIC_DEVJOB_PARENT=$root dj_span part fmt $EPOCHREALTIME $EPOCHREALTIME ok why $weird
 dj_attr $root more yes
 dj_end $root fail exit 1
 [[ ! -e $s/live/$root ]] || fail "dj_end left the live file"
+[[ ! -e $s/where/$root ]] || fail "dj_end left the working folder's file"
 python3 - $s/spool.ndjson*(N) $s/sending-*(N) "$weird" $root <<'PY' || fail "devjob.zsh's events"
 import json, sys
 *files, weird, root = sys.argv[1:]

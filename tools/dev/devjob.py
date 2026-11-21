@@ -16,6 +16,8 @@ network, and nothing is lost while the app is away: what wasn't sent is sent by 
       progress said while it ran is its own, the outer leaving it out: SCENIC_DEVJOB_OUTER). A span's Mac is the one it ran on: the
       run on the test Mac and its compiles, suites and tests are that Mac's (its `ran_on`); the job
       itself is this Mac's, which says the test Mac's name (ran_on) as soon as the run starts there.
+      A wrap of its own (no parent) writes its working folder beside its live file (WHERE), which
+      report-guard.sh reads: a stop passes while one works in the agent's worktree.
   devjob.py sampler      (started by the first live span; one a Mac) every TICK_S: sends the spool,
       reads cargo's timing reports; every SAMPLE_S: the Mac's load, memory and swap, naming the live
       spans, and ends those whose process is gone ("gone"). It exits once no span is live.
@@ -39,6 +41,10 @@ import urllib.request
 DIR = os.environ.get("SCENIC_DEVJOB_DIR") or os.path.expanduser("~/Library/Logs/scenic/devjobs")
 SPOOL = os.path.join(DIR, "spool.ndjson")
 LIVE = os.path.join(DIR, "live")
+# A live span's working folder, by its id, for a run tools/dev/report-guard.sh counts (#1576): a wrap
+# of its own (no parent) and check.sh's run (devjob.zsh dj_where). Beside LIVE, not in its files,
+# which a sampler of older code reads whole.
+WHERE = os.path.join(DIR, "where")
 # The sampler: a tick sends the spool; every SAMPLE_S it samples the Mac and names the live spans
 # (the app shows a running span its Mac hasn't named for a minute as lost: jobs.mjs LOST_S).
 TICK_S = 2
@@ -133,11 +139,22 @@ def live(span_id, pid):
     ensure_sampler()
 
 
-def unlive(span_id):
+def where(span_id):
+    """The span's working folder, this process's (WHERE)."""
     try:
-        os.unlink(os.path.join(LIVE, span_id))
+        os.makedirs(WHERE, exist_ok=True)
+        with open(os.path.join(WHERE, span_id), "w") as f:
+            f.write(os.getcwd() + "\n")
     except OSError:
         pass
+
+
+def unlive(span_id):
+    for d in (LIVE, WHERE):
+        try:
+            os.unlink(os.path.join(d, span_id))
+        except OSError:
+            pass
 
 
 def ensure_sampler():
@@ -516,6 +533,8 @@ def wrap(argv):
     t_start = time.time()
     emit({"op": "start", "id": sid, "parent": parent, "kind": kind, "name": name, "mac": m, "t": round(t_start, 3), "attrs": attrs})
     live(sid, os.getpid())
+    if not parent:
+        where(sid)
     # (A wrap inside this one writes its start and end into SCENIC_DEVJOB_OUTER, this one's mark
     # file: it records the progress lines it passes on, nested under its own suites and runs, and
     # this one leaves out those said while it ran, so a phase is recorded once: check.sh's `part
@@ -743,6 +762,10 @@ def sampler():
                 elif os.path.exists(os.path.join(LIVE, i)):
                     if not only:
                         emit({"op": "end", "id": i, "t": round(time.time(), 3), "status": "gone", "attrs": {"why": f"its process ({pid}) ended without saying how"}})
+                    unlive(i)
+            # (A working folder whose span is gone: its live file ended by an older sampler.)
+            for i in os.listdir(WHERE) if os.path.isdir(WHERE) else []:
+                if not os.path.exists(os.path.join(LIVE, i)):
                     unlive(i)
             ids = alive
             sample(ids)

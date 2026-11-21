@@ -339,6 +339,34 @@ class Wrap(unittest.TestCase):
                 except OSError:
                     time.sleep(0.1)
 
+    def test_a_wrap_of_its_own_says_its_working_folder_while_it_runs_and_a_child_doesnt(self):
+        # (#1576: report-guard.sh reads it; a sampler drops one whose span is gone.)
+        with tempfile.TemporaryDirectory() as d:
+            work = os.path.realpath(os.path.join(d, "wt"))
+            os.makedirs(work)
+            env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="toy")
+            env.pop("SCENIC_DEVJOB", None)
+            env.pop("SCENIC_DEVJOB_PARENT", None)
+            show = f'cat {d}/where/* 2>/dev/null; echo end'
+            wrap = [sys.executable, devjob.__file__, "wrap", "--kind", "tests", "--name", "x", "--", "sh", "-c", show]
+            r = subprocess.run(wrap, env=env, cwd=work, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.stdout, f"{work}\nend\n", r.stderr)
+            r = subprocess.run(wrap, env=dict(env, SCENIC_DEVJOB_PARENT="p-1"), cwd=work, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.stdout, "end\n", "a child names no folder")
+            self.assertEqual(os.listdir(os.path.join(d, "where")), [], "gone with its span")
+            with open(os.path.join(d, "where", "toy-gone"), "w") as f:
+                f.write(work + "\n")
+            # (Once the wraps' sampler has ended: a second one leaves at once.)
+            for _ in range(600):
+                try:
+                    with open(os.path.join(d, "sampler.lock")) as f:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            subprocess.run([sys.executable, devjob.__file__, "sampler"], env=env, timeout=60)
+            self.assertEqual(os.listdir(os.path.join(d, "where")), [], "one with no live span dropped")
+
     def test_a_span_whose_process_is_gone_is_ended_gone(self):
         with tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="toy")

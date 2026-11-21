@@ -75,9 +75,11 @@
 # key, base, test set and what it reused in $(git rev-parse --git-common-dir)/check-passed, which
 # the SubagentStop hook (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read; otherwise it
 # says why it records nothing. Exit 0 only when all passed and the pass is recorded.
-# While it runs, its run's span is live, its process working in the checkout (report-guard.sh lets
-# that worktree's agent stop meanwhile). A TERM stops it and the part it runs (#1580), the tests'
-# run on the test Mac with it: a run a review made stale is stopped so.
+# While it runs, its run's span is live, its working folder the checkout (report-guard.sh lets that
+# worktree's agent stop meanwhile). It runs nothing while the PM holds runs (the main checkout's
+# .git/hold-runs). Each part runs in a process group of its own; a TERM or an INT stops check.sh at
+# once and the whole group of the part it runs (#1580), the tests' run on the test Mac with it: a
+# run a review made stale is stopped so.
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -86,6 +88,12 @@ case $#:${1:-} in
 esac
 root=$(git rev-parse --show-toplevel) || exit 2
 cd $root
+# (The PM's hold, #1576: no run while the main checkout's .git/hold-runs is there.)
+held=$(git rev-parse --path-format=absolute --git-common-dir)/hold-runs
+if [[ -e $held ]]; then
+  print -u2 "check.sh: the PM holds runs ($held): ${$(<$held):-no reason given}. Nothing run: say \"Blocked on: the PM's hold\" and stop."
+  exit 2
+fi
 eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
 path=($root/tools/dev/bin $path)  # (after mise's: its PATH puts rustup's cargo first)
 exec {say}>&2; export SCENIC_CARGO_SAY=/dev/fd/$say  # (the parts' output goes to their logs; a wait comes here too)
@@ -109,10 +117,14 @@ buildenv=( ${(M)${(f)"$(env)"}:#(CARGO_PROFILE_|RUSTFLAGS=|CARGO_BUILD_RUSTFLAGS
 (( ! ${#buildenv} )) || treekey=
 source ${0:A:h}/devjob.zsh
 dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstatus=stopped djwhy=
+dj_where $djrun
 export SCENIC_DEVJOB_PARENT=$djrun
 # (zsh runs no EXIT trap on a signal: a TERM or INT ends it by exit, so the run is ended "stopped".)
 trap '[[ -n ${holdpid:-} ]] && kill $holdpid 2>/dev/null; dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
-trap '[[ -s $logs/part.pid ]] && kill -TERM $(<$logs/part.pid) 2>/dev/null; exit 143' TERM; trap 'exit 130' INT
+# (The part running, its process group's whole, stopped with it, #1580: $logs/part.pid names the
+# group while a part runs. Without, check.sh's exit waited for the part's end.)
+stop_part() { [[ -s $logs/part.pid ]] && kill -TERM -- -$(<$logs/part.pid) 2>/dev/null }
+trap 'stop_part; exit 143' TERM; trap 'stop_part; exit 130' INT; trap 'stop_part; exit 129' HUP
 # (`--no-renames`: a moved file is its old path and its new one, as check-reuse.py reads X; with
 # renames, 6f4's move of agent/settings.rs hid the old path the sweep's test is run by.)
 changed=( ${(f)"$(git diff --no-renames --name-only $base; git ls-files --others --exclude-standard)"} )
@@ -130,22 +142,19 @@ if [[ -n $treekey ]] && same=$(grep -F -- " $treekey" $passed 2>/dev/null | tail
 fi
 has() { local p; for p in $changed; do [[ $p == ${~1} ]] && return 0; done; return 1 }
 typeset -a summary fails  # (fails: the parts that failed)
+ingroup=( python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' )  # (a command run as its own process group)
 part() {  # part [--parse <kinds>] <name> <command...>: runs it, its output to $logs/<name>.log, with its wall and CPU time
   local name rc t parse=; [[ $1 == --parse ]] && { parse=$2; shift 2 }
   name=$1; shift
   print -n -- "$name ... "
-  # (A span of the run: devjob.py wrap reads its output for what --parse names; a function, run
-  # here, gets one of its own.)
-  local -a pre; local fid=
-  if (( $+functions[$1] )); then dj_start part $name; fid=$REPLY
-  else dj_wrap part $name ${parse:+--parse} ${parse:+$parse}; pre=( $reply ); fi
+  # (A span of the run: devjob.py wrap reads its output for what --parse names.)
+  local -a pre
+  dj_wrap part $name ${parse:+--parse} ${parse:+$parse}; pre=( $reply )
   # (zsh's time of the subshell: wall, and user + sys CPU of all it ran on this Mac.)
-  # (The subshell's pid in $logs/part.pid while it runs: the command's own, zsh execing a last
-  # command in place. A TERM to check.sh stops it too, #1580: its exit alone left the part running,
-  # the tests' run on the test Mac with it.)
-  t=$( { TIMEFMT='%E %U %S'; time ( print $sysparams[pid] > $logs/part.pid; [[ -n $fid ]] && export SCENIC_DEVJOB_PARENT=$fid; $pre "$@" > $logs/$name.log 2>&1 ) } 2>&1 ); rc=$?
+  # (The command a process group's leader, #1580, the group's id its pid, the subshell's own, in
+  # $logs/part.pid while it runs: stop_part stops it all, a `zsh -c` part's children too.)
+  t=$( { TIMEFMT='%E %U %S'; time ( print $sysparams[pid] > $logs/part.pid; exec $ingroup $pre "$@" > $logs/$name.log 2>&1 ) } 2>&1 ); rc=$?
   rm -f $logs/part.pid
-  [[ -n $fid ]] && { (( rc )) && dj_end $fid fail exit $rc || dj_end $fid ok }
   t=( ${${=t}%s} 0 0 0 ); t=$(printf '%.0f s, cpu %.0f s' ${t[1]} $(( t[2] + t[3] )))
   if (( rc == 0 )); then summary+="PASS  $name  ($t)"; print "PASS  ($t)"
   else summary+="FAIL  $name  ($t; $logs/$name.log)"; print "FAIL  ($t)"; fails+=$name
@@ -364,16 +373,15 @@ kept=( ${^py}(N) ); gone=( ${py:|kept} ); py=( $kept )
 for d in ${(u)gone:h}; do py+=( $d/*.py(N) ); done
 py=( ${(u)py} )
 if (( ${#py} )); then
-  pycheck() {
-    uvx --quiet --from 'pyflakes==4.0.2' pyflakes $py || return 1
-    local d proj
-    for d in ${(u)py:h}; do
+  # (Its files after the script, the checkout's root first.)
+  stopped python || part python zsh -c '
+    root=$1; shift
+    uvx --quiet --from "pyflakes==4.0.2" pyflakes "$@" || exit 1
+    for d in ${(u)@:h}; do
       [[ -n $(print -l $d/test_*.py(N)) ]] || continue
-      proj=${d%%/*}
-      (cd $d && uv run --quiet --project $root/$proj python -m unittest discover -p 'test_*.py') || return 1
+      (cd $d && uv run --quiet --project $root/${d%%/*} python -m unittest discover -p "test_*.py") || exit 1
     done
-  }
-  stopped python || part python pycheck
+    exit 0' zsh $root $py
 else skip python "no producers/ or dem/ Python changed"; fi
 
 print "\n== check.sh summary (${head0:0:7}) =="
