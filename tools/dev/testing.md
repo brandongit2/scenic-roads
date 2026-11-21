@@ -617,7 +617,10 @@ are its own for the disk rule and the drop below.
   leaves the group as it starts (it's the Mac's, not the run's).
 - The run: its command at the default QoS, its builds below it (#1583: rustc at utility priority,
   `taskpolicy -c utility`, as the pool's jobs, through RUSTC_WRAPPER, `~/scenic-check/.rustc-utility`,
-  which runs the test Mac's sccache; a run on the test Mac itself too), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
+  which runs the test Mac's sccache; the build scripts cargo runs, build.rs programs, not wrapped:
+  at the command's QoS; a run on the test Mac itself too, which before built at the default QoS, so
+  faster alone, about 1 / 0.65 by the spinners below, not measured on a build; the test Mac's agent's
+  loop, the lead's on the mini only, now meets tests at its own QoS), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
   and nextest versions and whether the NAS is mounted. A stopped run is stopped on the test Mac too.
@@ -649,7 +652,12 @@ are its own for the disk rule and the drop below.
   tests above it, so a share past those cores would take theirs. The pool's busy cores are read from `ps` as
   the run starts (the `%cpu` of the Mac's `scenic agent` process and every process under it, a
   decaying average over about a minute; read only), and a check's threads are those cores left over
-  its slots, rounded up, one at least (14 cores, the pool's jobs on 5: 3 test threads a slot).
+  its slots and over the two threads each test takes (RAYON_NUM_THREADS 2), rounded down, one at
+  least (14 cores: 2 test threads a slot; the pool's jobs on 5: 1). That bounds the tests (#1583):
+  every slot's at once, a test's own threads counted, stay within the cores the pool's jobs leave,
+  so they outrank the jobs only there (a share past it would starve the jobs, and the next run would
+  read their CPU as fewer busy cores and take more). A caller's own `NEXTEST_TEST_THREADS` and a
+  capacity file's `threads=` stand outside that bound.
   Lowered, the build folders of the slots above go at the next run, but one a live run holds: a
   slot whose run is gone is freed first, as when a slot is taken. Publish's run (key `publish`, publish.sh's alone: it
   is refused without SCENIC_PUBLISH) has a slot of its own besides, slot 0 with its own build folder,
@@ -679,7 +687,7 @@ are its own for the disk rule and the drop below.
   dev jobs page shows the wait as "the test Mac to publish alone" under publish's run, with the pool's
   cores and the threads taken, and a run's wait behind it as "a test-Mac slot". Each
   run says its slot, the slots and its threads, and where each was set ("on the test Mac … slot 2 of
-  3, 5 test threads …; capacity: slots derived: …; threads derived: …; the pool's jobs keep … cores
+  3, 2 test threads …; capacity: slots derived: …; threads derived: …; the pool's jobs keep … cores
   busy"); the dev jobs page records them on the run (`slots`, `threads`). The capacity holds only for runs from branches with #1539:
   the test Mac's side of the script is sent with each run, so a branch not rebased onto it still
   runs in 3 slots, with nextest's own threads (every core).
@@ -698,7 +706,7 @@ are its own for the disk rule and the drop below.
   CARGO_BUILD_JOBS 5 (cores / slots) instead, 96-128 s alone and 98-236 s beside (median 218). The
   build beside the tests: medians 155, 142 and 122 s; alone, six builds each, the variants alternated, medians 94, 80
   and 84 s. No TIMEOUT in any. So builds go through `low_builds` (above), and CARGO_BUILD_JOBS
-  stays the caller's.
+  stays the caller's. (Those runs took 5 test threads a slot, as the capacity gave then; it gives 2 since, the bound above, not measured.)
 - The result: the test Mac's side ends with a status line (read, not shown); the exit status is the
   command's. Without one (connection lost, no tree, no slot) the run is refused.
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits
@@ -744,7 +752,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **A stand-in child process: `testkit::sh(script, args)`.** It runs in its own process group; the
   script makes `$READY` once set up (`: >"$READY"`), `ready()` waits for that, and dropping it
   (a panic included) kills the whole group and reaps it. No fixed head start, no leaked `sleep`.
-- **A child's start is never inside a short bound (#1157).** At nice 20 on the loaded test Mac a
+- **A child's start is never inside a short bound (#1157).** On the test Mac loaded with three suites and builds (#1157: its runs then at nice 20 utility) a
   `/bin/sh` took 25 s to start, and a call is often several starts (a job's head, `taskpolicy`, its
   shell; a fake `ssh`, the `sh` it runs, its `cat`). So no bound under the watchdog covers a child
   that must start, print, reach a state or end for the test to pass: the test waits on the child's

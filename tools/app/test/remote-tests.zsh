@@ -136,26 +136,35 @@ wait_for() { local i; for i in {1..300}; do [[ -e $1 ]] && return 0; sleep 0.1; 
 hold_two() { mkdir -p $fb/.slots/{2,3}; print -r -- $holdme > $fb/.slots/2/owner; print -r -- $holdme > $fb/.slots/3/owner }
 
 # The capacity (#1539): a slot per 4 cores and per 12 GB, the fewer, at least one; each run's test
-# threads its share of the cores, rounded up; the capacity file's slots and threads, either.
+# threads its share of the cores, two threads a test, rounded down; the capacity file's slots and threads, either.
 cap() { capacity $tmp/capacity $1 $2; print -r -- "$reply[1] $reply[2]" }
 rm -f $tmp/capacity
-[[ $(cap 14 48) == "3 5" && $(cap 10 16) == "1 10" && $(cap 2 4) == "1 2" && $(cap 16 24) == "2 8" ]] \
+[[ $(cap 14 48) == "3 2" && $(cap 10 16) == "1 5" && $(cap 2 4) == "1 1" && $(cap 16 24) == "2 4" ]] \
   && ok "the capacity, from the cores and the memory" || no "the capacity, from the cores and the memory" "$(cap 14 48), $(cap 10 16), $(cap 2 4), $(cap 16 24)"
+# (#1583) Every slot's tests together, two threads a test, within the cores the pool's jobs leave
+# (one test thread a run at least).
+over=
+for c in 4 8 10 12 14 16 24 32; do for p in 0 1 3 5 9; do
+  (( p < c )) || continue
+  capacity $tmp/capacity $c 48 $p >/dev/null
+  (( reply[1] * reply[2] * 2 <= c - p || reply[2] == 1 )) || over+=" $c cores less $p: $reply[1] x $reply[2] x 2;"
+done; done
+[[ -z $over ]] && ok "the capacity: every slot's tests within the cores the pool's jobs leave" || no "the capacity: every slot's tests within the cores the pool's jobs leave" "$over"
 print 'slots=2' > $tmp/capacity; a=$(cap 14 48)
 print -n 'threads=3' > $tmp/capacity; b=$(cap 14 48)
-[[ $a == "2 7" && $b == "3 3" ]] && ok "the capacity, as its file sets it, a last line without its newline too" || no "the capacity, as its file sets it, a last line without its newline too" "$a, $b"
+[[ $a == "2 3" && $b == "3 3" ]] && ok "the capacity, as its file sets it, a last line without its newline too" || no "the capacity, as its file sets it, a last line without its newline too" "$a, $b"
 print -r -- $'  slots = 2  # two runs\r\n# a comment\n\n threads=4\r' > $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn
 [[ "$reply[1] $reply[2]" == "2 4" && ! -s $tmp/warn ]] && ok "the capacity file: spaces, CRs and comments" || no "the capacity file: spaces, CRs and comments" "$reply[1] $reply[2]: $(<$tmp/warn)"
 print -r -- $'slots=0\nthreads=x\njobs=2\nslots' > $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn
 w=$(<$tmp/warn)
-[[ "$reply[1] $reply[2]" == "3 5" && $w == *"line 1: slots=0"* && $w == *"line 2: threads=x"* && $w == *"line 3: jobs=2"*unknown* && $w == *"line 4: slots"* && $(wc -l < $tmp/warn) -eq 4 ]] \
+[[ "$reply[1] $reply[2]" == "3 2" && $w == *"line 1: slots=0"* && $w == *"line 2: threads=x"* && $w == *"line 3: jobs=2"*unknown* && $w == *"line 4: slots"* && $(wc -l < $tmp/warn) -eq 4 ]] \
   && ok "the capacity file: each line not read says so, by its value" || no "the capacity file: each line not read says so, by its value" "$reply[1] $reply[2]: $w"
 print -r -- $'slots=1000\nthreads=0005' > $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn
 w=$(<$tmp/warn)
-[[ "$reply[1] $reply[2]" == "3 5" && $w == *"slots=1000 isn't a whole number from 1 to 999"* && $w == *"threads=0005 isn't"* ]] \
+[[ "$reply[1] $reply[2]" == "3 2" && $w == *"slots=1000 isn't a whole number from 1 to 999"* && $w == *"threads=0005 isn't"* ]] \
   && ok "the capacity file: a value of more than 3 digits not read" || no "the capacity file: a value of more than 3 digits not read" "$reply[1] $reply[2]: $w"
 print -r -- $'slots=2\nthreads=4\nslots=1' > $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn
@@ -166,13 +175,13 @@ rm -f $tmp/capacity; mkdir $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn; w=$(<$tmp/warn); rmdir $tmp/capacity
 print 'slots=2' > $tmp/capacity; chmod 000 $tmp/capacity
 capacity $tmp/capacity 14 48 > $tmp/warn; w2=$(<$tmp/warn); chmod 644 $tmp/capacity
-[[ "$reply[1] $reply[2]" == "3 5" && $w == *"is a folder or can't be read"* && $w2 == *"is a folder or can't be read"* ]] \
+[[ "$reply[1] $reply[2]" == "3 2" && $w == *"is a folder or can't be read"* && $w2 == *"is a folder or can't be read"* ]] \
   && ok "the capacity file a folder, or unreadable: said, the capacity derived" || no "the capacity file a folder, or unreadable: said, the capacity derived" "$reply[1] $reply[2]: $w / $w2"
 rm -f $tmp/warn
 print 'threads=3' > $tmp/capacity; capacity $tmp/capacity 14 48
 [[ $reply[3] == "slots derived: 14 cores / 4, 48 GB / 12; threads set in $tmp/capacity" ]] && ok "the capacity: the slots' and the threads' sources, each" || no "the capacity: the slots' and the threads' sources, each" "$reply[3]"
 print 'slots=2' > $tmp/capacity; capacity $tmp/capacity 14 48
-[[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
+[[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots / 2 threads a test" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
 
 # Ended as a run ends, with a test's server left: it goes first, then the slot.
 # (publish_wait 1 min: a publish run waiting for slots never freed ends its wait within the test.)
@@ -182,11 +191,14 @@ left=$(<$tmp/left)
 [[ $(<$tmp/where) == *"/.build/1/src" && $out == *"@@remote-tests-status 0"* ]] && ok "a run in its slot's folder" || no "a run in its slot's folder" "$(<$tmp/where): $out"
 ! kill -0 $left 2>/dev/null && [[ ! -e $fb/.slots/1 ]] && ok "what a run left goes, then its slot" || no "what a run left goes, then its slot" "$left, $(ls $fb/.slots)"
 
-# Its builds below its tests (#1583): rustc through the wrapper, clamped to utility, as cargo runs it.
+# Its builds below its tests (#1583): rustc through the wrapper, clamped to utility, then sccache,
+# as cargo runs it. (sccache a stand-in printing what it was given: a real one would start the
+# shared server, for this folder's cache, and outlive it.)
 run_setup e0
-out=$(run_remote e0 "print -r -- \$RUSTC_WRAPPER > $tmp/wrap; \$RUSTC_WRAPPER rustc -vV > $tmp/vv 2>&1")
+print -r -- '#!/bin/sh'$'\n''echo "sccache: $*"' > $tmp/sccache; chmod +x $tmp/sccache
+out=$(SCENIC_TESTS_SCCACHE=$tmp/sccache run_remote e0 "print -r -- \$RUSTC_WRAPPER > $tmp/wrap; \$RUSTC_WRAPPER rustc -vV > $tmp/vv 2>&1")
 w=$(<$tmp/wrap)
-[[ $w == $fb/.rustc-utility && -x $w && $(<$w) == *'exec /usr/sbin/taskpolicy -c utility '*'"$@"' && $(<$tmp/vv) == *$'\n'release:* && $out == *"@@remote-tests-status 0"* ]] \
+[[ $w == $fb/.rustc-utility && -x $w && $(<$w) == "#!/bin/sh"$'\n'"exec /usr/sbin/taskpolicy -c utility $tmp/sccache \"\$@\"" && $(<$tmp/vv) == "sccache: rustc -vV" && $out == *"@@remote-tests-status 0"* ]] \
   && ok "a run's rustc through its utility wrapper" || no "a run's rustc through its utility wrapper" "$w: $(cat $w $tmp/vv 2>&1): $out"
 
 main_of() { local o=$(<$fb/.slots/1/owner); print -r -- ${o%% *} }  # (the run itself, the group's leader: the owner its slot names)
@@ -240,7 +252,7 @@ out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_T
 [[ $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) && $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
   && ok "publish's run: its own slot, every core as it builds" || no "publish's run: its own slot, every core as it builds" "$(<$tmp/pub): $out"
 out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS \$RAYON_NUM_THREADS > $tmp/chk")
-n=$(( ($(sysctl -n hw.ncpu) + 2) / 3 ))
+n=$(( $(sysctl -n hw.ncpu) / 6 )); (( n < 1 )) && n=1
 [[ $(<$tmp/chk) == "$n 2" && $out == *" of 3, $n test threads"*"2 threads a test"* ]] && ok "a check's run: its share of the cores, a test's own threads its share of those" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
 
 # The pool's jobs (#1563): the CPU of the agent's process and every process under it, nothing else;
@@ -264,7 +276,7 @@ print -r -- "91014     1   0.0 /bin/sh -c s=\$1; shift; \"\$@\"
 [[ $(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy) == "7 6.5 6" ]] && ok "the pool's jobs: one left by an agent's restart too" || no "the pool's jobs: one left by an agent's restart too" "$(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy)"
 [[ $(SCENIC_TESTS_PS=$tmp/ps0 pool_busy) == "0 0.0 0" ]] && ok "the pool's jobs: no agent, none" || no "the pool's jobs: no agent, none" "$(SCENIC_TESTS_PS=$tmp/ps0 pool_busy)"
 rm -f $tmp/capacity; capacity $tmp/capacity 14 48 5
-[[ "$reply[1] $reply[2]" == "3 3" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots" ]] \
+[[ "$reply[1] $reply[2]" == "3 1" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots / 2 threads a test" ]] \
   && ok "the capacity: a check's share of what the pool leaves" || no "the capacity: a check's share of what the pool leaves" "$reply"
 capacity $tmp/capacity 14 48 20
 [[ $reply[2] == 1 ]] && ok "the capacity: a test thread at least" || no "the capacity: a test thread at least" "$reply[2]"

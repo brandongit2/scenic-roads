@@ -207,8 +207,12 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # each runs, so together they stay within its cores (20 Nov: three runs of 14 threads each, their
 # tests' own threads and builds beside, put the M4's load at 108-229 on 14 cores, and tests of
 # 14-17 s alone timed out at 3 min). Derived from its cores and memory: a slot per 4 cores and per
-# 12 GB, the fewer (the M4, 14 cores and 48 GB: 3), each run's test threads its share of the cores,
-# rounded up (5). Publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH in its command)
+# 12 GB, the fewer (the M4, 14 cores and 48 GB: 3), each run's test threads its share of the cores
+# the pool's jobs leave, two threads a test (RAYON_NUM_THREADS, share_out), rounded down, one at
+# least (the M4 with no pool: 14 / 3 / 2, 2). So every slot's tests at once stay within those cores
+# (#1583: the tests, at the default QoS, outrank the pool's jobs only within that share; read from
+# the jobs' own CPU, which a share past it would starve, reading fewer busy cores at the next run).
+# Publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH in its command)
 # has its own slot besides (slot 0, its own build folder: it never waits behind a check) and every
 # core: it comes first, and while it runs the test Mac takes more than its cores. Set otherwise by
 # ~/scenic-check/capacity on the test Mac, lines `slots=<n>` and `threads=<n>` (either, each a whole
@@ -251,8 +255,8 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
   fi
   if [[ -z $threads ]]; then
     local free=$(( cores - pool < 1 ? 1 : cores - pool ))
-    threads=$(( (free + slots - 1) / slots ))
-    from_t="derived: $cores cores"; (( pool )) && from_t+=" less $pool the pool's jobs keep busy"; from_t+=" / $slots slots"
+    threads=$(( free / (2 * slots) )); (( threads < 1 )) && threads=1
+    from_t="derived: $cores cores"; (( pool )) && from_t+=" less $pool the pool's jobs keep busy"; from_t+=" / $slots slots / 2 threads a test"
   fi
   reply=($slots $threads "slots $from_s; threads $from_t" "$pthreads" $pwait $measures)
 }
@@ -354,12 +358,11 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
   else
     t=$reply[2]; how+="; the pool's jobs keep ${p[2]} cores busy"
   fi
-  # (A test's own threads, its share of the run's: RAYON_NUM_THREADS, read by rayon's pools and the
-  # tests' own threads, pipeline's case_threads; two at least, so a test's parallel code runs
-  # parallel, as the code it tests does: on the M4 every run's share comes to 2.)
-  local each=$(( ($2 == 0 ? $4 - ${p[1]} : ($4 - ${p[1]}) / $3) / t )); (( each < 2 )) && each=2
-  export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=$each
-  REPLY=$t; reply=("capacity: $how; $each threads a test")
+  # (A test's own threads: RAYON_NUM_THREADS, read by rayon's pools and the tests' own threads,
+  # pipeline's case_threads; two, so a test's parallel code runs parallel, as the code it tests
+  # does, and a check's tests count two threads each in its share: capacity.)
+  export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=2
+  REPLY=$t; reply=("capacity: $how; 2 threads a test")
 }
 
 # Builds below tests (#1583): a run's command runs at the default QoS and its rustc at utility
@@ -369,19 +372,22 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
 # spinners a side for 15 s) nice 0 against nice 20 split the cores evenly at one QoS, utility or
 # default, while default against utility went 27 to 1, and utility alone did 0.65 of default's work;
 # a lower clamp (background, or DARWIN_BG) left a build alone 2-5 % of utility's. The pool's jobs run
-# at utility (agentcore's jobs.rs): they share the cores with a build and give them to tests (whose
-# threads are those cores the jobs leave: share_out). Through the test Mac's sccache when it has one
-# (third-party crates for an emptied folder; those it compiles in its server, at the QoS that server
-# started with, as the first build to need one ran).
+# at utility (agentcore's jobs.rs): they share the cores with a build and give them to tests, whose
+# threads, every slot's together, are within the cores the jobs leave (capacity). Through the test
+# Mac's sccache when it has one (third-party crates for an emptied folder; those it compiles in its
+# server, at the QoS that server started with, as the first build to need one ran). Not wrapped: the
+# build scripts cargo runs (build.rs programs, CMake's GEOS among them), at the command's QoS. A run
+# on the test Mac itself builds so too: before, it built at the default QoS, so alone faster (about
+# 1 / 0.65 by the spinners), but above every other slot's tests.
 low_builds() {  # <wrapper file>: RUSTC_WRAPPER exported naming it
-  local sc= w
-  if [[ -x /opt/homebrew/bin/sccache ]]; then
-    sc="/opt/homebrew/bin/sccache "
+  # (SCENIC_TESTS_SCCACHE names a stand-in for sccache: this script's tests', which start no server.)
+  local sc=${SCENIC_TESTS_SCCACHE:-/opt/homebrew/bin/sccache} w
+  if [[ -x $sc ]]; then
     export SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
-  fi
-  w="#!/bin/sh"$'\n'"exec /usr/sbin/taskpolicy -c utility $sc\"\$@\""
+  else sc=; fi
+  w="#!/bin/sh"$'\n'"exec /usr/sbin/taskpolicy -c utility ${sc:+$sc }\"\$@\""
   if [[ $(cat $1 2>/dev/null) != "$w" ]]; then
-    print -r -- "$w" > $1.$$ && chmod +x $1.$$ && mv -f $1.$$ $1 || return 1
+    { print -r -- "$w" > $1.$$ && chmod +x $1.$$ && mv -f $1.$$ $1 } || { rm -f $1.$$; return 1 }
   fi
   export RUSTC_WRAPPER=$1
 }
@@ -816,7 +822,7 @@ local_main() {  # <key> <source dir> <command>
   local v envs=
   for v in RUST_LOG RUST_BACKTRACE RUST_TEST_THREADS RUST_MIN_STACK CARGO_TERM_COLOR CARGO_INCREMENTAL \
            CARGO_BUILD_JOBS ${(M)${(k)parameters}:#(CARGO_PROFILE_|NEXTEST_|SCENIC_)*}; do
-    [[ $v == SCENIC_(CHECK_LOCAL|TESTS_LOCAL|TEST_HOST|TESTS_TRACE|DEVJOB*) ]] && continue
+    [[ $v == SCENIC_(CHECK_LOCAL|TESTS_LOCAL|TEST_HOST|TESTS_TRACE|TESTS_SCCACHE|DEVJOB*) ]] && continue
     [[ ${(Pt)v:-} == *export* ]] && envs+="export $v=${(q)${(P)v}}; "
   done
   # (Its own connection, not the shared ControlMaster one: its sshd ends with it, which the
