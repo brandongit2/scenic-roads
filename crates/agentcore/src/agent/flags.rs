@@ -667,7 +667,7 @@ fn threads(r: &Run) -> String {
 /// and the jobs that failed since `since` (unix s), every Mac's.
 pub fn look(st: &Status, alert: Option<&str>, since: u64, now: u64) -> Vec<String> {
     let mut out: Vec<String> = st.flags.iter().map(Flag::line).collect();
-    let touch = if st.out_of_touch_s > 0 { st.out_of_touch_s } else { crate::pool::beat::OUT_OF_TOUCH_S };
+    let touch = st.out_of_touch_s;
     if let Some(a) = alert {
         out.push(format!("warning: {a}"));
     }

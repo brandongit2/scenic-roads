@@ -1081,8 +1081,8 @@ pub struct Status {
     pub hold: Option<jobrt::control::HoldView>,
     /// This Mac's state in a word and a line (`Status::say`, task #846): what the menu bar and the
     /// build page show for it, out of touch aside (theirs to tell, by `out_of_touch_s`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verdict: Option<Verdict>,
+    #[serde(default)]
+    pub verdict: Verdict,
     /// The lead's: the build in a line (`Status::build_said`), what its menu bar shows and its
     /// members' are told (`held::LeadLine::said`). Said again at each beat (crate::agent::beat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1313,7 +1313,7 @@ impl Status {
         self.held = state.held.clone();
         self.hold = jobrt::control::hold_view(asked, state, resuming, &finishing);
         self.out_of_touch_s = crate::pool::beat::OUT_OF_TOUCH_S;
-        self.verdict = Some(self.verdict_of());
+        self.verdict = self.verdict_of();
     }
 
     /// Its state in a word and a line (`Verdict`).
@@ -1368,7 +1368,7 @@ impl Status {
     /// `held::LeadLine`): its own verdict (`say` first), but while it builds nothing and the build
     /// isn't paused, a member in touch with a job running says the build is building.
     pub fn build_said(&self, now: u64) -> Verdict {
-        let own = self.verdict.clone().unwrap_or_else(|| self.verdict_of());
+        let own = self.verdict.clone();
         if own.state == "building" || self.pause.is_some() {
             return own;
         }
@@ -7656,8 +7656,8 @@ impl Agent {
 
     /// The brief slot `k`'s job opens from (buildstore::out::BRIEF_ENV), a job of a pool's lease: the
     /// lead's as of now, in this agent's folder (`BRIEF_FILE`, written again only when it's another);
-    /// None, the job reads the NAS's (the lead's app serves none, or none saved yet: `Fresh::Nas`; not
-    /// a pool's job). An error: the lead didn't answer (`Fresh::Away`), or the file can't be written.
+    /// None, the job reads the NAS's (no lead known, or none saved yet: `Fresh::Nas`; not a pool's
+    /// job). An error: the lead didn't answer (`Fresh::Away`), or the file can't be written.
     fn brief_for_job(&mut self, k: usize) -> std::result::Result<Option<PathBuf>, String> {
         if !matches!(self.slots[k].lease, Some(Held::Pooled { .. })) {
             return Ok(None);
@@ -20959,7 +20959,7 @@ mod membership_tests {
             },
             ..Default::default()
         };
-        b.heard(hb, Vec::new(), Some(serde_json::to_value(st).unwrap()), now_s());
+        b.heard(hb, Some(serde_json::to_value(st).unwrap()), now_s());
     }
 
     #[test]
@@ -22073,7 +22073,7 @@ mod membership_tests {
         let heard = now_s() - 290;
         {
             let mut s = c.shared.lock().unwrap();
-            s.keep.heard("m1", Vec::new(), heard);
+            s.keep.heard("m1", heard);
             let (now, unix) = (s.now(), now_s());
             let work =
                 crate::coord::lease::Work::Job { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] };

@@ -461,19 +461,10 @@ fn capacity_line_mem(c: &agentcore::coord::Capacity) -> String {
 
 /// `capacity_line_mem` and the rest of a Mac's capacity in a line.
 fn capacity_line(c: &agentcore::coord::Capacity) -> String {
-    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
         capacity_line_mem(c),
         format!("{} of {} cores free", c.cores_free, c.cores),
-        if c.free_mb > 0 {
-            format!("disk {}", agentcore::coord::disk_words(c, c.disk_mb))
-        } else {
-            format!(
-                "disk {} free{}",
-                gb(c.disk_mb),
-                if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }
-            )
-        },
+        format!("disk {}", agentcore::coord::disk_words(c, c.disk_mb)),
         match (c.ac, c.battery) {
             (true, _) => "on power".to_string(),
             (false, Some(b)) => format!("on battery ({b} %)"),
@@ -1841,9 +1832,15 @@ mod tests {
     /// none.
     #[test]
     fn the_capacity_line_shows_the_disk_reserved() {
-        let c = agentcore::coord::Capacity { disk_mb: 12 << 10, reserved_mb: 8 << 10, ..Default::default() };
-        assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
-        let c = agentcore::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
+        let c = agentcore::coord::Capacity {
+            free_mb: 20 << 10,
+            disk_mb: 12 << 10,
+            reserved_mb: 8 << 10,
+            ..Default::default()
+        };
+        let l = capacity_line(&c);
+        assert!(l.contains("disk 20 GB free · 12 GB for jobs (8 GB reserved by its jobs)"), "{l}");
+        let c = agentcore::coord::Capacity { free_mb: 12 << 10, disk_mb: 12 << 10, ..Default::default() };
         assert!(!capacity_line(&c).contains("reserved"));
     }
 

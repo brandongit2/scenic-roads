@@ -2115,14 +2115,14 @@ mod tests {
             pool: Beat { member: m.into(), host: format!("{m}-host"), beat: now, ..Default::default() },
             ..Default::default()
         };
-        s.http_beats().heard(hb(PH), Vec::new(), None, now);
+        s.http_beats().heard(hb(PH), None, now);
         let t0 = s.clock.now();
         s.take_members(t0);
         assert!(s.members().contains(PH), "heard: known");
         s.post(PH, retry("6/1/2"));
         assert!(s.mail.sent.contains_key(PH));
         // (Silent for `beats::FORGET_S`: missed from then, forgotten after `FORGET_AFTER`.)
-        s.http_beats().heard(hb(PH), Vec::new(), None, now.saturating_sub(crate::coord::beats::FORGET_S));
+        s.http_beats().heard(hb(PH), None, now.saturating_sub(crate::coord::beats::FORGET_S));
         s.take_members(t0);
         assert!(s.members().contains(PH));
         s.take_members(t0 + FORGET_AFTER);
@@ -2144,7 +2144,7 @@ mod tests {
         assert!(!s.members().contains(PH));
         // (Its beat heard again: known.)
         let now = s.now();
-        s.http_beats().heard(hb(PH), Vec::new(), None, now);
+        s.http_beats().heard(hb(PH), None, now);
         s.take_members(t0 + FORGET_AFTER * 2);
         assert!(s.members().contains(PH));
         let gone: BTreeSet<String> =
@@ -2306,7 +2306,6 @@ mod tests {
         fn beat(&mut self) -> crate::coord::held::Answer {
             let b = crate::coord::held::Beat {
                 member: "b-host".into(),
-                speaks: crate::agent::beat::speaks(),
                 heartbeat: self.b.http_beats().own(),
                 handoffs: self.b.http_beats().handoff_keys(),
                 ..Default::default()
@@ -2437,7 +2436,6 @@ mod tests {
         let beat = |b: &Side| {
             let w = crate::coord::held::Beat {
                 member: "b-host".into(),
-                speaks: vec![crate::coord::beats::SPEAKS.into()],
                 heartbeat: b.http_beats().own(),
                 ..Default::default()
             };

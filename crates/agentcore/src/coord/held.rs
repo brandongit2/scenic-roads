@@ -33,14 +33,12 @@ pub const AWAY_RELEASE_S: u64 = 12 * 3600;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Beat {
     pub member: String,
-    #[serde(default)]
-    pub speaks: Vec<String>,
     /// The leases of the lead it holds.
     #[serde(default)]
     pub held: BTreeSet<u64>,
     /// How old its list `held` is (s): made by its agent's loop, posted by its beat's own thread
-    /// while the loop may be stuck; no lease granted since is released for leaving it out. Left
-    /// out by apps before it (their list as of the beat).
+    /// while the loop may be stuck; no lease granted since is released for leaving it out. 0 (left
+    /// out): a list as of the beat.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub held_age_s: u64,
     /// Its pool heartbeat (crate::coord::beats).
@@ -55,8 +53,8 @@ pub struct Beat {
     pub handoffs: Vec<String>,
     /// Its Mac's capacity now (crate::coord::Capacity, as its asks carry it): with the threads its
     /// running jobs run on (`Capacity::threads`, as its agent controls them: docs/pool.md §7.1,
-    /// Threads controlled live), which the lead counts them for. Left out by apps before it; an
-    /// older lead reads past it.
+    /// Threads controlled live), which the lead counts them for. None: not measured yet (its agent
+    /// before its first capacity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<super::Capacity>,
     /// Its resume progress whole (crate::coord::budgets): the jobs whose progress is on its Mac's
@@ -64,15 +62,15 @@ pub struct Beat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::agent::resume::Progress>,
     /// Where its list stands among its agent's requests (`Sent`, taken as the list was made): it
-    /// releases no lease whose ask was sent after it. Left out by apps before it.
+    /// releases no lease whose ask was sent after it. None: no ask's place weighed, the grace alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
     /// Its jobs' spans and logs the lead lacks (crate::coord::jobspans), to a lead saying it takes
-    /// them (`beats::SPANS`). Left out by apps before it.
+    /// them (`beats::SPANS`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<super::jobspans::Chunk>,
     /// Its notes not yet taken (crate::coord::notes: the history only it sees), to a lead saying
-    /// it takes them (`beats::NOTES`). Left out by apps before it.
+    /// it takes them (`beats::NOTES`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<super::notes::Notes>,
 }
@@ -244,7 +242,7 @@ pub(super) fn wall(s: &Shared) -> u64 {
 /// `b` heard now: its member's word kept, its leases confirmed or released; the answer.
 pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     let unix = wall(s);
-    s.keep.heard(&b.member, b.speaks.clone(), unix);
+    s.keep.heard(&b.member, unix);
     refresh(s);
     let epoch = s.keep.store().map_or(0, |st| st.epoch());
     // (Its heartbeat and status, in memory: crate::coord::beats; none before the pool's side is
@@ -254,7 +252,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         if let Some(h) = b.heartbeat.clone() {
             let id = h.pool.member.clone();
             s.keep.beat(&id, &h, unix);
-            beats.heard(h, b.speaks.clone(), b.status.clone(), unix);
+            beats.heard(h, b.status.clone(), unix);
             a.members = beats.members(unix, &id);
             a.hold = s.asks.holds.get(&id).cloned();
             if let Some(h) = s.handoffs.as_ref() {
@@ -264,11 +262,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
                 a.progress_released = super::budgets::heard(s, p);
             }
         }
-        // (Its words: `ASKS` and `BUDGETS` still said for the app before, which falls back to the
-        // NAS without them.)
-        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS, super::beats::BUDGETS]
-            .map(str::to_string)
-            .to_vec();
+        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS].map(str::to_string).to_vec();
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
     }

@@ -1645,9 +1645,8 @@ the id with the clicked point. A reader takes version 8 only.
     (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, job?
     (the run it's held again for, below, Job ids), progress, …}`), `cost/<key>` (`{peak_mb, secs, worker,
     job?, v, sizes}`: `job` the run that measured it), `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
-    files below held them; `member/<host>`, `{speaks: [<word>], at}`, a member as its last beat
-    said (the words its app speaks, `agentcore::coord::beats`, and when heard: its jobs' leases
-    held by its word while heard, `agentcore::coord::held`); `beat/<member>` (its last heartbeat and when heard,
+    files below held them; `member/<host>`, `{at}`, when a member's beat was last heard (its jobs'
+    leases held by its word while heard, `agentcore::coord::held`); `beat/<member>` (its last heartbeat and when heard,
     `kept::Beat`); `inbox/<member>` (its mail not yet read); `hold/<member>` and `settings` (the
     owner's asks, `agentcore::coord::asks`); `handoff/<key>` (a hand-off taken, until a saved
     snapshot names it); `progress/<member>`, `answers-lease` and `budget-hold`

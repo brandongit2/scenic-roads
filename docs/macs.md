@@ -162,8 +162,7 @@ as it starts, from the declared lead, and builds that role's parts (docs/agent-p
   left from a part this Mac had before is the staler), and on a member the lead's line, which the
   beat's answer carries (`held::Answer::lead`, `LeadLine`: `host`, `app`, `said`, the build in a
   line, `pause` and `flags`) and the member's beat poster keeps in `agent/lead-view.json` at each
-  answer, with when the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer
-  with no line; written outside the registry's lock and not synced: a slow disk never holds up the
+  answer, with when the lead answered (`beats::LeadView`; written outside the registry's lock and not synced: a slow disk never holds up the
   beats, and a line lost to a crash is said again at the next answer). The build in a line is the
   lead's agent's (`Status::build_said`, handed its coordinator each loop, `Coordinator::set_said`,
   and kept in its own status as `build`): its own verdict, or, while it builds nothing and the

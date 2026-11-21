@@ -107,8 +107,8 @@ pub trait LeaseCalls {
     ) -> Result<(bool, Option<jobrt::control::Pause>, Option<jobrt::control::Cancel>)>;
 
     /// The member's beat listing the leases it holds (crate::coord::held, docs/coordination.md
-    /// §6.1); None from a lead that doesn't take it (an older app's: 404).
-    fn pool_beat(&self, b: &super::held::Beat) -> Result<Option<super::held::Answer>>;
+    /// §6.1).
+    fn pool_beat(&self, b: &super::held::Beat) -> Result<super::held::Answer>;
 
     /// Passes on the owner's cancel (jobrt::control::Cancel) to the lead: the leases it told to stop,
     /// as (lease, worker, what).
@@ -196,10 +196,10 @@ impl LeaseCalls for Client {
         ))
     }
 
-    fn pool_beat(&self, b: &super::held::Beat) -> Result<Option<super::held::Answer>> {
+    fn pool_beat(&self, b: &super::held::Beat) -> Result<super::held::Answer> {
         match self.post_json("/pool/beat", &serde_json::to_value(b)?)? {
-            (404, _) => Ok(None),
-            (_, v) => Ok(Some(serde_json::from_value(v)?)),
+            (200, v) => Ok(serde_json::from_value(v)?),
+            (c, v) => bail!("the coordinator answered {c} to /pool/beat: {v}"),
         }
     }
 

@@ -111,7 +111,6 @@ impl ToLead {
         });
         held::Beat {
             member: self.member.clone(),
-            speaks: speaks(),
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,
@@ -197,8 +196,7 @@ impl ToLead {
         }
     }
 
-    /// Posts `b` to the lead; its answer to the registry (an older lead's 404 said so). Whether it
-    /// failed.
+    /// Posts `b` to the lead; its answer to the registry. Whether it failed.
     fn post(&self, b: &crate::coord::held::Beat, failing: bool) -> bool {
         let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
         self.post_on(&c, b, failing, self.listed.elapsed(), now_s())
@@ -215,11 +213,7 @@ impl ToLead {
         now: u64,
     ) -> bool {
         // (Its list's age as it goes: the loop's, stuck maybe, may lack a lease granted since,
-        // which the lead then keeps. A lead that doesn't say it takes the beat may not read the
-        // age: a list older than its grace isn't sent it, the lease held as away meanwhile.)
-        if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
-            return failing;
-        }
+        // which the lead then keeps.)
         // (Its jobs' spans the lead lacks, to a lead that takes them: crate::agent::spans. Never
         // on the beat after one that failed, and less of them after each that failed carrying
         // them: a slow link never keeps the leases' beat from getting through.)
@@ -234,7 +228,7 @@ impl ToLead {
         };
         let carried = !b.spans.is_empty();
         match c.pool_beat(&b) {
-            Ok(Some(a)) => {
+            Ok(a) => {
                 if let Some(s) = &ship {
                     s.acked(&a.spans);
                     s.beat_went(true);
@@ -242,10 +236,6 @@ impl ToLead {
                 self.beats.answered(&a, now);
                 self.send_asks(c);
                 self.send_handoffs(c, &a.lacks);
-                false
-            }
-            Ok(None) => {
-                self.beats.lead_older(now);
                 false
             }
             Err(e) => {
@@ -259,12 +249,6 @@ impl ToLead {
             }
         }
     }
-}
-
-/// What a member's beat says it speaks (`held::Beat::speaks`).
-pub(crate) fn speaks() -> Vec<String> {
-    use crate::coord::beats;
-    [beats::SPEAKS, beats::VIEW, beats::ASKS, beats::BUDGETS, beats::BY_LEAD].map(str::to_string).to_vec()
 }
 
 type LeadBox = Arc<Snap<Option<(ToLead, crate::coord::held::Beat)>>>;
@@ -589,11 +573,11 @@ mod tests {
         let mut v = view(lead.clone());
         v.status.build = Some(v.status.build_said(v.status.beat));
         b.publish(v);
-        assert_eq!(said(&lead).build, said(&lead).verdict);
+        assert_eq!(said(&lead).build, Some(said(&lead).verdict));
         hold.set(HoldState { held: Some(Hold::new("a test")), at: 5 });
         b.changed();
         let s = said(&lead);
-        assert!(s.build.as_ref().is_some_and(|b| b.state == "paused") && s.build == s.verdict, "{s:?}");
+        assert!(s.build.as_ref().is_some_and(|b| b.state == "paused") && s.build.as_ref() == Some(&s.verdict), "{s:?}");
         let mut m = Handle::new(d.path().into(), hold);
         m.publish(view(member.clone()));
         assert!(said(&member).build.is_none());
@@ -745,8 +729,8 @@ mod tests {
     /// Task #1160: a member's notes (crate::coord::notes) reach the lead's history with its beats,
     /// once the lead has said it takes them (none to a lead before it); a beat whose answer was lost
     /// carries them again and they're taken once, by a restarted lead too (what it took of the
-    /// member in its history's file); the answer drops them on the member. A member before them sends a beat
-    /// without notes, answered as before.
+    /// member in its history's file); the answer drops them on the member. A beat carrying none is
+    /// answered with nothing noted.
     #[test]
     fn a_member_s_notes_reach_the_lead_s_history_once() {
         let d = tempfile::tempdir().unwrap();
@@ -787,12 +771,12 @@ mod tests {
         c.set_beats(Some(Arc::new(Beats::default())));
         let again =
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), X);
-        let a = again.pool_beat(&lost).unwrap().unwrap();
+        let a = again.pool_beat(&lost).unwrap();
         assert_eq!(noted(&c), ["on battery (40%)", "on mains power"], "loaded from its file, the old notes not again");
         assert_eq!(a.noted.map(|n| n.n), Some(2), "what it took of this member, from its history");
-        // (A member before them: its beat has no notes, answered as before.)
-        let old = serde_json::json!({ "member": Y, "speaks": ["held-leases", "beat"], "held": [] });
-        let (code, v) = again.post_json("/pool/beat", &old).unwrap();
+        // (A beat carrying no notes: answered, nothing noted.)
+        let none = serde_json::json!({ "member": Y, "held": [] });
+        let (code, v) = again.post_json("/pool/beat", &none).unwrap();
         assert_eq!(code, 200);
         assert!(v.get("noted").is_none() && v["speaks"].as_array().unwrap().iter().any(|w| w == "notes"));
         c.stop();

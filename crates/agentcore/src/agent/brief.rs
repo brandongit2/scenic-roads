@@ -14,8 +14,8 @@
 //! - **The agent's views and plan** (`Briefs::now`: the pool's view, a job's command, the lead's
 //!   plan and checklist): the lead's now; the lead not answering, the last one had, else the NAS's.
 //! - **The NAS's copy** (`state/build/brief.json`), still written by the lead on every save: read
-//!   when the lead's app serves no brief (an app before this step: `Fresh::Nas`), no lead is known,
-//!   the lead has saved none yet in its process; and always by the map server and the CLI.
+//!   when no lead is known or the lead has saved none yet in its process (`Fresh::Nas`); and always
+//!   by the map server and the CLI.
 
 use super::bus::Snap;
 use crate::coord::brief::{Held, PATH};
@@ -38,8 +38,8 @@ pub enum Lead<'a> {
 pub enum Fresh {
     /// The lead's brief now.
     Got(Held),
-    /// The NAS's is the one to read, as before this step: why (the lead's app serves none, no lead
-    /// known, the lead has saved none in this process yet).
+    /// The NAS's is the one to read: why (no lead known, the lead has saved none in this process
+    /// yet).
     Nas(String),
     /// The lead didn't answer: why.
     Away(String),
@@ -84,8 +84,6 @@ impl Briefs {
                 Some(h) => Fresh::Got(h),
                 None => Fresh::Away("it answered 304 to no brief".into()),
             },
-            // (An app before this step: no such route.)
-            Ok((404, _, _)) => Fresh::Nas("the lead's app serves no brief".into()),
             Ok((503, _, _)) => Fresh::Nas("the lead has saved no brief yet in its process".into()),
             Ok((code, b, _)) => Fresh::Away(format!("it answered {code}: {}", String::from_utf8_lossy(&b))),
             Err(e) => Fresh::Away(format!("{e:#}")),
@@ -141,8 +139,8 @@ mod tests {
     /// docs/coordination.md step 8d: a member has its lead's brief by HTTP, the one it holds named
     /// (304 while unchanged, kept as it is), a newer save's once there is one, the same as the
     /// lead's agent has in process. The lead not answering: `Away` (a job doesn't start), the views
-    /// keep the last one had, else the NAS's. A lead on an older app (no such route: 404), or one
-    /// with none saved yet (503), or none known: the NAS's, as before.
+    /// keep the last one had, else the NAS's. A lead with none saved yet (503), or none known: the
+    /// NAS's; any other answer (a 404) is the lead not answering.
     #[test]
     fn a_member_has_the_leads_brief_by_its_tag() {
         let d = tempfile::tempdir().unwrap();
@@ -172,10 +170,10 @@ mod tests {
         assert!(matches!(b.fresh(Lead::At(&away)), Fresh::Away(_)));
         assert_eq!(b.now(Lead::At(&away), &nas).unwrap().seq, 2);
         assert!(Briefs::default().now(Lead::At(&away), &nas).is_err(), "none held: the NAS's (none here)");
-        // A lead on an older app: the NAS's, as before.
-        let (old, asked) = coordwire::testkit::answering(404);
-        let old = Client::at(vec![old], token, "m1");
-        assert!(matches!(b.fresh(Lead::At(&old)), Fresh::Nas(_)));
+        // A 404: the lead not answering, never the NAS's.
+        let (lost, asked) = coordwire::testkit::answering(404);
+        let lost = Client::at(vec![lost], token, "m1");
+        assert!(matches!(b.fresh(Lead::At(&lost)), Fresh::Away(_)));
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(matches!(b.fresh(Lead::None), Fresh::Nas(_)));
         // No longer leading: none served.

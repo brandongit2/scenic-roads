@@ -401,10 +401,8 @@ mod tests {
         let at_lead = Arc::new(beats::Beats::default());
         c.set_beats(Some(at_lead.clone()));
         let a = "m-000000000000000a";
-        let all = [beats::SPEAKS, beats::VIEW, beats::ASKS, beats::BUDGETS];
-        let beat = |m: &str, speaks: &[&str], progress: Option<Progress>| held::Beat {
+        let beat = |m: &str, progress: Option<Progress>| held::Beat {
             member: format!("{m}-host"),
-            speaks: speaks.iter().map(|w| w.to_string()).collect(),
             heartbeat: Some(crate::agent::membership::Heartbeat {
                 pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
                 beat_http: true,
@@ -419,15 +417,14 @@ mod tests {
             worker: "a-host".into(),
             jobs: [(pass.clone(), Held { at: 100, ..Default::default() })].into(),
         };
-        let ans = c.member_beat(&beat(a, &all, Some(p.clone())));
-        assert!(ans.speaks.iter().any(|w| w == beats::BUDGETS), "said for the app before");
+        let ans = c.member_beat(&beat(a, Some(p.clone())));
         assert_eq!(c.progress().into_iter().map(|k| k.progress).collect::<Vec<_>>(), [p.clone()]);
         let at_a = beats::Beats::default();
         at_a.answered(&ans, 10);
         assert!(at_a.progress_released().is_empty());
         // (The owner's release, in the answer to the member's next beat.)
         c.release_progress(a, &pass).unwrap();
-        let ans = c.member_beat(&beat(a, &all, Some(p)));
+        let ans = c.member_beat(&beat(a, Some(p)));
         assert_eq!(ans.progress_released, [(pass, 100)]);
         at_a.answered(&ans, 11);
         assert_eq!(at_a.progress_released().len(), 1);

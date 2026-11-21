@@ -812,7 +812,7 @@ impl Refused {
             } else {
                 String::new()
             };
-            match a.cap.as_ref().filter(|c| c.free_mb > 0) {
+            match a.cap.as_ref() {
                 Some(c) => format!("{}{copies}", disk_words(c, d)),
                 None => format!("{} left{copies}", gb(d)),
             }

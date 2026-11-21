@@ -1764,8 +1764,7 @@ impl Pool {
                 c.leases.clear();
                 // (Its sustained best room from now on (`sustained`, `Capacity::best`): its memory
                 // for jobs and its cores less those busy outside the pool then, no brake, no
-                // owner's use. None said (an older app's, or not 30 minutes measured yet): its room
-                // as it asked.)
+                // owner's use. None said (not 30 minutes measured yet): its room as it asked.)
                 if let Some(b) = c.best {
                     a.mem_mb = b.mem_mb;
                     (c.mem_mb, c.build_mb, c.cores, c.cores_free) = (b.mem_mb, b.mem_mb, b.cores, b.cores);

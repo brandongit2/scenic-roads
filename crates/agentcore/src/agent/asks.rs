@@ -660,7 +660,7 @@ pub(crate) mod tests {
         let r = control::request_hold(&home, None, Some(Hold::new("the menu bar on m1"))).unwrap();
         within("answered", &|| control::hold_answer(&home, &r).is_some_and(|a| a.ok));
         within("the job told", &|| control::said(&chan) == Some(control::Say::Drain));
-        within("the beat says pausing", &|| said().verdict.is_some_and(|v| v.state == "pausing"));
+        within("the beat says pausing", &|| said().verdict.state == "pausing");
         assert!(!home.join(control::HOLD_REQUEST).exists());
         assert!(control::read_hold(&home).held.is_some() && c.hold.get().held.is_some());
         let h = said().hold.unwrap();

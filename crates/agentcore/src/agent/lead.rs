@@ -772,8 +772,7 @@ mod tests {
             for m in macs.iter_mut() {
                 let b = m.run.side.http_beats();
                 for h in own.iter().filter(|h| h.pool.member != m.id()) {
-                    let speaks = [crate::coord::beats::SPEAKS];
-                    b.heard(h.clone(), speaks.map(str::to_string).to_vec(), None, m.run.side.now());
+                    b.heard(h.clone(), None, m.run.side.now());
                 }
             }
         }

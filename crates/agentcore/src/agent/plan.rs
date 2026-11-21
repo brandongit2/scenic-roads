@@ -1218,13 +1218,17 @@ impl Planner {
         Seen([
             part(&mut |h| {
                 // (The records: the one path's snapshot, which the lead rewrites whole with each
-                // save (docs/coordination.md steps 8b, 8c); today's files before the pool.)
+                // save (docs/coordination.md steps 8b, 8c).)
                 stat(h, (&root.join(crate::pool::records::ONE)).into());
                 // (And the brief its coordinator serves, the plan's (`brief_now`): a save seen at
                 // once, an SMB stat's cache not waited out.)
                 self.coord.as_deref().and_then(|c| c.brief_mark()).hash(h);
-                for f in ["state/build/manifest.json", "state/build/jobs.json"] {
-                    stat(h, (&root.join(f)).into());
+                // (Today's files, the records only on a root no lead is declared on
+                // (buildstore::records::now): an agent out of the pool's, no coordinator here.)
+                if self.coord.is_none() && self.inp.pool_seen.is_none() {
+                    for f in &buildstore::records::TODAY[..2] {
+                        stat(h, (&root.join(f)).into());
+                    }
                 }
             }),
             part(&mut |h| {
@@ -2745,8 +2749,8 @@ impl Planner {
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
             // (Its room: the memory its jobs may hold together above its floor (`Ask::mem_mb`, as
-            // `pack_why` counts it), else its capacity's (`build_mb`; an older app's: its memory
-            // guard's limit).)
+            // `pack_why` counts it), else its capacity's (`build_mb`; none while its memory holds
+            // jobs back, the brake or its floor: its memory guard's limit).)
             let mem_all = mem
                 .get(&h.host)
                 .copied()

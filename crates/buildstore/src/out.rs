@@ -229,8 +229,9 @@ const fn upload_waits(testing: bool) -> &'static [std::time::Duration] {
 }
 
 /// The records' sizes of the files the manifest names (content name → bytes, compact JSON), kept
-/// beside the manifest by its writer (`Out::save_held`; in the pool its lead, from its records):
-/// what a catalogue lists a file's size as without looking at the NAS. A file written before them
+/// beside the manifest by `Out::save_held` on a root no lead is declared on (in the pool the
+/// records hold them, written by the lead alone): what a catalogue lists a file's size as without
+/// looking at the NAS. A file written before them
 /// isn't in it (the catalogue looks at it once, then has it from the catalogue before).
 pub const SIZES: &str = "state/build/sizes.json";
 

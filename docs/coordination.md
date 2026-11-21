@@ -230,7 +230,7 @@ owner's. **The clock alone never re-grants a target** while its holder may be ru
 can tell "holder gone" from "holder unreachable" only by hearing from it, so it waits to hear
 (`crate::coord::held`).
 
-- **The beat** (`POST /pool/beat {member, speaks, held, held_age_s, heartbeat, status, handoffs,
+- **The beat** (`POST /pool/beat {member, held, held_age_s, heartbeat, status, handoffs,
   cap, progress, sent, spans, notes}`, every `agent::beat::EVERY`, 10 s, from its own poster thread, whatever the
   loop waits on): `held` is the list the loop made last, `held_age_s` its age, so the lead releases
   only leases granted before the list was made (a loop stuck after a grant never loses it).

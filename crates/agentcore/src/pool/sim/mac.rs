@@ -486,13 +486,7 @@ impl Mac {
                 l
             }
         };
-        let body = held::Beat {
-            member: host(k),
-            speaks: crate::agent::beat::speaks(),
-            held: list,
-            heartbeat: self.beats.own(),
-            ..Default::default()
-        };
+        let body = held::Beat { member: host(k), held: list, heartbeat: self.beats.own(), ..Default::default() };
         let to_lead = ToLead {
             urls: Vec::new(),
             token: String::new(),

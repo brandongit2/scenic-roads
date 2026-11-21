@@ -117,14 +117,15 @@ pub struct Lease {
     /// apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub threads: u32,
-    /// The threads it was granted as it started (0: not said, an older lead's lease): the memory its
+    /// The threads it was granted as it started (0: not said, a lease of the lead's own granted
+    /// outside the scheduler, until its first `Leases::running_on` sets it): the memory its
     /// grant was admitted with covers them; a grow past them adds its own (crate::coord::sched's
     /// `grown_mb`).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub start_threads: u32,
     /// The slot of its worker's Mac running its job (0: the first; crate::agent::slot_worker), as
     /// the worker last said (its beats, this Mac's loop: `Leases::at_slot`; task #863): a lease
-    /// names its Mac, granted before a slot takes it. None until said (an older app's).
+    /// names its Mac, granted before a slot takes it. None until said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u32>,
     /// Loaded (a restart's, a take-up's) and not yet listed by its member's beat

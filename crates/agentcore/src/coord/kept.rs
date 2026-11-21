@@ -5,7 +5,7 @@
 //!
 //! - its documents: `leases` (the next id, the holds, the cancels), `lease/<id>` (each job's
 //!   lease), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills`, `pause`, and
-//!   `member/<host>` (what a member speaks and when the lead last heard it: `Heard`), and
+//!   `member/<host>` (when the lead last heard a member: `Heard`), and
 //!   `beat/<member>` (its last beat's heartbeat and status, crate::coord::beats: `Beat`, saved each
 //!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
 //!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
@@ -26,12 +26,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// A member as the lead last heard it (`member/<host>`): the protocol pieces its app speaks, and
-/// when (unix seconds).
+/// A member as the lead last heard it (`member/<host>`): when (unix seconds).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Heard {
-    #[serde(default)]
-    pub speaks: Vec<String>,
     pub at: u64,
 }
 
@@ -235,12 +232,11 @@ impl Kept {
         self.submit(Docs::new(), vec![key.to_string()]);
     }
 
-    /// `member` heard at `at`, speaking `speaks`: saved when what it speaks changed, or its time by
-    /// `HEARD_SAVE_S`.
-    pub fn heard(&self, member: &str, speaks: Vec<String>, at: u64) {
-        let h = Heard { speaks, at };
+    /// `member` heard at `at`: saved when new, or its time moved by `HEARD_SAVE_S`.
+    pub fn heard(&self, member: &str, at: u64) {
+        let h = Heard { at };
         let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
-        let save = m.members.get(member).is_none_or(|o| o.speaks != h.speaks || h.at >= o.at + HEARD_SAVE_S);
+        let save = m.members.get(member).is_none_or(|o| h.at >= o.at + HEARD_SAVE_S);
         if !save {
             return;
         }
@@ -285,11 +281,6 @@ impl Kept {
                 b
             })
             .collect()
-    }
-
-    /// When `member` was last heard (unix seconds, to `HEARD_SAVE_S`), and whether it speaks `what`.
-    pub fn member(&self, member: &str) -> Option<Heard> {
-        self.m.lock().unwrap_or_else(|e| e.into_inner()).members.get(member).cloned()
     }
 
     /// The members heard after `since` (unix seconds).

@@ -801,6 +801,8 @@ impl Shared {
         let holding: BTreeSet<&str> = self.leases.live(now).map(|l| crate::paces::mac_of(&l.worker)).collect();
         let answers = pool_answers(&caps, &holding, t, k);
         let moving = self.sched.nas.as_ref().map_or_else(Vec::new, |l| pool_moving(&caps, l, t, k));
+        // (A Mac whose capacity no live store set (`nas_at` 0: a dry run's, a test's) says nothing
+        // of the NAS.)
         let sends = |m: &str| caps.iter().any(|(n, c)| crate::paces::mac_of(n) == m && c.nas_at != 0);
         let blind = holding.iter().any(|m| sends(m) && !answers.iter().any(|a| a.mac == *m && a.fresh));
         let s = jobrt::budget::nas::Sample {
@@ -1427,13 +1429,9 @@ pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
 /// A Mac's memory in words (task #932): what's available against its floor (what compressing
 /// frees among it, task #945), what's reserved for its running jobs' growth, and what's left for a
 /// new job's peak (`for_new_mb`): "9.3 GB available (3.4 GB by compressing) · 6.0 GB floor · 3.0 GB
-/// reserved for its jobs' growth · 0.0 GB for a new job"; an older app's (no floor said), the new
-/// job's alone.
+/// reserved for its jobs' growth · 0.0 GB for a new job".
 pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
-    if c.mem_floor_mb == 0 {
-        return format!("{} for a new job", gb(for_new_mb));
-    }
     let mut v = vec![if c.mem_compress_mb > 0 {
         format!("{} available ({} by compressing)", gb(c.avail_mb), gb(c.mem_compress_mb))
     } else {
@@ -1466,7 +1464,7 @@ pub const NOTHING_HERE: &str = "nothing_here";
 /// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
 /// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
 /// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
-/// per member (`capacities`). Every field defaults: an older or newer agent's capacity parses.
+/// per member (`capacities`). Every field defaults, so a capacity of a newer agent's parses.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capacity {
@@ -1483,8 +1481,7 @@ pub struct Capacity {
     pub held_each: Vec<WaitingJob>,
     /// The memory its jobs may hold together for one to start (MB: what they hold and what's
     /// available, less its memory floor; none under the brake, the floor or a give-back's
-    /// cool-down: crate::agent::memguard's `Reading::admit_mb`). 0: an older app's, which doesn't
-    /// say.
+    /// cool-down: crate::agent::memguard's `Reading::admit_mb`).
     pub build_mb: u64,
     /// `build_mb` less each running job's need (the larger of what it holds and the peak its grant
     /// was packed at, `Grant::peak_mb`: the lead's measure, on the lead and a member alike) (MB): what
@@ -1511,8 +1508,7 @@ pub struct Capacity {
     /// The disk's free space less the owner's room target and the running jobs' reservations (MB).
     pub disk_mb: u64,
     /// The disk's free space (MB) and the owner's room target (0: none): what `disk_mb` is taken
-    /// from (`disk_words`). 0 both: an older app's. (An older app's `reserve_mb`, a fixed reserve
-    /// it took off too, is passed over as it parses: its `disk_mb` has it taken off already.)
+    /// from (`disk_words`).
     pub free_mb: u64,
     pub target_mb: u64,
     /// The disk its jobs have reserved and not taken yet (MB): each granted or running job's
@@ -1522,8 +1518,8 @@ pub struct Capacity {
     /// counts (MB: every kind a freeing toward a held room empties, as last counted on a thread of
     /// its own, crate::agent's `towardable`; 0 for a member with a room target, whose `disk_mb`
     /// counts them). The lead names a job's disk to free toward (`sched::Held::disk_mb`) and holds
-    /// room for it (`sched`'s `room_wait`) only within it. None: not counted yet, or an older
-    /// app's, which frees toward no held room: no room held for a job's disk.
+    /// room for it (`sched`'s `room_wait`) only within it. None: not counted yet: no room held for
+    /// a job's disk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub freeable_mb: Option<u64>,
     /// Its owner used it within the last five minutes (cond::AWAY_S), or publish's tests hold it
@@ -1557,8 +1553,8 @@ pub struct Capacity {
     pub idle: Vec<u64>,
     /// Its running jobs whose threads its agent controls (docs/pool.md §7.1, Threads controlled
     /// live; crate::agent::threads), each with the threads it runs on now and what it used on them:
-    /// the lead counts each at the more of those and its file's (`Leases::running_on`). An older
-    /// agent's capacity says none: its jobs keep their grant.
+    /// the lead counts each at the more of those and its file's (`Leases::running_on`). A job it
+    /// says none of keeps its grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<JobThreads>,
     /// Its running jobs an agent of an older app started and this one took over
@@ -1590,7 +1586,8 @@ pub struct Capacity {
     /// paces the pool's NAS work by every Mac's against its own best (jobrt::budget::nas::Pace),
     /// the floor young (`nas_young`) while its link has too little history (it may cut, never
     /// grow). Set as each beat goes (crate::agent::beat), so a Mac too busy to ask still answers
-    /// fresh. None: not measured then (no build running there); `nas_at` 0, an older app's.
+    /// fresh. None: not measured then (no build running there); `nas_at` 0, never set (no live
+    /// store: a dry run's or a test's agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1609,7 +1606,7 @@ pub struct Capacity {
     pub nas_apart: Option<jobrt::budget::nas::Apart>,
     /// Its room at its quietest sustained state over the last 48 hours (crate::agent::live::Store::best,
     /// task #951): what the forecast takes it to have from now on; the scheduler never reads it.
-    /// None: not measured (an older app's, or not 30 minutes of samples yet).
+    /// None: not measured (not 30 minutes of samples yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best: Option<crate::agent::forecast::MacRoom>,
 }
@@ -3498,10 +3495,6 @@ impl Coordinator {
             .live(now)
             .filter_map(|l| {
                 let Work::Job { step, targets } = &l.work else { return None };
-                // (A lease saying no grant time, an older lead's, has no time run to weigh.)
-                if l.granted_at == 0 {
-                    return None;
-                }
                 let live = l.live.as_ref();
                 let on = live.and_then(|v| v.target.as_deref()).map(|k| CostKey::parse(k).target.to_string());
                 let still = l.still().map(|d| {
@@ -5090,8 +5083,7 @@ fn load_beats(s: &Shared) {
     let unix = held::wall(s);
     for k in s.keep.beats(unix.saturating_sub(beats::FORGET_S)) {
         if b.get(&k.beat.pool.member, unix).is_none() {
-            let speaks = s.keep.member(&k.beat.pool.host).map(|h| h.speaks).unwrap_or_default();
-            b.heard(k.beat, speaks, None, k.at);
+            b.heard(k.beat, None, k.at);
         }
     }
 }
@@ -5119,10 +5111,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
         .iter()
         .map(|(n, w)| {
             let fit = w.ask.as_ref().map(|a| s.fit(a, now)).unwrap_or_default();
-            // (`bad`, always false since results are no longer compared (task #876): the menu bar
-            // app before it needs the field to read the workers at all. Remove it in the next
-            // version.)
-            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": false, "app": w.app, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen) })
+            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "app": w.app, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen) })
         })
         .collect();
     let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
@@ -7770,7 +7759,7 @@ mod tests {
     /// Task #1104: a member's beat carrying its jobs' spans: kept by the lead by job id, from where
     /// it has them (a beat posted again adds nothing), its answer saying it takes them and what it
     /// has; the page reads the job whole at `GET /api/job/<id>`, no key; a job of no spans is
-    /// legacy; an older member's beat, none, is answered as before.
+    /// legacy; a beat carrying none is answered with none.
     #[test]
     fn a_member_s_jobs_spans_reach_the_lead_and_the_page() {
         let (_d, _c, w) = start();
@@ -7799,12 +7788,12 @@ mod tests {
             end: false,
         };
         let b = held::Beat { spans: vec![chunk], ..word("m1", &[]) };
-        let a = w.pool_beat(&b).unwrap().unwrap();
+        let a = w.pool_beat(&b).unwrap();
         assert!(a.speaks.iter().any(|x| x == beats::SPANS), "{:?}", a.speaks);
         assert_eq!(a.spans.len(), 1);
         assert_eq!((a.spans[0].s, a.spans[0].meta, a.spans[0].done), (s.len() as u64, true, false));
-        assert_eq!(w.pool_beat(&b).unwrap().unwrap().spans, a.spans, "posted again: nothing added");
-        assert!(w.pool_beat(&word("m1", &[])).unwrap().unwrap().spans.is_empty(), "an older member's beat");
+        assert_eq!(w.pool_beat(&b).unwrap().spans, a.spans, "posted again: nothing added");
+        assert!(w.pool_beat(&word("m1", &[])).unwrap().spans.is_empty(), "a beat carrying none");
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let get = |p: &str| send(&addr, "GET", p, None, &[], &serde_json::json!({}));
         let (code, _, v) = get(&format!("/api/job/{job}"));
@@ -7835,8 +7824,8 @@ mod tests {
         assert_eq!(get("/api/job/nope").0, 400);
     }
 
-    /// A member's beat speaking `speaks`, with its heartbeat.
-    fn heard_beat(m: &str, speaks: &[&str]) -> held::Beat {
+    /// A member's beat, with its heartbeat.
+    fn heard_beat(m: &str) -> held::Beat {
         let heartbeat = crate::agent::membership::Heartbeat {
             pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
             beat_http: true,
@@ -7844,7 +7833,6 @@ mod tests {
         };
         held::Beat {
             member: m.into(),
-            speaks: speaks.iter().map(|w| w.to_string()).collect(),
             heartbeat: Some(heartbeat),
             status: Some(serde_json::json!({ "host": format!("{m}-host") })),
             ..Default::default()
@@ -7858,7 +7846,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
         c.set_beats(Some(std::sync::Arc::default()));
-        c.member_beat(&heard_beat("m1", &[beats::SPEAKS, beats::VIEW]));
+        c.member_beat(&heard_beat("m1"));
         drop(c);
         let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
         let b = std::sync::Arc::new(beats::Beats::default());
@@ -7867,9 +7855,6 @@ mod tests {
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].beat.pool.host, "m1-host");
         assert!(heard[0].status.is_none(), "its status not kept: the next beat brings it");
-        // (An older lead's record, with the status, still loads.)
-        let old = serde_json::json!({ "beat": kept::Beat::default().beat, "status": { "host": "m1" }, "at": 7 });
-        assert_eq!(serde_json::from_value::<kept::Beat>(old).unwrap().at, 7);
     }
 
     /// Task #913: the lead's status is answered again whenever its file was written again, even
@@ -13080,7 +13065,7 @@ mod tests {
 
     /// The disk in words (task #391): the free space, what's left of it for jobs, and what keeps
     /// the rest (the owner's room target, the jobs' reservations), on the refusal too. No fixed
-    /// reserve (task #421); an older app's `reserve_mb` parses and is passed over.
+    /// reserve (task #421).
     #[test]
     fn the_disk_is_said_plainly() {
         let c = Capacity { free_mb: 39_014, target_mb: 20 << 10, ..Default::default() };
@@ -13089,10 +13074,6 @@ mod tests {
         assert_eq!(disk_words(&c, 95 << 10), "100 GB free · 95 GB for jobs (5 GB reserved by its jobs)");
         let c = Capacity { free_mb: 100 << 10, ..Default::default() };
         assert_eq!(disk_words(&c, 100 << 10), "100 GB free · 100 GB for jobs");
-        let old: Capacity =
-            serde_json::from_str(r#"{"free_mb": 49152, "reserve_mb": 30720, "target_mb": 20480}"#).unwrap();
-        assert_eq!((old.free_mb, old.target_mb), (48 << 10, 20 << 10));
-        assert!(!serde_json::to_string(&old).unwrap().contains("reserve_mb"));
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(1));
         let cap = Capacity { cores: 8, free_mb: 21 << 10, target_mb: 20 << 10, ..Default::default() };

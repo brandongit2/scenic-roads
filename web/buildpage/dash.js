@@ -36,9 +36,6 @@ const POLL_MS = 10000;
 // A pressed Pause or Resume: the page asks again this often until the build says so, for this long at most.
 const PENDING_POLL_MS = 1000;
 const PENDING_MAX_MS = 60000;
-// A heartbeat older than this is out of touch: the agent's own threshold, served in its status
-// (`out_of_touch_s`, crate::pool::beat::OUT_OF_TOUCH_S, task #846); this from an agent before it.
-const OUT_OF_TOUCH_S = 600;
 const STUCK_S = 900;
 
 // ---- Words and numbers ------------------------------------------------------------------------
@@ -90,36 +87,8 @@ const waitName = (w) => w.step || w.what;
 // says them (progress::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
 // 284 z6 tiles", "3 runs left", "done", "to come"; the done that made nothing to publish counted
 // apart: "7,837 of 7,849 z10 tiles (6,814 with nothing for the map)".
-// (An agent's before #846, a rollout's: worked out from the older fields as build.rs Item::count
-// and Line::counts do.)
-function countOf(x) {
-  if (x.count) return x.count;
-  const noun = x.noun || S.noun(x.step) || (x.counted_in || x.unit || "target").replace(/s$/, "");
-  if (x.total > 0) return `${n(x.done)} of ${n(x.total)} ${noun}s`;
-  if (x.left === 0) return "done";
-  if (x.left != null) return `${n(x.left)} ${noun}${x.left === 1 ? "" : "s"} left`;
-  return "to come";
-}
-function countsOf(l) {
-  if (l.counts?.length) return l.counts.join(" · ");
-  const out = [], nouns = [], items = l.items || [];
-  for (const i of items) {
-    const noun = S.noun(i.step);
-    if (nouns.includes(noun)) continue;
-    nouns.push(noun);
-    const of = items.filter((j) => S.noun(j.step) === noun);
-    if (of.some((j) => j.total != null)) {
-      const t = of.reduce((a, j) => a + (j.total ?? 0), 0);
-      if (!of.every((j) => j.total != null)) out.push(`${noun}s to come`);
-      else if (t > 0 || !out.length) out.push(`${n(of.reduce((a, j) => a + j.done, 0))} of ${n(t)} ${noun}s`);
-    } else if (of.every((j) => j.left != null)) {
-      const left = of.reduce((a, j) => a + j.left, 0);
-      if (left) out.push(`${n(left)} ${noun}${left === 1 ? "" : "s"} left`);
-    } else out.push(`${noun}s to come`);
-  }
-  if (!out.length) out.push(finished(l) ? "done" : "to come");
-  return out.join(" · ");
-}
+const countOf = (x) => x.count;
+const countsOf = (l) => l.counts.join(" · ");
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
 // Machines' colours (theme.css's --mac-0 … --mac-4): a Mac's by a stable hash of its name (FNV-1a),
 // so it keeps its colour whatever the order and whichever Macs are in touch; of two whose hashes
@@ -154,18 +123,20 @@ const mark = (done, running) => h("span", `mark ${done ? "ok" : running ? "run" 
 // A key, a value and a line under it: the overview's numbers, each the same.
 const kpi = (k, v, s) => h("div", "kpi", h("div", "k", k), h("div", "v", v), s ? h("div", "s", s) : null);
 
-// ---- The data's shape, older coordinators' too --------------------------------------------------
-// (The gate's units, `a.inputs`: docs/inputs.md §4.7; none from an agent before it.)
+// ---- The data's shape ---------------------------------------------------------------------------
+// (The gate's units, `a.inputs`: docs/inputs.md §4.7.) A heartbeat older than the agent's own
+// threshold (`out_of_touch_s`, crate::pool::beat::OUT_OF_TOUCH_S) is out of touch; no word from
+// the lead yet, nothing is in touch.
 function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
-  const touch = a.out_of_touch_s || OUT_OF_TOUCH_S;
+  const touch = a.out_of_touch_s;
   const fresh = (beat) => beat && now - beat < touch;
   const fc = a.forecast && { ...a.forecast, publishes: a.forecast.publishes ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
-  // (Not the lead's own helper.json, from while it was a member: it leads now. Its members sent as
-  // `helpers` until task #858's follow-up, `members` after: both read.)
-  const members = (a.members || a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
+  // (Not the lead's own helper.json, from while it was a member: it leads now. Its members' statuses
+  // are sent as `helpers`, agent::Status::members.)
+  const members = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
   // Every machine: the lead, then its members.
   const colours = macColours([a.host, ...members.map((x) => x.host), ...(sw.workers || []).filter((w) => w.kind === "native").map((w) => w.name)].filter(Boolean));
@@ -192,27 +163,15 @@ const jobsOf = (st) => (st.jobs || []).map((j, i) => ({ ...j, slot: j.slot ?? i 
 // A Mac's state as its agent says it (agent::Verdict, task #846: the menu bar shows the same), out
 // of touch the page's to tell.
 const VERDICT_CLASS = { building: "run", idle: "", waiting: "", failed: "bad" };
-function machineState(st, fresh, paused) {
+function machineState(st, fresh) {
   if (!fresh) return ["out of touch", "bad"];
-  const v = verdictOf(st, paused);
+  const v = st.verdict;
   return [v.state, VERDICT_CLASS[v.state] ?? "warn", v.said];
-}
-// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked out
-// from its older fields as Status::verdict_of does.
-function verdictOf(st, paused) {
-  if (st.verdict) return st.verdict;
-  const jobs = jobsOf(st);
-  if (st.held) return { state: jobs.some((j) => !j.paused) ? "pausing" : "paused", said: `Paused (from ${st.held.by}); the other Macs go on` };
-  if (jobs.some((j) => !j.paused && !j.pausing)) return { state: "building", said: jobs.length === 1 ? `Building: ${jobs[0].what}` : `Building: ${plural(jobs.length, "job")}` };
-  if (jobs.some((j) => j.pausing && !j.paused)) return { state: "stopping", said: "Pausing: finishing what it's on" };
-  if (jobs.some((j) => j.paused)) return { state: "frozen", said: "Paused" };
-  if (paused || st.pause) return { state: "paused", said: "Paused with the build" };
-  return { state: "idle", said: "Nothing to build" };
 }
 
 // A Mac's loop stuck (task #899): its round older than the agent's own threshold (`loop_stuck_s`,
-// crate::agent::beat::LOOP_STUCK), with the phase it's in; "" while it isn't, and from an agent that
-// doesn't say both (before #871 and #899). The age as of now: as the beat said it, plus the time since.
+// crate::agent::beat::LOOP_STUCK), with the phase it's in; "" while it isn't, and from a status that
+// doesn't say both (none composed yet). The age as of now: as the beat said it, plus the time since.
 function loopStuck(st, now) {
   const limit = st.loop_stuck_s;
   if (st.loop_age_s == null || !limit) return "";
@@ -916,7 +875,7 @@ function fitText(w, host) {
 // slot, with what's inside it (or why none runs); live on it (live.js).
 function machineCard(m, x) {
   const st = x.status, now = m.now;
-  const [state, cls, said] = machineState(st, x.fresh, m.sw.pause);
+  const [state, cls, said] = machineState(st, x.fresh);
   const jobs = jobsOf(st);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const stuck = x.fresh && loopStuck(st, now);
@@ -2007,7 +1966,7 @@ function askSteps(m) {
   regionSteps.asked = Date.now();
   const body = { steps: true };
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
-  // (An agent before #636 answers the outlines, `regions` a list: none counted there.)
+  // (The counts by region, an object: the outlines' answer is a list.)
   const counted = (v) => v?.regions && !Array.isArray(v.regions);
   ctx.call("/api/regions", body).then(([code, v]) => (code === 200 && counted(v) ? v : lead ? remote(lead, regionSteps.st, body, "/api/regions") : null))
     .catch(() => null)
@@ -2209,7 +2168,7 @@ function render() {
   // (The lead not reached: this Mac's last view of it, kept, said with its age: /pool/view,
   // docs/coordination.md step 4.)
   const unreached = m.sw.view_unreached ? `lead not reached: its view from ${dur(m.sw.view_age_s ?? 0)} ago` : null;
-  ctx.onState?.(unreached || (m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? verdictOf(m.a, m.sw.pause).state : "lead out of touch"));
+  ctx.onState?.(unreached || (m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? m.a.verdict.state : "lead out of touch"));
 }
 
 let polling = null;
