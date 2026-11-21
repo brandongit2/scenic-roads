@@ -34,13 +34,16 @@ const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 /// the record format it was read by (buildstore::asked::RECORD_FMT): one of another is read again,
 /// so a build reading records otherwise can't take an old head for one it would parse; with the
 /// targets of other steps its questions read in (`reads`, idents::question_read: what its target's
-/// `Read::Built` reads wait for, task #1556). A head kept without them doesn't parse: read again.
+/// `Read::Built` reads wait for, task #1556). A head kept without them (None) stands for a step
+/// whose waits don't read them (`idents::waits_by_record`), read again only for one whose do: the
+/// peaks' 1,937 small records, not every step's (bldtiles' are 3.5 GB).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Head {
     fmt: u32,
     version: String,
     line: String,
-    reads: Vec<String>,
+    #[serde(default)]
+    reads: Option<Vec<String>>,
 }
 
 impl Head {
@@ -48,7 +51,18 @@ impl Head {
         let mut reads: Vec<String> = r.also.iter().filter_map(|(q, _)| super::idents::question_read(q)).collect();
         reads.sort_unstable();
         reads.dedup();
-        Head { fmt: buildstore::asked::RECORD_FMT, version: r.version.clone(), line: r.line.clone(), reads }
+        Head {
+            fmt: buildstore::asked::RECORD_FMT,
+            version: r.version.clone(),
+            line: r.line.clone(),
+            reads: Some(reads),
+        }
+    }
+
+    /// Whether it serves the record of content name `c` as kept: of this build's record format,
+    /// with the reads its step's waits read.
+    fn serves(&self, c: &str) -> bool {
+        self.fmt == buildstore::asked::RECORD_FMT && (self.reads.is_some() || !super::idents::waits_by_record(c))
     }
 }
 
@@ -448,7 +462,7 @@ impl TerrainTiles {
                     .as_ref()
                     .and_then(|p| std::fs::read(p).ok())
                     .and_then(|b| serde_json::from_slice::<Head>(&b).ok());
-                if let Some(h) = here.filter(|h| h.fmt == buildstore::asked::RECORD_FMT) {
+                if let Some(h) = here.filter(|h| h.serves(c)) {
                     return (*c, Ok(Some(h)));
                 }
                 let head =
@@ -513,7 +527,7 @@ impl TerrainTiles {
     /// (`Head`'s `reads`, "<step> <target>"): Some(None) for one that doesn't parse, None while it
     /// can't be read now.
     pub fn asked_reads(&self, c: &str) -> Option<Option<&[String]>> {
-        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| h.reads.as_slice()))
+        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| h.reads.as_deref().unwrap_or(&[])))
     }
 
     /// A target's record of content name `c`, read now (one held, `hold_asked`: that): Ok(None) for
@@ -1114,11 +1128,13 @@ mod tests {
         let also = ["z8 8/133/90", "z8 8/134/90", "z8 8/160/90"].map(|q| (q.to_string(), "-".to_string())).to_vec();
         let r = buildstore::asked::Record { version: "geo".into(), line: "l".into(), also, ..Default::default() };
         let (good, bad, gone) = (
-            "work/asked/pois/6-1-2.1111111111111111.json.zst",
+            "work/asked/peaks/6-1-2.1111111111111111.json.zst",
             "work/asked/pois/6-1-3.2222222222222222.json.zst",
             "work/asked/pois/6-1-4.3333333333333333.json.zst",
         );
-        std::fs::create_dir_all(d.path().join("nas/work/asked/pois")).unwrap();
+        for s in ["peaks", "pois"] {
+            std::fs::create_dir_all(d.path().join("nas/work/asked").join(s)).unwrap();
+        }
         std::fs::write(d.path().join("nas").join(good), r.to_bytes()).unwrap();
         std::fs::write(d.path().join("nas").join(bad), b"not a record").unwrap();
         let m: BTreeMap<String, String> =
@@ -1139,8 +1155,8 @@ mod tests {
         again.load_asked(&root, &m);
         assert_eq!(again.asked_head(good), Some(Some(("geo".into(), "l".into()))));
         assert_eq!(again.asked_reads(good), Some(Some(&reads[..])));
-        // A head kept by another record format, or without what its questions read: read again
-        // from the NAS (here, gone: unread).
+        // A head kept by another record format, or a peaks record's without what its questions
+        // read (its waits read them): read again from the NAS (here, gone: unread).
         let kept = d.path().join("kept/1111111111111111.asked-head");
         for old in [
             serde_json::json!({"fmt": buildstore::asked::RECORD_FMT - 1, "version": "geo", "line": "old", "reads": []}),
@@ -1151,6 +1167,18 @@ mod tests {
             other.load_asked(&root, &m);
             assert_eq!(other.asked_head(good), None, "{old}");
         }
+        // Another step's head kept without them stands, its record not read again (here, none on
+        // the NAS): its waits don't read them.
+        let plain = "work/asked/pois/6-1-5.4444444444444444.json.zst";
+        let old = serde_json::json!({"fmt": buildstore::asked::RECORD_FMT, "version": "geo", "line": "old"});
+        std::fs::write(d.path().join("kept/4444444444444444.asked-head"), old.to_string()).unwrap();
+        let mut with_plain = m.clone();
+        with_plain.insert("work/asked/pois/6-1-5".into(), plain.into());
+        let mut other = TerrainTiles::new(Some(d.path().join("kept")));
+        other.load_asked(&root, &with_plain);
+        assert_eq!(other.asked_head(plain), Some(Some(("geo".into(), "old".into()))));
+        assert_eq!(other.asked_reads(plain), Some(Some(&[][..])));
+        assert!(!other.unread.contains_key(plain));
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
         std::fs::rename(d.path().join("aside"), &nas_good).unwrap();
         other.load_asked(&root, &m);

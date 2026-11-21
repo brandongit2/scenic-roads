@@ -1346,6 +1346,24 @@ mod tests {
         assert_eq!(res.iter().map(|(k, o)| format!("{k} {}", o.json())).collect::<Vec<_>>(), first, "the same results");
         assert!(read_with.contains(&edge.2), "its unread neighbour {:?} recorded: {read_with:?}", edge.2);
         assert_eq!(read_with.len(), read.len() + 1, "that neighbour alone added");
+        // Task #1556 review: that neighbour unreadable (a local copy gone bad): working its height
+        // out fails, and so does the run, saying so.
+        let bad = terrain::layers::write_pack_local(
+            &out,
+            "bad",
+            "terrarium-png",
+            false,
+            "lo",
+            (3, edge.2 .0 >> 5, edge.2 .1 >> 5),
+            &mut [(8u8, edge.2 .0, edge.2 .1, b"not a png".to_vec(), 1)].into_iter(),
+        )
+        .unwrap()
+        .unwrap();
+        let z8b = Z8::open(&[((edge.2 .0 >> 5, edge.2 .1 >> 5), bad.local.clone())], 64).unwrap();
+        let base = Z8Base::new(&with, &z8b);
+        let e = run(&peaks, &with, &base, &z12, &z8b, 2, &mut jobrt::resume_log::Pieces::none()).unwrap_err();
+        assert!(format!("{e:#}").contains("z8 read failed"), "{e:#}");
+        assert!(base.failed().is_some());
         // A tile it didn't read raised: the same results, the same tiles read.
         assert_eq!(measure(&z8_of("b", &[(far, 9500.0)])), (first.clone(), read.clone()), "a tile it didn't read");
         // One it read raised past its peaks (the nearest to five z8 tiles east): nearer higher ground.

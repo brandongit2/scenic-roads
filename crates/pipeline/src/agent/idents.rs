@@ -767,6 +767,12 @@ pub fn peaks_lo_packs(t: &str, x: &KeyCtx) -> Vec<String> {
     }
 }
 
+/// Whether the record of content name `c` is of a step whose waits read what its questions read
+/// (`question_read`, a `Read::Built` from the record's head): the peaks'.
+pub fn waits_by_record(c: &str) -> bool {
+    c.starts_with(&buildstore::asked::target_logical("peaks", ""))
+}
+
 /// The target of another step a target record's question reads in (tiles::TerrainTiles'
 /// `asked_reads`, "<step> <target>"): a peaks run's z8 tile's lo pack
 /// (roads::peaks::z8::question_tile), "terrain-lo 3/x/y"; None for a question of another form.
