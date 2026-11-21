@@ -11,7 +11,8 @@
 //!   with it (`hold_links`, until its `Linked` is dropped), whatever the process lets go of meanwhile.
 //! - Room-making deletes a file only with an exclusive lock taken without waiting (`try_remove`:
 //!   LOCK_EX|LOCK_NB), its name checked to still be that file, and unlinked while it's held; a file
-//!   in use is skipped.
+//!   in use is skipped. Whether a file is in use (`held_by_job`, the caches' counts) is asked
+//!   without a lock, so a count running beside a freeing never makes it skip one.
 //! - Nothing in the caches is renamed over another file: a file is made by a temporary name, held
 //!   from the start, and given its name only if the name is free (`create`), so a name, once there,
 //!   names that file until it's deleted under the exclusive lock.
@@ -212,6 +213,30 @@ fn lock(f: &File, how: libc::c_int) -> io::Result<()> {
         // SAFETY: flock on a descriptor we own.
         if unsafe { libc::flock(f.as_raw_fd(), how) } == 0 {
             return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Whether open file `f` has a lock on it, shared or exclusive, of any process (this one's through
+/// another descriptor too), asked without taking one: F_GETLK for an exclusive lock of the whole
+/// file, which on macOS meets `flock`'s locks as it meets `fcntl`'s (the kernel keeps them as one).
+/// An error where it can't be asked: smbfs (the NAS's share) refuses F_GETLK (ENOTSUP), and
+/// `held_by_job` takes that as held.
+#[cfg(unix)]
+fn locked(f: &File) -> io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: a plain C struct, all zero a valid value (the whole file from its start).
+    let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+    fl.l_type = libc::F_WRLCK;
+    fl.l_whence = libc::SEEK_SET as i16;
+    loop {
+        // SAFETY: fcntl on a descriptor we own, with a flock struct it fills in.
+        if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETLK, &mut fl) } == 0 {
+            return Ok(fl.l_type != libc::F_UNLCK);
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {
@@ -690,16 +715,20 @@ pub fn try_remove(path: &Path) -> Removed {
     }
 }
 
-/// Whether a job holds the cache file at `path` now, so `try_remove` would leave it: its exclusive
-/// lock not to be had without waiting (taken and let go at once). Some(false): no job holds it (not
-/// there either). None: a link, or a file not to be opened, which `try_remove` leaves too though no
-/// job holds it, and no job's end lets go (`in_use` counts it in use).
+/// Whether a job holds the cache file at `path` now, so `try_remove` would leave it: a lock on it,
+/// any (a job's shared one; an exclusive one is a freeing's, a moment, or a making's), as
+/// `try_remove`'s exclusive one would meet. Asked without taking one (#1491: `fcntl`'s F_GETLK,
+/// which on macOS sees `flock`'s locks), so a freeing beside a count never meets the count's own.
+/// Where F_GETLK can't be asked (smbfs, the NAS's share: ENOTSUP), held: Some(true).
+/// Some(false): no job holds it (not there either). None: a link, or a file not to be opened, which
+/// `try_remove` leaves too though no job holds it, and no job's end lets go (`in_use` counts it in
+/// use).
 pub fn held_by_job(path: &Path) -> Option<bool> {
     #[cfg(unix)]
     return crate::spawn::no_child_starting(|| {
         use std::os::unix::fs::OpenOptionsExt;
         match File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
-            Ok(f) => Some(lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err()),
+            Ok(f) => Some(locked(&f).unwrap_or(true)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Some(false),
             Err(_) => None,
         }
@@ -1007,6 +1036,73 @@ mod tests {
             }
             stop.store(true, Ordering::Relaxed);
         });
+    }
+
+    /// Counts' probes (`held_by_job`) in other processes, asking of a file over and over as a
+    /// freeing comes to it, never make the freeing skip it, as a probe that took a lock would
+    /// (#1491): each of 1,000 files freed at once, four probing processes beside it (a process's
+    /// probes take turns: store::spawn's gap).
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_beside_a_freeing_never_makes_it_skip_a_file() {
+        use std::io::BufRead;
+        const N: usize = 1000;
+        const PROBES: usize = 4;
+        const DIR: &str = "SCENIC_TEST_PROBE_DIR";
+        let name = |d: &Path, i: usize| d.join(format!("{i}.bin"));
+        // The child: each file in turn asked of until it's gone, saying so once it has asked a
+        // hundred times (two minutes in all at most).
+        if let Some(d) = std::env::var_os(DIR).map(PathBuf::from) {
+            let t = std::time::Instant::now();
+            for i in 0..N {
+                let mut n = 0;
+                while name(&d, i).exists() && t.elapsed() < std::time::Duration::from_secs(120) {
+                    held_by_job(&name(&d, i));
+                    n += 1;
+                    if n == 100 {
+                        println!("probing {i}");
+                    }
+                }
+            }
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..N {
+            std::fs::write(name(d.path(), i), b"bytes").unwrap();
+        }
+        let mut kids: Vec<_> = (0..PROBES)
+            .map(|_| {
+                let mut c = crate::spawn::spawn(
+                    crate::spawn::command(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "cachefile::tests::a_probe_beside_a_freeing_never_makes_it_skip_a_file",
+                            "--nocapture",
+                        ])
+                        .env(DIR, d.path())
+                        .stdout(std::process::Stdio::piped()),
+                )
+                .unwrap();
+                let said = std::io::BufReader::new(c.stdout.take().unwrap()).lines();
+                (c, said)
+            })
+            .collect();
+        let mut left = Vec::new();
+        for i in 0..N {
+            // (Every probe on this file, then the freeing beside them.)
+            let want = format!("probing {i}");
+            for (_, said) in &mut kids {
+                assert!(said.by_ref().map_while(Result::ok).any(|l| l == want), "a probe ended before file {i}");
+            }
+            if try_remove(&name(d.path(), i)) != Removed::Freed(5) {
+                left.push(i);
+                std::fs::remove_file(name(d.path(), i)).unwrap();
+            }
+        }
+        for (c, _) in &mut kids {
+            assert!(c.wait().unwrap().success());
+        }
+        assert!(left.is_empty(), "{} of {N} files skipped as in use beside the probe: {left:?}", left.len());
     }
 
     #[test]
