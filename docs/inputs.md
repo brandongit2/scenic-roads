@@ -178,8 +178,11 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   nothing they depend on: jobrt but its resume log, store's `nasio`, `nasfs`, `nas`, `waits`,
   `aimd`, `deadline`, `retry`, `spawn`, `iopool`, `clock` and `cachefile`, buildstore's `fetch`,
   the gate's `pace` and the regions' `progress`, `PLUMBING` in build/checks_code.rs; the units'
-  own codes keep them), and a test fails when the code moves and the digest doesn't, naming the new digest:
-  the developer bumps the number if the change moves what it covers, and sets the digest either way.
+  own codes keep them), and when the code moves and the digest doesn't, the new digest is named:
+  by the crate's build (a warning, on any Mac: build.rs, `checks_code::stale_codes`), by
+  tools/app/guards.sh, which fails (check.sh's guards part, publish's), and by a test that fails.
+  The developer bumps the number if the change moves what it covers, and sets the digest either way,
+  as the branch's last change.
   A regions check under new code otherwise takes the outcome recorded for the same inputs.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
   (`bldprep`) or another check. It holds no region and no map.

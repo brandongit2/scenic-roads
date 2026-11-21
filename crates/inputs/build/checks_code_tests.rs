@@ -3,7 +3,7 @@
 //! digest, and nothing else does; the typed versions left are held to the code they cover.
 #![cfg(test)]
 
-use super::checks_code::{codes, resolution_code, rule_codes, World};
+use super::checks_code::{codes, resolution_code, rule_codes, stale_codes, World};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -334,21 +334,49 @@ fn the_codes_compiled_in_are_the_sources_now() {
 /// was fails here, saying what to do.
 #[test]
 fn the_resolution_and_the_measure_rules_are_held_to_their_code() {
-    let w = World::read(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-    let now = resolution_code(&w);
-    assert_eq!(
-        now,
-        crate::inputs::regions::RESOLUTION_CODE,
-        "the regions' resolution code changed: bump regions::RESOLUTION if what an unchanged region resolves to \
-         (or its problems' words) changes, and set regions::RESOLUTION_CODE to \"{now}\" either way"
-    );
-    for (step, now) in rule_codes(&w) {
-        let stored = crate::inputs::elevation::RULE_CODES.iter().find(|(s, _)| *s == step).map(|(_, d)| *d);
-        assert_eq!(
-            Some(now.as_str()),
-            stored,
-            "elevation's {step} step's measuring code changed: raise its Step::rule if what it measures changes, \
-             and set its digest in elevation::RULE_CODES to \"{now}\" either way"
-        );
+    let (w, regions, elevation) = held_sources();
+    let stale = stale_codes(&w, &regions, &elevation);
+    assert!(stale.is_empty(), "{}", stale.join("\n"));
+    // (The text read is what compiled in.)
+    assert!(regions.contains(&format!("RESOLUTION_CODE: &str = \"{}\"", crate::inputs::regions::RESOLUTION_CODE)));
+    for (step, d) in crate::inputs::elevation::RULE_CODES {
+        assert!(elevation.contains(&format!("(\"{step}\", \"{d}\")")), "{step}");
     }
+}
+
+/// The world and the held digests' files, as build.rs reads them.
+fn held_sources() -> (World, String, String) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+    (World::read(dir).unwrap(), read("src/inputs/regions/mod.rs"), read("src/inputs/elevation.rs"))
+}
+
+/// What the guard prints (#1578, build.rs and tools/app/guards.sh) names the value to set: the
+/// digest of the code as it is now, for the regions' code and a measure step's alike; and what
+/// build.rs wrote is what the sources say.
+#[test]
+fn a_stale_held_digest_is_printed_with_the_value_to_set() {
+    let (w, regions, elevation) = held_sources();
+    let now = resolution_code(&w);
+    let old = "0123456789abcdef0123456789abcdef";
+    assert!(regions.contains(&now), "held as the code is (the test above)");
+    let stale = stale_codes(&w, &regions.replace(&now, old), &elevation);
+    assert_eq!(
+        stale,
+        [format!(
+            "regions::RESOLUTION_CODE is \"{old}\", and the code it covers is now \"{now}\": set it to \"{now}\" (and \
+             bump regions::RESOLUTION if what an unchanged region resolves to, or its problems' words, changes)"
+        )]
+    );
+    let (step, now) = rule_codes(&w).swap_remove(1);
+    let stale = stale_codes(&w, &regions, &elevation.replace(&now, old));
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert!(stale[0].starts_with(&format!("elevation::RULE_CODES' {step} is \"{old}\", and its measuring code is now \"{now}\": set it to \"{now}\"")), "{}", stale[0]);
+    let gone = stale_codes(&w, "", &elevation);
+    assert!(gone[0].starts_with("regions::RESOLUTION_CODE is missing,"), "{gone:?}");
+    assert_eq!(
+        std::fs::read_to_string(concat!(env!("OUT_DIR"), "/stale_codes")).unwrap(),
+        stale_codes(&w, &regions, &elevation).iter().map(|s| format!("{s}\n")).collect::<String>(),
+        "build.rs's"
+    );
 }

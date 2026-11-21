@@ -58,6 +58,25 @@ step "the rollback floor"
 floor=$(head -1 tools/app/rollback-floor)
 [[ $floor =~ '^[0-9a-f]{40}$' ]] && git merge-base --is-ancestor "$floor" HEAD 2>/dev/null \
   || { echo "tools/app/rollback-floor's first line, $floor, isn't the full id of a commit this tree contains (the file says what it names)"; exit 1; }
+step "the held digests"
+# The typed versions' held digests match the code they cover (#1578: regions::RESOLUTION_CODE,
+# elevation::RULE_CODES): the inputs crate's build.rs writes each that doesn't, with the value to
+# set, to its $OUT_DIR/stale_codes, read here from a cargo check of the crate (seconds when built).
+held=$(cargo check -q -p inputs --lib --message-format=json 2>$log | python3 -c '
+import json, sys
+for l in sys.stdin:
+    try:
+        m = json.loads(l)
+    except ValueError:
+        continue
+    if m.get("reason") == "build-script-executed" and "/crates/inputs#" in m.get("package_id", ""):
+        print(m["out_dir"])') || { cat $log; echo "cargo check -p inputs failed: the held digests can't be read"; exit 1; }
+[[ -n $held && -e $held/stale_codes ]] || { echo "the inputs crate's build.rs wrote no stale_codes (in ${held:-no OUT_DIR})"; exit 1; }
+[[ ! -s $held/stale_codes ]] || {
+  cat $held/stale_codes
+  echo "a held digest doesn't match its code: set it as above, as the branch's last change (tools/dev/agent-rules.md)"
+  exit 1
+}
 step "the scan lines"
 # A test reading the repo's own files says which (#662): `//! scans: <path prefix> …`, so
 # tools/dev/affected-tests.sh runs it when any of them changes (write_sets missed #660's room.rs).

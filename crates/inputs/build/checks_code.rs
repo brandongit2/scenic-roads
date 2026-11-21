@@ -1,9 +1,10 @@
 //! What each gate unit's checks are, as code (docs/inputs.md §4.3, task #1467): a digest of the code
 //! a unit's checks compile to, which `inputs::check_key` and a unit's check state
 //! (`Listed::derived_by`) name in place of a typed version. build.rs makes one for every module
-//! `src/inputs/mod.rs` declares and one for the gate; the crate's tests compile this file in too
-//! (lib.rs), and hold the typed versions left (the regions' `RESOLUTION`, elevation's `Step::rule`)
-//! to the code they cover.
+//! `src/inputs/mod.rs` declares and one for the gate, and prints each held digest of the typed
+//! versions left (the regions' `RESOLUTION`, elevation's `Step::rule`) that no longer matches the
+//! code it covers, with the value to set (`stale_codes`); the crate's tests compile this file in too
+//! (lib.rs), and hold those digests to that code.
 //!
 //! **The code.** The inputs crate and every crate its manifest's dependencies reach by path (each
 //! manifest's `[dependencies]` and `[target.….dependencies]`, in any form Cargo takes, and a
@@ -265,7 +266,6 @@ impl World {
 
     /// The digest of the items `start` names and every item they name (`closure`), `leave_out` left
     /// out (the guards').
-    #[cfg(test)]
     fn digest(&self, start: Vec<Id>, leave_out: &BTreeSet<Id>) -> String {
         self.digest_of(&self.closure(start, leave_out))
     }
@@ -1634,7 +1634,6 @@ pub fn codes(w: &World) -> Result<Vec<(String, String)>, String> {
 /// through whole or not at all), so a change there checks nothing again. Each, with everything under
 /// it, but `PLUMBING_KEPT`: jobrt's resume log is the codec a resumed resolution's pieces are read
 /// back through. The units' own codes keep them all.
-#[cfg(test)]
 const PLUMBING: [&str; 15] = [
     "jobrt",
     "store::nasio",
@@ -1653,11 +1652,9 @@ const PLUMBING: [&str; 15] = [
     "inputs::inputs::regions::progress",
 ];
 
-#[cfg(test)]
 const PLUMBING_KEPT: [&str; 1] = ["jobrt::resume_log"];
 
 /// The items of `PLUMBING` (each module there, asserted).
-#[cfg(test)]
 fn plumbing(w: &World) -> BTreeSet<Id> {
     let split = |s: &str| -> (String, Vec<String>) {
         let mut v = s.split("::").map(String::from);
@@ -1677,13 +1674,11 @@ fn plumbing(w: &World) -> BTreeSet<Id> {
     out
 }
 
-#[cfg(test)]
 fn path(p: &[&str]) -> Vec<String> {
     p.iter().map(|s| s.to_string()).collect()
 }
 
 /// The method `name` of the impls in module `m` of the inputs crate of a type named `ty`.
-#[cfg(test)]
 fn method(w: &World, m: &[String], ty: &str, name: &str) -> Vec<Id> {
     let items = &w.crates[INPUTS].modules[m].items;
     let of_ty =
@@ -1701,8 +1696,7 @@ fn method(w: &World, m: &[String], ty: &str, name: &str) -> Vec<Id> {
 /// resolution (a resolution's making and its key, `Regions::made`, `outcome_key`; its budgets,
 /// `max_mb`, `op_budget_s`; its data, `data_from`, `Prepared::land_open`; a stored one taken,
 /// `accepted_resolution`, `Recorded`), and all they name but `PLUMBING`. Held to
-/// `regions::RESOLUTION_CODE` by a test.
-#[cfg(test)]
+/// `regions::RESOLUTION_CODE` (`stale_codes`).
 pub fn resolution_code(w: &World) -> String {
     let regions = path(&[INPUTS, "regions"]);
     let mut start: Vec<Id> = ["resolve", "tiles", "geom", "land", "stored", "shapes", "data"]
@@ -1726,8 +1720,7 @@ pub fn resolution_code(w: &World) -> String {
 
 /// The code each elevation measure step's rule (`Step::rule`) covers, by the step's name: its
 /// measuring code and all it names (`headers_of`, `presence_of`, `hollow_of`), `Step::rule` itself
-/// and `PLUMBING` left out. Held to `elevation::RULE_CODES` by a test.
-#[cfg(test)]
+/// and `PLUMBING` left out. Held to `elevation::RULE_CODES` (`stale_codes`).
 pub fn rule_codes(w: &World) -> Vec<(&'static str, String)> {
     let m = path(&[INPUTS, "elevation"]);
     let mut leave_out = plumbing(w);
@@ -1740,4 +1733,43 @@ pub fn rule_codes(w: &World) -> Vec<(&'static str, String)> {
             (step, w.digest(start, &leave_out))
         })
         .collect()
+}
+
+/// The held digests that no longer match the code they cover (#1578), each as what to set:
+/// `regions::RESOLUTION_CODE` (`resolution_code`) and each step's in `elevation::RULE_CODES`
+/// (`rule_codes`), as their files' text holds them, `regions` (src/inputs/regions/mod.rs) and
+/// `elevation` (src/inputs/elevation.rs). build.rs prints each as a warning and writes them to
+/// `$OUT_DIR/stale_codes` (tools/app/guards.sh fails on one, saying it); a test holds them to none.
+pub fn stale_codes(w: &World, regions: &str, elevation: &str) -> Vec<String> {
+    // (The quoted value after `before` in `text`.)
+    let held = |text: &str, before: &str| -> String {
+        text.find(before)
+            .map(|i| &text[i + before.len()..])
+            .and_then(|rest| rest.find('"').map(|j| format!("\"{}\"", &rest[..j])))
+            .unwrap_or_else(|| "missing".into())
+    };
+    let mut out = Vec::new();
+    let now = format!("\"{}\"", resolution_code(w));
+    let was = held(regions, "pub const RESOLUTION_CODE: &str = \"");
+    if was != now {
+        out.push(format!(
+            "regions::RESOLUTION_CODE is {was}, and the code it covers is now {now}: set it to {now} (and bump \
+             regions::RESOLUTION if what an unchanged region resolves to, or its problems' words, changes)"
+        ));
+    }
+    let rules = elevation.find("pub const RULE_CODES").map_or("", |i| {
+        let s = &elevation[i..];
+        &s[..s.find("];").unwrap_or(s.len())]
+    });
+    for (step, now) in rule_codes(w) {
+        let now = format!("\"{now}\"");
+        let was = held(rules, &format!("(\"{step}\", \""));
+        if was != now {
+            out.push(format!(
+                "elevation::RULE_CODES' {step} is {was}, and its measuring code is now {now}: set it to {now} (and \
+                 raise the step's Step::rule if what it measures changes)"
+            ));
+        }
+    }
+    out
 }
