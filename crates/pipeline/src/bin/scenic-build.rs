@@ -1262,6 +1262,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 // jobrt::control::on_grant_live; without the file, as it is.)
                 let (hi, mid) = with_fills(&raw, &pool, &cov, &sets, &keys, |tiles, src| {
                     jobrt::control::on_grant_live(|| {
+                        eprintln!("terrain-same {}: making its levels", t.slash());
                         terrain::terrain_pack::make_piece_from(tiles, src, levels, deep.clone())
                     })
                 })?;
