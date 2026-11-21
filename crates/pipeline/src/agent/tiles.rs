@@ -1558,11 +1558,7 @@ mod tests {
                 let _a = r.admit(60, Some(&room));
                 r.now().in_flight
             });
-            let t = std::time::Instant::now();
-            while r.now().held.is_none() {
-                assert!(t.elapsed() < Duration::from_secs(10), "held back");
-                std::thread::yield_now();
-            }
+            store::testkit::eventually("held back", || r.now().held.is_some());
             assert_eq!(r.now().held, Some((60, 100)));
             drop(first);
             assert_eq!(second.join().unwrap(), 60, "admitted once the first let go");
@@ -1570,11 +1566,7 @@ mod tests {
         assert_eq!(r.now(), ReaskState::default());
         std::thread::scope(|s| {
             let big = s.spawn(|| r.admit(150, Some(&room)).cost);
-            let t = std::time::Instant::now();
-            while r.now().held.is_none() {
-                assert!(t.elapsed() < Duration::from_secs(10), "held back");
-                std::thread::yield_now();
-            }
+            store::testkit::eventually("held back", || r.now().held.is_some());
             assert_eq!(r.now().held, Some((150, 100)));
             room_now.store(200, Ordering::SeqCst);
             r.freed.notify_all();
