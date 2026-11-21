@@ -134,9 +134,10 @@ function model(sw) {
   const fresh = (beat) => beat && now - beat < touch;
   const fc = a.forecast && { ...a.forecast, publishes: a.forecast.publishes ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
-  // (Not the lead's own helper.json, from while it was a member: it leads now. Its members' statuses
-  // are sent as `helpers`, agent::Status::members.)
-  const members = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
+  // (Not the lead's own helper.json, from while it was a member: it leads now. Its members'
+  // statuses, agent::Status::members, sent as `helpers` and read under either name, as the menu
+  // bar reads them.)
+  const members = (a.members || a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
   // Every machine: the lead, then its members.
   const colours = macColours([a.host, ...members.map((x) => x.host), ...(sw.workers || []).filter((w) => w.kind === "native").map((w) => w.name)].filter(Boolean));

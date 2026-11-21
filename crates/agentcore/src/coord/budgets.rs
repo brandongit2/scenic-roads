@@ -405,7 +405,6 @@ mod tests {
             member: format!("{m}-host"),
             heartbeat: Some(crate::agent::membership::Heartbeat {
                 pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
-                beat_http: true,
                 ..Default::default()
             }),
             progress,

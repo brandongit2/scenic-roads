@@ -500,7 +500,6 @@ mod tests {
                 let beats = Arc::new(Beats::default());
                 beats.set_own(Heartbeat {
                     pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
-                    beat_http: true,
                     ..Default::default()
                 });
                 (h, beats, id.to_string())
@@ -628,7 +627,6 @@ mod tests {
         let beats = Arc::new(Beats::default());
         beats.set_own(crate::agent::membership::Heartbeat {
             pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
-            beat_http: true,
             ..Default::default()
         });
         ToLead {
@@ -665,6 +663,26 @@ mod tests {
         to.post(&to.body(&Status::default()), false)
     }
 
+    /// Task #1458 review: a lead's answer other than 200 (a 404, a 500) is no answer: `pool_beat`
+    /// errs, the poster counts its beat as failed, and nothing of the lead is taken from it (no
+    /// lead's line kept, the lead not counted as answering).
+    #[test]
+    fn a_beat_answered_other_than_200_failed() {
+        let d = tempfile::tempdir().unwrap();
+        for status in [404, 500] {
+            let (url, asked) = coordwire::testkit::answering(status);
+            let x = ToLead { urls: vec![url.clone()], ..member(&d.path().join(status.to_string()), X, 0, "t") };
+            let view = x.home.join(crate::coord::beats::LEAD_VIEW);
+            x.beats.keep_lead_view(&view);
+            let c = crate::coord::client::Client::at(vec![url], "t".into(), X);
+            assert!(c.pool_beat(&x.body(&Status::default())).is_err(), "{status}");
+            assert!(beat_once(&x), "{status}: the beat failed");
+            assert!(asked.load(std::sync::atomic::Ordering::SeqCst) >= 2, "{status}: asked");
+            assert!(!view.exists(), "{status}: no lead's line kept");
+            assert!(!x.beats.lead_answering(now_s()), "{status}: the lead not answering");
+        }
+    }
+
     const X: &str = "m-000000000000000a";
     const Y: &str = "m-000000000000000b";
 
@@ -699,7 +717,7 @@ mod tests {
     }
 
     /// Task #1104: a member's jobs' spans go with its beats once the lead has said it takes them (not
-    /// before: an older lead would read past them, and they'd go again with every beat), never on
+    /// before: a lead keeping none would read past them, and they'd go again with every beat), never on
     /// the beat after one that failed, from where the lead's answer says it has them: once there,
     /// nothing more goes.
     #[test]
@@ -810,8 +828,7 @@ mod tests {
         c.stop();
     }
 
-    /// Task #922: an ask the lead refuses as it is (a setting it doesn't take: a newer Mac's, asking
-    /// an older lead) leaves the queue, the asks after it going on; its refusal is kept, what, from
+    /// Task #922: an ask the lead refuses as it is (a setting it doesn't take) leaves the queue, the asks after it going on; its refusal is kept, what, from
     /// which Mac, why and when, in the member's status until it's seen, and a later ask about the
     /// same thing taken clears it. Refused at once, its pause neither: the lead's 400 to a pause it
     /// can't read is said as a refusal, not a lead out of reach.

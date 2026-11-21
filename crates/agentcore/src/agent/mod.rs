@@ -6156,7 +6156,7 @@ impl Agent {
             mem_reserved_mb: need.saturating_sub(held_mb),
             mem_held_back: match r {
                 Some(r) => r.held_back(),
-                None => Some("this Mac's memory can't be read".into()),
+                None => Some(crate::coord::MEM_UNREAD.into()),
             },
             held_each,
             cores,

@@ -216,20 +216,13 @@ pub struct Heartbeat {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
     /// Its Mac's conditions, for the controls (§11: whether it's home on power, on battery, away;
-    /// whether it can lead now). Left out by apps before the controls, and ignored by them.
+    /// whether it can lead now). None: not known yet ("conditions unknown" in the views).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
     /// Its broker (docs/pool.md §8, crate::agent::brokering): where a page reaches it, and how many
-    /// of its jobs' tasks wait, of which kinds, how large. Left out by apps before it (ignored by
-    /// them).
+    /// of its jobs' tasks wait, of which kinds, how large. None: its brokers off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<crate::coord::brokers::Broker>,
-    /// Always so: said for a lead on the app before task #1036, which reads a heartbeat without them
-    /// as an older app's (its mail by mailbox, its heartbeat on the NAS) and falls back to the NAS.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub mail_http: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub beat_http: bool,
 }
 
 /// A member's conditions, as its heartbeat says them (§10, §11).
@@ -762,8 +755,6 @@ impl Side {
             members: self.members.iter().cloned().collect(),
             conds: self.conds,
             broker: self.broker.clone(),
-            mail_http: true,
-            beat_http: true,
         };
         if own.pool.member.is_empty() {
             return;
@@ -2162,18 +2153,10 @@ mod tests {
         Entry { member: member.into(), job: lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
     }
 
+    /// A heartbeat reads back as written, its pool beat flattened in it; one saying no conditions
+    /// is "conditions unknown" in the views.
     #[test]
-    fn heartbeats_of_apps_before_and_after_the_controls_read_each_other() {
-        // The heartbeat as the apps before the controls have it (1fa03d8), and as they write it.
-        #[derive(Debug, PartialEq, Serialize, Deserialize)]
-        struct Before {
-            #[serde(flatten)]
-            pool: Beat,
-            #[serde(default, skip_serializing_if = "Vec::is_empty")]
-            members: Vec<String>,
-            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-            shadow: bool,
-        }
+    fn a_heartbeat_reads_back_as_written() {
         let pool = Beat {
             member: "m-000000000000000a".into(),
             host: "Mac-mini".into(),
@@ -2187,20 +2170,12 @@ mod tests {
             members: vec!["m-000000000000000b".into()],
             conds: Some(Conds { home: true, ac: false, battery: Some(54), held: false }),
             broker: None,
-            mail_http: true,
-            beat_http: true,
         };
         let b = serde_json::to_vec(&new).unwrap();
-        // An older app reads the newer's: its fields, the conditions passed over.
-        let old: Before = serde_json::from_slice(&b).unwrap();
-        assert_eq!((old.pool.clone(), old.members.clone()), (pool.clone(), new.members.clone()));
-        assert_eq!(serde_json::from_slice::<Beat>(&b).unwrap(), pool);
-        // A newer app reads the older's: no conditions ("conditions unknown" in the views).
-        let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
-        assert_eq!(back, Heartbeat { conds: None, mail_http: false, beat_http: false, ..new.clone() });
-        assert!(crate::agent::lead::state_of(&back, 1000, None).starts_with("conditions unknown"));
-        // And its own, back as written.
         assert_eq!(serde_json::from_slice::<Heartbeat>(&b).unwrap(), new);
+        assert_eq!(serde_json::from_slice::<Beat>(&b).unwrap(), pool);
+        let unknown = Heartbeat { conds: None, ..new };
+        assert!(crate::agent::lead::state_of(&unknown, 1000, None).starts_with("conditions unknown"));
     }
 
     #[test]

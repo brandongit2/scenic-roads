@@ -1429,9 +1429,12 @@ pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
 /// A Mac's memory in words (task #932): what's available against its floor (what compressing
 /// frees among it, task #945), what's reserved for its running jobs' growth, and what's left for a
 /// new job's peak (`for_new_mb`): "9.3 GB available (3.4 GB by compressing) · 6.0 GB floor · 3.0 GB
-/// reserved for its jobs' growth · 0.0 GB for a new job".
+/// reserved for its jobs' growth · 0.0 GB for a new job"; with its memory not read, `MEM_UNREAD` alone.
 pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    if c.mem_held_back.as_deref() == Some(MEM_UNREAD) {
+        return MEM_UNREAD.to_string();
+    }
     let mut v = vec![if c.mem_compress_mb > 0 {
         format!("{} available ({} by compressing)", gb(c.avail_mb), gb(c.mem_compress_mb))
     } else {
@@ -1447,6 +1450,10 @@ pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
     v.push(format!("{} for a new job", gb(for_new_mb)));
     v.join(" · ")
 }
+
+/// Why no job starts on a Mac whose memory its agent can't read (`Capacity::mem_held_back`): its
+/// memory's fields are then none of its own.
+pub const MEM_UNREAD: &str = "this Mac's memory can't be read";
 
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
@@ -7828,7 +7835,6 @@ mod tests {
     fn heard_beat(m: &str) -> held::Beat {
         let heartbeat = crate::agent::membership::Heartbeat {
             pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
-            beat_http: true,
             ..Default::default()
         };
         held::Beat {
@@ -14488,6 +14494,17 @@ mod tests {
             mem_words(&c2, 0),
             "9.0 GB available · 6.0 GB floor · 3.0 GB reserved for its jobs' growth · 0.0 GB for a new job"
         );
+        // Its memory not read (the agent's reading None): said so, never as 0 GB available and a 0
+        // GB floor, in the refusal and the words alike.
+        let unread = Capacity { mem_held_back: Some(MEM_UNREAD.into()), ..ask(1, Vec::new()).cap.unwrap() };
+        let unread = Capacity { avail_mb: 0, mem_floor_mb: 0, ..unread };
+        assert_eq!(mem_words(&unread, 0), MEM_UNREAD);
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "trees", 6, Some(2));
+        let a = Ask { cap: Some(unread), ..ask(3, Vec::new()) };
+        assert!(all_granted(&w, &a).is_empty());
+        let why = c.refusals().get("m1").cloned().unwrap_or_default();
+        assert!(why.contains(&format!("memory: {MEM_UNREAD}")) && !why.contains("0.0 GB floor"), "{why}");
     }
 
     /// Task #499: the room left is never more than what its Mac's jobs hold now leaves (its memory

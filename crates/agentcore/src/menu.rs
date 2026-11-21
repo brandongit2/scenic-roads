@@ -58,7 +58,6 @@ mod tests {
         beats.keep_lead_view(&home.join(LEAD_VIEW));
         beats.set_own(crate::agent::membership::Heartbeat {
             pool: crate::pool::Beat { member: X.into(), host: "m1".into(), ..Default::default() },
-            beat_http: true,
             ..Default::default()
         });
         let mut h = Handle::new(home, Snap::new(HoldState::default()));

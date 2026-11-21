@@ -1190,8 +1190,7 @@ events kept and a thousand more; `seq` rises by one an event, across the coordin
   `caches`, `task`, `task-fail`, `task-back`), at most 50 a beat, to a lead whose answer says
   `notes` (`coord::beats::NOTES`); the answer's `noted: {process, n}` is the last it has of that
   member (from its history's `noted` events): the member drops those up to it, and the lead
-  takes none at or below it again. A beat without `notes` (an app before them) is answered as
-  before, without `noted`.
+  takes none at or below it again. A beat without `notes` is answered without `noted`.
 
 ## Job spans (jobrt::spans, agentcore::agent::spans, agentcore::coord::jobspans; task #1104)
 
@@ -1238,7 +1237,7 @@ and as the run ends. Times are µs from the job's start (`h`'s `start_us`, unix 
 
 **To the lead:** a member's beat (`POST /pool/beat`) carries `spans: [Chunk]`, at most 512 KB a
 beat (`agent::spans::BEAT_MAX`), to a lead whose last answer said `spans` (`coord::beats::SPANS`;
-an older lead's doesn't, and gets none); the answer's `spans: [Ack]` say what it has. The beat
+a coordinator keeping no spans doesn't, and gets none); the answer's `spans: [Ack]` say what it has. The beat
 after one that failed carries none, and each failed beat that carried them quarters the bound (to
 16 KB, `BEAT_MIN`; doubled again by each that gets through), so a slow link never holds up the
 leases' beat. The lead's own jobs' go to its store every 10 s.
@@ -1731,8 +1730,7 @@ the id with the clicked point. A reader takes version 8 only.
     older ones). Nothing goes to the NAS.
   - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md §5.1):
     `{member, host, app, beat, leads, addresses, reach, members, conds: {home, ac,
-    battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
-    always true, for a lead on the app before #1036).
+    battery, held}}` (with brokers on, `broker: {urls, https, pages}`).
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
     carry `ahead`), `nas-budget`, `nas-target`, the NAS pacing's bounds (`nas-step` … `nas-apart-judges`,
     docs/pool.md §7.7), the needs model's (`needs-work-pct` … `needs-relearn`, docs/pool.md §7.7, What
