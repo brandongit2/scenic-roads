@@ -12196,7 +12196,12 @@ mod tests {
             "nothing started under the hold: {:?}",
             running
                 .iter()
-                .map(|r| (&r.spec.id, r.pausing.clone(), r.paused.clone(), r.started_at.checked_duration_since(held_at)))
+                .map(|r| (
+                    &r.spec.id,
+                    r.pausing.clone(),
+                    r.paused.clone(),
+                    r.started_at.checked_duration_since(held_at)
+                ))
                 .collect::<Vec<_>>()
         );
         drop(hung);
@@ -22002,8 +22007,11 @@ mod membership_tests {
         // Its job, run in the lease's outbox folder: it began both and failed on 6/12/25.
         let dir = a.outbox().join(lease.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("work.json"), serde_json::to_vec(&jobs::Work { step: "unit".into(), targets: ts.clone() }).unwrap())
-            .unwrap();
+        std::fs::write(
+            dir.join("work.json"),
+            serde_json::to_vec(&jobs::Work { step: "unit".into(), targets: ts.clone() }).unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             dir.join("costs.jsonl"),
             "{\"unit\":\"6/12/25\",\"started\":1}\n{\"unit\":\"6/12/26\",\"started\":1}\n{\"unit\":\"6/12/25\",\"failed\":true}\n",
@@ -22055,7 +22063,8 @@ mod membership_tests {
             let mut s = c.shared.lock().unwrap();
             s.keep.heard("m1", Vec::new(), heard);
             let (now, unix) = (s.now(), now_s());
-            let work = crate::coord::lease::Work::Job { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] };
+            let work =
+                crate::coord::lease::Work::Job { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] };
             s.leases.grant_at("m1", work, now, unix);
         }
         a.round().unwrap();

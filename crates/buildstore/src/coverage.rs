@@ -842,7 +842,8 @@ impl Grid {
                 let (ay, by) = (a[1] as i64, b[1] as i64);
                 if (ay > y) != (by > y) {
                     // The crossing's x, floored: left of an integer x exactly when its floor is.
-                    let (mut num, mut den) = ((y - ay) as i128 * (b[0] as i64 - a[0] as i64) as i128, (by - ay) as i128);
+                    let (mut num, mut den) =
+                        ((y - ay) as i128 * (b[0] as i64 - a[0] as i64) as i128, (by - ay) as i128);
                     if den < 0 {
                         (num, den) = (-num, -den);
                     }
