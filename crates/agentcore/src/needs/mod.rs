@@ -893,17 +893,25 @@ impl<'a> Book<'a> {
             (1.., Some(on), Some(ran)) => mb + on.saturating_sub(ran),
             _ => mb,
         };
-        if let Some(f) = floor {
-            return (grown(f), From::Measured);
-        }
-        if let Some(p) = md.near.as_ref().filter(|n| n.good()).and_then(|n| n.of(&key)) {
-            return (grown(p), From::Near);
-        }
         let few = md.needs.runs < MIN_RUNS;
-        match md.needs.mem(&sizes, threads) {
-            _ if few && guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
-            Some(p) => (p, From::Model),
-            None => (guess, From::Table),
+        let (mb, from) = if let Some(f) = floor {
+            (grown(f), From::Measured)
+        } else if let Some(p) = md.near.as_ref().filter(|n| n.good()).and_then(|n| n.of(&key)) {
+            (grown(p), From::Near)
+        } else {
+            match md.needs.mem(&sizes, threads) {
+                _ if few && guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
+                Some(p) => (p, From::Model),
+                None => (guess, From::Table),
+            }
+        };
+        // (Task #1253 review: while the way its step runs now has fewer than `MIN_RUNS` runs, the
+        // target's own run of another way bounds it below, a heavy target never sized by a few
+        // light runs of the new way: bldprep's 10.8 GB against its 173 MB median. A cold start
+        // (`Table`) is the coordinator's provisional need's, which reads that run already.)
+        match self.costs.get(&key).filter(|c| few && from != From::Table && !is_drop(c)) {
+            Some(c) => (mb.max(c.peak_mb), from),
+            None => (mb, from),
         }
     }
 
@@ -1237,7 +1245,7 @@ fn sig(x: f64) -> String {
 /// `scenic pool needs`: per step, its runs learned from, its sizes best first with their
 /// needs per unit, its parallelism, its memory by place, and the runs flagged off their
 /// predictions; a step with costs but none of the way it runs now (its cost version) said so,
-/// with how many of earlier ways it has.
+/// with how many of other ways it has.
 pub fn model_table(book: &Book) -> String {
     let mut steps: Vec<&str> = book.costs.keys().map(|k| step_of_key(k)).collect();
     steps.sort();
@@ -1253,7 +1261,7 @@ pub fn model_table(book: &Book) -> String {
         if n.runs == 0 {
             let v = book.the_plan.cost_version(s);
             let older = book.costs.iter().filter(|(k, c)| step_of_key(k) == *s && c.v != v && !is_drop(c)).count();
-            out += &format!("{s:<14} no runs the way it runs now (cost version {v}); {older} of earlier ways\n");
+            out += &format!("{s:<14} no runs the way it runs now; {older} of other ways\n");
             continue;
         }
         let since = n.since.as_deref().map_or(String::new(), |k| format!(", relearned from {k}"));
@@ -1374,6 +1382,96 @@ mod tests {
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             ..Default::default()
         }
+    }
+
+    /// Task #1253 review: measures of another way than the one a step runs now, here one that
+    /// would sort after it, say nothing of it: a book holding them answers as one without them
+    /// does, of a target they measure and of its step (its cores, its places by runs and by
+    /// floors, its model's disk, its drops, a reader's source time), and a target's sizes keep
+    /// nothing such a run made.
+    #[test]
+    fn measures_of_a_later_way_are_no_measures() {
+        let (v, later) = (cost_version("peaks"), cost_version("peaks").wrapping_add(1));
+        let now = |c: Cost| Cost { v, ..c };
+        let mut costs = BTreeMap::new();
+        let mut disks = BTreeMap::new();
+        for i in 1..=12u32 {
+            costs.insert(format!("peaks 6/{i}/1"), now(cost(300, 5, &[("threads", 1)])));
+            disks.insert(format!("peaks 6/{i}/1"), 100);
+        }
+        let (base_costs, base_disks) = (costs.clone(), disks.clone());
+        let base_floors = BTreeMap::new();
+        for x in 40..45u32 {
+            let c = cost(20_000, 900, &[("threads", 8), ("wrote", 7)]);
+            costs.insert(format!("peaks 6/{x}/40"), Cost { v: later, ..c });
+            disks.insert(format!("peaks 6/{x}/40"), 50_000);
+        }
+        costs.insert("peaks 6/60/1".into(), Cost { v: later, ..cost(50, 1, &[(DROPS, 3)]) });
+        let tv = cost_version("terrain-deep").wrapping_add(1);
+        costs.insert("terrain-deep 10/100/252".into(), Cost { v: tv, ..cost(900, 120, &[]) });
+        let floors = BTreeMap::from([("peaks 6/50/40".to_string(), Floor { mb: 30_000, alone: true, v: later })]);
+        let plan = crate::agent::seam::for_tests();
+        let b = Book::with(plan, &costs, Some(&floors), Some(&disks));
+        let base = Book::with(plan, &base_costs, Some(&base_floors), Some(&base_disks));
+        assert_eq!(b.cores("peaks", "6/40/40"), base.cores("peaks", "6/40/40"), "its run's threads");
+        assert!(!b.sizes("peaks", "6/40/40", None).contains_key("wrote"), "what its run made");
+        assert_eq!(b.places("peaks"), base.places("peaks"), "its places, by runs and by floors");
+        assert_eq!(b.disk("peaks", "6/50/50"), base.disk("peaks", "6/50/50"), "its model's disk");
+        assert_eq!((b.drop_need("peaks"), base.drop_need("peaks")), (None, None), "its drops");
+        assert_eq!(b.source("slope-deep", "10/100/252"), None, "a reader's source time");
+        // (The same measures of the way it runs now count, so each answer above could tell.)
+        let cur: BTreeMap<String, Cost> =
+            costs.iter().map(|(k, c)| (k.clone(), Cost { v: cost_version(step_of_key(k)), ..c.clone() })).collect();
+        let floors_now = BTreeMap::from([("peaks 6/50/40".to_string(), Floor { mb: 30_000, alone: true, v })]);
+        let c = Book::with(plan, &cur, Some(&floors_now), Some(&disks));
+        assert_ne!(c.cores("peaks", "6/40/40"), base.cores("peaks", "6/40/40"));
+        assert!(c.sizes("peaks", "6/40/40", None).contains_key("wrote"));
+        assert_ne!(c.places("peaks"), base.places("peaks"));
+        assert_ne!(c.disk("peaks", "6/50/50"), base.disk("peaks", "6/50/50"));
+        assert!(c.drop_need("peaks").is_some());
+        assert!(c.source("slope-deep", "10/100/252").is_some());
+    }
+
+    /// Task #1253 review: a step's latest earlier way is the way of its latest run of another way
+    /// (by job), not the greatest number: ways are hashes. A cold start of a target is sized by
+    /// that way's runs (`older_mem`).
+    #[test]
+    fn the_latest_earlier_way_is_its_latest_runs() {
+        let v = cost_version("peaks");
+        let job = |n: u64| Some(jobrt::jobid::JobId { epoch: 1, n });
+        let mut costs = BTreeMap::new();
+        // (The greater number, run first; then the way after it, a lesser number.)
+        costs.insert("peaks 6/1/1".to_string(), Cost { v: v.wrapping_add(2), job: job(1), ..cost(1000, 5, &[]) });
+        costs.insert("peaks 6/2/1".to_string(), Cost { v: v.wrapping_add(1), job: job(2), ..cost(5000, 5, &[]) });
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(b.older_mem("peaks", "6/2/1"), Some(5000), "its own run of the latest way");
+        assert!(b.older_mem("peaks", "6/1/1").is_none_or(|mb| mb > 1000), "not the earlier way's");
+    }
+
+    /// Task #1253 review (M3): while the way a step runs now has fewer than `MIN_RUNS` runs, a
+    /// target's own run of another way bounds its memory below: bldprep's heaviest, 10.8 GB on the
+    /// lead's records of 21 Nov against its 173 MB median, isn't sized by a few light runs of the
+    /// new way; past `MIN_RUNS`, the way it runs now alone sizes it.
+    #[test]
+    fn a_heavy_targets_old_run_bounds_it_until_its_step_has_runs_of_the_new_way() {
+        let v = cost_version("bldprep");
+        let mut costs = BTreeMap::new();
+        let heavy = cost(10_800, 600, &[("rows", 900_000)]);
+        costs.insert("bldprep 6/9/9".to_string(), Cost { v: v.wrapping_add(1), ..heavy });
+        let mem = |costs: &BTreeMap<String, Cost>| {
+            Book::new(crate::agent::seam::for_tests(), costs).mem("bldprep", "6/9/9", 0, 0)
+        };
+        for i in 1..=3u32 {
+            costs.insert(format!("bldprep 6/{i}/1"), Cost { v, ..cost(173, 20, &[("rows", 9_000 + u64::from(i))]) });
+        }
+        let (mb, from) = mem(&costs);
+        assert_ne!(from, From::Table, "its model's, of three runs");
+        assert!(mb >= 10_800, "bounded by its own run before: {mb}");
+        for i in 4..=(MIN_RUNS as u32) {
+            costs.insert(format!("bldprep 6/{i}/1"), Cost { v, ..cost(173, 20, &[("rows", 9_000 + u64::from(i))]) });
+        }
+        let (mb, _) = mem(&costs);
+        assert!(mb < 10_800, "{} runs of the way it runs now size it alone: {mb}", MIN_RUNS);
     }
 
     /// Task #1586: a target's own run is booked at its peak times the spread of its step's reruns
@@ -2117,7 +2215,7 @@ mod tests {
                 }
                 for (k, c) in all.iter().filter(|(_, c)| granted(c).is_some_and(|g| (t0..t0 + 86_400).contains(&g))) {
                     let crate::coord::CostKey { step, target } = crate::coord::CostKey::parse(k);
-                    if c.v < the_plan.cost_version(step) || is_drop(c) {
+                    if c.v != the_plan.cost_version(step) || is_drop(c) {
                         continue;
                     }
                     let threads = c.sizes.get("threads").copied().unwrap_or(0) as u32;
@@ -2520,7 +2618,7 @@ mod tests {
             let mut jobs: BTreeMap<String, Vec<(&str, &str, &Cost)>> = BTreeMap::new();
             for (k, c) in all.iter().filter(|(_, c)| granted(c).is_some_and(|g| (t0..t0 + 86_400).contains(&g))) {
                 let crate::coord::CostKey { step, target } = crate::coord::CostKey::parse(k);
-                if c.v < the_plan.cost_version(step) || is_drop(c) {
+                if c.v != the_plan.cost_version(step) || is_drop(c) {
                     continue;
                 }
                 jobs.entry(c.job.unwrap().to_string()).or_default().push((step, target, c));

@@ -1618,11 +1618,13 @@ fn cli_main() -> Result<()> {
                         println!("no floors");
                     }
                     for (k, f) in floors {
+                        let step = agentcore::coord::CostKey::parse(&k).step;
+                        let now = pipeline::agent::theplan::the_plan().cost_version(step);
                         println!(
-                            "{k}: {:.1} GB{}{}",
+                            "{k}: {:.1} GB{}, {}",
                             f.mb as f64 / 1024.0,
                             if f.alone { ", held alone" } else { ", in a batch" },
-                            if f.v > 0 { format!(", v{}", f.v) } else { String::new() }
+                            if f.v == now { "this way" } else { "another way (sizes nothing)" }
                         );
                     }
                     // (The disk floors: what each target was seen to take on the disk at least.)

@@ -232,7 +232,10 @@ mod tests {
             ("slope-deep 10/0/2", c("m1", 2)),
             ("slope-deep 10/0/3", c("m1", 50)),
             ("slope-deep 10/0/4", c("m4", 1)),
-            ("slope-deep 10/0/5", crate::coord::Cost { v: 0, ..c("m1", 1) }),
+            (
+                "slope-deep 10/0/5",
+                crate::coord::Cost { v: crate::coord::cost_version("slope-deep").wrapping_add(1), ..c("m1", 1) },
+            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -247,9 +250,13 @@ mod tests {
             many(30, "m1", &["10/0/2", "10/0/3"], 62.0),
             many(40, "m1", &["10/0/1", "10/0/4"], 500.0),
             Event { v: Some(crate::coord::cost_version("slope-deep") + 1), ..many(50, "m1", &["10/0/1"], 500.0) },
-            // (Task #927 review: a job of a way older than the step's now, its record of that way
-            // too (slope-deep's before task #929's merge), and one that doesn't say its way.)
-            Event { v: Some(0), ..many(60, "m1", &["10/0/5"], 500.0) },
+            // (Task #927 review: a job of another way than the step's now, its record of that way
+            // too (slope-deep's before task #929's merge; task #1253 review: one that would sort
+            // after it), and one that doesn't say its way.)
+            Event {
+                v: Some(crate::coord::cost_version("slope-deep").wrapping_add(1)),
+                ..many(60, "m1", &["10/0/5"], 500.0)
+            },
             Event { v: None, ..many(70, "m1", &["10/0/2"], 500.0) },
         ];
         let p = Paces::default().with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100);

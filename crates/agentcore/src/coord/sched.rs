@@ -1045,10 +1045,27 @@ impl Sched {
         lacks
     }
 
-    /// The floor of `target` of `step` that holds it off a Mac: one learned alone, the way its step
-    /// runs now (crate::coord::cost_version).
+    /// The floor of `target` of `step` that holds it off a Mac: its floor of the way its step runs
+    /// now (crate::coord::cost_version), the callers weighing whether it was learned alone; else,
+    /// while the target is a cold start (no measure of the way it runs now), its floor of another
+    /// way learned alone (`cold_floor`).
     pub(super) fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
-        self.floors.get(&cost_key(step, target)).filter(|f| f.v == self.the_plan.cost_version(step)).copied()
+        let f = self.floors.get(&cost_key(step, target))?;
+        if f.v == self.the_plan.cost_version(step) {
+            return Some(*f);
+        }
+        self.cold_floor(step, target).map(|_| *f)
+    }
+
+    /// What a cold start of `target` of `step` held at least before its way changed: its floor of
+    /// another way, learned alone (MB), while nothing of the way it runs now measures it (task #1253
+    /// review: region-tiles' 10.9 GB, its one measure, granted at 0 MB on any idle Mac). A cold
+    /// start's sizing alone (`provisional`, and where it may go: `cold_fits`, the memory guard's
+    /// holds): it never raises `peak_of`. The target's own floor, not its step's heaviest: a step's
+    /// floors run from bldprep's 173 MB median to its 10.8 GB.
+    pub(super) fn cold_floor(&self, step: &str, target: &str) -> Option<u64> {
+        let f = self.floors.get(&cost_key(step, target))?;
+        (f.alone && f.v != self.the_plan.cost_version(step) && self.measured(step, target).is_none()).then_some(f.mb)
     }
 
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
@@ -1928,26 +1945,23 @@ impl Sched {
         !g.1.contains(step)
     }
 
-    /// A cold start's provisional need (task #499): `provisional_mb` of the most, over its targets,
-    /// its step's runs of its latest earlier way measured (crate::needs::Book::older_mem: its cost
-    /// version moved, task #979) or it was offered with (`offered_mb`), the disk its step's
-    /// measures say (none: 0). None when neither says anything: no figure, so it runs alone
-    /// (`no_figure`). It goes beside other jobs when that fits; the memory guard
-    /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
+    /// A cold start's provisional need (task #499): the most, over its targets, of
+    /// `provisional_mb` of what its step's runs of its latest earlier way measured
+    /// (crate::needs::Book::older_mem: its cost version moved, task #979) or it was offered with
+    /// (`offered_mb`), and of its floor of another way learned alone, as it is (`cold_floor`: what
+    /// it held at least); the disk its step's measures say (none: 0). None when none says anything:
+    /// no figure, so it runs alone (`no_figure`). It goes beside other jobs when that fits; the
+    /// memory guard (crate::agent::memguard) stops one that overruns, and its floor is learned.
     pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let each: Vec<(u64, Option<u64>)> = targets.iter().map(|t| self.provisional_of(step, t)).collect();
         let mem = each.iter().map(|e| e.0).max().filter(|&mb| mb > 0)?;
-        Some(Measured {
-            mem_mb: provisional_mb(mem),
-            disk_mb: each.iter().filter_map(|e| e.1).max().unwrap_or(0),
-            own: false,
-        })
+        Some(Measured { mem_mb: mem, disk_mb: each.iter().filter_map(|e| e.1).max().unwrap_or(0), own: false })
     }
 
-    /// `provisional`'s look at `target` of `step`: its runs' memory of their latest earlier way
-    /// or the memory it was offered with, the larger, and its disk by the measures; kept while
-    /// the measures stand and as offered (`provisional_of`: an ask weighs each cold target it may
-    /// grant).
+    /// `provisional`'s look at `target` of `step`: `provisional_mb` of its runs' memory of their
+    /// latest earlier way or the memory it was offered with, the larger, or its floor of another
+    /// way (`cold_floor`), the larger; and its disk by the measures; kept while the measures stand
+    /// and as offered (`provisional_of`: an ask weighs each cold target it may grant).
     fn provisional_of(&self, step: &str, target: &str) -> (u64, Option<u64>) {
         let rev = self.rev();
         {
@@ -1960,7 +1974,8 @@ impl Sched {
             }
         }
         let b = self.book();
-        let p = (b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)), b.disk(step, target));
+        let ran = provisional_mb(b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)));
+        let p = (ran.max(self.cold_floor(step, target).unwrap_or(0)), b.disk(step, target));
         let mut g = self.provisional_at.lock().unwrap_or_else(|e| e.into_inner());
         g.1.entry(step.to_string()).or_default().insert(target.to_string(), p);
         p
@@ -1974,12 +1989,14 @@ impl Sched {
     }
 
     /// Whether a cold start of `step` over `targets` may go to `a`'s worker (task #499): its
-    /// provisional need fits the room `a` spares, or the worker holds no job (one bigger than its
-    /// whole room, or with no figure, goes alone, as every cold start did before: the guard learns
-    /// its floor).
+    /// provisional need fits the room `a` spares, or the worker holds no job and the room it spares
+    /// covers its targets' floors of another way (`cold_floor`: one bigger than its whole room by
+    /// its runs' figure, or with no figure, goes alone, as every cold start did before, the guard
+    /// learning its floor; one a floor says is past that room waits for a Mac with it).
     pub(super) fn cold_fits(&self, step: &str, targets: &[String], a: &Ask, now: Instant) -> bool {
         let fits = |m: Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d);
-        self.provisional(step, targets).is_some_and(fits) || !self.holds_job(&a.worker, now)
+        let held = targets.iter().filter_map(|t| self.cold_floor(step, t)).max().unwrap_or(0);
+        self.provisional(step, targets).is_some_and(fits) || (!self.holds_job(&a.worker, now) && held <= a.mem_mb)
     }
 
     /// The disk a job of `step` reserves for its shared cache (crate::needs::CACHES) on the Mac

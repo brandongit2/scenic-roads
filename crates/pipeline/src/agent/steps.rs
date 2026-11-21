@@ -166,16 +166,24 @@ pub struct Step {
     /// whose key isn't derived from its reads (`derived`).
     pub versions: &'static [(&'static str, fn() -> String)],
     /// The code versions the key of a step whose key isn't derived (`derived`) names where it is
-    /// made (pack's and lo's in build's base-pack keys, lakefill's in its own): with `versions`,
-    /// what its cost version is derived from (`cost_version`).
+    /// made (pack's and lo's in build's base-pack keys, lakefill's and names-todo's in their own,
+    /// regions-extract's in inputs::inputs::regions::extract::key): with `versions`, what its cost
+    /// version is derived from (`cost_version`). Every key maker naming a version declares it here
+    /// (the test `every_key_made_outside_the_table_declares_its_versions`).
     pub key_versions: &'static [(&'static str, fn() -> String)],
+    /// Its memory's version: raised with a change of its code that moves its memory or time and
+    /// not its outputs (none of its `versions` moves then), so its costs and floors are learned
+    /// again with no target built again. 0: none declared. Folded into its cost version as the
+    /// line `v memory <n>`; never a build key.
+    pub memory_v: u32,
 }
 
 /// The way `step` runs now, as far as its memory and time go (agentcore::coord::cost_version):
-/// derived from the code versions its outputs are keyed by (`versions`, then `key_versions`), so a
-/// change that builds its targets again has its costs and floors learned again, and only its own.
-/// A hash of their lines (`v <name> <version>`), never 0; 0 for a step that declares none (and for
-/// a task's kind or a name the table doesn't know). Never a build key.
+/// derived from the code versions its outputs are keyed by (`versions`, then `key_versions`) and
+/// its memory's version (`memory_v`), so a change that builds its targets again, or moves its
+/// memory, has its costs and floors learned again, and only its own. A hash of their lines (`v
+/// <name> <version>`), never 0; 0 for a step that declares none (and for a task's kind or a name
+/// the table doesn't know). Never a build key.
 pub fn cost_version(step: &str) -> u32 {
     static WAYS: std::sync::OnceLock<std::collections::HashMap<&'static str, u32>> = std::sync::OnceLock::new();
     let ways = WAYS.get_or_init(|| TABLE.iter().map(|r| (r.name, way_of(r))).collect());
@@ -184,7 +192,11 @@ pub fn cost_version(step: &str) -> u32 {
 
 /// `cost_version` of row `r`, worked out.
 fn way_of(r: &Step) -> u32 {
-    let lines: Vec<String> = r.versions.iter().chain(r.key_versions).map(|(n, v)| format!("v {n} {}", v())).collect();
+    let mut lines: Vec<String> =
+        r.versions.iter().chain(r.key_versions).map(|(n, v)| format!("v {n} {}", v())).collect();
+    if r.memory_v > 0 {
+        lines.push(format!("v memory {}", r.memory_v));
+    }
     if lines.is_empty() {
         return 0;
     }
@@ -913,6 +925,7 @@ const fn step(
         reads: &[],
         versions: &[],
         key_versions: &[],
+        memory_v: 0,
     }
 }
 
@@ -1074,6 +1087,7 @@ pub const TABLE: [Step; 65] = [
     // a heavy NAS reader.
     Step {
         alone: true,
+        key_versions: &[("regions-extract", || inputs::inputs::regions::extract::VERSION.to_string())],
         ..step(
             "pass",
             Derive,
@@ -1639,6 +1653,7 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
+        key_versions: &[("names-todo", || landmarks::namestodo::VERSION.to_string())],
         ..step(
             "upkeep",
             Keep,
@@ -2566,16 +2581,19 @@ mod tests {
         let now: Vec<u32> = TABLE.iter().map(way_of).collect();
         for (r, &v) in TABLE.iter().zip(&now) {
             assert_eq!(cost_version(r.name), v, "{}", r.name);
-            let declared = !r.versions.is_empty() || !r.key_versions.is_empty();
+            let declared = !r.versions.is_empty() || !r.key_versions.is_empty() || r.memory_v > 0;
             assert_eq!(v != 0, declared, "{}: 0 exactly when it declares no version", r.name);
         }
         assert_eq!(cost_version("tail"), 0, "a task's kind");
-        // (Distinct for the steps that declare versions: none shares another's way by chance.)
-        let mut ways: Vec<u32> = now.iter().copied().filter(|&v| v != 0).collect();
-        let n = ways.len();
-        ways.sort_unstable();
-        ways.dedup();
-        assert_eq!(ways.len(), n);
+        // (A memory version raised moves its step's way and no other's, a step of none's too.)
+        for name in ["unit", "gc"] {
+            let i = TABLE.iter().position(|r| r.name == name).unwrap();
+            let mut t = TABLE;
+            t[i].memory_v += 1;
+            let moved: Vec<&str> = t.iter().zip(&now).filter(|(r, &v)| way_of(r) != v).map(|(r, _)| r.name).collect();
+            assert_eq!(moved, [name]);
+            assert_ne!(way_of(&t[i]), 0);
+        }
         let changed =
             |name: &str| -> Vec<&'static str> {
                 let mut t = TABLE;
@@ -2603,6 +2621,48 @@ mod tests {
         assert_eq!(changed("pack"), ["pack"], "keyed by PACK_V outside the table");
         assert_eq!(changed("lo"), ["lo"]);
         assert!(changed("no such version").is_empty());
+    }
+
+    /// Task #1253 review: every key made outside the table that names a version (`format!("<step>
+    /// {V}")` or `format!("<step> {}", V)`, V a `…_V` or `…VERSION` constant, in build.rs's key
+    /// makers and the regions' extract's) is of a row that declares it in `key_versions` (by that
+    /// constant), and every row declaring `key_versions` has such a key: found from the code, so a
+    /// step keyed by a version its cost version leaves out fails here.
+    #[test]
+    fn every_key_made_outside_the_table_declares_its_versions() {
+        use super::{row, TABLE};
+        let makers = [include_str!("build.rs"), include_str!("../../../inputs/src/inputs/regions/extract.rs")];
+        let steps_src = include_str!("steps.rs");
+        let mut found: std::collections::BTreeMap<String, String> = Default::default();
+        for src in makers {
+            for (at, _) in src.match_indices("format!(\"") {
+                let rest = &src[at + 9..];
+                let Some(end) = rest.find('"') else { continue };
+                let (lit, after) = (&rest[..end], &rest[end + 1..]);
+                let Some((name, v)) = lit.split_once(' ') else { continue };
+                let konst = match v.split(' ').next() {
+                    Some("{}") => after.strip_prefix(", ").and_then(|a| a.split(')').next()).unwrap_or(""),
+                    Some(b) if b.starts_with('{') && b.ends_with('}') => &b[1..b.len() - 1],
+                    _ => continue,
+                };
+                let konst = konst.rsplit("::").next().unwrap_or("");
+                let versioned = konst.ends_with("_V") || konst.ends_with("VERSION");
+                if versioned && row(name).is_some_and(|r| r.versions.is_empty()) {
+                    found.insert(name.to_string(), konst.to_string());
+                }
+            }
+        }
+        let declaring: Vec<&str> = TABLE.iter().filter(|r| !r.key_versions.is_empty()).map(|r| r.name).collect();
+        assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), {
+            let mut d = declaring.clone();
+            d.sort_unstable();
+            d
+        });
+        for (name, konst) in &found {
+            let at = steps_src.find(&format!("key_versions: &[(\"{name}\", ||")).unwrap_or_else(|| panic!("{name}"));
+            let line = steps_src[at..].lines().next().unwrap();
+            assert!(line.contains(&format!("{konst}.to_string()")), "{name}: its key's {konst}, declared {line}");
+        }
     }
 
     /// A write-set tests a name by its parts, held in place (`parts`): a name deeper than a

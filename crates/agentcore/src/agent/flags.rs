@@ -89,11 +89,12 @@
 //!   before on as many threads, for `relearn` (`needs-relearn`) targets or more on one side and
 //!   most of its reruns whose larger peak is past what a thread of the step adds by its needs model
 //!   (`Status::not_raised`, crate::coord::Coordinator::not_raised, crate::coord::Cost::was_mb; task
-//!   #1507): code outside the versions its cost version is derived from moved its memory (a shared
-//!   reader's, #1109's coverage read in place), so its targets not run since are still sized by
-//!   the old code's runs; or their inputs moved as much. A flag per step and side: how many
-//!   targets, the one off the most with both peaks, and the Mac of its run. Flagged until its
-//!   cost version moves (its costs then of another way) or those targets run again alike.
+//!   #1507): its code moved its memory with no version raised (its memory version, the steps
+//!   table's `memory_v`, is the one for a change that moves memory and not outputs), so its
+//!   targets not run since are still sized by the old code's runs; or their inputs moved as much.
+//!   A flag per step and side: how many targets, the one off the most with both peaks, and the
+//!   Mac of its run. Flagged until its cost version moves (its costs then of another way) or
+//!   those targets run again alike.
 //! - **NAS apart** (`nas-apart`): a Mac answering the lead's pacing whose probe on its own ssh to
 //!   the NAS is down (crate::coord::Capacity::nas_apart's `down`, crate::agent::apart), with why
 //!   (its key's agent not answering among the causes): its probe's figures are missing, and with
@@ -292,11 +293,10 @@ pub fn not_raised(st: &Status) -> Vec<Flag> {
             kind: "cost-version".into(),
             mac: n.mac.clone(),
             said: format!(
-                "{}: {} of its {} reruns at its cost version {} took {} memory than their runs before ({} {} then, {} now): code outside the versions its cost version is derived from, or its inputs, moved its memory, and its targets not run since are sized by their old runs until they run again",
+                "{}: {} of its {} reruns of the way it runs now took {} memory than their runs before ({} {} then, {} now): if its code moved its memory, raise its memory version (the steps table's `memory_v`), as its targets not run since are sized by their old runs; or its inputs moved as much",
                 n.step,
                 n.targets,
                 n.reruns,
-                n.v,
                 if n.lower { "far less" } else { "far more" },
                 n.target,
                 gb(n.was_mb),

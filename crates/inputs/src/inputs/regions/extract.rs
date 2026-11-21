@@ -111,9 +111,12 @@ impl Extract {
     }
 }
 
-/// The job's key: the pass's date and the sorted ids.
+/// The extract's version: raised with any change to what it makes (the job's key names it).
+pub const VERSION: u32 = 1;
+
+/// The job's key: the pass's date, the extract's version and the sorted ids.
 pub fn key(date: &str, ids: &BTreeSet<Id>) -> String {
-    let mut parts = vec![format!("regions-extract 1 {date}")];
+    let mut parts = vec![format!("regions-extract {VERSION} {date}")];
     parts.extend(ids.iter().map(|i| i.to_string()));
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
     jobrt::jobs::h(&refs)

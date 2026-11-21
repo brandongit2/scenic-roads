@@ -686,8 +686,9 @@ cores again and the Mac is granted nothing more until they fit.
   release's programs to its end; the lead's status names such jobs (`Capacity::old_app`).
 - **Floors**: the most a target held is its floor (`floors.json`), rising only, tagged with the
   step's `cost_version`; a target's predicted memory is never below its floor of the way its step
-  runs now, and a floor of another way neither holds it nor raises it, nor takes the place of one
-  of the way it runs now (§7.7, One model per step). A target whose floor
+  runs now, and a floor of another way never raises it nor takes the place of one of the way it
+  runs now (§7.7, One model per step); one learned alone sizes and holds only the target's cold
+  start (§7.7, A cold start). A target whose floor
   exceeds every Mac's room waits, the status saying so. `scenic pool floors [--clear [<step>
   [<target>]]]` lists or clears them, through the running lead's coordinator.
 
@@ -1202,13 +1203,24 @@ and always count). **The way** is derived, never kept by hand (`steps::cost_vers
 #1253): a hash of the code versions the step's outputs are keyed by, its row's `versions` (the
 `v` lines of its key, its own version and the codecs and code it borrows), then `key_versions`
 for a step whose key is made outside the table (pack's `PACK_V`, lo's `LO_V`, lakefill's
-`LAKEFILL_V`); 0 for a step that declares none (the pass's own, prune, gc, redo, inputs, the
+`LAKEFILL_V`, names-todo's `namestodo::VERSION`, regions-extract's `extract::VERSION`: every key
+maker naming a version is found from the code and its row checked to declare it), then its
+memory version (`memory_v`, the line `v memory <n>`, none at 0); 0 for a step that declares none
+(osm-pass, pass-sets, buildings, prune, the catalogue and the catalogue held, inputs, gc, redo,
 backup) and for a task's kind. A change that builds a step's targets again so moves its way and
 its alone (terrain-hi's `TERRAIN_V` moves terrain-hi's, terrain-deep's and terrain-lo's, which
 name it): their measures are of another way from then, each target a cold start until the step
 is measured again, while the lead's restart and every other change keep the costs and floors as
-they are. Ways are equal or not, never ordered: a measure of a later way counts for nothing too
-(a member on an older app sending measures of its way, or the lead on one). A target's
+they are. **A change that moves a step's memory or time and not its outputs** (its memory held
+another way, a buffer cut, a shared reader's change) raises its row's `memory_v` in the same
+commit: its way moves, no target is built again. Ways are equal or not, never ordered: a measure
+of a later way counts for nothing too. **During a rollout** a member still on the old app runs
+its jobs the old way and says so: its costs and floors come with its way, and the lead on the new
+app keeps them as of another way (sizing nothing but a cold start), as a lead still on the old
+app keeps a new member's; once each Mac runs the new app (docs/building.md §2, Restarts), their
+runs are of one way again. While a step has fewer than `MIN_RUNS` runs of the way it runs now, a
+target's own run of another way bounds its memory below (bldprep's heaviest, 10.8 GB against its
+173 MB median, is never sized by a few light runs of the new way). A target's
 memory, disk and time are its own run's (memory never below its floor), its memory times its
 step's **spread over its reruns** (`needs::Reruns::spread`, task #1586): of each of its targets
 that reran one of the way it runs now on as many threads (`Cost::was_mb`) after a run that peaked
@@ -1393,8 +1405,13 @@ against what it was sized to, by step and Mac.
 **A cold start** (no target of its step measured the way it runs now) is packed by its
 *provisional need*: the most its step's runs of its latest earlier way (the way of its latest run,
 by job, of another way) measured (or its offered
-guess: unit's and pois' extract size), times 3/2 (`coord::sched::provisional_mb`), its disk its
-step's measures'. With neither, it runs alone (`Sched::no_figure`). Its cores: one thread when its
+guess: unit's and pois' extract size), times 3/2 (`coord::sched::provisional_mb`), or its floor
+of another way learned alone, as it is (`Sched::cold_floor`: what it held at least), the larger;
+its disk its step's measures'. With none, it runs alone (`Sched::no_figure`). A cold target with
+such a floor goes only to a Mac whose ask covers it, idle or not, and the memory guard holds it
+by it as by a floor of the way it runs now (`holding_floor`): region-tiles' 10.9 GB floor, its one
+measure, is never granted at nothing to a Mac short of it. That floor sizes the cold start alone,
+never `peak_of`. Its cores: one thread when its
 step honours its threads (`coord::THREADS_HONOURED`: `slope-hi`, `slope-deep`, `terrain-deep`,
 `bld-fetch`, `pyramids-fill`; its agent grows it from there), else the whole Mac. It goes beside
 other jobs when it fits; at most one cold start runs on a Mac, one job of the step in the pool at a
@@ -1405,9 +1422,10 @@ its memory measured. A floor never stalls the build: the first slot starts once 
 done what it can, the disk guard as backstop.
 
 **A version not raised.** A step's cost version is derived from the code versions its outputs are
-keyed by (§7.7, One model per step), so code that moves its memory outside them (a reader shared by
-many steps, #1109's coverage read in place) moves no cost version, and a digest of all the code
-would make every step a cold start with nearly every release. So the lead watches: a
+keyed by and its memory version (§7.7, One model per step), so a change that moves its memory
+without a version raised (its `memory_v` left as it was, or a reader shared by many steps:
+#1109's coverage read in place) moves no cost version, and a digest of all the code would make
+every step a cold start with nearly every release. So the lead watches: a
 target's rerun of the same way on as many threads notes its run before's peak (`Cost::was_mb`). One
 off by more than `needs-off` (3) times, where it matters in packing, is counted: where the larger
 of its two peaks is past its step's bar by its runs: what a thread of it holds (their peaks over
@@ -1420,7 +1438,7 @@ its lightest quarter's peak inputs' small targets rerunning within their 20 to 2
 counted. A move up past the step's heaviest raises that bar at most to a tenth of itself; a move
 of a target under a tenth of its step's 95th-percentile peak counts for nothing; a step with
 `needs-relearn` (5) or more such on one side, and most of its reruns, is flagged `cost-version`
-(§10, Flags): its targets not run since are sized by their old runs until they run again.
+(§10, Flags): raise the step's `memory_v` if its code moved its memory.
 
 ### 7.8 The agent never waits on one NAS call
 

@@ -2841,6 +2841,33 @@ pub fn speeds(
 mod tests {
     use crate::coord::client::LeaseCalls;
 
+    /// Task #1253 review: a cost of another way than the one its step runs now, one that would sort
+    /// after it too, counts for nothing in the forecast: not in its step's sums (`step_sums`), nor
+    /// as its step's measure in the forecast's pool (`Pool::current`, whose cold steps' jobs leave
+    /// their measures).
+    #[test]
+    fn a_cost_of_a_later_way_is_no_measure_of_the_forecasts() {
+        let the_plan = crate::agent::seam::for_tests();
+        let v = the_plan.cost_version("slope-hi");
+        let costs = |v: u32| {
+            BTreeMap::from([(
+                cost_key("slope-hi", "6/1/1"),
+                crate::coord::Cost { peak_mb: 500, secs: 60, v, ..Default::default() },
+            )])
+        };
+        let sums = |v: u32| step_sums(the_plan, &costs(v), &|c, _| c.secs as f64);
+        assert_eq!(sums(v).get("slope-hi"), Some(&(60.0, 1.0)));
+        assert!(sums(v.wrapping_add(1)).is_empty(), "a later way's");
+        let current = |v: u32| {
+            let regions: Vec<RegionLeft> = Vec::new();
+            let mut inp = input(&regions, Vec::new(), &cost);
+            inp.sched = Some(State { costs: costs(v), ..Default::default() });
+            Pool::new(the_plan, &inp, &[]).current
+        };
+        assert!(current(v).contains("slope-hi"));
+        assert!(current(v.wrapping_add(1)).is_empty(), "a later way's");
+    }
+
     #[test]
     fn a_machine_listed_twice_does_not_panic() {
         // (Task #816 review: two machines under one name shared its lanes while run_of numbered

@@ -8983,7 +8983,7 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert!(
             f[0].line().starts_with(&format!(
-                "cost-version: lo: {n} of its {} reruns at its cost version {v} took far less memory than their runs before (3/0/1 11.7 GB then, 0.9 GB now)",
+                "cost-version: lo: {n} of its {} reruns of the way it runs now took far less memory than their runs before (3/0/1 11.7 GB then, 0.9 GB now)",
                 n + 1
             )),
             "{}",
@@ -9436,19 +9436,64 @@ mod tests {
         assert!(c.take_redo_asks().is_empty());
     }
 
+    /// A floor of another way than its step's now (from before a fix) sizes no measure of the
+    /// target (`peak_of`, the needs); while the target is a cold start, it is what its cold start
+    /// held at least (task #1253 review: `Sched::cold_floor`), so it holds it off a Mac short of
+    /// it, `scenic pool floors --clear` lifting it.
     #[test]
-    fn a_floor_of_before_a_steps_fix_neither_holds_nor_sizes_it() {
+    fn a_floor_of_before_a_steps_fix_sizes_only_its_cold_start() {
         let (_d, c, _w) = start();
-        assert!(cost_version("bld-fetch") > 0);
-        c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
+        let old = cost_version("bld-fetch").wrapping_add(1);
+        c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: old })]);
+        assert_eq!(c.holding_floor("bld-fetch", "6/1/1").map(|f| f.mb), Some(43_000));
+        assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none());
+        assert!(c.shared.lock().unwrap().peak_of("bld-fetch", "6/1/1", 0, 0) < 43_000);
+        c.floors(true, Some("bld-fetch"), None);
         assert_eq!(c.holding_floor("bld-fetch", "6/1/1"), None);
-        assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
+    }
+
+    /// Task #1253 review (H2): a cold start whose one measure is a floor of another way learned
+    /// alone (region-tiles' 10.9 GB on 21 Nov, its runs' costs none) is sized by it, as it is: a
+    /// Mac whose ask is short of it, idle or not, isn't granted it; one with the room is, at that
+    /// figure. A floor of another way learned in a batch says nothing (its batch's caches), and
+    /// one of a target measured the way it runs now holds nothing (`peak_of` and the needs alone).
+    #[test]
+    fn a_cold_start_known_by_an_old_floor_alone_waits_for_a_mac_with_its_room() {
+        let (_d, c, w) = start();
+        let old = cost_version("peaks").wrapping_add(1);
+        let offer = |t: &str| Offer { step: "peaks".into(), targets: vec![(t.into(), format!("k {t}"), 0)], job: None };
+        c.offer("p", vec![offer("6/1/1")]);
+        let can = |mem: u64| Ask { can: vec!["peaks".into()], ..ask(mem) };
+        c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 10_900, alone: true, v: old })]);
+        assert!(!c.shared.lock().unwrap().never_measured("peaks"));
+        assert_eq!(c.holding_floor("peaks", "6/1/1").map(|f| f.mb), Some(10_900), "the guard holds by it");
+        assert!(w.ask(&can(8192)).unwrap().is_none(), "an idle Mac short of it: held");
+        let g = w.ask(&can(16 << 10)).unwrap().expect("a Mac with the room");
+        assert_eq!(g.peak_mb, 10_900, "at the figure its floor gives");
+        w.give_back(g.lease, "the build paused").unwrap();
+        // (One learned in a batch: no figure, so the cold start goes alone to an idle Mac.)
+        c.floors(true, Some("peaks"), None);
+        c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 10_900, alone: false, v: old })]);
+        assert_eq!(c.holding_floor("peaks", "6/1/1"), None);
+        let g = w.ask(&can(8192)).unwrap().expect("a batch's floor holds nothing");
+        assert_eq!(g.peak_mb, 0);
+    }
+
+    /// Task #1253 review: a z6 tile's run of another way than unit's now, one that would sort after
+    /// it too, sizes nothing (`unit_peak`): its extract's guess does.
+    #[test]
+    fn a_z6_tiles_peak_of_a_later_way_is_no_measure() {
+        let v = cost_version("unit");
+        let costs =
+            |v: u32| BTreeMap::from([("6/1/1".to_string(), Cost { peak_mb: 9000, secs: 60, v, ..Default::default() })]);
+        assert_eq!(unit_peak(v, &costs(v), "6/1/1", 500 << 20), 9000);
+        assert_eq!(unit_peak(v, &costs(v.wrapping_add(1)), "6/1/1", 500 << 20), 5000);
     }
 
     /// Task #1253: a step whose code version moved (its cost version, derived from it, another
     /// now: the costs and floors kept are of its way before, here a greater one, as a way that
     /// sorted after it would be) is sized by none of them: neither its old peak nor its old floor
-    /// holds it or raises `peak_of`; its next run's peak sizes it, and a floor of the old way
+    /// raises `peak_of` (they size its cold start alone); its next run's peak sizes it, and a floor of the old way
     /// learned after it raises nothing, where one of the way it runs now does. Another step's
     /// measures of its own way, kept beside them, size it throughout.
     #[test]
@@ -9462,8 +9507,11 @@ mod tests {
         c.add_costs_by(&[(other.clone(), run(800, cost_version("slope-hi")))], "m1");
         c.add_costs_by(&[(key.clone(), run(10_700, old))], "m1");
         c.add_floors(&[(key.clone(), Floor { mb: 20_000, alone: true, v: old })]);
-        assert_eq!(c.holding_floor(step, t), None, "its old floor holds nothing");
         assert!(mem_of(&c, step, t).is_none(), "a cold start: nothing of the way it runs now");
+        // (Its cold start alone is sized by them: its old run's 3/2, or its old floor as it is.)
+        assert_eq!(c.holding_floor(step, t).map(|f| f.mb), Some(20_000), "its cold start's room");
+        let cold = c.shared.lock().unwrap().provisional(step, &[t.to_string()]).map(|m| m.mem_mb);
+        assert_eq!(cold, Some(20_000));
         assert!(peak(&c) < 10_700, "neither its old peak nor its old floor sizes it: {}", peak(&c));
         assert_eq!(mem_of(&c, "slope-hi", t), Some(800), "another step's own way, as kept");
         c.add_costs_by(&[(key.clone(), run(1_500, now))], "m1");
