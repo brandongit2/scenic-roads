@@ -2593,6 +2593,10 @@ mod tests {
             let moved: Vec<&str> = t.iter().zip(&now).filter(|(r, &v)| way_of(r) != v).map(|(r, _)| r.name).collect();
             assert_eq!(moved, [name]);
             assert_ne!(way_of(&t[i]), 0);
+            // (Each raise again moves it: the version's number is in its line.)
+            let once = way_of(&t[i]);
+            t[i].memory_v += 1;
+            assert_ne!(way_of(&t[i]), once, "{name}");
         }
         let changed =
             |name: &str| -> Vec<&'static str> {

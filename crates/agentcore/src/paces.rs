@@ -236,6 +236,10 @@ mod tests {
                 "slope-deep 10/0/5",
                 crate::coord::Cost { v: crate::coord::cost_version("slope-deep").wrapping_add(1), ..c("m1", 1) },
             ),
+            (
+                "slope-deep 10/0/6",
+                crate::coord::Cost { v: crate::coord::cost_version("slope-deep").wrapping_add(1), ..c("m6", 1) },
+            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -257,11 +261,17 @@ mod tests {
                 v: Some(crate::coord::cost_version("slope-deep").wrapping_add(1)),
                 ..many(60, "m1", &["10/0/5"], 500.0)
             },
+            // (A Mac whose one job, and its record, are of that later way: nothing measured.)
+            Event {
+                v: Some(crate::coord::cost_version("slope-deep").wrapping_add(1)),
+                ..many(65, "m6", &["10/0/6"], 500.0)
+            },
             Event { v: None, ..many(70, "m1", &["10/0/2"], 500.0) },
         ];
         let p = Paces::default().with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100);
         assert_eq!(p.start("m1 #2", "slope-deep"), 10.0, "of 10, 8 and 10");
         assert_eq!(p.start("m4", "slope-deep"), 0.0, "none measured");
+        assert_eq!(p.start("m6", "slope-deep"), 0.0, "a later way's job alone");
         assert_eq!(p.start("m1", "pack"), 0.0);
         assert!(
             Paces::default()
