@@ -240,6 +240,24 @@ fn said() -> Vec<resolve::Problem> {
     vec![p(false, "rg-ref", "a"), p(true, "rg-cover", "c")]
 }
 
+/// A kept memo naming a step this app doesn't know (a later app's, or one renamed since) still
+/// reads: its outcomes are kept, so nothing resolves again, and its other steps' times are told on.
+#[test]
+fn a_memo_naming_an_unknown_step_keeps_its_regions() {
+    let f = Fx::new();
+    let first = f.checks("n", "fixture");
+    let (_, mut s) = f.check(&first, &files(), &State::default());
+    let times = first.times();
+    assert!(!times.is_empty());
+    let kept = s.memo.as_mut().unwrap()["times"].as_array_mut().unwrap();
+    kept.insert(0, serde_json::json!(["SomeLaterStep", 2.5]));
+    let again = f.checks("n", "fixture");
+    let (d, _) = f.check(&again, &files(), &s);
+    assert_eq!(resolved(&again), None, "nothing resolved");
+    assert!(!d.changed, "{:?}", d.report);
+    assert_eq!(again.times(), times, "the known steps' times told on");
+}
+
 /// The memo's outcome read back says what was said, word for word, in order, each problem's level
 /// kept (a warning stays a warning).
 #[test]

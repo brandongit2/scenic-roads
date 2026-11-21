@@ -158,8 +158,17 @@ impl Recorded {
 struct Memo {
     fmt: u32,
     outcomes: Vec<Recorded>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// By the step's name: one this app doesn't know (an older or newer app's) is passed over, the
+    /// rest kept (task #1581: one such step failed the memo's whole parse, every region resolved
+    /// again).
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_steps")]
     times: Vec<(progress::Step, f64)>,
+}
+
+/// `Memo::times` read: the steps whose names this app knows, with their times.
+fn known_steps<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<(progress::Step, f64)>, D::Error> {
+    let named: Vec<(serde_json::Value, f64)> = Deserialize::deserialize(d)?;
+    Ok(named.into_iter().filter_map(|(step, secs)| Some((serde_json::from_value(step).ok()?, secs))).collect())
 }
 
 /// An outcome: made now (whole), or as a check recorded it (its geometry the accepted version's).
