@@ -964,7 +964,7 @@ regions built, the coverage and the drawing (no area to cover).
 **Reading:** `accepted_coverage(root, accepted, cache)` (crate::inputs::regions::read) builds the
 coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
 cache folder: the coverage is kept there by the accepted version and the file's format
-(`coverage/<hash16>.rdcov007.cov`, `buildstore::coverage::kept_name`: an older app's file under its
+(`coverage/<hash16>.rdcov008.cov`, `buildstore::coverage::kept_name`: an older app's file under its
 own name, so an update's agent and the jobs an older one left never read each other's as
 unreadable and make theirs in memory; the shapes with their grids and edge trees, tasks #807 and
 #1109, so a read makes nothing again), so each Mac reads a version's geometry files off the NAS and grids them once, a

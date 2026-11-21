@@ -433,8 +433,7 @@ impl Shape {
         }
         let g = &self.grid;
         let c = self.cell(p);
-        let (cx, cy) = (c % g.nx, c / g.nx);
-        let centre = [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
+        let centre = g.centre_of(c);
         let pp = [p[0] as i64, p[1] as i64];
         let mut ins = bit(&g.centre, c);
         let mut flip = |e: u32| {
@@ -809,23 +808,51 @@ impl Grid {
             at[c] += 1;
         });
         drop(at);
-        // Each row's centres: crossings of the row's centre line, sorted, give the parity.
-        let mut centre = vec![0u64; cells.div_ceil(64)];
-        let mut xs: Vec<f64> = Vec::new();
+        let rank = rank_of(&listed).into();
+        let mut g = Grid {
+            x0,
+            y0,
+            cw,
+            ch,
+            nx,
+            ny,
+            centre: Vec::new().into(),
+            listed: listed.into(),
+            rank,
+            starts: starts.into(),
+            edges: edges.into(),
+        };
+        g.centre = g.centres_inside(rings).into();
+        g
+    }
+
+    /// Each cell's bit (`centre`): whether its centre (`centre_of`, the point `Shape::inside` starts
+    /// from) is inside `rings`, by the crossings of its row's centre line left of it, counted
+    /// exactly (task #1462: counted at the unrounded centre, an edge passing between the two
+    /// inverted every answer in the cell).
+    fn centres_inside(&self, rings: &Rings) -> Vec<u64> {
+        let (nx, ny) = (self.nx, self.ny);
+        let mut centre = vec![0u64; (nx * ny).div_ceil(64)];
+        let mut xs: Vec<i64> = Vec::new();
         for cy in 0..ny {
-            let y = y0 + (cy as f64 + 0.5) * ch;
+            let y = self.centre_of(cy * nx)[1];
             xs.clear();
-            for e in all_edges() {
+            for e in (0..rings.len()).flat_map(|r| rings.edges(r)) {
                 let (a, b) = rings.edge(e);
-                let (ay, by) = (a[1] as f64, b[1] as f64);
+                let (ay, by) = (a[1] as i64, b[1] as i64);
                 if (ay > y) != (by > y) {
-                    xs.push(a[0] as f64 + (y - ay) * (b[0] as f64 - a[0] as f64) / (by - ay));
+                    // The crossing's x, floored: left of an integer x exactly when its floor is.
+                    let (mut num, mut den) = ((y - ay) as i128 * (b[0] as i64 - a[0] as i64) as i128, (by - ay) as i128);
+                    if den < 0 {
+                        (num, den) = (-num, -den);
+                    }
+                    xs.push(a[0] as i64 + num.div_euclid(den) as i64);
                 }
             }
-            xs.sort_by(f64::total_cmp);
+            xs.sort_unstable();
             let mut k = 0;
             for cx in 0..nx {
-                let x = x0 + (cx as f64 + 0.5) * cw;
+                let x = self.centre_of(cy * nx + cx)[0];
                 while k < xs.len() && xs[k] < x {
                     k += 1;
                 }
@@ -835,20 +862,13 @@ impl Grid {
                 }
             }
         }
-        let rank = rank_of(&listed).into();
-        Grid {
-            x0,
-            y0,
-            cw,
-            ch,
-            nx,
-            ny,
-            centre: centre.into(),
-            listed: listed.into(),
-            rank,
-            starts: starts.into(),
-            edges: edges.into(),
-        }
+        centre
+    }
+
+    /// Cell `c`'s centre, in whole E7 units: the point its bit (`centre`) says the state of.
+    fn centre_of(&self, c: usize) -> [i64; 2] {
+        let (cx, cy) = (c % self.nx, c / self.nx);
+        [(self.x0 + (cx as f64 + 0.5) * self.cw) as i64, (self.y0 + (cy as f64 + 0.5) * self.ch) as i64]
     }
 
     /// Cell `c`'s edges.
@@ -1193,7 +1213,7 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 /// `inputs::inputs::regions::read::accepted_coverage` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
-const KEPT_MAGIC: &[u8; 8] = b"RDCOV007";
+const KEPT_MAGIC: &[u8; 8] = b"RDCOV008";
 
 /// The kept coverage's file name for the regions' accepted `version` (in the cache's `coverage/`
 /// folder, `inputs::inputs::regions::read::accepted_coverage`): `<hash16>.<format>.cov`, by the
@@ -2159,6 +2179,30 @@ mod tests {
     }
 
     #[test]
+    fn an_edge_between_a_cells_centre_and_its_whole_units_leaves_the_cell_right() {
+        // A square 103,100 units a side: 1,024 cells of 100.68359375, so cell (10, 10)'s centre is
+        // at 1,057.18 each way and `inside` starts from 1,057. The hole's lower edge, from
+        // (1000, 1057) to (1500, 1058), passes between them (at 1,057.114 there): 1,057 is below it,
+        // in the shape; 1,057.18 above it, in the hole. (Task #1462: the cell's state, counted at
+        // 1,057.18, inverted every answer in the cell.)
+        let n = 103_100;
+        let rings = vec![vec![[0, 0], [n, 0], [n, n], [0, n]], vec![[1000, 1057], [1500, 1058], [1000, 2000]]];
+        let s = Shape::new("t".into(), rings.clone(), 0.0);
+        let c = 10 * s.grid.nx + 10;
+        assert_eq!((s.grid.nx, s.grid.cw), (1024, 100.68359375));
+        assert_eq!(s.grid.centre_of(c), [1057, 1057]);
+        let mut checked = 0;
+        for y in (1007..1107).step_by(3) {
+            for x in (1007..1107).step_by(3) {
+                assert_eq!(s.cell([x, y]), c);
+                assert_eq!(s.inside([x, y]), inside_plain(&rings, [x, y]), "at {x},{y}");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 34 * 34);
+    }
+
+    #[test]
     fn buffer_reaches_a_kilometre() {
         let rings = vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]];
         let s = Shape::new("t".into(), rings, 1000.0);
@@ -2295,9 +2339,7 @@ mod tests {
                         (false, false)
                     } else {
                         let c = s.cell(p);
-                        let (cx, cy) = (c % g.nx, c / g.nx);
-                        let centre =
-                            [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
+                        let centre = g.centre_of(c);
                         let mut i = bit(&g.centre, c);
                         let mut nr = false;
                         for &e in g.edges(c) {
