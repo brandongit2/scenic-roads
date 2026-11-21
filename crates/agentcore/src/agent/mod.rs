@@ -12187,20 +12187,16 @@ mod tests {
             a.round().ok();
         }
         // (A job the rounds started before the hold, as they may: told to stop at its next safe
-        // point.)
+        // point, or frozen where it is for the NAS it needs, a hung NAS's condition coming before the
+        // hold's drain: task #1588, the lead's backup started by the first round, before the hang,
+        // and frozen as "the NAS isn't reachable" ahead of the pause, its `pausing` never set.)
         let running: Vec<_> = a.slots.iter().filter_map(|s| s.running.as_ref()).collect();
         assert!(
-            running.iter().all(|r| r.started_at < held_at && r.pausing.is_some()),
+            running.iter().all(|r| r.started_at < held_at && (r.pausing.is_some() || r.paused.is_some())),
             "nothing started under the hold: {:?}",
             running
                 .iter()
-                .map(|r| (
-                    &r.spec.id,
-                    r.pausing.clone(),
-                    r.paused.clone(),
-                    r.started_at.checked_duration_since(held_at),
-                    held_at.checked_duration_since(r.started_at)
-                ))
+                .map(|r| (&r.spec.id, r.pausing.clone(), r.paused.clone(), r.started_at.checked_duration_since(held_at)))
                 .collect::<Vec<_>>()
         );
         drop(hung);
