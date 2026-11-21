@@ -264,7 +264,9 @@ capacity $tmp/capacity 14 48 20
 a=$(publish_share 14 4 ""; print $REPLY); b=$(publish_share 14 11 ""; print $REPLY); c=$(publish_share 14 11 6; print $REPLY $reply[1])
 [[ $a == 10 && $b == 7 && $c == "6 publish_threads set in the capacity file" ]] && ok "publish's threads: what the pool leaves, half at least, or as set" || no "publish's threads: what the pool leaves, half at least, or as set" "$a, $b, $c"
 print -r -- $'publish_threads=9\npublish_wait=2' > $tmp/capacity; capacity $tmp/capacity 14 48
-[[ $reply[4] == 9 && $reply[5] == 120 ]] && ok "the capacity file: publish's threads and wait" || no "the capacity file: publish's threads and wait" "$reply"
+[[ $reply[4] == 9 && $reply[5] == 120 && $reply[6] == 1 ]] && ok "the capacity file: publish's threads and wait" || no "the capacity file: publish's threads and wait" "$reply"
+print -r -- 'measures=2' > $tmp/capacity; capacity $tmp/capacity 14 48
+[[ $reply[6] == 2 ]] && ok "the capacity file: the measurement runs at once" || no "the capacity file: the measurement runs at once" "$reply"
 rm -f $tmp/capacity
 
 # While publish's run holds slot 0, every other run waits at start, in no slot (a run outside
@@ -371,6 +373,65 @@ sleep 2
 [[ ! -e $tmp/hran && $(<$tmp/hout) == *"is publish's run's"* ]] && ok "a run on the test Mac itself waits behind publish's" || no "a run on the test Mac itself waits behind publish's" "$(<$tmp/hout)"
 rm -rf $fb/.slots/0; wait $hp
 [[ -e $tmp/hran ]] && ok "and goes once publish's run ends" || no "and goes once publish's run ends" "$(<$tmp/hout)"
+rm -rf $fb/.slots
+
+# Measurement runs (#1575): marked #perf or #repro in their command, or setting SCENIC_PUBLISH under
+# another key; one at a time (a turn, before its slot), beside the checks in the slots' capacity.
+mk() { is_measure $1 "$2" && print m || print n }
+[[ $(mk k 'cargo test --release -p x #perf')$(mk k 'cargo nextest run --workspace #repro')$(mk k 'export SCENIC_PUBLISH=1; cargo nextest run -p pipeline')$(mk k 'a;#perf') == mmmm \
+   && $(mk k 'cargo test -p x')$(mk k 'cargo test -p x #performance')$(mk k 'echo a#perf')$(mk publish 'export SCENIC_PUBLISH=1; cargo nextest run') == nnnn ]] \
+  && ok "a measurement run: by its marks" || no "a measurement run: by its marks" "$(mk k 'cargo test --release -p x #perf')…"
+run_setup m1; run_setup m2; run_setup c6; rm -f $tmp/{m1go,m1end,m2ran,c6ran}
+run_remote m1 "touch $tmp/m1go; until [[ -e $tmp/m1end ]]; do sleep 0.2; done #perf" > $tmp/m1out 2>&1 &
+m1p=$!
+wait_for $tmp/m1go
+run_remote m2 "#perf
+date +%s > $tmp/m2ran" > $tmp/m2out 2>&1 &
+m2p=$!
+sleep 3
+[[ ! -e $tmp/m2ran && $(<$tmp/m2out) == *"measurement turns are taken"*m1* ]] \
+  && ok "a second measurement run waits while one runs" || no "a second measurement run waits while one runs" "$(<$tmp/m2out)"
+[[ $(ls $fb/.slots | tr '\n' ' ') == [1-3]\ m1\  ]] && ok "a measurement run waiting for its turn holds no slot" || no "a measurement run waiting for its turn holds no slot" "$(ls $fb/.slots)"
+# (Its run in the background, waited for 30 s: one held up by a turn is stopped, not waited on for 30 min.)
+bounded_run() {  # <key> <command> <file it writes> <output file>: the run, stopped if <file> isn't written within 30 s
+  run_remote $1 $2 > $4 2>&1 &
+  local p=$!
+  wait_for $3 || kill -TERM $p 2>/dev/null  # (the run itself, its group's leader: its trap stops the rest)
+  wait $p 2>/dev/null
+}
+bounded_run c6 "date +%s > $tmp/c6ran" $tmp/c6ran $tmp/c6out; out=$(<$tmp/c6out)
+[[ -e $tmp/c6ran && ! -e $tmp/m2ran && $out == *"@@remote-tests-status 0"* && $out != *measurement* ]] \
+  && ok "a check goes beside a measurement run" || no "a check goes beside a measurement run" "$out"
+touch $tmp/m1end; wait $m1p $m2p
+[[ -e $tmp/m2ran && $(<$tmp/m2out) == *"got a measurement turn after"*"a measurement run, turn 1 of 1)"* && $(<$tmp/m1out) == *"a measurement run, turn 1 of 1)"* && -z $(ls $fb/.slots) ]] \
+  && ok "the next measurement run goes once the first ends, its turn and slot freed" || no "the next measurement run goes once the first ends, its turn and slot freed" "$(<$tmp/m2out); $(ls $fb/.slots)"
+# Behind publish's run, a measurement run takes neither its turn nor a slot.
+mkdir -p $fb/.slots/0; print -r -- "$holdme" > $fb/.slots/0/owner; rm -f $tmp/m2ran
+run_remote m2 "date +%s > $tmp/m2ran #perf" > $tmp/m2out 2>&1 &
+m2p=$!
+sleep 3
+[[ ! -e $tmp/m2ran && $(ls $fb/.slots) == 0 && $(<$tmp/m2out) == *"a measurement run"*"is publish's run's (slot 0 since"* ]] \
+  && ok "behind publish's run, a measurement run takes no turn" || no "behind publish's run, a measurement run takes no turn" "$(ls $fb/.slots): $(<$tmp/m2out)"
+rm -rf $fb/.slots/0; wait $m2p
+[[ -e $tmp/m2ran && $(<$tmp/m2out) == *"got a measurement turn after"* ]] && ok "a measurement run goes once publish's run ends" || no "a measurement run goes once publish's run ends" "$(<$tmp/m2out)"
+# measures= of the capacity file: that many at once.
+print $'slots=3\npublish_wait=1\nmeasures=2' > $fb/capacity; rm -f $tmp/{m1go,m1end,m2ran}
+run_remote m1 "touch $tmp/m1go; until [[ -e $tmp/m1end ]]; do sleep 0.2; done #perf" > $tmp/m1out 2>&1 &
+m1p=$!
+wait_for $tmp/m1go
+bounded_run m2 "date +%s > $tmp/m2ran #perf" $tmp/m2ran $tmp/m2out; out=$(<$tmp/m2out)
+touch $tmp/m1end; wait $m1p
+[[ -e $tmp/m2ran && $out == *"a measurement run, turn 2 of 2)"* && $out != *"turns are taken"* ]] \
+  && ok "the capacity file's measures=: that many at once" || no "the capacity file's measures=: that many at once" "$out"
+print $'slots=3\npublish_wait=1' > $fb/capacity; rm -rf $fb/.slots
+# A measurement run on the test Mac itself: its turn too, freed as it ends.
+mkdir -p $fb/.slots/m1; print -r -- "$holdme" > $fb/.slots/m1/owner; rm -f $tmp/hran
+( HOME=$fh here_on_test_mac h5 $tmp/here "touch $tmp/hran #perf" > $tmp/hout 2>&1 ) &
+hp=$!
+sleep 2
+[[ ! -e $tmp/hran && $(<$tmp/hout) == *"measurement turns are taken"* ]] && ok "a measurement run on the test Mac itself waits for its turn" || no "a measurement run on the test Mac itself waits for its turn" "$(<$tmp/hout)"
+rm -rf $fb/.slots/m1; wait $hp
+[[ -e $tmp/hran && $(<$tmp/hout) == *"a measurement run, turn 1 of 1)"* && -z $(ls $fb/.slots) ]] && ok "and goes once it is free, its turn freed" || no "and goes once it is free, its turn freed" "$(<$tmp/hout); $(ls $fb/.slots)"
 rm -rf $fb/.slots
 
 # The capacity lowered: the build folders above its slots go, but one in use.

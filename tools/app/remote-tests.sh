@@ -55,7 +55,9 @@
 # ended (wait_alone, called by its command), its test threads then held from the pool's jobs there
 # for its run's length (hold_tests, #1570: the agent lowers their threads to the cores left); slots in ~/scenic-check/.slots, each
 # naming its process and its start time; a gone process's slot is freed); the rest wait for one, up
-# to 30 min (behind publish's run, as long as it lasts), then refuse. A run on the test Mac itself
+# to 30 min (behind publish's run, as long as it lasts), then refuse. A measurement run (#1575: its
+# command marked #perf or #repro, or setting SCENIC_PUBLISH under another key, is_measure) takes a
+# measurement turn first, one at a time by default (take_turn), then a slot as any run. A run on the test Mac itself
 # (no ssh, no copy: here_on_test_mac) takes a slot too. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
 # is its build folder's lock: freed only once nothing the run started is left, a run killed outright too.
 # The result: the test Mac's side ends with a line "@@remote-tests-status <exit>" (or "none <why>"), read
@@ -209,15 +211,16 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # has its own slot besides (slot 0, its own build folder: it never waits behind a check) and every
 # core: it comes first, and while it runs the test Mac takes more than its cores. Set otherwise by
 # ~/scenic-check/capacity on the test Mac, lines `slots=<n>` and `threads=<n>` (either, each a whole
-# number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last), which
+# number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last; also
+# `publish_threads=`, `publish_wait=` (minutes) and `measures=`, the measurement runs at once), which
 # every run reads as it starts, printing each line it doesn't take, a key given again, and a folder
 # or unreadable file in its place (the capacity then derived). Each run says its slot, the slots and its threads, and where
 # each was set; the dev jobs page records them. A caller's own NEXTEST_TEST_THREADS (or nextest's
 # --test-threads) is taken as it is. Builds aren't shared out: a run's cargo builds with every core,
 # at nice 20 as its tests (a check's compile is the larger part of its time on the test Mac, a
 # build's load passes, and its tests are what time out).
-capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep busy>]: reply=(<slots> <test threads a run> <where each was set> <publish's test threads, set, or none> <publish's wait for the other runs, s>)
-  local f=$1 cores=$2 gb=$3 pool=${4:-0} slots threads line k v n=0 from_s from_t pthreads= pwait=$(( 30 * 60 ))
+capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep busy>]: reply=(<slots> <test threads a run> <where each was set> <publish's test threads, set, or none> <publish's wait for the other runs, s> <measurement runs at once>)
+  local f=$1 cores=$2 gb=$3 pool=${4:-0} slots threads line k v n=0 from_s from_t pthreads= pwait=$(( 30 * 60 )) measures=1
   local -A at  # (the line each key was read from)
   slots=$(( cores / 4 < gb / 12 ? cores / 4 : gb / 12 )); (( slots < 1 )) && slots=1
   from_s="derived: $cores cores / 4, $gb GB / 12"
@@ -230,7 +233,7 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
       [[ -z $line ]] && continue
       k=${${line%%=*}%%[[:space:]]#}; v=${${line#*=}##[[:space:]]#}
       if [[ $line != *=* ]]; then print -r -- "remote-tests: $f line $n: $line isn't <key>=<value>: not read"
-      elif [[ $k != (slots|threads|publish_threads|publish_wait) ]]; then print -r -- "remote-tests: $f line $n: $k=$v: unknown key (slots=, threads=, publish_threads=, publish_wait=): not read"
+      elif [[ $k != (slots|threads|publish_threads|publish_wait|measures) ]]; then print -r -- "remote-tests: $f line $n: $k=$v: unknown key (slots=, threads=, publish_threads=, publish_wait=, measures=): not read"
       elif [[ $v != <1-> || ${#v} -gt 3 ]]; then print -r -- "remote-tests: $f line $n: $k=$v isn't a whole number from 1 to 999: not read"
       else
         [[ -n ${at[$k]} ]] && print -r -- "remote-tests: $f line $n: $k given again (line ${at[$k]}): this line's $v read"
@@ -240,6 +243,7 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
           threads) threads=$(( 10#$v )); from_t="set in $f" ;;
           publish_threads) pthreads=$(( 10#$v )) ;;
           publish_wait) pwait=$(( 10#$v * 60 )) ;;
+          measures) measures=$(( 10#$v )) ;;
         esac
       fi
     done < $f
@@ -249,7 +253,51 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
     threads=$(( (free + slots - 1) / slots ))
     from_t="derived: $cores cores"; (( pool )) && from_t+=" less $pool the pool's jobs keep busy"; from_t+=" / $slots slots"
   fi
-  reply=($slots $threads "slots $from_s; threads $from_t" "$pthreads" $pwait)
+  reply=($slots $threads "slots $from_s; threads $from_t" "$pthreads" $pwait $measures)
+}
+
+# Measurement runs (#1575): an agent's runs that time tests or imitate a publish (a whole crate's
+# suite, every plan test) are the heaviest the test Mac takes, and nothing paced them: on 20 Nov
+# they stacked with each other and with the checks, and one held publish's tests back 307 s. A run
+# is one when its command is marked so: `#perf` or `#repro` in it as a word (the marks test-guard
+# lets a --release or --workspace run through by), or SCENIC_PUBLISH set under a key that isn't
+# publish's (the plan tests' full set, publish's own). It takes a measurement turn before its slot
+# (take_turn): `measures=` of the capacity file at once (one by default), each in a check slot of
+# its own as any run, so beside the checks within the slots' capacity, never more. Publish first:
+# behind publish's run a measurement waits as any run does, its turn too.
+is_measure() {  # <key> <command>: 0 when the run is a measurement
+  [[ $1 != publish ]] || return 1
+  [[ " $2 " == *[[:space:]\;\(\&\|]\#(perf|repro)[^[:alnum:]_-]* || $2 == *SCENIC_PUBLISH=* ]]
+}
+
+# A measurement run's turn, before its slot: turn <n> is ~/scenic-check/.slots/m<n>, taken by mkdir
+# and naming its run as a slot does (freed with its slots, free_mine; a gone run's freed as a gone
+# slot is, free_stale_slot). None free, it waits, 30 min at most, behind publish's run without
+# trying one, that wait not counted (as take_slot). Says what it waits for at once. REPLY: the turn;
+# 1 when none came.
+take_turn() {  # <base> <measures> <owner>
+  local base=$1 n=$2 mine=$3 s waited=0 behind=0 said=
+  mkdir -p $base/.slots
+  while true; do
+    if publish_holds $base; then
+      [[ $said != publish ]] && print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac is publish's run's (slot 0 since $(date -r $(stat -f %m $base/.slots/0) +%H:%M:%S)): waiting for it to end"
+      said=publish; sleep 5; (( behind += 5 )); continue
+    fi
+    for s in {1..$n}; do
+      if mkdir $base/.slots/m$s 2>/dev/null; then
+        print -r -- "$mine" > $base/.slots/m$s/owner
+        [[ $(cat $base/.slots/m$s/owner 2>/dev/null) == "$mine" ]] || continue
+        REPLY=$s
+        (( waited + behind )) && print "remote-tests: got a measurement turn after $(( waited + behind )) s"
+        return 0
+      fi
+      free_stale_slot $base m$s
+    done
+    [[ $said != turns ]] && print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac's $n measurement turns are taken ($(awk '{print $NF}' $base/.slots/m<1->/owner(N) 2>/dev/null | tr '\n' ' ')): waiting"
+    said=turns
+    (( waited >= 1800 )) && return 1
+    sleep 5; (( waited += 5 ))
+  done
 }
 
 # The pool's jobs on this Mac (#1563): the cores its agent and every process under it (its jobs:
@@ -449,9 +497,9 @@ free_stale_slot() {  # <base> <slot>: frees the slot if its run is gone (0), els
   fi
 }
 
-free_mine() {  # <base> <owner> <its slot's folder>: the slots <owner> holds freed, the check slots publish's run took first, its tests' hold too
+free_mine() {  # <base> <owner> <its slot's folder>: the slots <owner> holds freed, the check slots publish's run took first, a measurement run's turn, its tests' hold too
   local s l= f=$agent_home/test-hold.json
-  for s in $1/.slots/<1->(/N); do
+  for s in $1/.slots/(m|)<1->(/N); do
     [[ $s != $3 && $(cat $s/owner 2>/dev/null) == "$2" ]] && rm -rf $s
   done
   [[ $(cat $3/owner 2>/dev/null) == "$2" ]] && rm -rf $3
@@ -499,8 +547,12 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   mkdir -p $base/.slots $base/.build
   mine="$(proc_id) $key"
   capacity $base/capacity $cores $(( $(sysctl -n hw.memsize) / 1073741824 ))
-  local slots=$reply[1]
-  take_slot $base $key $dir $slots "$mine" || none "no test-Mac slot within 30 min"
+  local slots=$reply[1] measures=$reply[6] turn=
+  if is_measure $key "$cmd"; then
+    take_turn $base $measures "$mine" || none "no measurement turn on the test Mac within 30 min"
+    turn="; a measurement run, turn $REPLY of $measures"
+  fi
+  take_slot $base $key $dir $slots "$mine" || { free_mine $base "$mine" /nonexistent; none "no test-Mac slot within 30 min" }
   slot=$REPLY
   # On any exit, by a signal too (a TERM stops the whole run, cargo's rustc and test binaries, a
   # test's server): the watcher stopped (by its PID), then all else in this connection's process
@@ -580,7 +632,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   # (The test Mac sampled meanwhile, by the tree's own recorder: tools/dev/devjob.zsh.)
   [[ -f tools/dev/devjob.zsh ]] && { source tools/dev/devjob.zsh && dj_sampling } >/dev/null 2>&1
   share_out $base $slot $slots $cores "$mine"
-  print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot of $slots, $REPLY test threads, $build; ${reply[1]})"
+  print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot of $slots, $REPLY test threads, $build; ${reply[1]}$turn)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
   # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
   nice -n 20 /usr/sbin/taskpolicy -c utility zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
@@ -633,17 +685,22 @@ here_on_test_mac() {  # <key> <source dir> <command>
   local base=~/scenic-check cores=$(sysctl -n hw.ncpu) mine="$(proc_id) $1" rc
   mkdir -p $base/$1
   capacity $base/capacity $cores $(( $(sysctl -n hw.memsize) / 1073741824 ))
-  local slots=$reply[1]
-  take_slot $base $1 $base/$1 $slots "$mine" || { refuse "no test-Mac slot within 30 min"; return }
-  typeset -g g_mine=$mine g_base=$base g_slotdir=$base/.slots/$REPLY g_reserver= g_slot=$REPLY
+  local slots=$reply[1] measures=$reply[6] turn=
+  typeset -g g_mine=$mine g_base=$base g_slotdir=/nonexistent g_reserver=
   trap '[[ -n $g_reserver ]] && { kill $g_reserver 2>/dev/null; wait $g_reserver 2>/dev/null; }; free_mine $g_base "$g_mine" $g_slotdir' EXIT
   trap 'exit 143' INT TERM HUP
+  if is_measure $1 "$3"; then
+    take_turn $base $measures "$mine" || { refuse "no measurement turn on the test Mac within 30 min"; return }
+    turn="; a measurement run, turn $REPLY of $measures"
+  fi
+  take_slot $base $1 $base/$1 $slots "$mine" || { refuse "no test-Mac slot within 30 min"; return }
+  typeset -g g_slotdir=$base/.slots/$REPLY g_slot=$REPLY
   local own=${NEXTEST_TEST_THREADS:-} own_each=${RAYON_NUM_THREADS:-}
   share_out $base $g_slot $slots $cores "$mine"
   # (A caller's own threads, exported here already, stand, as in a run sent from another Mac.)
   [[ -n $own ]] && export NEXTEST_TEST_THREADS=$own
   [[ -n $own_each ]] && export RAYON_NUM_THREADS=$own_each
-  print "remote-tests: running here (this is the test Mac; load $(loadavg), slot $g_slot of $slots, ${NEXTEST_TEST_THREADS} test threads; ${reply[1]})"
+  print "remote-tests: running here (this is the test Mac; load $(loadavg), slot $g_slot of $slots, ${NEXTEST_TEST_THREADS} test threads; ${reply[1]}$turn)"
   run_local $2 "$3"
 }
 

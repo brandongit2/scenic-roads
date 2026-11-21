@@ -208,6 +208,10 @@ RT_ALONE_WAIT = re.compile(r"^remote-tests: publish's tests wait for the test Ma
 RT_ALONE = re.compile(r"^remote-tests: (?:the test Mac is publish's|publish's tests went on) after (\d+) s")
 RT_ALONE_THREADS = re.compile(r"the pool's jobs keep ([\d.]+) cores busy, \d+ processes\): (\d+) test threads")
 RT_SLOT_GOT = re.compile(r"^remote-tests: got a test-Mac slot after (\d+) s")
+# (#1575: a measurement run waiting for its turn, before its slot; its turn, said on its run's line.)
+RT_TURN_WAIT = re.compile(r"^remote-tests: a measurement run \(")
+RT_TURN_GOT = re.compile(r"^remote-tests: got a measurement turn after (\d+) s")
+RT_TURN = re.compile(r"; a measurement run, turn (\d+ of \d+)\)$")
 RT_ON = re.compile(r"^remote-tests: on the test Mac (\S+) \(load ([\d.]+), slot (\d+)(?: of (\d+), (\d+) test threads)?")
 RT_TOOK = re.compile(r"^remote-tests: the run took ([\d.]+)s on the test Mac, cpu ([\d.]+)s user \+ ([\d.]+)s sys")
 RT_EXIT = re.compile(r"^remote-tests: exit (\d+) on the test Mac \(load ([\d.]+)\)")
@@ -378,7 +382,7 @@ def parse(lines, kinds, t_start, t_end):
                 suites[home]["kids"].extend(phases(got, suites[home]["t1"]))
     attrs = {}
     if "remote" in kinds:
-        key_wait = slot_wait = alone_wait = on = None
+        key_wait = slot_wait = alone_wait = turn_wait = on = None
         for t, l in lines:
             if not l.startswith(RT):
                 continue
@@ -394,6 +398,11 @@ def parse(lines, kinds, t_start, t_end):
             elif (m := RT_SLOT_GOT.match(l)) and slot_wait:
                 out.append(span("wait", "a test-Mac slot", slot_wait, t))
                 slot_wait = None
+            elif RT_TURN_WAIT.match(l):
+                turn_wait = turn_wait or t
+            elif (m := RT_TURN_GOT.match(l)) and turn_wait:
+                out.append(span("wait", "a measurement turn", turn_wait, t))
+                turn_wait = None
             elif RT_ALONE_WAIT.match(l):
                 alone_wait = alone_wait or t
             elif m := RT_ALONE.match(l):
@@ -407,6 +416,8 @@ def parse(lines, kinds, t_start, t_end):
             elif m := RT_ON.match(l):
                 # (The slot, and the test Mac's slots and this run's test threads, #1539.)
                 on = (t, m.group(1), m.group(2), m.group(3), {k: v for k, v in (("slots", m.group(4)), ("threads", m.group(5))) if v})
+                if mt := RT_TURN.search(l):
+                    on[4]["measure"] = mt.group(1)
             elif (m := RT_TOOK.match(l)) and on:
                 wall = float(m.group(1))
                 run = span("run", "run on the test Mac", max(on[0], t - wall), t, ran_on=on[1], load=on[2], slot=on[3],
@@ -420,7 +431,7 @@ def parse(lines, kinds, t_start, t_end):
         # The compiles and tests on the test Mac go under its run.
         runs = [s for s in out if s["kind"] == "run"]
         for r in runs:
-            inside = [s for s in out if s is not r and s["kind"] in ("compile", "suite", "tests", "wait", "phase") and s["name"] != "the test Mac's key" and s["name"] != "a test-Mac slot"
+            inside = [s for s in out if s is not r and s["kind"] in ("compile", "suite", "tests", "wait", "phase") and s["name"] not in ("the test Mac's key", "a test-Mac slot", "a measurement turn")
                       and r["t0"] - 1 <= s["t0"] and (s["t1"] <= r["t1"] + 1 or s["kind"] == "phase" and s["t0"] <= r["t1"])]
             for s in inside:  # (a phase said last runs to the run's end, not the job's)
                 s["t1"] = min(s["t1"], r["t1"])

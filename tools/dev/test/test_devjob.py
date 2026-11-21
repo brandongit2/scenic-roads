@@ -111,6 +111,20 @@ remote-tests: the test Mac's publish slot is taken (publish): waiting
 remote-tests: got a test-Mac slot after 5 s
 """, step=1.0), {"remote"}, T, T + 3)
         self.assertEqual([(s["kind"], s["name"]) for s in out], [("wait", "a test-Mac slot")])
+        # (#1575: a measurement run's wait for its turn, behind publish's run or another measurement
+        # run, before its slot's; its turn on its run.)
+        out, _ = devjob.parse(lines("""
+remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac is publish's run's (slot 0 since 12:00:00): waiting for it to end
+remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac's 1 measurement turns are taken (m1 ): waiting
+remote-tests: got a measurement turn after 5 s
+remote-tests: the test Mac's 3 test slots are taken (a b c ): waiting
+remote-tests: got a test-Mac slot after 5 s
+remote-tests: on the test Mac Mac-mini-M4 (load 13.09, slot 1 of 3, 5 test threads, /x; capacity: slots derived; a measurement run, turn 1 of 1)
+remote-tests: the run took 1.00s on the test Mac, cpu 1.00s user + 1.00s sys
+""", step=1.0), {"remote"}, T, T + 8)
+        self.assertEqual([(s["kind"], s["name"], s["t0"] - T, s["t1"] - T) for s in out[:2]],
+                         [("wait", "a measurement turn", 0, 2), ("wait", "a test-Mac slot", 3, 4)])
+        self.assertEqual(out[2]["attrs"]["measure"], "1 of 1")
         # (#1563: a run behind publish's waits too; publish's tests wait for the test Mac to be its
         # own, under its run, with the pool's cores and the threads they took; past its bound, what
         # was left.)
