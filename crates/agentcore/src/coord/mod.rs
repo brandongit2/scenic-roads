@@ -6357,8 +6357,7 @@ fn route(
             // Each step's model of what its jobs need as this coordinator holds it now
             // (crate::needs::model_table: its measures, the Macs' speeds, the jobs' records, the
             // pool's tuning), and where each step's memory peaks (its timings log's last 20 timed
-            // runs, jobrt::timings::peak_holders): `scenic pool needs` (task #1510: it read the
-            // costs file of an agent before the pool's store, 31 Oct's).
+            // runs, jobrt::timings::peak_holders): `scenic pool needs` (task #1510).
             let (table, dir) = {
                 let s = shared.lock().unwrap();
                 (crate::needs::model_table(&s.book()), s.dir.clone())
@@ -9354,8 +9353,7 @@ mod tests {
     }
 
     /// Task #1510: `scenic pool needs` prints the model this coordinator holds (its measures, as
-    /// its store keeps them), asked of it, not a costs file beside it (an agent's before the store
-    /// left 31 Oct's): a step measured now is in it.
+    /// its store keeps them), asked of it: a step measured now is in it.
     #[test]
     fn the_needs_table_is_the_coordinators() {
         let (_d, c, w, _clock) = every((0, 0));
