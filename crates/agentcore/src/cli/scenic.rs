@@ -268,6 +268,11 @@ pub enum Cmd {
         /// input): the inputs from then are scored apart from those before
         #[arg(long, value_name = "TIME", requires = "replay")]
         split: Option<String>,
+        /// With --replay: each forecast rerun as the code is also written to FILE, a JSON line
+        /// each, as the forecasts' archive keeps them (each target placed, the finish), to compare
+        /// one app's run with another's
+        #[arg(long, value_name = "FILE", requires = "replay")]
+        entries: Option<PathBuf>,
         /// As JSON
         #[arg(long)]
         json: bool,

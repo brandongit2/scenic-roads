@@ -1741,8 +1741,8 @@ fn cli_main() -> Result<()> {
         Some(Cmd::Timings(a)) => timings(&a),
         Some(Cmd::Steps { json }) => steps(json),
         Some(Cmd::Inputs(a)) => inputs(&a),
-        Some(Cmd::ForecastCheck { from, to, replay, split, json, root: r }) => {
-            forecast_check(from, to, replay.then_some(split), json, &r.root)
+        Some(Cmd::ForecastCheck { from, to, replay, split, entries, json, root: r }) => {
+            forecast_check(from, to, replay.then_some((split, entries)), json, &r.root)
         }
         Some(Cmd::Catalogues { after, home }) => {
             use agentcore::agent::cataloguesview::{CataloguesView, KEPT};
@@ -2043,12 +2043,13 @@ mod tests {
 }
 
 /// `scenic forecast-check`: the archived forecasts made from `from` to `to` held to the history's
-/// jobs that ended then (agent::fccheck); with `replay` (its test set's start, if said), the
-/// backtest of the forecast inputs made then (agent::fcinputs, and the terms' from before it).
+/// jobs that ended then (agent::fccheck); with `replay` (its test set's start, if said, and the
+/// file its new forecasts are written to, if said), the backtest of the forecast inputs made then
+/// (agent::fcinputs, and the terms' from before it).
 fn forecast_check(
     from: Option<String>,
     to: Option<String>,
-    replay: Option<Option<String>>,
+    replay: Option<(Option<String>, Option<PathBuf>)>,
     json: bool,
     r: &Option<PathBuf>,
 ) -> Result<()> {
@@ -2071,7 +2072,7 @@ fn forecast_check(
     let t = std::time::Instant::now();
     let events = fccheck::dedup(agentcore::pubtimes::load_history(Some(&root), Some(&own), days));
     let history_s = t.elapsed().as_secs_f64();
-    if let Some(split) = replay {
+    if let Some((split, entries)) = replay {
         let t = std::time::Instant::now();
         let inputs = fccheck::inputs(&root, from, to);
         let read_s = t.elapsed().as_secs_f64();
@@ -2079,7 +2080,10 @@ fn forecast_check(
         let last = inputs.iter().map(|i| i.at).max().unwrap_or(to);
         let split = at(&split, last.saturating_sub(86_400))?;
         let t = std::time::Instant::now();
-        let b = fccheck::backtest(pipeline::agent::theplan::the_plan(), &inputs, &events, from, to, split);
+        // (Its reruns stamped with this app's version, "development" for a build of a worktree.)
+        let exe = std::env::current_exe()?;
+        let app = jobrt::sys::app_version(exe.parent().context("the program's folder")?);
+        let b = fccheck::backtest(pipeline::agent::theplan::the_plan(), &inputs, &events, from, to, split, &app);
         let backtest_s = t.elapsed().as_secs_f64();
         // (Where its time went, task #1527: on stderr, the report on stdout as it was.)
         eprintln!(
@@ -2088,6 +2092,9 @@ fn forecast_check(
             history_s + read_s + backtest_s,
             b.spent.text()
         );
+        if let Some(p) = entries {
+            fccheck::write_entries(&p, &b.new).with_context(|| format!("{}: not written", p.display()))?;
+        }
         if json {
             println!("{}", serde_json::to_string_pretty(&b)?);
         } else {

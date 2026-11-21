@@ -1426,7 +1426,7 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   that step and target that ended after the forecast was made; a lane's name is the history's
   worker.
 
-**`scenic forecast-check [--from T] [--to T] [--replay [--split T]] [--json] [--root DIR]`**
+**`scenic forecast-check [--from T] [--to T] [--replay [--split T] [--entries FILE]] [--json] [--root DIR]`**
 (`agent::fccheck`, reads only) holds the forecasts made in the span (default the last 7 days) to the
 history's jobs that ended in it. Each (forecast, job) is a sample: its end's error, and, where it
 started after the forecast, its start's and its run's (the end's error is the two summed); error is
@@ -1447,8 +1447,10 @@ Inputs before it are the old terms' `state/build/term/<E>/forecast-input.json` (
 code before made it (old) and as the code is (new), each archived and checked as above.
 `forecast::BEFORE_HAS_PATH` is false: the app keeps no path for the code before (codes 9 and 10
 replaced their predecessors' ways), so old is new and the report says so; the code before is then
-measured by an earlier app's replay. The inputs from `--split` on (default a day before the last)
-are the test set, scored apart from those before (train): what the model was chosen on is never what
+measured by an earlier app's replay, whose forecasts `--entries FILE` writes (a JSON line each, as the
+forecasts' archive keeps them: each target placed and the finish, stamped with the app that reran
+them) to set beside this one's. The inputs from `--split` on (default a day before the last) are the
+test set, scored apart from those before (train): what the model was chosen on is never what
 it's scored on. Run it on a copy of `state/coord` and `state/build/term` (`--root`), or on the NAS
 (reads only). A term's file last written over an hour before `--from` holds no input in the span and
 isn't read (`fccheck::inputs`; the hour for the clocks). Where its time went is said on stderr, the report on stdout as before: the

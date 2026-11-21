@@ -389,13 +389,15 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// Mac's room
 /// at its sustained best (`Rooms`, from the asks the inputs before it recorded) and each Mac's slots
 /// its lanes (`unhold`: no hold of the day before). Code 7 also has the NAS's own gate open once the
-/// jobs out then end; code 6, as recorded for the whole run.
+/// jobs out then end; code 6, as recorded for the whole run. Each entry is stamped with `app`, the
+/// app rerunning it (`Entry::app`).
 pub fn replay(
     the_plan: &'static dyn crate::agent::seam::Plan,
     inputs: &[Input],
     events: &[Event],
     code: u32,
     spent: &mut Spent,
+    app: &str,
 ) -> Vec<Entry> {
     let mut rooms = Rooms::default();
     let mut out = Vec::new();
@@ -421,7 +423,7 @@ pub fn replay(
         });
         spent.forecasts += 1;
         let f = timed(&mut spent.forecast_s, || r.forecast(the_plan));
-        let mut e = Entry::of(&r, &f, "replay");
+        let mut e = Entry::of(&r, &f, app);
         e.code = code;
         out.push(e);
     }
@@ -574,6 +576,10 @@ pub struct Backtest {
     pub batches: Vec<Batches>,
     /// Where its time went (task #1527).
     pub spent: Spent,
+    /// The forecasts rerun as the code is, as the archive keeps them (`scenic forecast-check
+    /// --entries`): not in its JSON.
+    #[serde(skip)]
+    pub new: Vec<Entry>,
 }
 
 /// Where a backtest's time went, wall seconds (task #1527): the inputs decoded (each record read
@@ -701,7 +707,8 @@ pub fn batches(
         .collect()
 }
 
-/// The backtest of `inputs` (`replay`, old and new) against `events`, over `from`..`to`.
+/// The backtest of `inputs` (`replay`, old and new, by app `app`) against `events`, over
+/// `from`..`to`.
 pub fn backtest(
     the_plan: &'static dyn crate::agent::seam::Plan,
     inputs: &[Input],
@@ -709,14 +716,15 @@ pub fn backtest(
     from: u64,
     to: u64,
     split: u64,
+    app: &str,
 ) -> Backtest {
     // (One code after the other: side by side, the M1's replay of 60 inputs peaked at a 4.7 GB
     // footprint, task #988; each forecast's three runs go side by side already.)
     // (The code before with no way of its own runs as this one: old is new's run, not rerun.)
     let mut spent = Spent::default();
-    let new = replay(the_plan, inputs, events, forecast::VERSION, &mut spent);
+    let new = replay(the_plan, inputs, events, forecast::VERSION, &mut spent, app);
     let old = if forecast::BEFORE_HAS_PATH {
-        replay(the_plan, inputs, events, forecast::VERSION - 1, &mut spent)
+        replay(the_plan, inputs, events, forecast::VERSION - 1, &mut spent, app)
     } else {
         new.clone()
     };
@@ -728,7 +736,18 @@ pub fn backtest(
     let mut decoded = 0.0;
     let batches = timed(&mut spent.batches_s, || batches(the_plan, inputs, events, from, to, &mut decoded));
     spent.batches_decoded_s = decoded;
-    Backtest { split, old_is_new: !forecast::BEFORE_HAS_PATH, train, test, batches, spent }
+    Backtest { split, old_is_new: !forecast::BEFORE_HAS_PATH, train, test, batches, spent, new }
+}
+
+/// `entries` written to `path`, a JSON line each, as the forecasts' archive keeps them (`scenic
+/// forecast-check --replay --entries`): one app's reruns to set beside another's.
+pub fn write_entries(path: &std::path::Path, entries: &[Entry]) -> std::io::Result<()> {
+    let mut out = Vec::new();
+    for e in entries {
+        out.extend(serde_json::to_vec(e)?);
+        out.push(b'\n');
+    }
+    std::fs::write(path, out)
 }
 
 /// The backtest as text: for the test set, then the train set, the end's and the start's errors
@@ -1114,23 +1133,45 @@ mod tests {
         };
         let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
         assert_eq!(
-            span(&replay(crate::agent::seam::for_tests(), &records, &es, old, &mut Spent::default())),
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, old, &mut Spent::default(), "app")),
             (old, 600)
         );
         assert_eq!(
-            span(&replay(crate::agent::seam::for_tests(), &records, &es, new, &mut Spent::default())),
+            span(&replay(crate::agent::seam::for_tests(), &records, &es, new, &mut Spent::default(), "app")),
             (new, 600)
         );
         // Paused by then (the history's pause, for every code): nothing placed.
         let mut paused = es.clone();
         paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new, &mut Spent::default());
+        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new, &mut Spent::default(), "app");
         assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
         assert_eq!(replayed[0].placed().len(), 3);
         // The backtest: the second record the test set's.
-        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000);
+        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000, "app");
         assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
         assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
+    }
+
+    /// Task #1483: `--entries` writes the backtest's reruns as the code is, a line each, read back
+    /// as the same entries, each stamped with the app that reran it.
+    #[test]
+    fn the_reruns_written_read_back_as_they_were() {
+        let es: Vec<Event> =
+            (0..3).map(|i| ev(11_000 + i, "end", "m4", None, "depth", &[&format!("6/1/{i}")], Some(300.0))).collect();
+        let records: Vec<super::super::fcinputs::Input> = [rec(10_000, 0..3), rec(20_000, 3..5)]
+            .iter()
+            .map(|r| super::super::fcinputs::Input::of_bytes(1, r.bytes().unwrap()).unwrap())
+            .collect();
+        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000, "20261121-0300-abc");
+        assert_eq!(b.new.len(), 2);
+        assert!(b.new.iter().all(|e| e.app == "20261121-0300-abc" && e.code == forecast::VERSION));
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("entries.jsonl");
+        write_entries(&p, &b.new).unwrap();
+        let back: Vec<Entry> =
+            std::fs::read_to_string(&p).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(back, b.new);
+        assert_eq!(back[0].placed().len(), 3);
     }
 
     /// Task #1527: a term's file last written over an hour before the span isn't read (its input
@@ -1152,7 +1193,7 @@ mod tests {
         }
         let got = inputs(&store::nasfs::NasRoot::local_for_test(d.path()), from, from + 10_000);
         assert_eq!(got.iter().map(|i| (i.term, i.at)).collect::<Vec<_>>(), vec![(2, from + 2_000), (3, from + 3_000)]);
-        let b = backtest(crate::agent::seam::for_tests(), &got, &[], from, from + 10_000, from + 2_500);
+        let b = backtest(crate::agent::seam::for_tests(), &got, &[], from, from + 10_000, from + 2_500, "app");
         let runs = if forecast::BEFORE_HAS_PATH { 2 } else { 1 };
         assert_eq!((b.spent.decodes, b.spent.forecasts), (2 * runs, 2 * runs));
         assert!(
