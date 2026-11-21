@@ -224,7 +224,7 @@ pub(super) fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
 }
 
 /// The world with more land and more zones.
-fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<geom::Ring>>) -> World {
+pub(super) fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<geom::Ring>>) -> World {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),

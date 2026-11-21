@@ -811,17 +811,20 @@ impl Reads {
 /// Regions' pieces by cell: each region's id and its piece's digest there.
 type ByCell = HashMap<Cell, Vec<(String, blake3::Hash)>>;
 
+/// A piece's digest (`Reads::area`'s), as every key reading a region's piece names it.
+fn digest(a: &Area) -> blake3::Hash {
+    let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
+    r.area(a);
+    r.h.update(&r.buf);
+    r.h.finalize()
+}
+
 /// `areas`' pieces by cell (`Reads::cells`), in id order.
 fn pieces_by_cell<'a>(areas: impl Iterator<Item = (&'a String, &'a TArea)>) -> ByCell {
     let all: Vec<(&String, Cell, &Area)> =
         areas.flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (id, *c, a))).collect();
     let mut by: ByCell = HashMap::new();
-    for (id, c, h) in pace::par_map(all, |(id, c, a)| {
-        let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
-        r.area(a);
-        r.h.update(&r.buf);
-        (id, c, r.h.finalize())
-    }) {
+    for (id, c, h) in pace::par_map(all, |(id, c, a)| (id, c, digest(a))) {
         by.entry(c).or_default().push((id.clone(), h));
     }
     by
@@ -982,9 +985,25 @@ fn key_cells(
 pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, held: &BTreeSet<String>, out: &mut Outcome) {
     // (On threads whose operations snap: `geom::snap_here`.)
     let threads = crate::inputs::pace::width();
+    // (None: the check stops with an error, as a pause stops it (`Kept::fail`), or with a problem
+    // when it keeps nothing; never resolved on threads that don't snap, which resolve otherwise,
+    // their pieces kept under the same keys.)
     match rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| geom::snap_here()).build() {
         Ok(pool) => pool.install(|| geom::snapping(|| resolve_in(folder, ctx, held, out))),
-        Err(_) => geom::snapping(|| resolve_in(folder, ctx, held, out)),
+        Err(e) => {
+            let e = anyhow::anyhow!("the regions with water can't be resolved now: no threads that snap ({e})");
+            match ctx.kept {
+                Some(k) => k.fail(e),
+                None => out.problems.push(Problem {
+                    warning: false,
+                    check: "rg-data",
+                    about: Vec::new(),
+                    found: vec!["threads".into()],
+                    files: Vec::new(),
+                    message: format!("{e:#}"),
+                }),
+            }
+        }
     }
 }
 
@@ -1425,10 +1444,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     trace("the cover check");
     // 5. With cover = "earth": the check, which moves nothing; the rest.
     // (Every region's cells, moved together, not copied.)
+    let unchanged: BTreeSet<String> = others.keys().cloned().collect();
     let mut all: BTreeMap<String, TArea> = others;
     all.extend(areas);
     // (Every region's pieces by cell, digested, for the strays and the cover check.)
-    let index = if cover { index_of(&all) } else { Index::new() };
+    let index = if cover { index_of(&all, &others_by_cell, &unchanged) } else { Index::new() };
     if cover {
         strays(&ids, folder, data, &lands, &all, &index, &mut out.problems, &mut out.fit, progress);
         trace("the zones");
@@ -3209,16 +3229,19 @@ type Owned<'a> = (&'a String, &'a Area, blake3::Hash);
 /// Each cell's pieces (`Owned`), in id order.
 type Index<'a> = HashMap<Cell, Vec<Owned<'a>>>;
 
-/// The regions' pieces by cell (`Index`), each digested once.
-fn index_of(all: &BTreeMap<String, TArea>) -> Index<'_> {
+/// The regions' pieces by cell (`Index`), each digested once in a run: those of the regions
+/// without water (`unchanged`: none of their pieces moves after) as `pieces_by_cell` digested
+/// them (`known`), the rest here.
+fn index_of<'a>(all: &'a BTreeMap<String, TArea>, known: &ByCell, unchanged: &BTreeSet<String>) -> Index<'a> {
     let pieces: Vec<(Cell, &String, &Area)> =
         all.iter().flat_map(|(id, t)| t.cells.iter().map(move |(c, a)| (*c, id, a))).collect();
     let mut index: Index = HashMap::new();
     for (c, owned) in pace::par_map(pieces, |(c, id, a)| {
-        let mut r = Reads { h: blake3::Hasher::new(), buf: Vec::new() };
-        r.area(a);
-        r.h.update(&r.buf);
-        (c, (id, a, r.h.finalize()))
+        let was = unchanged
+            .contains(id)
+            .then(|| known.get(&c).and_then(|v| v.iter().find(|x| x.0 == *id)).map(|x| x.1))
+            .flatten();
+        (c, (id, a, was.unwrap_or_else(|| digest(a))))
     }) {
         index.entry(c).or_default().push(owned);
     }

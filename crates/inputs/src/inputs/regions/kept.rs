@@ -239,7 +239,14 @@ impl Kept {
         }
     }
 
-    /// The pause a piece kept met, if one did: the check stops with it.
+    /// The check can't go on (`e`): it stops with it as with a pause (`stopped`), and no piece is
+    /// made from now on.
+    pub fn fail(&self, e: anyhow::Error) {
+        self.stop.lock().unwrap().get_or_insert(e);
+    }
+
+    /// The pause a piece kept met, or the error the check failed with (`fail`), if one did: the
+    /// check stops with it.
     pub fn stopped(&self) -> Result<()> {
         match self.stop.lock().unwrap().take() {
             Some(e) => Err(e),
@@ -283,8 +290,8 @@ pub const KEEP_MB: u64 = 10_000;
 
 /// The pool's check's lasting folder (task #1566), in this Mac's cache (the job's
 /// `buildstore::coverage::CACHE_ENV`): on its local disk, never the NAS (a whole check writes
-/// about 21,100 small files, 16,200 of them the cover check's cells). Room-making frees it as it frees the other cheap caches (agentcore's
-/// agent::room), the least recently used pieces first.
+/// about 21,100 small files, 16,200 of them the cover check's cells). Room-making frees it as it
+/// frees the other cheap caches (agentcore's agent::room), the least recently used pieces first.
 pub const POOL_DIR: &str = "regions-pieces";
 
 /// The pool's check's lasting folder's cap (MB), as its agent gives it to the job from its Mac's

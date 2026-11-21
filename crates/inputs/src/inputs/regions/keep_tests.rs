@@ -279,7 +279,60 @@ fn a_cells_cover_check_is_made_again_only_where_it_or_a_neighbour_changed() {
     assert_eq!(taken, window.len() - 9);
     assert_eq!(cover_check(&w, &f, d.path(), CODE).0, BTreeSet::new(), "as kept after");
     // Back as it was: every cell as kept before.
-    assert_eq!(cover_check(&w, &cover_files(), d.path(), CODE).0, BTreeSet::new());
+    let mut f = cover_files();
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, BTreeSet::new());
+    // A region without water (its piece digested as the others' pieces are, once) added in the
+    // cell from 6°, 2°, then moved within it.
+    f.push(("q.toml", "id = \"q\"\nname = \"Q\"\noutline = [\"box:6.2,2.2,6.8,2.8\"]\n".into()));
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, round((3, 1)), "added");
+    let q = f.len() - 1;
+    f[q].1 = f[q].1.replace("6.2,2.2", "6.3,2.2");
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, round((3, 1)), "moved");
+}
+
+/// Task #1572: a cell's cover check reads the coastline's land and the zones' water in it, and the
+/// ids of the regions round it: land added in one cell (an island at sea, in no region), a zone
+/// added in one cell (no region's), each makes again that cell's alone; a region renamed, its
+/// geometry as it was, makes again the cells round its own (its name in their gaps' edges and
+/// pairs). The datasets keep their names (`world_data`'s "fixture"), so only the cells' own reads
+/// tell the change.
+#[test]
+fn a_cells_cover_check_is_made_again_with_its_land_its_zones_or_a_region_renamed() {
+    use std::collections::HashMap;
+    let d = tempfile::tempdir().unwrap();
+    let mut f = cover_files();
+    let window = cover_window();
+    let w = super::water_tests::world();
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, window);
+    // (The cell from 8°, 4°: no region there, the open sea's.)
+    let island = super::water_tests::world_more(1.002, vec![bx(8.4, 4.4, 8.6, 4.6)]);
+    assert_eq!(cover_check(&island, &f, d.path(), CODE).0, BTreeSet::from([(4, 2)]), "the land's cell alone");
+    let zone = super::water_tests::world_zones(1.002, Vec::new(), HashMap::from([(3, bx(8.2, 4.2, 8.8, 4.8))]));
+    assert_eq!(cover_check(&zone, &f, d.path(), CODE).0, BTreeSet::from([(4, 2)]), "the zone's cell alone");
+    // The disputed zone's region (in the cell from 4°, 4° alone) renamed, its file with it: its
+    // shapes as they were.
+    let shapes = |f: &[(&str, String)], id: &str| {
+        let m: BTreeMap<String, String> = f.iter().map(|(p, t)| (p.to_string(), t.clone())).collect();
+        format!("{:?}", resolve_with(&w, &m, None).resolved[id].geometry.shapes)
+    };
+    let was = shapes(&f, "disputed");
+    let disputed = f.iter().position(|x| x.0 == "disputed.toml").unwrap();
+    f[disputed] = ("contested.toml", f[disputed].1.replace("id = \"disputed\"", "id = \"contested\""));
+    assert_eq!(shapes(&f, "contested"), was, "the same geometry");
+    assert_eq!(cover_check(&w, &f, d.path(), CODE).0, round((2, 2)), "the renamed region's cells and their neighbours");
+}
+
+/// Task #1572: `Lasting::open` keeps the pieces of the code as compiled (`code_key` of `RESOLUTION`
+/// and the regions' code digest): a piece it writes is one `open_as` of that code takes.
+#[test]
+fn a_lasting_folder_opened_keeps_the_pieces_of_the_code_as_compiled() {
+    let d = tempfile::tempdir().unwrap();
+    Lasting::open(d.path(), "context", 1_000).unwrap().write(kept::COVER, "0,0 x", b"piece").unwrap();
+    let now = kept::code_key(RESOLUTION, crate::inputs::code_of(module_path!()));
+    let l = Lasting::open_as(d.path(), "context", 1_000, &now).unwrap();
+    assert_eq!(l.read(kept::COVER, "0,0 x").as_deref(), Some(&b"piece"[..]));
+    let other = Lasting::open_as(d.path(), "context", 1_000, &kept::code_key(RESOLUTION + 1, "x")).unwrap();
+    assert_eq!(other.read(kept::COVER, "0,0 x"), None);
 }
 
 /// Task #1572: another code (or `RESOLUTION`) makes every cell's cover check again; the first's are

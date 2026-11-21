@@ -898,7 +898,10 @@ Mac's server (§6.1.9).
   (Australian and Indonesian waters) split over and over for half an hour; snapping, those
   subsets resolve in 11 s and 38 s. Every operation is watched: one past 30 s is said on stderr
   (the region, the cell, its points), one past `SCENIC_REGIONS_OP_BUDGET_S` (300 s by default;
-  none measured over 30 s since) stops the check, naming the cell.
+  none measured over 30 s since) stops the check, naming the cell. The regions with water resolve
+  only on threads that snap: if those threads can't be made, the check stops with an error
+  (`kept::Kept::fail`; a resolve keeping no pieces says it as an `rg-data` problem), never resolving
+  them otherwise, as a kept piece's key doesn't name its threads.
 - **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
   (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
   Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
