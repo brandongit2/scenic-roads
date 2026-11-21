@@ -230,7 +230,7 @@ pub enum Event {
 
 /// What a member keeps between processes: the agent saves it in its own folder after every step
 /// that changed it, before acting on that step's `Out`, and starts the next process's driver from
-/// it. (An app before docs/coordination.md step 8c kept its terms beside: read past.)
+/// it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Saved {
     /// The member it's of: another's (this Mac's member file lost and a new id made; or a copy of
@@ -239,8 +239,8 @@ pub struct Saved {
     pub member: String,
     /// Its jobs' hand-offs, kept until a lead's saved records name them.
     pub mine: Mine,
-    /// The records it last saved leading (epoch, seq; a term's, before step 8c): a take-up never
-    /// starts from older ones, whose saves acknowledged hand-offs no member keeps now.
+    /// The records it last saved leading (epoch, seq): a take-up never starts from older ones,
+    /// whose saves acknowledged hand-offs no member keeps now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records: Option<(u64, u64)>,
 }
