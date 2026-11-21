@@ -120,8 +120,11 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   (`remote-tests.sh <key> <tree> 'cargo test --release -p terrain -- … #perf'`, not after the closing
   quote, where the shell drops it), or `SCENIC_PUBLISH` set in it under a key of your own. The test
   Mac admits those one at a time ("Tests on the test Mac", the capacity's `measures=`), each in a check
-  slot as any run. Key `publish` is publish.sh's: an agent's remote-tests.sh under it is refused (the
-  hook). A measurement that needs the test Mac to itself asks the PM for a quiet period.
+  slot as any run. The hook reads the mark in that command, as the test Mac does: an agent's
+  remote-tests.sh whose command has `--release` (or `--profile release`) and no mark is refused, and so
+  is one with the mark after the closing quote. Key `publish` is publish.sh's: an agent's run under it
+  is refused, a publish-shaped measurement being the PM's to run. A measurement that needs the test
+  Mac to itself asks the PM for a quiet period.
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
   - first, on the publishing Mac, `crates/server/tests/serves.rs` against the release server it
@@ -623,7 +626,8 @@ are its own for the disk rule and the drop below.
   ("a measurement run (…): the test Mac's 1 measurement turns are taken (<key>): waiting", 30 min,
   then refused), holding no slot meanwhile, so the checks go on beside the one that runs, within the
   slots, and publish's tests never wait for one that waits. Behind publish's run a measurement run
-  takes no turn, as no run takes a slot (that wait not counted in its 30 min). The turn
+  takes no turn, as no run takes a slot (said at once and every 5 min, that wait not counted in its
+  30 min). The turn
   (`~/scenic-check/.slots/m<n>`) is freed with the run's slot, a gone run's as a gone slot is. Its
   line says it ("…; a measurement run, turn 1 of 1)"); the dev jobs page shows the wait as "a
   measurement turn" and the turn on the run (`measure`). A measurement run under way when publish's

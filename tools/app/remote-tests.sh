@@ -100,6 +100,7 @@ versions() {  # the toolchain this side runs
 
 stale_after=$(( 6 * 3600 ))
 term_wait=${SCENIC_TESTS_TERM_WAIT:-15}  # (seconds from a run's TERM to its KILL; shorter in this script's test)
+slot_wait=${SCENIC_TESTS_SLOT_WAIT:-1800}  # (seconds a run waits for a slot or a measurement turn, 30 min; shorter in this script's test)
 remote_lock() {  # <key> <owner>: 0 taken, 1 busy (prints its owner)
   local d=~/scenic-check/$1 owner=$2
   mkdir -p $d || exit 2
@@ -273,14 +274,16 @@ is_measure() {  # <key> <command>: 0 when the run is a measurement
 # A measurement run's turn, before its slot: turn <n> is ~/scenic-check/.slots/m<n>, taken by mkdir
 # and naming its run as a slot does (freed with its slots, free_mine; a gone run's freed as a gone
 # slot is, free_stale_slot). None free, it waits, 30 min at most, behind publish's run without
-# trying one, that wait not counted (as take_slot). Says what it waits for at once. REPLY: the turn;
-# 1 when none came.
+# trying one, that wait not counted (as take_slot). Says what it waits for at once (behind
+# publish's run, again every 5 min with the time so far). REPLY: the turn; 1 when none came.
 take_turn() {  # <base> <measures> <owner>
   local base=$1 n=$2 mine=$3 s waited=0 behind=0 said=
   mkdir -p $base/.slots
   while true; do
     if publish_holds $base; then
-      [[ $said != publish ]] && print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac is publish's run's (slot 0 since $(date -r $(stat -f %m $base/.slots/0) +%H:%M:%S)): waiting for it to end"
+      if [[ $said != publish ]] || (( behind % 300 == 0 )); then
+        print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac is publish's run's (slot 0 since $(date -r $(stat -f %m $base/.slots/0) +%H:%M:%S)): waiting for it to end$( (( behind )) && print ", $behind s so far")"
+      fi
       said=publish; sleep 5; (( behind += 5 )); continue
     fi
     for s in {1..$n}; do
@@ -293,9 +296,9 @@ take_turn() {  # <base> <measures> <owner>
       fi
       free_stale_slot $base m$s
     done
-    [[ $said != turns ]] && print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac's $n measurement turns are taken ($(awk '{print $NF}' $base/.slots/m<1->/owner(N) 2>/dev/null | tr '\n' ' ')): waiting"
+    [[ $said != turns ]] && print "remote-tests: a measurement run (#perf, #repro or SCENIC_PUBLISH): the test Mac's $n measurement turns are taken ($(owners $base/.slots/m<1->/owner(N))): waiting"
     said=turns
-    (( waited >= 1800 )) && return 1
+    (( waited >= slot_wait )) && return 1
     sleep 5; (( waited += 5 ))
   done
 }
@@ -434,6 +437,14 @@ hold_tests() {  # <agent's folder> <pid> <cores>: 0 written
   print -r -- "{\"cores\":$3,\"pid\":$2,\"at\":$(date +%s)}" > $1/test-hold.json.$$ && mv -f $1/test-hold.json.$$ $1/test-hold.json
 }
 
+# The keys the slots or turns <owner files> name, for a waiting line: none, none said. (Never awk's
+# stdin: with no file, it would read the run's, which a run on the test Mac itself holds open, and
+# hang; or, over ssh, the rest of this script.)
+owners() {  # <owner files...>
+  (( $# )) || return 0
+  awk '{print $NF}' "$@" </dev/null 2>/dev/null | tr '\n' ' '
+}
+
 # A slot (remote_main's, and a run on the test Mac itself): publish's run slot 0, any other the
 # key's last, then the least recently used (slot_order); none free, it waits, 30 min at most, but
 # while publish's run holds slot 0 (publish_holds) a run waits for it without trying one, that wait
@@ -465,12 +476,12 @@ take_slot() {  # <base> <key> <key folder> <slots> <owner>
       free_stale_slot $base $s
     done
     if [[ $said != slots ]] && [[ $key == publish ]]; then
-      print "remote-tests: the test Mac's publish slot is taken ($(awk '{print $NF}' $base/.slots/0/owner 2>/dev/null)): waiting"
+      print "remote-tests: the test Mac's publish slot is taken ($(owners $base/.slots/0/owner(N))): waiting"
     elif [[ $said != slots ]]; then
-      print "remote-tests: the test Mac's $slots test slots are taken ($(awk '{print $NF}' $base/.slots/<1->/owner 2>/dev/null | tr '\n' ' ')): waiting"
+      print "remote-tests: the test Mac's $slots test slots are taken ($(owners $base/.slots/<1->/owner(N))): waiting"
     fi
     said=slots
-    (( waited >= 1800 )) && return 1
+    (( waited >= slot_wait )) && return 1
     sleep 5; (( waited += 5 ))
   done
 }

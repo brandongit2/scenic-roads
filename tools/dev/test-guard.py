@@ -19,6 +19,8 @@ if tool == "Agent":
 if tool != "Bash" or not agent: sys.exit()
 cmd = ti.get("command") or ""
 repro, perf = "#repro" in cmd, "#perf" in cmd
+# (A measurement run's mark as remote-tests.sh's is_measure reads it: #perf or #repro, a word.)
+MARK = re.compile(r"[\s;(&|]#(perf|repro)(?![\w-])")
 
 # --- Finding the test runs (shellwords.py: commands, not text).
 CARGO_TAKES = {"-C", "--config", "-Z", "--color", "--manifest-path", "--target-dir", "--explain"}
@@ -54,8 +56,16 @@ def scan(text, depth=0):
         # it holds a real publish back; an agent's publish-shaped run is a measurement run, #1575.)
         rt = rest if c0 == "remote-tests.sh" else rest[1:] if c0 in ("sh", "bash", "zsh") and rest and os.path.basename(rest[0]) == "remote-tests.sh" else None
         if rt and rt[0] == "publish":
-            block("Key publish is publish.sh's (its own slot, the test Mac to itself): run under a key of your own, "
-                  "and mark a publish-shaped or timing run #perf in its command (a measurement run, one at a time on the test Mac).")
+            block("Key publish is publish.sh's (its own slot, the test Mac to itself): a publish-shaped measurement is the PM's to run. "
+                  "Run under a key of your own, a timing run marked #perf inside its command (a measurement run, one at a time on the test Mac).")
+        # (The test Mac paces a measurement run by the mark in the command it runs (remote-tests.sh's is_measure): one
+        # after the closing quote is a comment the shell drops, and a --release run is one.)
+        if rt and len(rt) >= 3 and not MARK.search(" %s " % rt[2]) and "SCENIC_PUBLISH=" not in rt[2]:
+            if re.search(r"(^|\s)(--release|-r)(\s|$)|--(cargo-)?profile[= ]release", rt[2]):
+                block("A --release run on the test Mac is a measurement run: mark it #perf inside its command "
+                      "('cargo test --release -p … #perf', within the quotes), so the test Mac runs it one at a time.")
+            if MARK.search(seg):
+                block("The #perf or #repro mark is outside remote-tests.sh's command, where the shell drops it: put it inside the quotes.")
         # (sh -c "$(…)", eval "$(…)" and $(…) -p … run what the substitution writes: a cargo test there can't be read)
         if any(TEST.search(b) and "cargo" in b for b in bodies[a:n]) and "${SUBSTITUTION}" in " ".join(toks[:1] + (rest if c0 in ("sh", "bash", "zsh", "dash", "eval") else [])):
             block("A command built from a substitution that writes out a cargo test can't be checked: write the cargo test out plainly.")

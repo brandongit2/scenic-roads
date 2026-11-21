@@ -381,24 +381,26 @@ mk() { is_measure $1 "$2" && print m || print n }
 [[ $(mk k 'cargo test --release -p x #perf')$(mk k 'cargo nextest run --workspace #repro')$(mk k 'export SCENIC_PUBLISH=1; cargo nextest run -p pipeline')$(mk k 'a;#perf') == mmmm \
    && $(mk k 'cargo test -p x')$(mk k 'cargo test -p x #performance')$(mk k 'echo a#perf')$(mk publish 'export SCENIC_PUBLISH=1; cargo nextest run') == nnnn ]] \
   && ok "a measurement run: by its marks" || no "a measurement run: by its marks" "$(mk k 'cargo test --release -p x #perf')…"
+# (Waits on what a run says or writes, polled under the watchdog, 2 min: never a fixed head start,
+# testing.md #1157. A run held up past it, a broken admission's, is stopped, not waited on for 30 min.)
+said_in() { local i; for i in {1..1200}; do [[ -e $1 && $(<$1) == *$2* ]] && return 0; sleep 0.1; done; return 1 }  # <file> <text>
+bounded_run() {  # <key> <command> <file it writes> <output file>: the run, stopped if <file> isn't written within 2 min
+  run_remote $1 $2 > $4 2>&1 &
+  local p=$!
+  said_in $3 '' || kill -TERM $p 2>/dev/null  # (the run itself, its group's leader: its trap stops the rest)
+  wait $p 2>/dev/null
+}
 run_setup m1; run_setup m2; run_setup c6; rm -f $tmp/{m1go,m1end,m2ran,c6ran}
 run_remote m1 "touch $tmp/m1go; until [[ -e $tmp/m1end ]]; do sleep 0.2; done #perf" > $tmp/m1out 2>&1 &
 m1p=$!
-wait_for $tmp/m1go
+said_in $tmp/m1go ''
 run_remote m2 "#perf
 date +%s > $tmp/m2ran" > $tmp/m2out 2>&1 &
 m2p=$!
-sleep 3
+said_in $tmp/m2out "measurement turns are taken"
 [[ ! -e $tmp/m2ran && $(<$tmp/m2out) == *"measurement turns are taken"*m1* ]] \
   && ok "a second measurement run waits while one runs" || no "a second measurement run waits while one runs" "$(<$tmp/m2out)"
 [[ $(ls $fb/.slots | tr '\n' ' ') == [1-3]\ m1\  ]] && ok "a measurement run waiting for its turn holds no slot" || no "a measurement run waiting for its turn holds no slot" "$(ls $fb/.slots)"
-# (Its run in the background, waited for 30 s: one held up by a turn is stopped, not waited on for 30 min.)
-bounded_run() {  # <key> <command> <file it writes> <output file>: the run, stopped if <file> isn't written within 30 s
-  run_remote $1 $2 > $4 2>&1 &
-  local p=$!
-  wait_for $3 || kill -TERM $p 2>/dev/null  # (the run itself, its group's leader: its trap stops the rest)
-  wait $p 2>/dev/null
-}
 bounded_run c6 "date +%s > $tmp/c6ran" $tmp/c6ran $tmp/c6out; out=$(<$tmp/c6out)
 [[ -e $tmp/c6ran && ! -e $tmp/m2ran && $out == *"@@remote-tests-status 0"* && $out != *measurement* ]] \
   && ok "a check goes beside a measurement run" || no "a check goes beside a measurement run" "$out"
@@ -409,16 +411,32 @@ touch $tmp/m1end; wait $m1p $m2p
 mkdir -p $fb/.slots/0; print -r -- "$holdme" > $fb/.slots/0/owner; rm -f $tmp/m2ran
 run_remote m2 "date +%s > $tmp/m2ran #perf" > $tmp/m2out 2>&1 &
 m2p=$!
-sleep 3
+said_in $tmp/m2out "is publish's run's (slot 0 since"
 [[ ! -e $tmp/m2ran && $(ls $fb/.slots) == 0 && $(<$tmp/m2out) == *"a measurement run"*"is publish's run's (slot 0 since"* ]] \
   && ok "behind publish's run, a measurement run takes no turn" || no "behind publish's run, a measurement run takes no turn" "$(ls $fb/.slots): $(<$tmp/m2out)"
 rm -rf $fb/.slots/0; wait $m2p
 [[ -e $tmp/m2ran && $(<$tmp/m2out) == *"got a measurement turn after"* ]] && ok "a measurement run goes once publish's run ends" || no "a measurement run goes once publish's run ends" "$(<$tmp/m2out)"
+# A gone run's turn is freed: its process gone, or its PID another process's (its start time differs).
+true & dead=$!; wait $dead
+sleep 300 & live=$!
+for o in "$dead Fri Nov 20 20:00:00 2026 gone" "$live Fri Nov 20 20:00:00 2026 reused"; do
+  rm -rf $fb/.slots; mkdir -p $fb/.slots/m1; print -r -- "$o" > $fb/.slots/m1/owner; rm -f $tmp/m2ran
+  bounded_run m2 "date +%s > $tmp/m2ran #perf" $tmp/m2ran $tmp/m2out; out=$(<$tmp/m2out)
+  [[ -e $tmp/m2ran && $out == *"a measurement run, turn 1 of 1)"* && -z $(ls $fb/.slots) ]] \
+    && ok "a gone run's turn freed (${o##* })" || no "a gone run's turn freed (${o##* })" "$out; $(ls $fb/.slots)"
+done
+kill $live 2>/dev/null; wait $live 2>/dev/null
+# No slot within its wait: its turn freed too.
+hold_two; mkdir -p $fb/.slots/1; print -r -- "$holdme" > $fb/.slots/1/owner; rm -f $tmp/m2ran
+out=$(SCENIC_TESTS_SLOT_WAIT=5 run_remote m2 "date +%s > $tmp/m2ran #perf")
+[[ ! -e $tmp/m2ran && $out == *"@@remote-tests-status none no test-Mac slot"* && ! -e $fb/.slots/m1 ]] \
+  && ok "no slot for a measurement run: its turn freed" || no "no slot for a measurement run: its turn freed" "$out; $(ls $fb/.slots)"
+rm -rf $fb/.slots
 # measures= of the capacity file: that many at once.
 print $'slots=3\npublish_wait=1\nmeasures=2' > $fb/capacity; rm -f $tmp/{m1go,m1end,m2ran}
 run_remote m1 "touch $tmp/m1go; until [[ -e $tmp/m1end ]]; do sleep 0.2; done #perf" > $tmp/m1out 2>&1 &
 m1p=$!
-wait_for $tmp/m1go
+said_in $tmp/m1go ''
 bounded_run m2 "date +%s > $tmp/m2ran #perf" $tmp/m2ran $tmp/m2out; out=$(<$tmp/m2out)
 touch $tmp/m1end; wait $m1p
 [[ -e $tmp/m2ran && $out == *"a measurement run, turn 2 of 2)"* && $out != *"turns are taken"* ]] \
@@ -428,11 +446,23 @@ print $'slots=3\npublish_wait=1' > $fb/capacity; rm -rf $fb/.slots
 mkdir -p $fb/.slots/m1; print -r -- "$holdme" > $fb/.slots/m1/owner; rm -f $tmp/hran
 ( HOME=$fh here_on_test_mac h5 $tmp/here "touch $tmp/hran #perf" > $tmp/hout 2>&1 ) &
 hp=$!
-sleep 2
+said_in $tmp/hout "measurement turns are taken"
 [[ ! -e $tmp/hran && $(<$tmp/hout) == *"measurement turns are taken"* ]] && ok "a measurement run on the test Mac itself waits for its turn" || no "a measurement run on the test Mac itself waits for its turn" "$(<$tmp/hout)"
 rm -rf $fb/.slots/m1; wait $hp
 [[ -e $tmp/hran && $(<$tmp/hout) == *"a measurement run, turn 1 of 1)"* && -z $(ls $fb/.slots) ]] && ok "and goes once it is free, its turn freed" || no "and goes once it is free, its turn freed" "$(<$tmp/hout); $(ls $fb/.slots)"
 rm -rf $fb/.slots
+# Its waiting line with no owner to name (a turn just taken, its owner not yet written), its stdin
+# open (a caller's, never closed): said, and the run goes once that turn is freed (10 s on, no owner).
+# (Its stdin a fifo whose one writer is this shell: closed after, a run hung reading it ends then.)
+mkdir -p $fb/.slots/m1; rm -f $tmp/hran $tmp/stdin; mkfifo $tmp/stdin
+( HOME=$fh here_on_test_mac h6 $tmp/here "touch $tmp/hran #perf" < $tmp/stdin > $tmp/hout 2>&1 ) &
+hp=$!
+exec {sfd}>$tmp/stdin
+said_in $tmp/hran ''
+[[ -e $tmp/hran && $(<$tmp/hout) == *"measurement turns are taken ()"* ]] && ok "a measurement run's wait with no owner to name, its stdin open: it goes" || no "a measurement run's wait with no owner to name, its stdin open: it goes" "$(<$tmp/hout)"
+exec {sfd}>&-
+[[ -e $tmp/hran ]] || { rm -rf $fb/.slots/m1; kill -TERM $hp 2>/dev/null }  # (the run held up, a broken one's: ended, not waited on)
+wait $hp; rm -rf $fb/.slots $tmp/stdin
 
 # The capacity lowered: the build folders above its slots go, but one in use.
 mkdir -p $fb/.build/{4,5}/target $fb/.slots/4; print -r -- $holdme > $fb/.slots/4/owner
