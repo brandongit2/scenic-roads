@@ -15,7 +15,6 @@ use agentcore::pool::records::Keys;
 use roads::reach::Reaches;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -186,8 +185,8 @@ impl Plan for ThePlan {
     fn unit_margin_km(&self) -> f64 {
         roads::staging::MARGIN_KM
     }
-    fn held(&self, index_dir: PathBuf) -> Box<dyn PlanHeld> {
-        Box::new(Held::new(index_dir))
+    fn held(&self, home: &std::path::Path) -> Box<dyn PlanHeld> {
+        Box::new(Held::new(home))
     }
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         key_inputs(root, manifest)
@@ -341,6 +340,9 @@ struct Held {
     shadow_failed: Arc<AtomicBool>,
     /// Whether each plan has its shadow made (off only in a test of what it costs).
     shadowing: Cell<bool>,
+    /// How many passes asking records again had ended at the last `kick` (tiles::Reask): one more
+    /// since, and a plan is due for the lines it put.
+    reask_seen: Cell<u64>,
 }
 
 /// What a shadow plan's keys read their context as, for the next one's diff: the manifest and the
@@ -787,10 +789,19 @@ fn first_difference(a: &Planned, b: &Planned) -> String {
 }
 
 impl Held {
-    /// Nothing held yet, the terrain packs' indexes kept in `index_dir`.
-    fn new(index_dir: PathBuf) -> Held {
+    /// Nothing held yet, the terrain packs' indexes kept in the agent's folder `home` (`pack-idx/`),
+    /// its keys leaving the records that must be asked again to a pass off the plan's thread
+    /// (`start_reask`), which holds them in flight within the memory available above the floor as
+    /// the guard last read it (memguard::live: its reading's `low_usable_mb` less the floor).
+    fn new(home: &std::path::Path) -> Held {
+        let mut tiles = TerrainTiles::new(Some(home.join("pack-idx")));
+        let at = home.to_path_buf();
+        tiles.defer(Arc::new(move || {
+            let r = agentcore::agent::memguard::live(&at).filter(|l| l.on)?.reading?;
+            Some(r.low_usable_mb().saturating_sub(r.floor_mb) << 20)
+        }));
         Held {
-            tiles: RefCell::new(TerrainTiles::new(Some(index_dir))),
+            tiles: RefCell::new(tiles),
             reach: RefCell::default(),
             reach_now: RefCell::default(),
             kept: RefCell::default(),
@@ -798,6 +809,35 @@ impl Held {
             shadow: RefCell::default(),
             shadow_failed: Arc::default(),
             shadowing: Cell::new(true),
+            reask_seen: Cell::new(0),
+        }
+    }
+
+    /// Starts the pass asking the records again off the plan's thread, when one is due
+    /// (idents::warm_due) and none runs: on a thread of its own, its records on a rayon pool of its
+    /// own (as many threads as cores; each record admitted within the memory above the floor,
+    /// tiles::Reask::admit), the lines it works out put in the memo the plan's keys read, their
+    /// heads kept. Until it ends the keys of a record it hasn't asked yet wait (`defers_now`), and
+    /// the plan offers the rest; its end kicks a plan (`kick`).
+    fn start_reask(&self, r: &Round, reach: Option<Arc<Reaches>>, tiles: &TerrainTiles) {
+        let x = KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), tiles);
+        if !tiles.defers() || !super::idents::warm_due(&x) || !tiles.reask().begin() {
+            return;
+        }
+        let (covs, date, m, inputs) = (r.covs.clone(), r.date.to_string(), r.manifest.clone(), r.inputs.clone());
+        let t = tiles.for_reask();
+        let run = move || {
+            nasread::unphased();
+            let all = || super::idents::warm_all(&KeyCtx::new(&covs.all, &date, &m, &inputs, reach.as_deref(), &t));
+            match rayon::ThreadPoolBuilder::new().thread_name(|i| format!("reask-{i}")).build() {
+                Ok(pool) => pool.install(all),
+                Err(_) => all(),
+            }
+            t.reask().end();
+        };
+        if let Err(e) = std::thread::Builder::new().name("reask".into()).spawn(run) {
+            eprintln!("agent: the thread asking records again: {e}");
+            tiles.reask().end();
         }
     }
 
@@ -963,6 +1003,7 @@ impl PlanHeld for Held {
             None => {
                 let memo = KeyMemo::default();
                 let tiles = self.terrain_tiles(r.root, r.manifest);
+                self.start_reask(r, reach_now.as_ref().map(|(_, r)| r.clone()), &tiles);
                 nasread::PLAN.enter("build::plan");
                 let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
                 let hold = self.shadow_hold();
@@ -1002,7 +1043,31 @@ impl PlanHeld for Held {
     fn chains_left(&self, r: &Round) -> [Vec<Work>; 5] {
         self.with_keys(r, |x| build::chains_left(x, r.done))
     }
+    fn reasking(&self) -> Option<String> {
+        let s = self.tiles.borrow().reask().now();
+        let gb = |b: u64| format!("{:.1} GB", b as f64 / (1u64 << 30) as f64);
+        let held = s.held.map_or_else(String::new, |(cost, room)| {
+            format!("; one of {} waits for room above the memory floor ({} there)", gb(cost), gb(room))
+        });
+        s.running.then(|| {
+            format!(
+                "asked again by this build's answering code off the plan's thread, {} of {}{held}: \
+                 the targets of those not asked yet wait",
+                s.done, s.total
+            )
+        })
+    }
+    fn kick(&self) -> Option<&'static str> {
+        let ended = self.tiles.borrow().reask().now().ended;
+        (self.reask_seen.replace(ended) != ended).then_some("the records asked again are in")
+    }
     fn unknown_why(&self, manifest: &BTreeMap<String, String>, n: usize) -> String {
+        // (A z6 tile's coverage line waits for the pass asking records again: `reasking` says how far.)
+        if self.tiles.borrow().defers_now() {
+            return format!(
+                "{n} of them wait while the coverage records are asked again (or for what else their keys read)"
+            );
+        }
         match self.tiles.borrow().elevation(manifest) {
             Ok(None) => "the records don't say the build reads the declared elevation datasets yet (their switch, docs/inputs.md §6.8)".to_string(),
             Err(e) => e.0,
@@ -1082,7 +1147,7 @@ mod tests {
         let mut s = ended();
         assert!(live(&mut s).is_none(), "an ended worker's shadow is copied nothing");
         assert!(s.is_none(), "and dropped");
-        let held = Held::new(std::env::temp_dir().join("never-read"));
+        let held = Held::new(&std::env::temp_dir().join("never-read"));
         *held.shadow.borrow_mut() = ended();
         let hold = held.shadow_hold().expect("a shadow started again");
         drop(hold);

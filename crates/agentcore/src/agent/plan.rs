@@ -635,7 +635,7 @@ impl Planner {
         catalogues: publish::LastCatalogue,
     ) -> Planner {
         let (out, out_rx) = mpsc::channel();
-        let held_plan = o.the_plan.held(o.home.join("pack-idx"));
+        let held_plan = o.the_plan.held(&o.home);
         Planner {
             o,
             host,
@@ -784,6 +784,9 @@ impl Planner {
         let last = self.last.map(|(at, took, s, t)| (at.elapsed(), took, s.map_or(0, |s| s.digest()), t));
         let refiltered = self.refiltered.map(|(at, took)| (at.elapsed(), took));
         let granting_changed = granting.changed(&self.granting);
+        if let Some(k) = self.held_plan.kick() {
+            self.kicked.get_or_insert(k);
+        }
         if let Some(why) = why_plan(self.kicked, last, seen.digest(), now) {
             // (Which part changed, said: how many plans each brings, docs/incremental-planning.md.)
             let why = match why {
@@ -2005,6 +2008,10 @@ impl Planner {
         if !planned.unknown.is_empty() {
             let why = self.held_plan.unknown_why(&manifest, planned.unknown.len());
             waiting.push(Waiting { step: Some("unit".into()), what: "roads".into(), why });
+        }
+        // (The records asked again off this thread: the targets of those not asked yet wait.)
+        if let Some(why) = self.held_plan.reasking() {
+            waiting.push(Waiting { step: None, what: "The coverage records".into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of a step a catalogue waits for (build::CATALOGUE_GATE: the map tiles, the road

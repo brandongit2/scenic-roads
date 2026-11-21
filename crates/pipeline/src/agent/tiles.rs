@@ -37,26 +37,20 @@ const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 /// `Read::Built` reads wait for, task #1556). A head kept without them (None) stands for a step
 /// whose waits don't read them (`idents::waits_by_record`), read again only for one whose do: the
 /// peaks' 1,937 small records, not every step's (bldtiles' are 3.5 GB). Its cheap test (`version`,
-/// `answering`) is its record's, or one the record was asked again under and answered the same
-/// (`TerrainTiles::answered_same`), so a record isn't asked again on every start once the coverage's
-/// geometry or answering code moved under it without changing an answer. (A world step's record,
-/// held whole, has one too, for that test alone.)
+/// `answering`) and `line` are its record's, or a test the record was asked again under and the
+/// line that gave (`TerrainTiles::answered`: its own line when it answered the same, else the new
+/// one), so a record isn't asked again on every start once the coverage's geometry or answering
+/// code moved under it. (A world step's record, held whole, has one too, for that test alone.)
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Head {
     fmt: u32,
     version: String,
     /// buildstore::asked::Record::answering (a head kept before it was carried: its record's, 1).
-    #[serde(default = "first_answering")]
+    #[serde(default = "buildstore::asked::first_answering")]
     answering: u32,
     line: String,
     #[serde(default)]
     reads: Option<Vec<String>>,
-}
-
-/// A head's answering code kept before it was carried (`Head::answering`): its record's, put before
-/// records carried one.
-fn first_answering() -> u32 {
-    1
 }
 
 impl Head {
@@ -148,7 +142,7 @@ pub struct TerrainTiles {
     asked: HashMap<String, Option<Option<std::sync::Arc<buildstore::asked::Record>>>>,
     /// Of what each target keyed so last asked (`asked::target_logical`), by content name: its cheap
     /// test (what it read of the coverage by geometry, the answering code: `Record::version`,
-    /// `answering`, or a test it was asked again under and answered the same, `answered_same`) and
+    /// `answering`, or a test it was asked again under, `answered`) and
     /// the line it ran under, all a key reads of it while that test holds; the record itself is read
     /// again only once it doesn't (`target_asked`). Read once each, several at a time, and kept in
     /// this Mac's folder by content hash (`<hash>.asked-head`), so an agent's start reads only those
@@ -163,6 +157,117 @@ pub struct TerrainTiles {
     /// names, only when asked (never held open: a coverage of the version a record asked asks
     /// nothing again).
     root: Option<store::nasfs::NasRoot>,
+    /// The records asked again off the plan's thread, shared by the copies (`Reask`).
+    reask: std::sync::Arc<Reask>,
+    /// Whether its keys leave a record that must be asked again to a pass off the plan's thread
+    /// while one runs (`Reask::running`), waiting meanwhile: the agent's plan's (`defer`), not a
+    /// test's, nor the pass's own copy, which asks them.
+    defers: bool,
+    /// The memory available above this Mac's floor now, as the memory guard last read it (bytes;
+    /// None: unread, the guard guarding nothing): what the records asked again may hold in flight
+    /// (`Reask::admit`). None: no bound (a test's).
+    room: Option<Room>,
+}
+
+/// The memory available above the floor now (bytes; None: unknown), `TerrainTiles::room`.
+pub type Room = std::sync::Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// The coverage records asked again off the plan's thread (task #1590: every record once the
+/// answering code changed, buildstore::coverage::ANSWERING; any whose cheap test moved), shared by
+/// a `TerrainTiles` and its copies: whether a pass runs (`running`: the plan's keys of a record
+/// it hasn't asked yet wait), how far it is (records gone through of those it looks at), how many
+/// passes ended (in the tiles' `state`, so a plan after one finds their lines), and the records'
+/// memory in flight (`admit`).
+#[derive(Default)]
+pub struct Reask {
+    state: std::sync::Mutex<ReaskState>,
+    freed: std::sync::Condvar,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReaskState {
+    pub running: bool,
+    /// Records gone through (`done`) of those the pass looks at (`total`).
+    pub done: usize,
+    pub total: usize,
+    /// Passes ended.
+    pub ended: u64,
+    /// The records' memory in flight (bytes: `asked::record_cost`, `admit`).
+    pub in_flight: u64,
+    /// A record held back for memory: its cost and the room there was (bytes).
+    pub held: Option<(u64, u64)>,
+}
+
+impl Reask {
+    /// Its state now.
+    pub fn now(&self) -> ReaskState {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&mut ReaskState) -> T) -> T {
+        f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// A pass begins (false: one runs already).
+    pub fn begin(&self) -> bool {
+        self.with(|s| {
+            let was = s.running;
+            if !was {
+                (s.running, s.done, s.total) = (true, 0, 0);
+            }
+            !was
+        })
+    }
+
+    /// The pass ends.
+    pub fn end(&self) {
+        self.with(|s| {
+            s.running = false;
+            s.ended += 1;
+        });
+    }
+
+    /// `n` records more to go through.
+    pub fn looks_at(&self, n: usize) {
+        self.with(|s| s.total += n);
+    }
+
+    /// One gone through.
+    pub fn went_through(&self) {
+        self.with(|s| s.done += 1);
+    }
+
+    /// Admits a record costing `cost` bytes in memory (`asked::record_cost`): at once while what's
+    /// in flight with it fits in what `room` says is available above the floor now (no reading: no
+    /// bound), else once it does, read again each guard sample (memguard::EVERY) and as each in
+    /// flight lets go. What's in flight is counted beside the room read, though the room already
+    /// holds what of it is allocated: the bound errs on the side of less. Held to its drop.
+    pub fn admit(&self, cost: u64, room: Option<&Room>) -> Admitted<'_> {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(r) = room.and_then(|f| f()) {
+            if g.in_flight + cost <= r {
+                break;
+            }
+            g.held = Some((cost, r));
+            g = self.freed.wait_timeout(g, agentcore::agent::memguard::EVERY).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        g.held = None;
+        g.in_flight += cost;
+        Admitted { reask: self, cost }
+    }
+}
+
+/// A record's memory admitted (`Reask::admit`), let go as it drops.
+pub struct Admitted<'a> {
+    reask: &'a Reask,
+    cost: u64,
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        self.reask.with(|s| s.in_flight = s.in_flight.saturating_sub(self.cost));
+        self.reask.freed.notify_all();
+    }
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -187,6 +292,34 @@ impl TerrainTiles {
     /// None held yet; `dir`: where indexes are kept (the agent's `pack-idx/`).
     pub fn new(dir: Option<PathBuf>) -> TerrainTiles {
         TerrainTiles { dir, ..Default::default() }
+    }
+
+    /// The agent's plan's: its keys leave the records that must be asked again to a pass off the
+    /// plan's thread (`defers`), which holds them in flight within `room`.
+    pub fn defer(&mut self, room: Room) {
+        (self.defers, self.room) = (true, Some(room));
+    }
+
+    /// The records asked again off the plan's thread (`Reask`).
+    pub fn reask(&self) -> &std::sync::Arc<Reask> {
+        &self.reask
+    }
+
+    /// A copy for that pass: it asks the records itself, the memo and `Reask` shared.
+    pub fn for_reask(&self) -> TerrainTiles {
+        TerrainTiles { defers: false, ..self.clone() }
+    }
+
+    /// Whether its keys leave the records that must be asked again to a pass off the plan's thread
+    /// (`defer`): the agent's plan's.
+    pub fn defers(&self) -> bool {
+        self.defers
+    }
+
+    /// Whether a key now leaves a record that must be asked again to the pass (`defers`, one
+    /// running), its target waiting.
+    pub fn defers_now(&self) -> bool {
+        self.defers && self.reask.now().running
     }
 
     /// A digest of what the keys read of it now: the packs whose indexes it holds and those it
@@ -216,7 +349,15 @@ impl TerrainTiles {
         let mut a: Vec<(&String, bool)> = self.asked.iter().map(|(c, r)| (c, r.is_some())).collect();
         a.sort_unstable();
         a.hash(&mut h);
+        self.reask_state().hash(&mut h);
         h.finish()
+    }
+
+    /// What of `Reask` the keys read (`state`, `load_state`): whether a pass runs (they wait) and
+    /// how many ended (the lines they put in the memo).
+    fn reask_state(&self) -> (bool, u64) {
+        let s = self.reask.now();
+        (self.defers && s.running, s.ended)
     }
 
     /// A digest of what of it the manifest's entries don't show: what it can't read now (the packs'
@@ -236,6 +377,8 @@ impl TerrainTiles {
         let mut a: Vec<&String> = self.asked.iter().filter(|(_, r)| r.is_none()).map(|(c, _)| c).collect();
         a.sort_unstable();
         a.hash(&mut h);
+        // (A key that waited for the pass met it as a load: moved when it ends.)
+        self.reask_state().hash(&mut h);
         h.finish()
     }
 
@@ -545,12 +688,18 @@ impl TerrainTiles {
     }
 
     /// Record `r` of content name `c`, asked again under cheap test `now` by this build's answering
-    /// code (buildstore::coverage::ANSWERING), answered the same: its head kept here with that test,
-    /// so the next start takes its line without asking again (this one finds it in the memo its key
-    /// asked through). A local file for each record a geometry or answering change asks again,
-    /// never the NAS.
-    pub fn answered_same(&self, c: &str, r: &buildstore::asked::Record, now: &str) {
-        let h = Head { version: now.to_string(), answering: buildstore::coverage::ANSWERING, ..Head::of(r) };
+    /// code (buildstore::coverage::ANSWERING), giving key line `line` (its own when it answered the
+    /// same, else a new one naming it): its head kept here with that test and line, so the next
+    /// start takes the line without asking again, whether its target reran yet or not (this one
+    /// finds it in the memo its key asked through). A local file for each record a geometry or
+    /// answering change asks again, never the NAS.
+    pub fn answered(&self, c: &str, r: &buildstore::asked::Record, now: &str, line: &str) {
+        let h = Head {
+            version: now.to_string(),
+            answering: buildstore::coverage::ANSWERING,
+            line: line.to_string(),
+            ..Head::of(r)
+        };
         self.keep_head(c, &h);
     }
 
@@ -576,15 +725,25 @@ impl TerrainTiles {
 
     /// A target's record of content name `c`, read now (one held, `hold_asked`: that): Ok(None) for
     /// one that doesn't parse, an error only while it can't be read.
-    pub fn target_asked(&self, c: &str) -> Result<Option<std::sync::Arc<buildstore::asked::Record>>, Unread> {
+    pub fn target_asked<T>(
+        &self,
+        c: &str,
+        f: impl FnOnce(Option<&buildstore::asked::Record>) -> T,
+    ) -> Result<T, Unread> {
         if let Some(Some(Some(r))) = self.asked.get(c) {
-            return Ok(Some(r.clone()));
+            return Ok(f(Some(r)));
         }
         let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
         // (By the content name its key read in the manifest: store::keyread's recorded read.)
         let _r = store::keyread::recorded();
-        let b = root.join(c).read().map_err(|e| Unread(format!("{c}: {e:#}")))?;
-        Ok(buildstore::asked::Record::from_bytes(&b).ok().map(std::sync::Arc::new))
+        let p = root.join(c);
+        let cost = buildstore::asked::record_cost(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
+        // (Held while it's read, parsed and asked again: `f`.)
+        let _a = self.reask.admit(cost, self.room.as_ref());
+        let b = p.read().map_err(|e| Unread(format!("{c}: {e:#}")))?;
+        let r = buildstore::asked::Record::from_bytes(&b).ok();
+        drop(b);
+        Ok(f(r.as_ref()))
     }
 
     /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`
@@ -1189,7 +1348,7 @@ mod tests {
         let reads = ["terrain-lo 3/4/2".to_string(), "terrain-lo 3/5/2".to_string()];
         assert_eq!(t.asked_reads(good), Some(Some(&reads[..])));
         assert_eq!(t.asked_head(bad), Some(None));
-        assert!(t.target_asked(bad).unwrap().is_none());
+        assert!(t.target_asked(bad, |r| r.is_none()).unwrap());
         assert_eq!(t.asked_head(gone), None);
         assert!(t.unread.contains_key(gone) && !t.unread.contains_key(bad));
         // Another start: the head from here, the NAS's file gone.
@@ -1290,22 +1449,141 @@ mod tests {
         assert_ne!(pois[1], format!("ran {differs}"));
         assert_eq!(world[0], "ran rail");
         assert_ne!(world[1], "ran bld-fetch");
-        // Those answered the same: their heads kept with this build's code and the test asked.
+        // Each asked again: its head kept with this build's code, the test asked and the line it
+        // gave, its own or the new one (task #1590 review: one answered differently, not read
+        // again on every start until its target reruns).
         let head = |hash: &str| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(kept.join(format!("{hash}.asked-head"))).unwrap()).unwrap()
         };
-        assert_eq!(head("1111111111111111")["answering"], ANSWERING);
-        assert_eq!(head("1111111111111111")["version"], geo(same));
-        assert_eq!(head("3333333333333333")["version"], c.version());
-        assert_eq!(head("2222222222222222")["answering"], 1);
-        assert!(!kept.join("4444444444444444.asked-head").exists());
-        // The next start: the records the old code answered the same aren't read again (here, the
-        // target's gone from the NAS); the same lines.
-        std::fs::remove_file(d.path().join("nas").join(&m[&target_logical("pois", same)])).unwrap();
+        for (hash, now, line) in [
+            ("1111111111111111", geo(same), &pois[0]),
+            ("2222222222222222", geo(differs), &pois[1]),
+            ("3333333333333333", c.version(), &world[0]),
+            ("4444444444444444", c.version(), &world[1]),
+        ] {
+            let h = head(hash);
+            assert_eq!(
+                (&h["answering"], &h["version"], &h["line"]),
+                (&ANSWERING.into(), &now.into(), &line.as_str().into())
+            );
+        }
+        // The next start: no record asked again (the targets' gone from the NAS; the world steps',
+        // held whole, asked nothing: no line of theirs in the memo); the same lines.
+        for t in [same, differs] {
+            std::fs::remove_file(d.path().join("nas").join(&m[&target_logical("pois", t)])).unwrap();
+        }
         let mut again = TerrainTiles::new(Some(kept));
         again.load_asked(&root, &m);
         assert!(again.unread.is_empty(), "{:?}", again.unread);
         assert_eq!(lines(&again), (pois, world));
+        for s in ["rail", "bld-fetch"] {
+            let (key, from) = (format!("coverage:asked {s}"), format!("{} {} []", c.version(), m[&logical(s)]));
+            assert!(t.memo_found(&key, &from).is_some(), "{s} asked again the first time");
+            assert_eq!(again.memo_found(&key, &from), None, "{s} asked again");
+        }
+    }
+
+    /// Task #1590 review: the agent's plan leaves the records that must be asked again to a pass
+    /// off its thread. While one runs, the key of a record it hasn't asked yet waits (None), met as
+    /// a load, and the keys of every other target are worked out as ever: the plan offers them; once
+    /// the pass has asked it, the key is its line, and the tiles' state has moved.
+    #[test]
+    fn a_record_left_to_the_pass_waits_alone() {
+        use crate::agent::build::KeyCtx;
+        use buildstore::asked::{target_logical, Record};
+        use buildstore::coverage::{fixture_circle, Asking, Coverage, Shape};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let shape = Shape::new("r0: c".into(), vec![fixture_circle(-21.9, 64.13, 20.0)], 1000.0);
+        let c = Coverage { shapes: vec![shape], ..Default::default() };
+        let inputs = BTreeMap::new();
+        let asking = Asking::new(&c);
+        assert!(asking.contains([-219_000_000, 641_300_000]));
+        let asked = asking.asked();
+        let (old, fresh, none) = ("6/28/17", "6/27/17", "6/26/17");
+        let geo = |t: &str| crate::agent::idents::clip_geo(&c, codecs::tile::TileId::parse(t).unwrap());
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for (t, hash, answering) in [(old, "1111111111111111", 1), (fresh, "2222222222222222", 2)] {
+            let mut r = Record::read_as(&c, geo(t), asked.clone(), Vec::new(), format!("ran {t}"));
+            r.answering = answering;
+            let content = format!("{}.{hash}.json.zst", target_logical("pois", t));
+            let p = d.path().join("nas").join(&content);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, r.to_bytes()).unwrap();
+            m.insert(target_logical("pois", t), content);
+        }
+        let mut t = TerrainTiles::new(Some(d.path().join("kept")));
+        t.defer(std::sync::Arc::new(|| None));
+        t.load_asked(&root, &m);
+        let key = |tiles: &TerrainTiles, u: &str| {
+            crate::agent::idents::coverage_clip(u, &KeyCtx::new(&c, "d", &m, &inputs, None, tiles))
+                .map(|mut l| l.remove(0))
+        };
+        // No pass running: asked on the plan's thread, as a test's plan does.
+        assert!(!t.defers_now());
+        let (state, load) = (t.state(), t.load_state());
+        assert!(t.reask().begin());
+        assert!(t.defers_now() && t.state() != state && t.load_state() != load);
+        assert_eq!(key(&t, old), None, "left to the pass");
+        assert_eq!(key(&t, fresh).as_deref(), Some(format!("ran {fresh}").as_str()));
+        assert_eq!(key(&t, none), Some(geo(none)));
+        // The pass, on its copy: it asks the record, and the plan's key finds its line.
+        let pass = t.for_reask();
+        assert!(!pass.defers_now());
+        crate::agent::idents::warm_all(&KeyCtx::new(&c, "d", &m, &inputs, None, &pass));
+        assert_eq!(t.reask().now().total, 2);
+        assert_eq!(t.reask().now().done, 2);
+        t.reask().end();
+        assert_eq!(key(&t, old).as_deref(), Some(format!("ran {old}").as_str()));
+        assert!(!t.defers_now() && t.state() != state);
+        // Nothing new to ask: no pass due.
+        assert!(!crate::agent::idents::warm_due(&KeyCtx::new(&c, "d", &m, &inputs, None, &t)));
+    }
+
+    /// Task #1590 review: the records asked again are admitted within the memory above the floor
+    /// (`Reask::admit`): one at once while what's in flight with it fits, the next held until one
+    /// lets go; one larger than the room, with nothing in flight, until the room grows; no reading,
+    /// no bound.
+    #[test]
+    fn records_asked_again_are_held_to_the_room_above_the_floor() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let r = std::sync::Arc::new(Reask::default());
+        let room_now = std::sync::Arc::new(AtomicU64::new(100));
+        let at = room_now.clone();
+        let room: Room = std::sync::Arc::new(move || Some(at.load(Ordering::SeqCst)));
+        let first = r.admit(60, Some(&room));
+        assert_eq!(r.now().in_flight, 60);
+        std::thread::scope(|s| {
+            let second = s.spawn(|| {
+                let _a = r.admit(60, Some(&room));
+                r.now().in_flight
+            });
+            let t = std::time::Instant::now();
+            while r.now().held.is_none() {
+                assert!(t.elapsed() < Duration::from_secs(10), "held back");
+                std::thread::yield_now();
+            }
+            assert_eq!(r.now().held, Some((60, 100)));
+            drop(first);
+            assert_eq!(second.join().unwrap(), 60, "admitted once the first let go");
+        });
+        assert_eq!(r.now(), ReaskState::default());
+        std::thread::scope(|s| {
+            let big = s.spawn(|| r.admit(150, Some(&room)).cost);
+            let t = std::time::Instant::now();
+            while r.now().held.is_none() {
+                assert!(t.elapsed() < Duration::from_secs(10), "held back");
+                std::thread::yield_now();
+            }
+            assert_eq!(r.now().held, Some((150, 100)));
+            room_now.store(200, Ordering::SeqCst);
+            r.freed.notify_all();
+            assert_eq!(big.join().unwrap(), 150);
+        });
+        // No reading: no bound.
+        let a = r.admit(u64::MAX / 2, None);
+        assert_eq!(r.now().in_flight, u64::MAX / 2);
+        drop(a);
     }
 
     /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,

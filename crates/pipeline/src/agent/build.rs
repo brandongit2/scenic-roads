@@ -2393,10 +2393,12 @@ pub fn plan_with(
 /// `plan`'s work, worked out with `x`.
 fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m.whole(), x.inputs.whole(), x.reach, x.tiles);
-    nasread::PLAN.enter("build::plan: the z6 tiles' records asked again");
-    super::idents::warm_asked(x);
-    super::idents::warm_lakes(x);
-    super::idents::warm_peaks(x);
+    // (The agent's plan leaves them to a pass off its thread, theplan's `reask`: its keys of a
+    // record not asked yet wait meanwhile.)
+    if !tiles.defers() {
+        nasread::PLAN.enter("build::plan: the records asked again");
+        super::idents::warm_all(x);
+    }
     nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);

@@ -989,8 +989,10 @@ the shapes made from the rings, bit for bit (the same values). How the answers a
 a version of its own, `buildstore::coverage::ANSWERING` (2 since task #1462's centre parity),
 bumped with any change that may answer a question differently: neither the coverage's version
 (`Coverage::version`: the rings, buffer and water) nor the file's format reads it, so a bump moves
-no identity; the steps keyed on what their runs asked carry it in their cheap test and ask each
-record again once, rebuilding only where an answer changed (docs/steps.md §12). `scenic-build`'s steps read the
+no identity; the steps keyed on what their runs asked carry it in their cheap test, and the
+lead's plan asks each record again once, off its thread and within the memory above the floor,
+rebuilding only where an answer changed (docs/steps.md §12, The records asked again).
+`scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
 own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
 filesystem isn't mapped, the coverage made in memory as with no cache). Each read in place there

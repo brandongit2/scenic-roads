@@ -352,8 +352,9 @@ pub trait Plan: Send + Sync {
     fn unit_margin_km(&self) -> f64;
 
     // The planner's.
-    /// What the planner carries for the plan, its caches in `index_dir` where they're kept.
-    fn held(&self, index_dir: std::path::PathBuf) -> Box<dyn PlanHeld>;
+    /// What the planner carries for the plan, its caches kept in the agent's folder `home`
+    /// (`pack-idx/`), the memory guard's last sample read there (memguard::live).
+    fn held(&self, home: &std::path::Path) -> Box<dyn PlanHeld>;
     /// The inputs the steps' keys read (`Round::inputs`).
     fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String>;
 }
@@ -449,6 +450,16 @@ pub trait PlanHeld: Send {
     fn timetables_todo(&self, r: &Round) -> Option<Work>;
     /// The trains', landmarks', 3D buildings' and depths' work to come, for the forecast.
     fn chains_left(&self, r: &Round) -> [Vec<Work>; 5];
+    /// The records asked again off the plan's thread while a pass runs (task #1590), for the
+    /// status: how far it is, and what its targets wait for. None while none runs.
+    fn reasking(&self) -> Option<String> {
+        None
+    }
+    /// Why a plan is due now that nothing else in the plan's digest shows (a pass asking records
+    /// again ended since the last plan: its lines are in): None while nothing is.
+    fn kick(&self) -> Option<&'static str> {
+        None
+    }
     /// Why `n` z6 tiles' keys can't be worked out now.
     fn unknown_why(&self, manifest: &BTreeMap<String, String>, n: usize) -> String;
     /// The map tiles among `tiles` made stale by each z6 tile whose base pack or road values in

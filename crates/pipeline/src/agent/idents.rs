@@ -173,9 +173,10 @@ pub fn coverage_cover(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// What world step `t`'s run asked of the coverage, as the coverage answers it now
 /// (buildstore::asked::line: its record's line while the coverage is the version it asked, answered
 /// by this build's code, or answers all it asked the same); asked again once a coverage version and
-/// record, and once answered the same, its head kept with that version (`answered_same`). A record that
-/// doesn't parse, or a question of another form, a new line (its step re-runs once). None while
-/// the record, or the outlines its questions name, can't be read now.
+/// record, its head then kept with that version and the line it gave (`TerrainTiles::answered`). A
+/// record that doesn't parse, or a question of another form, a new line (its step re-runs once).
+/// None while the record, or the outlines its questions name, can't be read now, and while it's
+/// left to the pass asking records again off the plan's thread (`TerrainTiles::defers_now`).
 pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     use buildstore::asked::{line, Answer, Prev};
     let Some(c) = x.m.get(&buildstore::asked::logical(t)) else {
@@ -185,13 +186,13 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         return Some(vec![line(x.cov, Some((c, Prev::Unparsed)), &buildstore::asked::no_questions)?]);
     };
     let v = x.cov.version();
-    // (Its cheap test: its head's, one it answered the same under since, else its own.)
-    let (version, answering) = match x.tiles.asked_head(c) {
-        Some(Some((version, answering, _))) => (version, answering),
-        _ => (r.version.clone(), r.answering),
+    // (Its cheap test and line: its head's, one it was asked again under since, else its own.)
+    let (version, answering, l) = match x.tiles.asked_head(c) {
+        Some(Some(h)) => h,
+        _ => (r.version.clone(), r.answering, r.line.clone()),
     };
     if buildstore::asked::as_read(&version, answering, &v) {
-        return Some(vec![r.line.clone()]);
+        return Some(vec![l]);
     }
     let reask = |q: &str| -> Answer {
         let Some((o, _)) = inputs::rail::parse_countries_question(q) else { return Answer::OfAnotherForm };
@@ -207,12 +208,15 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .filter_map(|(q, _)| inputs::rail::parse_countries_question(q))
         .map(|(o, _)| x.m.holds(&o))
         .collect();
-    let l = x.tiles.memo(&format!("coverage:asked {t}"), &format!("{v} {c} {named:?}"), || {
+    let (key, from) = (format!("coverage:asked {t}"), format!("{v} {c} {named:?}"));
+    if x.tiles.defers_now() && x.tiles.memo_found(&key, &from).is_none() {
+        x.m.met_load();
+        return None;
+    }
+    let l = x.tiles.memo(&key, &from, || {
         let l = line(x.cov, Some((c, Prev::Record(&r))), &reask)
             .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))?;
-        if l == r.line {
-            x.tiles.answered_same(c, &r, &v);
-        }
+        x.tiles.answered(c, &r, &v, &l);
         Ok(l)
     });
     l.ok().map(|l| vec![l])
@@ -234,9 +238,10 @@ pub fn extract(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// it has no record (its line before it asked); its record's line while `geo` reads as its run's
 /// did, answered by this build's code (the record's head, `TerrainTiles::asked_head`), or the
 /// coverage answers what it asked the same (`reask` its questions asked whole), the record read and
-/// asked again once a `geo` and record (`TerrainTiles::memo`), then its head kept with `geo`
-/// (`TerrainTiles::answered_same`); else a new line (one that doesn't parse, or asks what can't be
-/// answered now, too: re-run once). None only while the record can't be read now.
+/// asked again once a `geo` and record (`TerrainTiles::memo`), then its head kept with `geo` and the
+/// line it gave (`TerrainTiles::answered`); else a new line (one that doesn't parse, or asks what
+/// can't be answered now, too: re-run once). None only while the record can't be read now, or is
+/// left to the pass asking records again off the plan's thread (`TerrainTiles::defers_now`).
 fn target_asked(
     step: &str,
     t: &str,
@@ -266,14 +271,17 @@ fn asked_line<'m>(
     if buildstore::asked::as_read(&version, answering, &geo) {
         return Some(line);
     }
+    let (key, from) = (format!("asked {step} {t}"), format!("{c} {geo}"));
+    if tiles.defers_now() && tiles.memo_found(&key, &from).is_none() {
+        m.met_load();
+        return None;
+    }
     tiles
-        .memo(&format!("asked {step} {t}"), &format!("{c} {geo}"), || {
-            Ok(match tiles.target_asked(c)? {
+        .memo(&key, &from, || {
+            tiles.target_asked(c, |r| match r {
                 Some(r) => {
-                    let l = target_line(cov, &geo, Some((c, Prev::Record(&r))), reask);
-                    if l == r.line {
-                        tiles.answered_same(c, &r, &geo);
-                    }
+                    let l = target_line(cov, &geo, Some((c, Prev::Record(r))), reask);
+                    tiles.answered(c, r, &geo, &l);
                     l
                 }
                 None => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
@@ -282,15 +290,15 @@ fn asked_line<'m>(
         .ok()
 }
 
-/// Works out, on rayon's threads, the line of every target whose record's geometry moved
-/// (`asked_line`, for the four steps keyed so: steps::ASKED_PER_TARGET), kept in the tiles' memo
-/// for the plan's keys to find: where the coverage's geometry moved under many records (a regions
+/// Works out, on rayon's threads (the pass's own pool, `warm_all`), the line of every target whose
+/// record's geometry moved (`asked_line`, for the four steps keyed so: steps::ASKED_PER_TARGET),
+/// kept in the tiles' memo for the plan's keys to find: where the coverage's geometry moved under many records (a regions
 /// intake: every z6 tile's record asked again, a trees tile's mask in tens of milliseconds by one
 /// measurement on the mini), the plan's thread asks none of them one by one. Each geometry as the
 /// step's key reads it (`coverage_clip`, `ways`, `coverage_inside`, `coverage_shapes`); a line
 /// that can't be worked out now is left to the key that reads it. Once per what those geometries
 /// read: the coverage's version and its shapes' countries, the pass, the spacing and the pass's
-/// reaches (the plan runs it every loop: none of that changed, nothing done). A record put since
+/// reaches (each pass: none of that changed, nothing done). A record put since
 /// is asked again by its key alone.
 pub fn warm_asked(x: &KeyCtx) {
     // (A shadow plan's warms nothing: its round may be older than the plan's, whose mark it would
@@ -298,28 +306,84 @@ pub fn warm_asked(x: &KeyCtx) {
     if x.shadow() {
         return;
     }
-    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
-    let fine = tiles.spacing(m);
-    let mut each: Vec<(&str, String)> = Vec::new();
-    for step in super::steps::ASKED_PER_TARGET {
-        let p = format!("work/asked/{step}/");
-        for (l, _) in m.under(&p) {
-            each.push((step, l[p.len()..].replace('-', "/")));
+    let (key, from) = asked_warm(x);
+    let _ = x.tiles.memo(key, &from, || {
+        let (m, tiles) = (x.m, x.tiles);
+        let mut each: Vec<(&str, String)> = Vec::new();
+        for step in super::steps::ASKED_PER_TARGET {
+            let p = format!("work/asked/{step}/");
+            for (l, _) in m.under(&p) {
+                each.push((step, l[p.len()..].replace('-', "/")));
+            }
         }
-    }
+        warm(x, &tiles.spacing(m), &each);
+        Ok(String::new())
+    });
+}
+
+/// `warm_asked`'s memo key, and what it's worked out from.
+fn asked_warm(x: &KeyCtx) -> (&'static str, String) {
+    let (cov, m) = (x.cov, x.m);
     let countries: Vec<&str> = cov.shapes.iter().map(|s| s.country.as_str()).collect();
     let from = format!(
         "{} {} {} {} {}",
         cov.version(),
         store::naming::hash16(countries.join("\0").as_bytes()),
         x.date,
-        fine.digest(),
+        x.tiles.spacing(m).digest(),
         m.get(&roads::reach::logical(x.date)).map_or("-", String::as_str),
     );
-    let _ = tiles.memo("coverage:asked warm", &from, || {
-        warm(x, &fine, &each);
+    ("coverage:asked warm", from)
+}
+
+/// Works out the line of every world step's record whose coverage version moved under it
+/// (`coverage_asked`: rail-feeds' countries 49 s, task #1130), kept in the tiles' memo as
+/// `warm_asked` the targets'. Once per coverage version and records.
+pub fn warm_world(x: &KeyCtx) {
+    if x.shadow() {
+        return;
+    }
+    let (key, from) = world_warm(x);
+    let _ = x.tiles.memo(key, &from, || {
+        let world = world_records(x);
+        x.tiles.reask().looks_at(world.len());
+        for (l, _) in world {
+            let (_d, _n) = (store::keyread::deriving(), WentThrough(x.tiles));
+            coverage_asked(&l["work/asked/".len()..], x);
+        }
         Ok(String::new())
     });
+}
+
+/// The world steps' records the manifest names (buildstore::asked::is_world): (logical, content).
+fn world_records<'a>(x: &'a KeyCtx) -> Vec<(&'a String, &'a String)> {
+    x.m.unrecorded_map().under("work/asked/").filter(|(l, _)| buildstore::asked::is_world(l)).collect()
+}
+
+/// `warm_world`'s memo key, and what it's worked out from.
+fn world_warm(x: &KeyCtx) -> (&'static str, String) {
+    let named: Vec<&str> = world_records(x).into_iter().flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
+    ("coverage:asked world warm", format!("{} {}", x.cov.version(), named.join(" ")))
+}
+
+/// Whether a pass asking records again has work now (`warm_all`): a warm not done for what it's
+/// worked out from, with records to ask. False in a shadow plan, which warms nothing.
+pub fn warm_due(x: &KeyCtx) -> bool {
+    !x.shadow()
+        && x.m.unrecorded_map().under("work/asked/").next().is_some()
+        && [asked_warm(x), world_warm(x), lakes_warm(x), peaks_warm(x)]
+            .iter()
+            .any(|(k, from)| x.tiles.memo_found(k, from).is_none())
+}
+
+/// Every record that must be asked again, asked (`warm_world`, `warm_asked`, `warm_lakes`,
+/// `warm_peaks`): the pass off the agent's plan's thread (theplan's `reask`), or a plan's own
+/// where its keys don't leave them to one (a test's: `TerrainTiles::defer`).
+pub fn warm_all(x: &KeyCtx) {
+    warm_world(x);
+    warm_asked(x);
+    warm_lakes(x);
+    warm_peaks(x);
 }
 
 /// `warm_asked`'s work: each of `each` (step, target) asked again where its geometry moved.
@@ -333,8 +397,10 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
         BTreeMap::new()
     };
     let reach = x.reach;
+    tiles.reask().looks_at(each.len());
     each.par_iter().for_each(|(step, t)| {
         let _d = store::keyread::deriving();
+        let _n = WentThrough(tiles);
         let Some(u) = TileId::parse(t) else { return };
         let geo = match *step {
             "pois" => Some(clip_geo(cov, u)),
@@ -352,6 +418,16 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
         let reask: &(dyn Fn(&str) -> Option<String> + Sync) = if *step == "trees" { &mask } else { &none };
         asked_line(step, t, geo, cov, m, tiles, reask);
     });
+}
+
+/// A record gone through by a warm, counted as it drops (`tiles::Reask::went_through`), however
+/// it returned.
+struct WentThrough<'a>(&'a super::tiles::TerrainTiles);
+
+impl Drop for WentThrough<'_> {
+    fn drop(&mut self) {
+        self.0.reask().went_through();
+    }
 }
 
 /// What a candidates' z6 tile's key reads of the coverage by geometry: its rings over the tile and
@@ -844,21 +920,29 @@ pub fn warm_peaks(x: &KeyCtx) {
     }
     // (A cache filled, on other threads: each key finds its line by what it reads itself.)
     let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
-    let named = |p: &'static str| m.under(p);
     let asked = "work/asked/peaks/";
-    let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
-    if each.is_empty() {
-        return;
-    }
-    let from: Vec<&str> =
-        named("layers/terrain/lo/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
-    let _ = tiles.memo("peaks:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
+    let (key, from) = peaks_warm(x);
+    let _ = tiles.memo(key, &from, || {
+        let each: Vec<String> = m.under(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
+        tiles.reask().looks_at(each.len());
         each.par_iter().for_each(|t| {
             let _d = store::keyread::deriving();
+            let _n = WentThrough(tiles);
             peaks_line(t, cov, m, tiles);
         });
         Ok(String::new())
     });
+}
+
+/// `warm_peaks`' memo key, and what it's worked out from: the lo packs and the peaks' records.
+fn peaks_warm(x: &KeyCtx) -> (&'static str, String) {
+    let m = x.m.unrecorded_map();
+    let from: Vec<&str> = m
+        .under("layers/terrain/lo/")
+        .chain(m.under("work/asked/peaks/"))
+        .flat_map(|(l, c)| [l.as_str(), c.as_str()])
+        .collect();
+    ("peaks:asked warm", store::naming::hash16(from.join("\n").as_bytes()))
 }
 
 /// What a lake-depth z6 tile's key reads of the terrain by its packs, its cheap test
@@ -922,21 +1006,30 @@ pub fn warm_lakes(x: &KeyCtx) {
     }
     // (A cache filled, on other threads: each key finds its line by what it reads itself.)
     let (cov, m, tiles) = (x.cov, x.m.unrecorded_map(), x.tiles);
-    let named = |p: &'static str| m.under(p);
     let asked = "work/asked/lake-depth/";
-    let each: Vec<String> = named(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
-    if each.is_empty() {
-        return;
-    }
-    let from: Vec<&str> =
-        named("layers/terrain/hi/").chain(named(asked)).flat_map(|(l, c)| [l.as_str(), c.as_str()]).collect();
-    let _ = tiles.memo("lake-depth:asked warm", &store::naming::hash16(from.join("\n").as_bytes()), || {
+    let (key, from) = lakes_warm(x);
+    let _ = tiles.memo(key, &from, || {
+        let each: Vec<String> = m.under(asked).map(|(l, _)| l[asked.len()..].replace('-', "/")).collect();
+        tiles.reask().looks_at(each.len());
         each.par_iter().for_each(|t| {
             let _d = store::keyread::deriving();
+            let _n = WentThrough(tiles);
             lake_line(t, cov, m, tiles);
         });
         Ok(String::new())
     });
+}
+
+/// `warm_lakes`' memo key, and what it's worked out from: the hi packs and the lake-depth's
+/// records.
+fn lakes_warm(x: &KeyCtx) -> (&'static str, String) {
+    let m = x.m.unrecorded_map();
+    let from: Vec<&str> = m
+        .under("layers/terrain/hi/")
+        .chain(m.under("work/asked/lake-depth/"))
+        .flat_map(|(l, c)| [l.as_str(), c.as_str()])
+        .collect();
+    ("lake-depth:asked warm", store::naming::hash16(from.join("\n").as_bytes()))
 }
 
 /// The mids of a z3 tile's z6 tiles near the coverage (`buildstore::coverage::coverage_tiles`) of the terrain or

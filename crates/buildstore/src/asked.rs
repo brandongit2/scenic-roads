@@ -18,9 +18,10 @@
 //! `target_line`) is the record's own line while that cheap test reads the same (`as_read`: the
 //! same version, answered by this build's code) or the coverage answers those questions the same;
 //! otherwise a new one. So a change to how answers are worked out moves no identity: the bump asks
-//! every record again once, and only a record answered differently moves its key. A target with no record keys by the
-//! cheap test's own line, as before it asked: its first run under this keying moves no key. The
-//! run works its line out as the plan did, from the record before it (`Run::start`,
+//! every record again once, and only a record answered differently moves its key. A target with
+//! no record keys by the cheap test's own line, as before it asked: its first run under this
+//! keying moves no key. The run works its line out as the plan did, from the record before it
+//! (`Run::start`,
 //! `Run::start_target`), so the key it is recorded done under is the one the plan works out after
 //! it: one run, never a second to settle the key (a record's places are only known once it has
 //! run).
@@ -56,7 +57,7 @@ pub struct Record {
 }
 
 /// The answering code of a record put before it was carried (`Record::answering`).
-fn first_answering() -> u32 {
+pub fn first_answering() -> u32 {
     1
 }
 
@@ -103,14 +104,45 @@ impl Record {
         Record { asked, also, answers: a, version, answering: crate::coverage::ANSWERING, line }
     }
 
-    /// As put: zstd'd JSON (rail's asks a point of each of the world's rail ways).
+    /// As put: zstd'd JSON (rail's asks a point of each of the world's rail ways), one frame whose
+    /// header holds its size (`record_cost` reads it).
     pub fn to_bytes(&self) -> Vec<u8> {
-        zstd::encode_all(&serde_json::to_vec(self).expect("a record serializes")[..], 9).expect("zstd in memory")
+        zstd::bulk::compress(&serde_json::to_vec(self).expect("a record serializes"), 9).expect("zstd in memory")
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Record> {
         serde_json::from_slice(&zstd::decode_all(b).context("not zstd")?).context("not a coverage record")
     }
+}
+
+/// What reading record `p` and asking it again holds in memory (bytes): the file, its JSON and the
+/// record parsed from it (no larger than its JSON), its JSON's size from its zstd frame's header
+/// (`Record::to_bytes`), else, for a record put before that held it, by decoding the frame once
+/// into nothing (a file that isn't zstd: its own size). An error only when it can't be read.
+pub fn record_cost(p: &store::nasfs::NasPath) -> std::io::Result<u64> {
+    use std::io::Read;
+    let file = p.metadata()?.len();
+    let mut head = Vec::with_capacity(18);
+    p.open()?.take(18).read_to_end(&mut head)?;
+    let json = match zstd::zstd_safe::get_frame_content_size(&head) {
+        Ok(Some(n)) => n,
+        _ => {
+            struct Count(u64);
+            impl std::io::Write for Count {
+                fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                    self.0 += b.len() as u64;
+                    Ok(b.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            // (One that isn't zstd costs its file: it's read, and doesn't parse.)
+            let mut n = Count(0);
+            zstd::stream::copy_decode(p.open()?, &mut n).map_or(0, |()| n.0)
+        }
+    };
+    Ok(file + 2 * json)
 }
 
 /// A question of a record's `also` answered again now (`line`'s and `target_line`'s `reask`).
@@ -387,6 +419,36 @@ mod tests {
         old.remove("answering");
         let parsed: Record = serde_json::from_value(serde_json::Value::Object(old)).unwrap();
         assert_eq!(parsed.answering, 1);
+    }
+
+    /// Task #1590 review: what asking a record again holds in memory, its JSON's size read from its
+    /// frame's header as put now, and by decoding one put before that held it.
+    #[test]
+    fn a_records_cost_is_its_file_and_twice_its_json() {
+        let c = cov(&[(4.85, 45.75, 60.0)]);
+        let a = Asking::new(&c);
+        for k in 0..2000 {
+            a.contains(e7(4.0 + k as f64 * 0.001, 45.75));
+        }
+        let r = Record::new(&c, a.asked(), vec![("q".into(), "a".into())], "l".into());
+        let json = serde_json::to_vec(&r).unwrap().len() as u64;
+        let d = tempfile::tempdir().unwrap();
+        for (name, b) in
+            [("now", r.to_bytes()), ("before", zstd::encode_all(&serde_json::to_vec(&r).unwrap()[..], 9).unwrap())]
+        {
+            let p = d.path().join(name);
+            std::fs::write(&p, &b).unwrap();
+            assert_eq!(Record::from_bytes(&b).unwrap(), r);
+            let held = zstd::zstd_safe::get_frame_content_size(&b).ok().flatten();
+            assert_eq!(held, (name == "now").then_some(json), "{name}");
+            let cost = record_cost(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
+            assert_eq!(cost, b.len() as u64 + 2 * json, "{name}");
+        }
+        // One that isn't zstd: its file (it's read, and doesn't parse); one that can't be read, none.
+        let p = d.path().join("not");
+        std::fs::write(&p, b"not a record").unwrap();
+        assert_eq!(record_cost(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), 12);
+        assert!(record_cost(&store::nasfs::NasPath::local_for_test(d.path().join("gone"))).is_err());
     }
 
     #[test]

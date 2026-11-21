@@ -960,17 +960,18 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   answered by this build's code (`asked::as_read`: nothing asked again) or answers it all the
   same; otherwise a new one naming the record, and none yet, one of the coverage's version. So a
   change to how answers are worked out (task #1462's centre parity, `ANSWERING` 2) moves no
-  identity: every record is asked again once and only one answered differently reruns. The run works its line out from the record before it as the plan does
-  (`asked::Run::start`), so the key it's recorded done under is the plan's after it: one run. So a
-  region change reruns these only where it changes an answer they read: water given from one region
-  to another, or a region added where none of them asked, changes none (task #1127's regions
-  change, measured on the real inputs, changed no answer of the four, nor the cover). The plan reads
-  a record once by content name (`TerrainTiles`) and asks it again only once a cheap test other
-  than its own and the record, keeping it in its head (below) when it answers the same, so the
-  next start asks nothing again (on the plan's thread: rail's 4.3 M points 1.2 s,
-  rail-feeds' countries 49 s, measured by task #1130 on the mini), opening the outlines a question
-  names only then; outlines no longer named (a pass gone) answer `GONE`. A record that can't be
-  read leaves its step waiting, its run failing.
+  identity: every record is asked again once and only one answered differently reruns. The run
+  works its line out from the record before it as the plan does (`asked::Run::start`), so the key
+  it's recorded done under is the plan's after it: one run. So a region change reruns these only
+  where it changes an answer they read: water given from one region to another, or a region added
+  where none of them asked, changes none (task #1127's regions change, measured on the real
+  inputs, changed no answer of the four, nor the cover). The plan reads a record once by content
+  name (`TerrainTiles`) and asks it again only once a cheap test other than its own and the
+  record, in the pass below (rail's 4.3 M points 1.2 s, rail-feeds' countries 49 s, measured by
+  task #1130 on the mini), keeping its head with that test and the line it gave so the next start
+  asks nothing again, and opening the outlines a question names only then; outlines no longer
+  named (a pass gone) answer `GONE`. A record that can't be read leaves its step waiting, its run
+  failing.
 - **The z6 tiles' coverage as their runs asked it** (task #1473; pois, unit, trees, bldtiles): each
   z6 tile's run asks through `coverage::Asking` and puts what it asked with its files, as
   `work/asked/<step>/<z-x-y>` (`asked::Run::start_target`): pois its candidates' points and ways'
@@ -993,20 +994,35 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   loads and kept in the agent's folder by content hash with the record format it was read by,
   `<hash>.asked-head`, so a start reads only new ones; one the manifest no longer names goes after
   a fortnight untouched, as the packs' indexes and water digests do) or the coverage answers what
-  it asked the same (the record read and asked again once per geometry and record, every target's
-  on rayon's threads as the plan begins once the coverage, its countries, the pass, the spacing or
-  the reaches change, `idents::warm_asked`; answered the same, its head is kept with the geometry
-  and answering code it was asked under, `TerrainTiles::answered_same`, a local file, so the next
-  start reads the record no more); else a new line naming the record. An `ANSWERING` bump so
-  costs each Mac's plan one read of every record and reruns only the z6 tiles answered
-  differently: task #1590 measured, on the mini, the lead's 6,050 records of 21 Nov (3.7 GB, 3.5 GB
-  of it bldtiles') asked again by task #1462's code in 12 min on 6 threads (45 CPU min, bldtiles'
-  11 of them), 26 answered differently (19 bldtiles, 6 unit, 1 pois z6 tiles), the world steps'
-  none; the code before it answered all 6,050 as recorded. A record that reads but doesn't parse,
-  or asks a question of another form, takes that new line too, plan and run alike, for the z6
-  tiles and the world steps both (`asked::Answer::OfAnotherForm`): its step re-runs once, never
-  waits for good; only what can't be read now (the record, outlines a question names) waits. A z6 tile's roads keep the record in their folder from preparing to
-  their commit (resumed with it); with none there, the record from before goes. A prune and a
+  it asked the same (the record read and asked again once per geometry and record); else a new
+  line naming the record. A record that reads but doesn't parse, or asks a question of another
+  form, takes that new line too, plan and run alike, for the z6 tiles and the world steps both
+  (`asked::Answer::OfAnotherForm`): its step re-runs once, never waits for good; only what can't
+  be read now (the record, outlines a question names) waits. A z6 tile's roads keep the record in
+  their folder from preparing to their commit (resumed with it); with none there, the record from
+  before goes.
+- **The records asked again** (task #1590; the world steps', the z6 tiles', the lake-depth's and
+  the peaks'): once a cheap test moves under records (a regions intake, the terrain rebuilt, an
+  `ANSWERING` bump: all of them), the lead's plan asks them again in a pass off its own thread
+  (pipeline's theplan `start_reask`, `idents::warm_all`), started as a plan begins once the
+  coverage, its countries, the pass, the spacing, the reaches, the terrain's packs or the records
+  change. Meanwhile the plan goes on: the key of a record the pass hasn't asked yet waits (None,
+  met as a load), every other target's is worked out and offered, and the status says "The
+  coverage records: asked again … n of N" (`PlanHeld::reasking`); the pass's end kicks a plan,
+  which finds the lines it put in the memo. Each record asked again has its head kept with the
+  test and the line it gave (`TerrainTiles::answered`, a local file: its own line when it answered
+  the same, else the new one), so the next start reads it no more, whether its target reran yet
+  or not. The pass reads the records on a rayon pool of its own, as many threads as cores, each
+  admitted within the memory available above the Mac's floor as the guard last read it
+  (`tiles::Reask::admit`, `memguard::live`: what's in flight with it at most the reading's
+  `low_usable_mb` less the floor, a record's cost its file and twice its JSON,
+  `asked::record_cost`, from its zstd frame's header, or decoded once for one put before the
+  header held it); one that doesn't fit waits for room, said in the status. Only the lead plans,
+  so only the lead pays: task #1590 measured, on the mini, the lead's 6,050 records of 21 Nov (3.7
+  GB, 3.5 GB of it bldtiles', the largest 86 MB on the NAS and about 1 GB to ask) asked again by
+  task #1462's code in 12 min (45 CPU min, bldtiles' 11 of them), 26 answered differently (19
+  bldtiles, 6 unit, 1 pois z6 tiles), the world steps' none; the code before it answered all 6,050
+  as recorded. A prune and a
   "none" tile's drop remove it with the tile's files, and a z3 tile's whole tree run (`put_z3`,
   which asks nothing) its z6 tiles'.
 - **water:** its version and the pass's basemap.

@@ -83,7 +83,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
         "crates/pipeline/src/agent/tiles.rs",
         "keep_head",
         1,
-        "a record's head written here (the load's; answered_same's, as a key asks a record again): \
+        "a record's head written here (the load's; answered's, as a record is asked again): \
          no key's value reads it, the next start's load does",
     ),
     (
