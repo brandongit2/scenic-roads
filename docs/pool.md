@@ -1203,11 +1203,18 @@ and always count). **The way** is derived, never kept by hand (`steps::cost_vers
 #1253): a hash of the code versions the step's outputs are keyed by, its row's `versions` (the
 `v` lines of its key, its own version and the codecs and code it borrows), then `key_versions`
 for a step whose key is made outside the table (pack's `PACK_V`, lo's `LO_V`, lakefill's
-`LAKEFILL_V`, names-todo's `namestodo::VERSION`, regions-extract's `extract::VERSION`: every key
-maker naming a version is found from the code and its row checked to declare it), then its
-memory version (`memory_v`, the line `v memory <n>`, none at 0); 0 for a step that declares none
-(osm-pass, pass-sets, buildings, prune, the catalogue and the catalogue held, inputs, gc, redo,
-backup) and for a task's kind. A change that builds a step's targets again so moves its way and
+`LAKEFILL_V`, names-todo's `namestodo::VERSION`, regions-extract's `extract::VERSION`; checked
+from the code, tests/key_versions.rs: a string anywhere in the crates' code but their tests that
+names such a step and then a `…_V` or `…VERSION` constant, inside it as `{V}` or as its first
+argument or next expression, names one its row declares, and a row declaring any has such a
+string; a version a key reads another way is not found), then its memory version (`memory_v`,
+the line `v memory <n>`, none at 0); 0 for a step that declares none (osm-pass, pass-sets,
+buildings, prune, the catalogue and the catalogue held, inputs, gc, redo, backup) and for a
+task's kind. The inputs check declares none on purpose: its key names each unit's own checker
+(translations' `check.py` digest and the Python it runs in, `lint::PYTHON_VERSION`), so one
+step-wide way of them would have every unit's costs learned again for one unit's checker; that
+unit is checked again under the new one and its own cost replaced, and a checker's change that
+moves memory raises the row's `memory_v`. A change that builds a step's targets again so moves its way and
 its alone (terrain-hi's `TERRAIN_V` moves terrain-hi's, terrain-deep's and terrain-lo's, which
 name it): their measures are of another way from then, each target a cold start until the step
 is measured again, while the lead's restart and every other change keep the costs and floors as

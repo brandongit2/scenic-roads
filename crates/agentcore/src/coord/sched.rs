@@ -1062,10 +1062,14 @@ impl Sched {
     /// review: region-tiles' 10.9 GB, its one measure, granted at 0 MB on any idle Mac). A cold
     /// start's sizing alone (`provisional`, and where it may go: `cold_fits`, the memory guard's
     /// holds): it never raises `peak_of`. The target's own floor, not its step's heaviest: a step's
-    /// floors run from bldprep's 173 MB median to its 10.8 GB.
+    /// floors run from bldprep's 173 MB median to its 10.8 GB. None for one past the most a Mac
+    /// that runs its step holds for jobs at its best (`step_room`, its capacity's limit): an old
+    /// way's floor no Mac could grant would hold the target until the owner cleared it, where its
+    /// cold start with no figure runs alone and the guard learns its floor of the way it runs now.
     pub(super) fn cold_floor(&self, step: &str, target: &str) -> Option<u64> {
         let f = self.floors.get(&cost_key(step, target))?;
-        (f.alone && f.v != self.the_plan.cost_version(step) && self.measured(step, target).is_none()).then_some(f.mb)
+        let cold = f.alone && f.v != self.the_plan.cost_version(step) && self.measured(step, target).is_none();
+        (cold && self.step_room(step).is_none_or(|r| f.mb <= r)).then_some(f.mb)
     }
 
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from

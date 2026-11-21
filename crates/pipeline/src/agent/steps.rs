@@ -168,8 +168,12 @@ pub struct Step {
     /// The code versions the key of a step whose key isn't derived (`derived`) names where it is
     /// made (pack's and lo's in build's base-pack keys, lakefill's and names-todo's in their own,
     /// regions-extract's in inputs::inputs::regions::extract::key): with `versions`, what its cost
-    /// version is derived from (`cost_version`). Every key maker naming a version declares it here
-    /// (the test `every_key_made_outside_the_table_declares_its_versions`).
+    /// version is derived from (`cost_version`). Checked from the code (tests/key_versions.rs): a
+    /// string anywhere in the crates' code but their tests that names such a step and then a
+    /// version constant (`…_V`, `…VERSION`; inside the string as `{V}`, or as its first argument or
+    /// the next expression after it) names one its row declares here, and a row declaring any has
+    /// such a string. A version its key reads another way (a digest, a constant of another name)
+    /// is the row's to declare by hand.
     pub key_versions: &'static [(&'static str, fn() -> String)],
     /// Its memory's version: raised with a change of its code that moves its memory or time and
     /// not its outputs (none of its `versions` moves then), so its costs and floors are learned
@@ -2625,48 +2629,6 @@ mod tests {
         assert_eq!(changed("pack"), ["pack"], "keyed by PACK_V outside the table");
         assert_eq!(changed("lo"), ["lo"]);
         assert!(changed("no such version").is_empty());
-    }
-
-    /// Task #1253 review: every key made outside the table that names a version (`format!("<step>
-    /// {V}")` or `format!("<step> {}", V)`, V a `…_V` or `…VERSION` constant, in build.rs's key
-    /// makers and the regions' extract's) is of a row that declares it in `key_versions` (by that
-    /// constant), and every row declaring `key_versions` has such a key: found from the code, so a
-    /// step keyed by a version its cost version leaves out fails here.
-    #[test]
-    fn every_key_made_outside_the_table_declares_its_versions() {
-        use super::{row, TABLE};
-        let makers = [include_str!("build.rs"), include_str!("../../../inputs/src/inputs/regions/extract.rs")];
-        let steps_src = include_str!("steps.rs");
-        let mut found: std::collections::BTreeMap<String, String> = Default::default();
-        for src in makers {
-            for (at, _) in src.match_indices("format!(\"") {
-                let rest = &src[at + 9..];
-                let Some(end) = rest.find('"') else { continue };
-                let (lit, after) = (&rest[..end], &rest[end + 1..]);
-                let Some((name, v)) = lit.split_once(' ') else { continue };
-                let konst = match v.split(' ').next() {
-                    Some("{}") => after.strip_prefix(", ").and_then(|a| a.split(')').next()).unwrap_or(""),
-                    Some(b) if b.starts_with('{') && b.ends_with('}') => &b[1..b.len() - 1],
-                    _ => continue,
-                };
-                let konst = konst.rsplit("::").next().unwrap_or("");
-                let versioned = konst.ends_with("_V") || konst.ends_with("VERSION");
-                if versioned && row(name).is_some_and(|r| r.versions.is_empty()) {
-                    found.insert(name.to_string(), konst.to_string());
-                }
-            }
-        }
-        let declaring: Vec<&str> = TABLE.iter().filter(|r| !r.key_versions.is_empty()).map(|r| r.name).collect();
-        assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), {
-            let mut d = declaring.clone();
-            d.sort_unstable();
-            d
-        });
-        for (name, konst) in &found {
-            let at = steps_src.find(&format!("key_versions: &[(\"{name}\", ||")).unwrap_or_else(|| panic!("{name}"));
-            let line = steps_src[at..].lines().next().unwrap();
-            assert!(line.contains(&format!("{konst}.to_string()")), "{name}: its key's {konst}, declared {line}");
-        }
     }
 
     /// A write-set tests a name by its parts, held in place (`parts`): a name deeper than a

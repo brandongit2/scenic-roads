@@ -3276,7 +3276,9 @@ impl Coordinator {
         }
     }
 
-    /// The floor of `target` of `step` that may hold it off a Mac: the way its step runs now.
+    /// The floor of `target` of `step` that may hold it off a Mac (`sched::Sched::holding_floor`):
+    /// its floor of the way its step runs now; else, while it is a cold start, its floor of
+    /// another way learned alone that a Mac running its step could hold (`Sched::cold_floor`).
     pub fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
         self.shared.lock().unwrap().holding_floor(step, target)
     }
@@ -9451,6 +9453,58 @@ mod tests {
         assert!(c.shared.lock().unwrap().peak_of("bld-fetch", "6/1/1", 0, 0) < 43_000);
         c.floors(true, Some("bld-fetch"), None);
         assert_eq!(c.holding_floor("bld-fetch", "6/1/1"), None);
+    }
+
+    /// Task #1253 confirm review (M1): an old way's floor past the most any Mac that runs its step
+    /// holds for jobs at its best (`Sched::step_room`) is dropped from its cold start: no figure,
+    /// so it runs alone and the guard learns its floor of the way it runs now, where it would
+    /// have waited for the owner to clear it. One within that room sizes and holds it.
+    #[test]
+    fn an_old_floor_past_every_macs_room_leaves_its_cold_start_with_no_figure() {
+        let (_d, c, _w) = start();
+        let old = cost_version("bld-fetch").wrapping_add(1);
+        let t = vec!["6/1/1".to_string()];
+        c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: old })]);
+        let mac = Ask {
+            can: vec!["bld-fetch".into()],
+            cap: Some(Capacity { at: unix_now(), limit_mb: 32_000, ..Default::default() }),
+            ..ask(32_000)
+        };
+        {
+            let mut s = c.shared.lock().unwrap();
+            s.sched.set_step_rooms([&mac]);
+            assert_eq!(s.cold_floor("bld-fetch", "6/1/1"), None);
+            assert!(s.provisional("bld-fetch", &t).is_none() && s.no_figure("bld-fetch", &t), "no figure: alone");
+        }
+        c.add_floors(&[(
+            cost_key("bld-fetch", "6/1/1"),
+            Floor { mb: 20_000, alone: true, v: cost_version("bld-fetch") },
+        )]);
+        assert_eq!(c.holding_floor("bld-fetch", "6/1/1").map(|f| f.mb), Some(20_000), "its new floor learned");
+        c.floors(true, Some("bld-fetch"), None);
+        c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 30_000, alone: true, v: old })]);
+        let s = c.shared.lock().unwrap();
+        assert_eq!(s.cold_floor("bld-fetch", "6/1/1"), Some(30_000), "within the room: sized by it");
+    }
+
+    /// Task #1253 confirm review (L5): a cold start of several targets whose old floors differ
+    /// needs the room of the largest: an idle Mac short of it isn't sent the job, where it is sent
+    /// its lighter target alone, and a Mac with the room is sent both.
+    #[test]
+    fn a_cold_start_of_several_targets_needs_its_largest_old_floor() {
+        let (_d, c, _w) = start();
+        let old = cost_version("peaks").wrapping_add(1);
+        c.add_floors(&[
+            (cost_key("peaks", "6/1/1"), Floor { mb: 2_000, alone: true, v: old }),
+            (cost_key("peaks", "6/1/2"), Floor { mb: 10_900, alone: true, v: old }),
+        ]);
+        let ts = |t: &[&str]| t.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let can = |mem: u64| Ask { can: vec!["peaks".into()], ..ask(mem) };
+        let s = c.shared.lock().unwrap();
+        let now = Instant::now();
+        assert!(!s.cold_fits("peaks", &ts(&["6/1/1", "6/1/2"]), &can(8192), now), "short of its largest");
+        assert!(s.cold_fits("peaks", &ts(&["6/1/1"]), &can(8192), now), "its lighter alone");
+        assert!(s.cold_fits("peaks", &ts(&["6/1/1", "6/1/2"]), &can(16 << 10), now));
     }
 
     /// Task #1253 review (H2): a cold start whose one measure is a floor of another way learned
