@@ -387,9 +387,9 @@ pub struct LeaseKept {
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → each threads asked (None: its own
-/// start's) and `Sched::measures`. (Looked in for every target an ask weighs, never walked:
-/// roadcore::fx.)
-pub type Measures = FxMap<String, FxMap<String, Vec<(Option<u32>, (u64, Option<Measured>))>>>;
+/// start's) and its step's room (`Sched::step_room`), and `Sched::measures`. (Looked in for every
+/// target an ask weighs, never walked: roadcore::fx.)
+pub type Measures = FxMap<String, FxMap<String, Vec<((Option<u32>, Option<u64>), (u64, Option<Measured>))>>>;
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
 /// steps' NAS bytes per unit kept with its models: crate::needs::model).
@@ -868,7 +868,7 @@ pub(super) fn keeps_threads(step: &str) -> bool {
 /// A cold start's provisional memory (MB) from `mb`, the most its step's runs of its latest earlier
 /// way measured or it was offered with: times 3/2 (task #499; `Sched::provisional`, the forecast's
 /// packing too).
-pub(crate) fn provisional_mb(mb: u64) -> u64 {
+pub(super) fn provisional_mb(mb: u64) -> u64 {
     mb.saturating_mul(3) / 2
 }
 
@@ -1228,16 +1228,17 @@ impl Sched {
     /// admitted and packed at (crate::needs::Book::mem: its step's runs' `needs-mem-pct` percentile
     /// at those threads), whichever Mac asks; kept while the measures stand (`measured_of`). A job
     /// grown past the threads it was read at reserves `thread_mb` for each (`Grant::thread_mb`,
-    /// docs/pool.md §7.1).
+    /// docs/pool.md §7.1). A measured target's spread is bounded by its step's room (`step_room`).
     fn measures(&self, step: &str, target: &str, threads: Option<u32>) -> (u64, Option<Measured>) {
         let rev = self.rev();
+        let room = self.step_room(step);
+        let at = (threads, room);
         {
             let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
             if g.0 != rev {
                 *g = (rev, Measures::default());
             }
-            if let Some(&(_, m)) =
-                g.1.get(step).and_then(|t| t.get(target)).and_then(|v| v.iter().find(|e| e.0 == threads))
+            if let Some(&(_, m)) = g.1.get(step).and_then(|t| t.get(target)).and_then(|v| v.iter().find(|e| e.0 == at))
             {
                 return m;
             }
@@ -1248,7 +1249,7 @@ impl Sched {
             (mem_mb, Some(Measured { mem_mb, disk_mb: 0, own: false }))
         } else {
             let on = threads.unwrap_or_else(|| self.start_threads(step, [target]));
-            let (mem_mb, from) = b.mem(step, target, on, self.offered_guess(step, target));
+            let (mem_mb, from) = b.mem_within(step, target, on, self.offered_guess(step, target), room);
             let m = (from != crate::needs::From::Table).then(|| Measured {
                 mem_mb,
                 disk_mb: b.disk(step, target).unwrap_or(0),
@@ -1257,8 +1258,21 @@ impl Sched {
             (mem_mb, m)
         };
         let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
-        g.1.entry(step.to_string()).or_default().entry(target.to_string()).or_default().push((threads, got));
+        g.1.entry(step.to_string()).or_default().entry(target.to_string()).or_default().push((at, got));
         got
+    }
+
+    /// The most memory a Mac that runs `step` holds for jobs at its best (MB, `best_room`, by the
+    /// last asks of the Macs heard from); None with none heard from. A measured target's own run is
+    /// booked at most this times its spread (crate::needs::Book::mem_within, task #1586 review):
+    /// derived from the Macs, so a spread never books a target that fits one past them all.
+    fn step_room(&self, step: &str) -> Option<u64> {
+        self.workers
+            .values()
+            .filter_map(|w| w.ask.as_ref())
+            .filter(|a| a.can.iter().any(|c| c == step))
+            .map(|a| best_room(a).0)
+            .max()
     }
 
     /// Each Mac's time and jobs' start now (`paces`): the models made again when they changed.

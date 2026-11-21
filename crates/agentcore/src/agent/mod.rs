@@ -924,19 +924,24 @@ fn read_timings(dir: &Path) -> Option<jobrt::timings::RunRec> {
 /// What a job's targets cost (`SCENIC_COSTS`: a JSON line a target), measured by run `job`
 /// (jobrt::jobid). The job's memory past its last target's line (its `tail_mb` line, scenic-build's
 /// `note_cost_tail`: its saving, its last uploads) is that line's too, so the most of its lines is
-/// the job's whole-process peak (task #1586).
+/// the job's whole-process peak (task #1586); only where that line is the last its job said of any
+/// target: a target begun or failed after it held what came after, and none of that is the line's.
 fn read_costs(p: &Path, job: Option<jobrt::jobid::JobId>) -> Vec<(String, crate::coord::Cost)> {
     let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
     let mut out: Vec<(String, crate::coord::Cost)> = Vec::new();
+    let mut last_a_cost = false;
     for l in s.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         if let Some(tail) = v["tail_mb"].as_u64() {
-            if let Some((_, c)) = out.last_mut() {
+            if let Some((_, c)) = out.last_mut().filter(|_| last_a_cost) {
                 c.peak_mb = c.peak_mb.max(tail);
             }
             continue;
         }
-        let (Some(unit), Some(peak_mb)) = (v["unit"].as_str(), v["peak_mb"].as_u64()) else { continue };
+        let Some(unit) = v["unit"].as_str() else { continue };
+        last_a_cost = false;
+        let Some(peak_mb) = v["peak_mb"].as_u64() else { continue };
+        last_a_cost = true;
         // (`sizes`: a line from a job before them has none.)
         let sizes = v["sizes"]
             .as_object()
@@ -10733,7 +10738,28 @@ mod tests {
         )
         .unwrap();
         let peaks: Vec<u64> = read_costs(&p, None).iter().map(|c| c.1.peak_mb).collect();
-        assert_eq!(peaks, [900, 700]);
+        assert_eq!(peaks, [900, 300], "a target failed after the last line: the tail is none of its");
+        std::fs::write(
+            &p,
+            concat!(
+                "{\"unit\":\"pack 6/1/1\",\"peak_mb\":900,\"secs\":4}\n",
+                "{\"unit\":\"pack 6/1/2\",\"started\":1}\n",
+                "{\"tail_mb\":700}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_costs(&p, None)[0].1.peak_mb, 900, "nor a target begun after it");
+        std::fs::write(
+            &p,
+            concat!(
+                "{\"unit\":\"pack 6/1/1\",\"peak_mb\":900,\"secs\":4}\n",
+                "{\"unit\":\"pack 6/1/2\",\"peak_mb\":300,\"secs\":4}\n",
+                "{\"tail_mb\":700}\n",
+            ),
+        )
+        .unwrap();
+        let peaks: Vec<u64> = read_costs(&p, None).iter().map(|c| c.1.peak_mb).collect();
+        assert_eq!(peaks, [900, 700], "the last line's tail is its");
         std::fs::write(&p, "{\"unit\":\"pack 6/1/1\",\"peak_mb\":900,\"secs\":4}\n{\"tail_mb\":700}\n").unwrap();
         assert_eq!(read_costs(&p, None)[0].1.peak_mb, 900);
         // (An older reader's Cost: no `sizes`, unknown fields ignored.)

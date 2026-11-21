@@ -87,7 +87,7 @@ pub const KNOBS: [Knob<Tuning>; 7] = [
     },
     Knob {
         name: "needs-mem-pct",
-        what: "a job's memory as the pool admits it: this percentile of its step's runs at the target's size or more, at the job's threads",
+        what: "a job's memory as the pool admits it: this percentile of its step's runs at the target's size or more, at the job's threads; and of its step's reruns' peaks over their runs before, the spread a measured target's own peak is booked times",
         unit: "%",
         least: 50.0,
         most: 100.0,

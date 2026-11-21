@@ -333,10 +333,9 @@ impl Reruns {
     /// percentile of the ratios of the step's reruns whose runs before peaked at about as much
     /// (half to twice it; fewer than `MIN_RUNS`, the nearest of those that peaked at half of it or
     /// more), never under 1 (1 with none). A target's peak moves run to run by its level: depth's
-    /// reruns took up to 3.6 times their runs before (6/20/17: 564 MB, then 1,605); pack's of tens
-    /// of MB up to 30 times (its base packs fetched or not), of 3 GB about as much again. So a
-    /// lighter run's swing never books a heavier target: one spread for every level booked a 3.8 GB
-    /// pack at 36 GB.
+    /// reruns take up to 3.6 times their runs before; pack's of tens of MB up to 30 times (its base
+    /// packs fetched or not), of 3 GB about as much again. So a lighter run's swing never books a
+    /// heavier target.
     pub fn spread(&self, mb: f64) -> f64 {
         let mb = mb.max(1.0);
         // (Sorted by their runs before's peaks: those from half of it up, the nearest first.)
@@ -851,14 +850,23 @@ impl<'a> Book<'a> {
     }
 
     /// The memory (MB) a job of `step` for `target` needs on `threads` (0: as measured), and where
-    /// it came from: `need`'s, alone (what the picks read). Its own run: its peak (never below its
-    /// floor) times its step's spread over its reruns (`Models::spread`); on fewer threads than
-    /// `threads` (`own_threads`), each thread more its `thread_mb`. A floor, or its place's figure
-    /// (`near`), says no threads: each grown by its step's model's growth from its runs' threads
-    /// to `threads` (`model::Model::mem` on them past it as measured). `guess`: the caller's
-    /// first guess (MB); for a step offered by an input measure (`OFFERED_BY`), that measure of the
-    /// target, its memory guess none.
+    /// it came from: `need`'s, alone (what the picks read), with no Mac's room bounding it
+    /// (`mem_within`).
     pub fn mem(&self, step: &str, target: &str, threads: u32, guess: u64) -> (u64, From) {
+        self.mem_within(step, target, threads, guess, None)
+    }
+
+    /// `mem`, its own run's spread bounded by `room` (MB; None: unbounded). Its own run: its peak
+    /// (never below its floor) times its step's spread over its reruns (`Reruns::spread`), at most
+    /// `room` (the most the Macs that run its step hold for jobs at their best, crate::coord::sched's
+    /// `step_room`) and never under its peak: a spread read off another target's rerun never books
+    /// a measured target off every Mac (crate::coord's `too_big`), where its own peak fits one. On
+    /// fewer threads than `threads` (`own_threads`), each thread more its `thread_mb`. A floor, or
+    /// its place's figure (`near`), says no threads: each grown by its step's model's growth from
+    /// its runs' threads to `threads` (`model::Model::mem` on them past it as measured). `guess`:
+    /// the caller's first guess (MB); for a step offered by an input measure (`OFFERED_BY`), that
+    /// measure of the target, its memory guess none.
+    pub fn mem_within(&self, step: &str, target: &str, threads: u32, guess: u64, room: Option<u64>) -> (u64, From) {
         let (guess, offered) = match offered_by(step) {
             Some(m) => (0, Some((m, guess))),
             None => (guess, None),
@@ -868,7 +876,8 @@ impl<'a> Book<'a> {
         let md = self.model(step);
         if let Some(c) = self.own(step, target) {
             let peak = c.peak_mb.max(floor.unwrap_or(0)) as f64;
-            let mb = (peak * md.reruns.spread(peak)).ceil() as u64;
+            let spread = (peak * md.reruns.spread(peak)).ceil() as u64;
+            let mb = room.map_or(spread, |r| spread.min(r)).max(peak.ceil() as u64);
             let more = match own_threads(c) {
                 Some(ran) if threads > ran => u64::from(threads - ran) * self.own_thread_mb(step, target, c, ran),
                 _ => 0,
@@ -1390,6 +1399,21 @@ mod tests {
         }
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.mem("depth", "6/2/1", 2, 0), (800, From::Measured));
+        // (Fewer than `MIN_RUNS` reruns about its level: the nearest that ran at half of it or more,
+        // three of 5 GB that took three times as much again; never the lighter ones', thirty times
+        // their 100 MB.)
+        let mut costs = BTreeMap::from([("depth 6/2/1".to_string(), at(800, None))]);
+        for i in 0..3u64 {
+            costs.insert(format!("depth 6/3/{i}"), at(15_000, Some(5_000)));
+        }
+        for i in 0..10u64 {
+            costs.insert(format!("depth 6/4/{i}"), at(3_000, Some(100)));
+        }
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(b.mem("depth", "6/2/1", 2, 0), (2_400, From::Measured));
+        // (Bounded by the room its step's Macs have: never under its own peak.)
+        assert_eq!(b.mem_within("depth", "6/2/1", 2, 0, Some(1_000)), (1_000, From::Measured));
+        assert_eq!(b.mem_within("depth", "6/2/1", 2, 0, Some(500)), (800, From::Measured));
     }
 
     /// A run of `step` the way it runs now: `secs` of wall, as much CPU on one thread, on `worker`.
@@ -2118,8 +2142,8 @@ mod tests {
     /// of the runs ended before its lease (each target's cost its run's peak, `was_mb` its run
     /// before's of the way its step runs now on as many threads, as the lead sets it): the most of
     /// its targets' memory on its threads (`Book::mem`, the run's grant standing in for its plan's
-    /// guess), a cold start's (`From::Table`) its provisional need (crate::coord::sched's
-    /// `provisional_mb` of its step's earlier way's, else the grant). Writes `<runs>.booked.jsonl`, a
+    /// guess), a cold start's (`From::Table`) its grant (crate::coord::sched's provisional need, as
+    /// granted then). Writes `<runs>.booked.jsonl`, a
     /// line a run: the run's line less its peaks and sizes, with `booked`, `from` and `unspread` (as
     /// `booked`, its targets' own runs at their peaks alone, without their step's spread). Without the
     /// folder it prints that it skipped and checks nothing.
@@ -2187,9 +2211,7 @@ mod tests {
                     None => grant,
                 };
                 let (mb, f) = match book.mem(step, t, threads, guess) {
-                    (_, From::Table) => {
-                        (crate::coord::sched::provisional_mb(book.older_mem(step, t).unwrap_or(grant)), From::Table)
-                    }
+                    (_, From::Table) => (grant, From::Table),
                     m => m,
                 };
                 // (Its own run's peak alone, as booked before the spread.)

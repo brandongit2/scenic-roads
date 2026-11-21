@@ -13344,6 +13344,30 @@ mod tests {
     /// own ask is weighed with its capacity (its ask is kept without it), and an ask bounding no
     /// disk (the lead's own while it runs nothing, a member's that says none) fits any disk, as
     /// packing grants it: what's granted there is never flagged as granted nowhere.
+    /// Task #1586 review: a measured target is booked at its peak times its step's rerun spread,
+    /// at most the most a Mac that runs its step holds for jobs at its best: a spread read off other
+    /// targets' reruns (each twice its run before here) never books one whose own peak fits a Mac
+    /// past them all, where it would never run again.
+    #[test]
+    fn a_spread_never_books_a_measured_target_past_every_mac() {
+        let (_d, c, w, _clock) = every((0, 0));
+        // (Ten reruns of about 20 GB, each twice its run before.)
+        let rerun: Vec<(&str, Option<(u64, u64, u64)>)> =
+            ["6/2/0", "6/2/1", "6/2/2", "6/2/3", "6/2/4", "6/2/5", "6/2/6", "6/2/7", "6/2/8", "6/2/9"]
+                .iter()
+                .map(|t| (*t, Some((15_000, 100, 2000))))
+                .collect();
+        measured_offer(&c, "pack", &rerun);
+        let twice: Vec<(&str, Option<(u64, u64, u64)>)> =
+            rerun.iter().map(|r| (r.0, Some((30_000, 100, 2000)))).collect();
+        measured_offer(&c, "pack", &twice);
+        measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
+        let cap = Capacity { limit_mb: 30_000, ..every_ask("m1", "pack", 0, 0).cap.unwrap() };
+        let a = Ask { cap: Some(cap), want: 1, ..every_ask("m1", "pack", 30_000, 10_000) };
+        assert_eq!(granted(&w, &a), ["6/1/1"], "booked within m1's 30 GB, not at 40");
+        assert!(c.too_big().is_empty(), "{:?}", c.too_big());
+    }
+
     #[test]
     fn too_big_weighs_each_mac_at_its_best() {
         let (_d, c, w, _clock) = every((0, 0));
