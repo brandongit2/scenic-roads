@@ -61,6 +61,9 @@ pub struct Regions {
     /// The outcomes the last check kept (`recall`), and this check's, made or taken (`memo`), by key.
     recalled: Mutex<BTreeMap<String, Recorded>>,
     recorded: Mutex<BTreeMap<String, Recorded>>,
+    /// The step times of the last resolve the last check kept (`Memo::times`): what a resolve
+    /// before this check's first weighs its progress by (progress::Weights).
+    recalled_times: Mutex<Vec<(progress::Step, f64)>>,
     /// The last outcome made, whole, by its key: a check resolves the candidate, the next version
     /// and derives from it, often the same version.
     last: Mutex<Option<(String, Arc<resolve::Outcome>)>>,
@@ -148,11 +151,15 @@ impl Recorded {
     }
 }
 
-/// What the last check kept for the next (`Checks::memo`): this version's outcomes.
+/// What the last check kept for the next (`Checks::memo`): this version's outcomes, and the step
+/// times of the last resolve made (progress::Weights: the next resolve's progress by them; none
+/// made in this check, those it was told).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Memo {
     fmt: u32,
     outcomes: Vec<Recorded>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    times: Vec<(progress::Step, f64)>,
 }
 
 /// An outcome: made now (whole), or as a check recorded it (its geometry the accepted version's).
@@ -291,6 +298,16 @@ impl Regions {
         self.steps.lock().unwrap().clone()
     }
 
+    /// The step times of the last resolve made, or, before one, those the last check kept.
+    fn times(&self) -> Vec<(progress::Step, f64)> {
+        let made: Vec<(progress::Step, f64)> = self.steps.lock().unwrap().0.iter().map(|t| (t.step, t.secs)).collect();
+        if made.is_empty() {
+            self.recalled_times.lock().unwrap().clone()
+        } else {
+            made
+        }
+    }
+
     /// The folder `v` holds, resolved now (or as this check last made it, by the same key). The
     /// process is stopped (exit 3, saying so) if its footprint passes `max_mb()` while it resolves:
     /// a check never takes the Mac down. How far it is goes out as the check's stage under way every
@@ -351,7 +368,7 @@ impl Regions {
             reuse: Some(&reuse),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
             data,
-            progress: Default::default(),
+            progress: progress::Progress::weighed(progress::Weights::of(&self.times())),
             window: self.window.as_ref(),
         };
         let out =
@@ -798,11 +815,13 @@ impl Checks for Regions {
         // (Kept by an app whose memo this one can't read: none, resolved again.)
         let m: Memo = serde_json::from_value(memo.clone()).unwrap_or_default();
         *self.recalled.lock().unwrap() = m.outcomes.into_iter().map(|r| (r.key.clone(), r)).collect();
+        *self.recalled_times.lock().unwrap() = m.times;
     }
 
     fn memo(&self) -> Option<serde_json::Value> {
         let outcomes: Vec<Recorded> = self.recorded.lock().unwrap().values().cloned().collect();
-        (!outcomes.is_empty()).then(|| serde_json::to_value(Memo { fmt: 1, outcomes }).unwrap_or_default())
+        let times = self.times();
+        (!outcomes.is_empty()).then(|| serde_json::to_value(Memo { fmt: 1, outcomes, times }).unwrap_or_default())
     }
 
     fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {

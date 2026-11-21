@@ -871,9 +871,11 @@ Mac's server (§6.1.9).
   coast's cells, splits and fills, each region's area, the hand-outs (by region, the one under way by
   the cells of the unions of the members it hands to and of its stretches), the stray water (by
   region, the one under way by its stretches), the 200-nmi zones, the cover check's every cell, the
-  gaps' stretches, the rest's cells, the regions stored. Each step
-  is an equal share of the resolve (a step the folder doesn't take passed over), its items done of
-  its total within it; as each step begins and every 5 s (`jobrt::jobs::saying`) the share goes out
+  gaps' stretches, the rest's cells, the regions stored. Each step's share of the resolve is the
+  time it took in the last resolve made, or before one in this process the last the check kept
+  (its memo's `times`; a step not taken then the least of those that were; none kept, an equal
+  share each: task #1167), a step the folder doesn't take passed over, its items done of its total
+  within it; as each step begins and every 5 s (`jobrt::jobs::saying`) the share goes out
   as the check's stage under way, what's under way in its line (`1.642/6 inputs check (the candidate
   checked whole: the cover check, 5200 of 16200 cells)`), the item under way named where the step
   takes its regions or folders by name, by its cells (`the water, 12 of 300 regions; alberta, 40 of
@@ -881,8 +883,8 @@ Mac's server (§6.1.9).
   `the land, 12 of 300 regions; alberta, 40 of 120; 3 more`), each counted by its own cells, so the
   slow and stuck flags judge it while it works. The share never goes back. Each
   step's wall time is kept, and each named item's (task #1523): a scratch check's report says them
-  (`steps`, `slowest`). (Planned, #1167: the steps are equal shares whatever they take, so the slow
-  flag's rate in a long one, the cover check, is under the check's average.)
+  (`steps`, `slowest`). So a long step (the cover check) moves the share at about the resolve's own
+  pace, and the slow flag doesn't judge it slow for being long.
 - **Snapping and the operations' watch:** the regions with water's operations snap with a growing
   radius (i_overlay's `Precision::HIGH`, from a unit; the others' stay at a unit, so they're byte
   for byte as before): with a fixed unit radius, cells whose edges ran nearly along each other

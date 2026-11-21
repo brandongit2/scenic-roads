@@ -130,6 +130,11 @@ fn nothing_changed_resolves_nothing() {
     assert!(!d2.changed && !d2.listed_changed && d2.report.is_none(), "{:?}", d2.report);
     assert_eq!(serde_json::to_vec(&d2.index).unwrap(), serde_json::to_vec(s.index.as_ref().unwrap()).unwrap());
     assert_eq!(d2.memo, s.memo, "the memo as it was");
+    // (Task #1167: the first resolve's step times kept, for the next resolve's progress.)
+    let times = first.times();
+    assert!(times.iter().any(|t| t.0 == super::progress::Step::Plain), "{times:?}");
+    assert_eq!(serde_json::to_value(&times).unwrap(), s.memo.as_ref().unwrap()["times"]);
+    assert_eq!(again.times(), times, "told the next check, which resolved nothing");
     // A change held: held again the same by the next check, which resolves nothing.
     let mut held = files();
     held.insert("y.toml".into(), b"id = \"y\"\nname = \"Y\"\noutline = [\"region:nowhere\"]\n".to_vec());
@@ -241,7 +246,7 @@ fn said() -> Vec<resolve::Problem> {
 fn a_recorded_outcome_says_the_same_problems() {
     let out = resolve::Outcome { problems: said(), ..Default::default() };
     let r = Recorded::of("k", &out);
-    let m = serde_json::to_value(Memo { fmt: 1, outcomes: vec![r] }).unwrap();
+    let m = serde_json::to_value(Memo { fmt: 1, outcomes: vec![r], times: vec![] }).unwrap();
     let back: Memo = serde_json::from_value(m).unwrap();
     assert_eq!(back.outcomes[0].problems(), out.problems);
 }

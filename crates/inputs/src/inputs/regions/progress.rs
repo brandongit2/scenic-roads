@@ -1,7 +1,10 @@
-//! How far a resolve of the regions is (task #1145): its steps in order (`Step`), each an equal share
-//! of it, and within the one under way its items done of its total (regions, or cells), the items
-//! under way (several at once where a step takes its regions so) by their own parts done (a
-//! region's cells). The resolve counts where it works (`Progress::begin`, `one_on_drop`, `item`,
+//! How far a resolve of the regions is (task #1145): its steps in order (`Step`), each its share of
+//! it by the time it took in the last resolve the check kept (task #1167: `Weights`; none kept, an
+//! equal share each), and within the one under way its items done of its total (regions, or
+//! cells), the items under way (several at once where a step takes its regions so) by their own
+//! parts done (a region's cells). So a step taking most of a resolve (the cover check) moves its
+//! progress at about the resolve's own pace, and the slow flag (agentcore's, a job's rate over its
+//! window against its step's whole runs') doesn't judge it slow for being long. The resolve counts where it works (`Progress::begin`, `one_on_drop`, `item`,
 //! `Item::part_on_drop`); the check's ticker (jobrt::jobs::saying, in
 //! crate::inputs::regions's `Regions::resolve`) reads the share and the line every few seconds, so
 //! a check's progress goes on through the long passes (the cover check's cells, the coast's) and
@@ -10,10 +13,12 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 /// A resolve's steps, in the order it takes them (crate::inputs::regions::resolve's `resolve_all`,
 /// then crate::inputs::regions::tiles' `resolve_in` and `cover_check`). A step the folder doesn't
 /// take (no region with water, no `cover`) is passed over, its share with it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Step {
     Plain,
     Land,
@@ -84,12 +89,45 @@ impl Step {
     }
 }
 
+/// Each step's share of a resolve (`Progress::share`): the time it took in a resolve before
+/// (`Weights::of`); a step it didn't take (passed over then, likely now too) the least of those it
+/// did, so one taken now still moves; none timed, an equal share each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weights([f64; Step::ALL.len()]);
+
+impl Default for Weights {
+    fn default() -> Self {
+        Weights([1.0; Step::ALL.len()])
+    }
+}
+
+impl Weights {
+    /// From a resolve's step times (s, its `Progress::steps`').
+    pub fn of(times: &[(Step, f64)]) -> Weights {
+        let mut w = [None; Step::ALL.len()];
+        for (step, secs) in times.iter().filter(|t| t.1.is_finite() && t.1 > 0.0) {
+            *w[step.index()].get_or_insert(0.0) += secs;
+        }
+        let Some(least) = w.iter().flatten().copied().reduce(f64::min) else { return Weights::default() };
+        Weights(w.map(|x| x.unwrap_or(least)))
+    }
+
+    /// The share of the whole the steps before `step` take, and `step`'s own.
+    fn at(&self, step: Step) -> (f64, f64) {
+        let all: f64 = self.0.iter().sum();
+        let i = step.index();
+        (self.0[..i].iter().sum::<f64>() / all, self.0[i] / all)
+    }
+}
+
 /// A resolve's progress (the module's doc).
 #[derive(Default)]
 pub struct Progress(Mutex<State>);
 
 #[derive(Default)]
 struct State {
+    /// Each step's share (`Weights`).
+    weights: Weights,
     /// The step under way (None: none begun), its items' total and how many are done, and when it
     /// began.
     step: Option<Step>,
@@ -151,6 +189,11 @@ impl State {
 }
 
 impl Progress {
+    /// A resolve's progress, each step its share by `weights`.
+    pub fn weighed(weights: Weights) -> Progress {
+        Progress(Mutex::new(State { weights, ..Default::default() }))
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -218,7 +261,8 @@ impl Progress {
     }
 
     /// How far the resolve is, 0 to 1: its steps before the one under way, and that one's items
-    /// done (those under way by their parts). Never less than it said before.
+    /// done (those under way by their parts), each step by its share (`Weights`). Never less than
+    /// it said before.
     pub fn share(&self) -> f64 {
         let mut s = self.state();
         let Some(step) = s.step else { return s.best };
@@ -229,7 +273,8 @@ impl Progress {
             .map(|u| u.counts as f64 * u.parts_done as f64 / u.parts as f64)
             .sum();
         let within = if s.total > 0 { ((s.done as f64 + parts) / s.total as f64).min(1.0) } else { 1.0 };
-        let share = (step.index() as f64 + within) / Step::ALL.len() as f64;
+        let (before, own) = s.weights.at(step);
+        let share = (before + own * within).min(1.0);
         s.best = s.best.max(share);
         s.best
     }
@@ -407,5 +452,44 @@ mod tests {
         drop(late);
         assert_eq!(p.line(), "the lakes, 0 of 3 cells");
         assert_eq!(p.slowest(5).len(), 3);
+    }
+
+    /// Task #1167: each step's share is its time in the last resolve, so a resolve at its usual
+    /// pace moves at about its whole run's rate through its long steps too. The slow flag
+    /// (agentcore's flags::slow) judges a job's rate over its window against its step's whole-run
+    /// rates over the overdue factor (3): through a cover check of 20 minutes in a resolve of 25,
+    /// the rate here is within that; by equal shares it was a seventeenth of the resolve in those
+    /// 20 minutes, a fourteenth of the whole run's rate, so flagged.
+    #[test]
+    fn a_long_step_moves_at_the_resolves_pace() {
+        let last: Vec<(Step, f64)> = vec![
+            (Step::Plain, 30.0),
+            (Step::Land, 150.0),
+            (Step::Water, 60.0),
+            (Step::Areas, 30.0),
+            (Step::Cover, 1200.0),
+            (Step::Gaps, 15.0),
+            (Step::Stored, 15.0),
+        ];
+        let whole: f64 = last.iter().map(|t| t.1).sum();
+        let p = Progress::weighed(Weights::of(&last));
+        p.begin(Step::Cover, 1000);
+        let at = p.share();
+        // (Half the cover check's cells done, in half its time.)
+        for _ in 0..500 {
+            p.one();
+        }
+        let rate = (p.share() - at) / 600.0;
+        let flagged_under = 1.0 / whole / 3.0;
+        assert!(rate >= flagged_under, "{rate} a second, flagged under {flagged_under}");
+        // (The steps it didn't take: the least of those it did, 15 s each.)
+        let all = whole + 15.0 * (Step::ALL.len() - last.len()) as f64;
+        let before = 30.0 + 150.0 + 15.0 + 60.0 + 15.0 * 4.0 + 30.0 + 15.0 * 4.0;
+        assert!((at - before / all).abs() < 1e-9, "{at}");
+        assert!((rate * 600.0 - 600.0 / all).abs() < 1e-9, "the cover check's half: half its share");
+        assert_eq!(Weights::of(&[]), Weights::default(), "none timed: equal shares");
+        assert_eq!(Weights::of(&[(Step::Cover, 0.0)]), Weights::default());
+        p.begin(Step::Stored, 0);
+        assert_eq!(p.share(), 1.0, "the last step done: the whole");
     }
 }
