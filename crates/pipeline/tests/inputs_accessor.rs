@@ -58,6 +58,8 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 /// with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/inputs/build/checks_code.rs", "INPUTS", "\"inputs\"", "the inputs crate's and its gate module's name in code (the checks' code digests), not an inputs folder"),
+    ("crates/inputs/build/checks_code.rs", "PLUMBING", "\"inputs::inputs::", "modules of the inputs crate the held digests leave out, by their paths in code, not an inputs folder"),
+    ("crates/inputs/build.rs", "main", "\"src/inputs/", "the inputs crate's own source files (the held digests' text, #1578), not an inputs folder"),
     ("crates/agentcore/src/coord/mod.rs", "API", "\"pause\", \"inputs\"", "the build page's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
     ("crates/agentcore/src/coord/mod.rs", "gate", "\"pause\" | \"inputs\"", "the build page's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
     ("crates/agentcore/src/agent/mod.rs", "tell_gate", "post_api(\"inputs\"", "the lead's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
