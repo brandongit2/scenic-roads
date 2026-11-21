@@ -312,6 +312,23 @@ class Batch(Base):
         self.b.items["i1"].update(status="working", batch=B)
         self.refused("1", "10", "2", "3", "4", says="in different batches already (b1-20261120T0200, other)")
 
+    def test_a_predicted_gain_starts_only_with_its_measure_first_line_which_its_batch_event_carries(self):
+        for n in range(1, 6):
+            self.b.task(n)
+        self.b.items["i2"]["text"] = "Threads for slope-deep: a predicted gain of 20 %"
+        self.b.items["i4"]["note"] = "From the report. Predicted gain: 1 h a day."
+        self.refused("1", "2", "3", "4", "5", says="#2 is a predicted gain: its note needs a line 'Measure first:")
+        self.refused("1", "2", "3", "4", "5", says="#4 is a predicted gain")
+        self.b.items["i2"]["note"] = "Measure first: slope-deep's CPU share in the job records; dropped below 15 %"
+        self.b.items["i4"]["note"] += "\nmeasure first: one probe run of the step; dropped below 10 min"
+        code, out, err = run(self.b, "batch", "1", "2", "3", "4", "5")
+        self.assertEqual(code, 0, err)
+        bid = {w[2]["batch"] for w in self.b.writes if w[0] == "PATCH"}.pop()
+        self.assertEqual({w[2]["text"] for w in self.posts()}, {
+            f"Batch {bid} of small tasks: #1 #2 #3 #4 #5\n"
+            "Measure first, #2: slope-deep's CPU share in the job records; dropped below 15 %\n"
+            "Measure first, #4: one probe run of the step; dropped below 10 min"})
+
     def test_a_small_task_in_flight_in_no_batch_is_put_in_one_as_it_is(self):
         self.b.task(1, status="backgrounded")  # (marked small while under way)
         for n in range(2, 6):

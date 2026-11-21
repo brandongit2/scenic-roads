@@ -135,6 +135,14 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
   set.
 - **No hand-kept figures:** a step's requirements are measured, enforced where used, or derived from
   the code.
+- **Measure a predicted gain before building it** (#1577): a task whose value is a predicted gain
+  (faster, less load, fewer turns) says "predicted gain" in its text or note, and its note carries
+  `Measure first: <the probe, or the records, that measure it>; dropped below <the figure>`. Its
+  builder measures first, by that cheap probe or the records (the dev job records, the pool's
+  history), before writing code, and stops there, reporting the figure, when it is below the line.
+  The PM writes the line when filing the task; `tools/dev/board.py batch` refuses a member marked
+  so without one and puts each line in the batch's start event; a brief for a task started alone
+  carries it.
 
 ## Spelling
 

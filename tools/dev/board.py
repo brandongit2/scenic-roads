@@ -8,12 +8,15 @@
       batch's `start` event, the same text on all:
           Batch b1601-20261120T0300 of small tasks: #1601 #1602 #1603 #1604 #1605
           Left out: #1610 (blocked by #1600); #1611 (conflicts with #1534)     (only with --left-out)
+          Measure first, #1603: <its note's Measure first: line>               (for each with one)
           <the note>                                                          (only with --note)
       --left-out is a list of entries, each a task's number then why it waits, separated by commas
       or semicolons outside parentheses; only an entry's leading #N is the task left out. Given more
       than once, the lists are merged.
       Refused, nothing written, unless every task named is a small task (the board's `small`),
-      queued, waiting or in flight, not archived and in no other batch; at most five; every left-out
+      queued, waiting or in flight, not archived and in no other batch; whose text or note says
+      "predicted gain" only with a "Measure first: <the probe or the records>; dropped below
+      <figure>" line in its note (#1577: measured before it's built); at most five; every left-out
       entry has a reason; and, when fewer than five, every other queued small task is named in
       --left-out (a waiting one needn't be). A task in flight is put in the batch as it is (its status
       kept): a small task in no batch, such as one marked small while under way, is recorded so.
@@ -60,6 +63,11 @@ WAITS = ("", "waiting")  # not started: queued, or waiting on the owner (also be
 OUT = ("", "abandoned")  # a member in one of these has left its batch's work (queued again, or dropped)
 NUM = re.compile(r"#(\d+)")
 ENTRY = re.compile(r"^#(\d+)\s*(.*)$", re.S)
+# A task whose value is a predicted gain (#1577) says so in its text or note, and is measured before
+# it's built: its note's "Measure first:" line names the probe or the records, and the figure below
+# which it's dropped.
+GAIN = re.compile(r"\bpredicted gain\b", re.I)
+MEASURE = re.compile(r"^\s*Measure first:\s*(\S.*)$", re.M | re.I)
 
 
 def call(method, path, body=None):
@@ -314,6 +322,9 @@ def batch(args):
             errs.append(f"#{n} isn't marked small: " + ("classify it first" if d.get("small") is None else "start it alone"))
         elif d.get("status") not in WAITS + IN_FLIGHT:
             errs.append(f"#{n} is {d['status']}, neither queued, waiting nor in flight")
+        elif GAIN.search(d.get("text", "") + "\n" + d.get("note", "")) and not MEASURE.search(d.get("note", "")):
+            errs.append(f"#{n} is a predicted gain: its note needs a line 'Measure first: <the probe, or the records, "
+                        "that measure the gain>; dropped below <the figure>' before it's built")
     for n, _ in left:
         if n in nums:
             errs.append(f"#{n} is both in the batch and left out")
@@ -336,8 +347,9 @@ def batch(args):
     if errs:
         return die("; ".join(errs) + ". Nothing written.")
     bid = had[0] if had else f"b{min(nums)}-{datetime.now(timezone.utc):%Y%m%dT%H%M}"
+    measure = [f"Measure first, #{n}: {m.group(1).strip()}" for n in nums if (m := MEASURE.search(items[ids[n]].get("note", "")))]
     text = "\n".join([f"Batch {bid} of small tasks: " + " ".join(f"#{n}" for n in nums)]
-                     + ([f"Left out: {'; '.join(f'#{n} {why}' for n, why in left)}"] if left else []) + ([note] if note else []))
+                     + ([f"Left out: {'; '.join(f'#{n} {why}' for n, why in left)}"] if left else []) + measure + ([note] if note else []))
     for n in nums:
         id, d = ids[n], items[ids[n]]
         did = []
