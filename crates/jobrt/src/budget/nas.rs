@@ -163,7 +163,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 ///   show it (store::aimd's once a window: a cut compounding on readings of the jobs out before it
 ///   takes the pool to nothing);
 /// - **spare** (a Mac's answers read and not rising; under `Tuning::slow`, the knee (this reading's,
-///   and the last `span_s`'s lower quartile), or past it, judged not the pool's, the disks read;
+///   and the last `span_s`'s lower quartile), or past it, judged not the pool's, the disks read
+///   with a step's room under the target, smoothed and on the reading alike;
 ///   and the disks with room for the next job: their busy share smoothed and the room it needs, a
 ///   share of the NAS as probed, within the target; the disks not read, the answers alone say): it
 ///   grows,
@@ -1093,8 +1094,12 @@ impl Pace {
         let over = self.load.is_some_and(|l| l > s.pct as f64) || busiest.is_some_and(|b| b >= f64::from(s.pct));
         let past = over || missed || slow || to_knee;
         // (The knee: this reading's answers past it, or the last span's, their lower quartile;
-        // unless a growth cadence of them is judged not the pool's doing, the disks read.)
-        let outside = j.outside && j.done && self.load.is_some();
+        // unless a growth cadence of them is judged not the pool's doing, the disks read with a
+        // step's room under the target, smoothed and on this reading alike: slow answers with the
+        // disks near the target are the disks' load, whoever's, and hold at the knee.)
+        let disks = busiest.zip(self.load).map(|(b, l)| b.max(l));
+        let near = disks.is_some_and(|l| l + step / 10.0 > f64::from(s.pct));
+        let outside = j.outside && j.done && disks.is_some() && !near;
         let span = seen.iter().filter(|x| x.t + k.span_s > t && x.apart == apart).map(|x| x.ratio);
         let knee = !outside && (ratio.is_some_and(|r| r > k.slow) || quartile(span, 1).is_some_and(|q| q > k.slow));
         // (Room for a job of weight `w`: the disks' busy share smoothed and its weight, a share of
@@ -2070,6 +2075,35 @@ mod tests {
         assert!(p.window() > STEP, "the window {} at its floor", p.window());
         let r = p.last.as_ref().unwrap();
         assert!(r.outside && r.ratio == Some(20.5), "{r:?}");
+    }
+
+    /// Task #1589 (20 Nov 12:41:30Z: answers 21 times their best, the disks 83 % busy, judged
+    /// outside, grown): the same slowness, slow answers with no step's room left under the target
+    /// aren't judged outside but held at the knee, never grown. The disks at 83 % throughout; and
+    /// at 39 % but for the one reading the window first grew on there, at 83 %, the smoothed share
+    /// still under 55 % (judged on it alone, outside, and grown); at 39 % throughout, outside and
+    /// grown as above.
+    #[test]
+    fn slow_answers_with_the_disks_near_the_target_are_never_judged_outside() {
+        let run = |disks: &dyn Fn(usize) -> f64, n: usize| {
+            let (mut p, mut t) = (Pace::default(), 0);
+            let mut v = Vec::new();
+            for i in 0..n {
+                t += READ_EVERY_S;
+                let (ms, in_use, moving, wants) = if i < 30 { (2.0, 30, 10, None) } else { (41.0, 63, 25, Some(100)) };
+                v.push(sample(&mut p, t, &[ans("m6", ms, 2.0)], &[disks(i)], in_use, &jobs(moving), wants));
+            }
+            (v, p.last.clone().unwrap(), p.load)
+        };
+        let (v, r, _) = run(&|_| 39.0, 90);
+        assert!(r.outside && v[30..].contains(&Verdict::Grew), "{r:?}");
+        let (v, r, _) = run(&|_| 83.0, 90);
+        assert!(!v[30..].contains(&Verdict::Grew), "{v:?}");
+        assert!(!r.outside && r.verdict == Verdict::Held(Hold::Slow), "{r:?}");
+        let grew = run(&|_| 39.0, 90).0.iter().skip(30).position(|v| *v == Verdict::Grew).unwrap() + 30;
+        let (v, r, load) = run(&|i| if i == grew { 83.0 } else { 39.0 }, grew + 1);
+        assert!(load.is_some_and(|l| l < 55.0), "{load:?}");
+        assert!(v[grew] != Verdict::Grew && !r.outside, "{r:?}");
     }
 
     /// The pool the NAS's load: the jobs leased weigh 300 throughout, moving 40 for five minutes,

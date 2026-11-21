@@ -873,6 +873,13 @@ impl Store {
         self.nas.lock().is_ok_and(|n| n.is_some())
     }
 
+    /// Where the probe apart runs now (None: not run; crate::agent::apart): the NAS's root while a
+    /// build runs (`set_nas`) and the probe is on (`Tuning::apart_s` past 0).
+    fn apart_root(&self) -> Option<store::nasfs::NasRoot> {
+        let on = self.apart_s.load(Ordering::Relaxed) > 0;
+        self.nas.lock().ok().and_then(|n| n.clone()).filter(|_| on)
+    }
+
     /// The proxy's counts, answered and sampled from here on.
     pub fn set_net(&self, net: Arc<jobrt::budget::net::Net>) {
         if let Ok(mut n) = self.net.lock() {
@@ -1105,7 +1112,7 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
             let mut probe: Option<super::apart::Probe> = None;
             loop {
                 let every = apart.apart_s.load(Ordering::Relaxed);
-                let root = apart.nas.lock().ok().and_then(|n| n.clone()).filter(|_| every > 0);
+                let root = apart.apart_root();
                 let down = match root.map(|r| store::nas::on_nas(&r.unchecked_path())) {
                     None => {
                         if let Some(p) = probe.as_mut() {
@@ -1382,6 +1389,22 @@ impl NasRates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probe apart runs at the NAS's root only while a build runs (`set_nas`) and the probe is
+    /// on: no root, or the probe off, runs none.
+    #[test]
+    fn the_probe_apart_runs_only_while_a_build_runs_and_it_is_on() {
+        let l = Store::new(None, "m4");
+        assert!(l.apart_root().is_none(), "no build running");
+        let root = store::nasfs::NasRoot::local_for_test("/nas");
+        l.set_nas(Some(&root));
+        assert!(l.apart_root().is_some());
+        l.apart_s.store(0, Ordering::Relaxed);
+        assert!(l.apart_root().is_none(), "the probe off");
+        l.apart_s.store(5, Ordering::Relaxed);
+        l.set_nas(None);
+        assert!(l.apart_root().is_none(), "the build over");
+    }
 
     #[test]
     fn a_bucket_keeps_the_least_mean_and_most_in_every_ring() {

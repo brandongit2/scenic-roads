@@ -983,7 +983,9 @@ thousandths:
     slower. Between the two (the lower quartile past, the median not; a cadence is some three
     spans), neither: past the knee, held.
   - Not the pool's, slow answers neither cut the window nor hold it at the knee, but only with the
-    disks read; nothing measured, they hold it, never cut it.
+    disks read with a step's room under the target, smoothed and on the reading alike: slow
+    answers with the disks near the target are their load, whoever's, and hold it at the knee.
+    Nothing measured, they hold it, never cut it.
 - **The window**: **congested** (the disks over the target, smoothed, or a reading's busiest disk at
   it or over: the smoothing lags a burst by half a minute; the counted Mac missing its deadlines;
   or the answers rising, past 3 times their best, `nas-slow`), it drops at once to half the weight
