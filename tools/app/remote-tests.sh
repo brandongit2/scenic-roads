@@ -39,10 +39,10 @@
 # for the folder it was made in (its working directory is part of what it checks), and a folder per
 # key compiled every workspace crate anew (77 % of a new key's compile, M4, 7 Nov); only what
 # differs from the slot's last tree rebuilds. A key takes the slot it last used if free (a check's
-# key with none yet, its worktree's key's), else the one least recently used (slot_order). rustc goes through the test Mac's sccache when it has one
-# (third-party crates, for an emptied folder).
-# The command runs at nice 20 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
-# agent's loop first, task #700; the lowest nice, so the pool's jobs at nice 0 win the CPU, #887),
+# key with none yet, its worktree's key's), else the one least recently used (slot_order).
+# The command runs at the default QoS and its builds below it (low_builds, #1583: rustc at utility
+# priority, `taskpolicy -c utility`, through the test Mac's sccache when it has one), so one slot's
+# build gives the cores to another's tests, and a build alone has them all;
 # timed (a line with its wall and CPU), under `mise env` of the tree, with 8192
 # open files, its stdin closed, with this side's RUST_LOG, RUST_BACKTRACE, RUST_TEST_THREADS,
 # RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL, CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_*
@@ -218,8 +218,8 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # or unreadable file in its place (the capacity then derived). Each run says its slot, the slots and its threads, and where
 # each was set; the dev jobs page records them. A caller's own NEXTEST_TEST_THREADS (or nextest's
 # --test-threads) is taken as it is. Builds aren't shared out: a run's cargo builds with every core,
-# at nice 20 as its tests (a check's compile is the larger part of its time on the test Mac, a
-# build's load passes, and its tests are what time out).
+# below every run's tests (low_builds, #1583: a check's compile is the larger part of its time on the
+# test Mac, and its tests are what time out).
 capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep busy>]: reply=(<slots> <test threads a run> <where each was set> <publish's test threads, set, or none> <publish's wait for the other runs, s> <measurement runs at once>)
   local f=$1 cores=$2 gb=$3 pool=${4:-0} slots threads line k v n=0 from_s from_t pthreads= pwait=$(( 30 * 60 )) measures=1
   local -A at  # (the line each key was read from)
@@ -308,8 +308,8 @@ take_turn() {  # <base> <measures> <owner>
 # ~/Library/Application Support/scenic/app/<release>/) with what is under it: a job outlives its
 # agent's restart (every publish restarts it), adopted by the new one but no longer its child (its
 # wrapper's parent is launchd). From ps's %cpu (a decaying average over about the last
-# minute), read only. They run at nice 0 and the tests at nice 20, so what they take the tests don't
-# get: a run's share is of the cores they leave. Prints "<whole cores, rounded> <cores, a tenth>
+# minute), read only. A run's share is of the cores they leave: they run at utility priority and
+# the tests above it (low_builds), so a share past those cores would take theirs. Prints "<whole cores, rounded> <cores, a tenth>
 # <processes>". (SCENIC_TESTS_PS names a file of `ps -axo pid=,ppid=,pcpu=,args=` lines read in its
 # place: this script's tests'.)
 pool_busy() {
@@ -360,6 +360,30 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
   local each=$(( ($2 == 0 ? $4 - ${p[1]} : ($4 - ${p[1]}) / $3) / t )); (( each < 2 )) && each=2
   export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=$each
   REPLY=$t; reply=("capacity: $how; $each threads a test")
+}
+
+# Builds below tests (#1583): a run's command runs at the default QoS and its rustc at utility
+# (`taskpolicy -c utility`, inherited by what rustc starts: the linker), through RUSTC_WRAPPER, this
+# program (written when it differs), so where one slot's build meets another's tests, the tests have
+# the cores, and a build alone still has every core. QoS decides it, not nice: on the M4 (21 Nov, 14
+# spinners a side for 15 s) nice 0 against nice 20 split the cores evenly at one QoS, utility or
+# default, while default against utility went 27 to 1, and utility alone did 0.65 of default's work;
+# a lower clamp (background, or DARWIN_BG) left a build alone 2-5 % of utility's. The pool's jobs run
+# at utility (agentcore's jobs.rs): they share the cores with a build and give them to tests (whose
+# threads are those cores the jobs leave: share_out). Through the test Mac's sccache when it has one
+# (third-party crates for an emptied folder; those it compiles in its server, at the QoS that server
+# started with, as the first build to need one ran).
+low_builds() {  # <wrapper file>: RUSTC_WRAPPER exported naming it
+  local sc= w
+  if [[ -x /opt/homebrew/bin/sccache ]]; then
+    sc="/opt/homebrew/bin/sccache "
+    export SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
+  fi
+  w="#!/bin/sh"$'\n'"exec /usr/sbin/taskpolicy -c utility $sc\"\$@\""
+  if [[ $(cat $1 2>/dev/null) != "$w" ]]; then
+    print -r -- "$w" > $1.$$ && chmod +x $1.$$ && mv -f $1.$$ $1 || return 1
+  fi
+  export RUSTC_WRAPPER=$1
 }
 
 publish_holds() {  # <base>: 0 while publish's run holds slot 0 (its process alive); REPLY its owner line
@@ -618,9 +642,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   mkdir -p $build/.cargo
   print -r -- "[build]"$'\n'"target-dir = \"$build/target\"" > $build/.cargo/config.toml
   unset CARGO_TARGET_DIR
-  if [[ -x /opt/homebrew/bin/sccache ]]; then
-    export RUSTC_WRAPPER=/opt/homebrew/bin/sccache SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
-  fi
+  low_builds $base/.rustc-utility || none "can't write $base/.rustc-utility"
   ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null
   # The watcher: this connection's sshd gone (the calling Mac's side stopped), the run's process group goes.
   local p=$$ sshd=
@@ -646,7 +668,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot of $slots, $REPLY test threads, $build; ${reply[1]}$turn)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
   # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
-  nice -n 20 /usr/sbin/taskpolicy -c utility zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
+  zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
   g_cpid=$!
   wait $g_cpid
   local rc=$?
@@ -693,7 +715,7 @@ run_local() {  # <source dir> <command>
 # (share_out), the slot freed as it ends (by a signal too; killed outright, its slot is a gone
 # process's, freed by the next run that tries it).
 here_on_test_mac() {  # <key> <source dir> <command>
-  local base=~/scenic-check cores=$(sysctl -n hw.ncpu) mine="$(proc_id) $1" rc
+  local base=~/scenic-check cores=$(sysctl -n hw.ncpu) mine="$(proc_id) $1"
   mkdir -p $base/$1
   capacity $base/capacity $cores $(( $(sysctl -n hw.memsize) / 1073741824 ))
   local slots=$reply[1] measures=$reply[6] turn=
@@ -711,6 +733,7 @@ here_on_test_mac() {  # <key> <source dir> <command>
   # (A caller's own threads, exported here already, stand, as in a run sent from another Mac.)
   [[ -n $own ]] && export NEXTEST_TEST_THREADS=$own
   [[ -n $own_each ]] && export RAYON_NUM_THREADS=$own_each
+  low_builds $base/.rustc-utility || { refuse "can't write $base/.rustc-utility"; return }
   print "remote-tests: running here (this is the test Mac; load $(loadavg), slot $g_slot of $slots, ${NEXTEST_TEST_THREADS} test threads; ${reply[1]}$turn)"
   run_local $2 "$3"
 }

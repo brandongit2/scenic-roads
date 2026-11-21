@@ -932,7 +932,7 @@ pub fn ask_cores(a: &Ask) -> u32 {
 /// minute counts as outside it until the minute shows it gone, a minute at most, and it keeps half the
 /// cores at most meanwhile).
 /// At most half the cores its Mac has for its jobs (`ask_cores`) count (task #684): the cores
-/// busy can't tell a niced test build (tools/app/remote-tests.sh runs at nice 10) from work
+/// busy can't tell a test build (tools/app/remote-tests.sh's, at utility priority) from work
 /// that competes, and on 26 Oct an agent's check build held the
 /// lead's load at 47 of 12 cores, so it granted itself nothing for two hours. The owner's own use
 /// keeps the in-use share besides.

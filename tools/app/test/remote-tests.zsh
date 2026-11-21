@@ -182,6 +182,13 @@ left=$(<$tmp/left)
 [[ $(<$tmp/where) == *"/.build/1/src" && $out == *"@@remote-tests-status 0"* ]] && ok "a run in its slot's folder" || no "a run in its slot's folder" "$(<$tmp/where): $out"
 ! kill -0 $left 2>/dev/null && [[ ! -e $fb/.slots/1 ]] && ok "what a run left goes, then its slot" || no "what a run left goes, then its slot" "$left, $(ls $fb/.slots)"
 
+# Its builds below its tests (#1583): rustc through the wrapper, clamped to utility, as cargo runs it.
+run_setup e0
+out=$(run_remote e0 "print -r -- \$RUSTC_WRAPPER > $tmp/wrap; \$RUSTC_WRAPPER rustc -vV > $tmp/vv 2>&1")
+w=$(<$tmp/wrap)
+[[ $w == $fb/.rustc-utility && -x $w && $(<$w) == *'exec /usr/sbin/taskpolicy -c utility '*'"$@"' && $(<$tmp/vv) == *$'\n'release:* && $out == *"@@remote-tests-status 0"* ]] \
+  && ok "a run's rustc through its utility wrapper" || no "a run's rustc through its utility wrapper" "$w: $(cat $w $tmp/vv 2>&1): $out"
+
 main_of() { local o=$(<$fb/.slots/1/owner); print -r -- ${o%% *} }  # (the run itself, the group's leader: the owner its slot names)
 gone() { local i; for i in {1..100}; do kill -0 $1 2>/dev/null || return 0; sleep 0.1; done; return 1 }
 

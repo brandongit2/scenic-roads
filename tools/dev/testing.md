@@ -615,9 +615,9 @@ are its own for the disk rule and the drop below.
   its watcher do that, and the next run takes the slot only when the group is gone. A run whose slot isn't its own at the end gives no result.
   Tests: `remote-tests.zsh`, `remote_main` itself in a fake home (each of these, five runs at once on three slots). The dev job sampler
   leaves the group as it starts (it's the Mac's, not the run's).
-- The run: nice 20 at utility priority (`taskpolicy -c utility`, as the pool's jobs, whose nice 0
-  wins the CPU, #887; and so the lead's
-  agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
+- The run: its command at the default QoS, its builds below it (#1583: rustc at utility priority,
+  `taskpolicy -c utility`, as the pool's jobs, through RUSTC_WRAPPER, `~/scenic-check/.rustc-utility`,
+  which runs the test Mac's sccache; a run on the test Mac itself too), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
   and nextest versions and whether the NAS is mounted. A stopped run is stopped on the test Mac too.
@@ -645,8 +645,8 @@ are its own for the disk rule and the drop below.
   starts goes on to its end, as a check does, and publish's tests wait for it. The turns hold only
   for runs from branches with #1575 (the test Mac's side is sent with each run): an older branch's
   measurement run takes a slot alone.
-  A run's share is of the cores the pool's jobs leave (#1563): they run at nice 0 and the tests at
-  nice 20, so what they keep busy the tests don't get. The pool's busy cores are read from `ps` as
+  A run's share is of the cores the pool's jobs leave (#1563): they run at utility priority and the
+  tests above it, so a share past those cores would take theirs. The pool's busy cores are read from `ps` as
   the run starts (the `%cpu` of the Mac's `scenic agent` process and every process under it, a
   decaying average over about a minute; read only), and a check's threads are those cores left over
   its slots, rounded up, one at least (14 cores, the pool's jobs on 5: 3 test threads a slot).
@@ -684,10 +684,21 @@ are its own for the disk rule and the drop below.
   the test Mac's side of the script is sent with each run, so a branch not rebased onto it still
   runs in 3 slots, with nextest's own threads (every core).
   A caller's own `NEXTEST_TEST_THREADS` or `--test-threads` stands. Builds aren't shared out: cargo
-  builds with every core, at nice 20 as the tests (a check's compile is most of its time on the test
+  builds with every core, below every run's tests (a check's compile is most of its time on the test
   Mac, and its tests are what time out). On 20 Nov three runs of 14 test threads each, the plan
   tests' own threads and the builds beside them put the M4's load at 108-229 on 14 cores, and tests
   of 14-17 s alone timed out at 3 min.
+  Builds below tests (#1583, measured 21 Nov on the M4 beside live checks): QoS orders the CPU there,
+  nice doesn't (14 spinners a side for 15 s: nice 0 against nice 20 split the cores evenly at utility
+  and at the default QoS; the default QoS against utility took 27 to 1; utility alone did 0.65 of
+  the default's work; background or DARWIN_BG left a lone build 2-5 % of utility's). One check's
+  tests (#1582's agentcore, pipeline and jobrt set) beside another slot's agentcore build: with
+  both at nice 20 utility, tests 134-181 s alone and 187-331 s beside (median 294); with the build
+  at utility and the tests at the default QoS, 81-85 s alone and 78-126 s beside (median 83); with
+  CARGO_BUILD_JOBS 5 (cores / slots) instead, 96-128 s alone and 98-236 s beside (median 218). The
+  build beside the tests: medians 155, 142 and 122 s; alone, six builds each, the variants alternated, medians 94, 80
+  and 84 s. No TIMEOUT in any. So builds go through `low_builds` (above), and CARGO_BUILD_JOBS
+  stays the caller's.
 - The result: the test Mac's side ends with a status line (read, not shown); the exit status is the
   command's. Without one (connection lost, no tree, no slot) the run is refused.
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits
@@ -715,7 +726,7 @@ fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 
-The suite runs as many at a time as the test Mac's slots (three on the M4; none beside publish's tests, #1563), at nice 20 and utility priority, beside builds: what takes milliseconds
+The suite runs as many at a time as the test Mac's slots (three on the M4; none beside publish's tests, #1563), beside builds (at utility priority, below the tests: #1583) and the pool's jobs: what takes milliseconds
 idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
 that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
 through their dev-dependency on store, `features = ["testkit"]`):

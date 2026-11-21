@@ -207,7 +207,7 @@ CARGO_BIN_EXE_server=$PWD/target/release/server $serves >> $tests_log 2>&1 \
 # through the accessor, the records written only through Out (docs/pool.md §7.3), every Wikimedia
 # request through the budgets' proxy (§7.7), the Python steps' timer, no Instant dated back...)
 # Both run on the test Mac, the M4 by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, in a test
-# slot's build folder kept there, at nice 20; here when this is the test Mac or with
+# slot's build folder kept there, its build below the test Mac's tests (#1583); here when this is the test Mac or with
 # SCENIC_TESTS_LOCAL=1; kept from it otherwise, not run, a failure): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
 # Built first, then its tests once the test Mac is publish's alone (#1563: SCENIC_TEST_MAC_ALONE,
