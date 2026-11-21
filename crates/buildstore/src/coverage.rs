@@ -1573,6 +1573,16 @@ pub fn fingerprint_of(shapes: &[Shape], b: [i32; 4]) -> String {
 
 // ---- what a run asked of the coverage ------------------------------------------------------------
 
+/// The version of how the coverage works out its answers to what a run asked (`Coverage::answers`:
+/// `contains`, `meets_rect`, `meets_rect_all`, `contains_cell`, `country_at`, `country_cell`, and
+/// the grids and edge trees they read). Neither `Coverage::version` nor `fingerprint` reads it: they
+/// digest the rings, buffer and water, so a change to the answering code moves no identity. A
+/// record (buildstore::asked::Record) carries the version it was answered by in its cheap test, so
+/// once this is bumped every record is asked again, once, and only those answered differently move
+/// their key. Bumped with any change that may answer a question differently (2: task #1462's
+/// centre parity at the whole-unit centre).
+pub const ANSWERING: u32 = 2;
+
 /// The zoom of the cells a run's point questions are kept by (`Asking::asked`): a cell whose
 /// neighbourhood answers every point in it alike is kept as that one answer, not its points. A
 /// cell's question is of its box and its neighbours' (`cell_box` 1), asked whole only where the

@@ -985,7 +985,12 @@ the agent and every job on the Mac, dropped by macOS under pressure and read aga
 world's 1,605 shapes, read into the process's own memory, were 1.68 GB of its footprint on the
 plan bench of 11 Nov, 4 MB read in place; the file 1.62 GB with the edge trees, 1.41 without). A version
 just made is read back from its file the same way, the one made let go. The answers are those of
-the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
+the shapes made from the rings, bit for bit (the same values). How the answers are worked out has
+a version of its own, `buildstore::coverage::ANSWERING` (2 since task #1462's centre parity),
+bumped with any change that may answer a question differently: neither the coverage's version
+(`Coverage::version`: the rings, buffer and water) nor the file's format reads it, so a bump moves
+no identity; the steps keyed on what their runs asked carry it in their cheap test and ask each
+record again once, rebuilding only where an answer changed (docs/steps.md §12). `scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
 own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
 filesystem isn't mapped, the coverage made in memory as with no cache). Each read in place there

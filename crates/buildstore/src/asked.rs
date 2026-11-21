@@ -13,9 +13,12 @@
 //! countries, a tree cover tile's mask), a digest of all the answers (`Record::answers`), what it
 //! read of the coverage by a cheap test (`Record::version`: the coverage's version for a world
 //! step; for a target, what its key named of the coverage before it asked, its geometry over the
-//! target's box) and the key line it ran under (`Record::line`). The key's line (`line`,
-//! `target_line`) is the record's own line while that cheap test reads the same or the coverage
-//! answers those questions the same; otherwise a new one. A target with no record keys by the
+//! target's box), with the version of the code that answered it (`Record::answering`,
+//! `coverage::ANSWERING`), and the key line it ran under (`Record::line`). The key's line (`line`,
+//! `target_line`) is the record's own line while that cheap test reads the same (`as_read`: the
+//! same version, answered by this build's code) or the coverage answers those questions the same;
+//! otherwise a new one. So a change to how answers are worked out moves no identity: the bump asks
+//! every record again once, and only a record answered differently moves its key. A target with no record keys by the
 //! cheap test's own line, as before it asked: its first run under this keying moves no key. The
 //! run works its line out as the plan did, from the record before it (`Run::start`,
 //! `Run::start_target`), so the key it is recorded done under is the one the plan works out after
@@ -41,10 +44,27 @@ pub struct Record {
     /// A digest of every answer (`answers`).
     pub answers: String,
     /// What it read of the coverage by the cheap test (a world step's: `Coverage::version`; a
-    /// target's: its key's geometric line): the same, the same answers.
+    /// target's: its key's geometric line): the same, answered by the same code (`answering`), the
+    /// same answers.
     pub version: String,
+    /// The coverage's answering code it was answered by (`coverage::ANSWERING`), the cheap test's
+    /// other half; a record put before it was carried, 1.
+    #[serde(default = "first_answering")]
+    pub answering: u32,
     /// The key line the run ran under.
     pub line: String,
+}
+
+/// The answering code of a record put before it was carried (`Record::answering`).
+fn first_answering() -> u32 {
+    1
+}
+
+/// Whether a record that read `version` of the coverage by the cheap test, answered by code
+/// `answering`, answers as it did under cheap test `now` without asking again: the same version,
+/// answered by this build's code (`coverage::ANSWERING`).
+pub fn as_read(version: &str, answering: u32, now: &str) -> bool {
+    version == now && answering == crate::coverage::ANSWERING
 }
 
 /// Where world step `step`'s run puts its record.
@@ -80,7 +100,7 @@ impl Record {
     /// A record of a run that read `version` of the coverage by the cheap test.
     pub fn read_as(cov: &Coverage, version: String, asked: Asked, also: Vec<(String, String)>, line: String) -> Record {
         let a = answers(cov, &asked, also.iter().cloned());
-        Record { asked, also, answers: a, version, line }
+        Record { asked, also, answers: a, version, answering: crate::coverage::ANSWERING, line }
     }
 
     /// As put: zstd'd JSON (rail's asks a point of each of the world's rail ways).
@@ -105,8 +125,9 @@ pub enum Answer {
 }
 
 /// The key line of a run that reads `now` of the coverage by the cheap test: with no record, `none`;
-/// with record `prev` (put as content `content`), its line while `now` is what it read
-/// (nothing asked again) or `cov` answers its questions as they were answered (`reask` answering its
+/// with record `prev` (put as content `content`), its line while `now` is what it read and this
+/// build's code answers (`as_read`: nothing asked again) or `cov` answers its questions as they
+/// were answered (`reask` answering its
 /// `also` questions now), else a new one naming it; a record that doesn't parse, or a question of
 /// another form, a new one too. None only while a question can't be answered now (`Answer::NotNow`).
 fn line_of(
@@ -121,7 +142,7 @@ fn line_of(
         Some((content, Prev::Unparsed)) => return Some(changed(now, content)),
         Some((content, Prev::Record(r))) => (content, r),
     };
-    if r.version == now {
+    if as_read(&r.version, r.answering, now) {
         return Some(r.line.clone());
     }
     let also: Vec<(String, String)> = r
@@ -327,6 +348,45 @@ mod tests {
         // Back as it was: the answers are the first run's, but the line names the second's record.
         assert_ne!(line_of(&lyon_and_oslo, &second), second.1.line);
         assert_ne!(line_of(&lyon_and_oslo, &second), first.1.line);
+    }
+
+    /// Task #1590: a record answered by other answering code (`coverage::ANSWERING`), the coverage's
+    /// version the same, is asked again: answered the same by this build's code, its line; answered
+    /// differently, a new one (its step re-runs). A record put before it carried one is code 1's.
+    #[test]
+    fn an_answering_change_asks_again_and_moves_only_a_line_answered_differently() {
+        let none = |_: &str| Answer::NotNow;
+        let c = cov(&[(4.85, 45.75, 60.0)]);
+        let a = Asking::new(&c);
+        assert!(a.contains(e7(4.85, 45.75)));
+        let kept = Record::new(&c, a.asked(), Vec::new(), "kept".into());
+        assert_eq!(kept.answering, crate::coverage::ANSWERING);
+        let rec = |r: &Record| line(&c, Some(("n", Prev::Record(r))), &none).unwrap();
+        assert_eq!(rec(&kept), "kept");
+        // Answered by code 1, the same answers: asked again (nothing else could tell), its line.
+        let same = Record { answering: 1, line: "same".into(), ..kept.clone() };
+        assert!(!as_read(&same.version, same.answering, &c.version()));
+        assert_eq!(rec(&same), "same");
+        // Code 1 answered the point out (its digest that of a cell out): asked again, answered in
+        // now, a new line.
+        let out = Asking::new(&c);
+        assert!(!out.contains(e7(5.7, 45.75)));
+        let differs = Record {
+            answering: 1,
+            line: "differs".into(),
+            answers: Record::new(&c, out.asked(), Vec::new(), String::new()).answers,
+            ..kept.clone()
+        };
+        assert_ne!(rec(&differs), "differs");
+        // The same record under this build's code: its line, nothing asked again.
+        let now = Record { answering: crate::coverage::ANSWERING, ..differs.clone() };
+        assert_eq!(rec(&now), "differs");
+        // A record as put before it carried one: code 1's.
+        let json = serde_json::to_value(&kept).unwrap();
+        let mut old = json.as_object().unwrap().clone();
+        old.remove("answering");
+        let parsed: Record = serde_json::from_value(serde_json::Value::Object(old)).unwrap();
+        assert_eq!(parsed.answering, 1);
     }
 
     #[test]

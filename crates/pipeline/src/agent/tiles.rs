@@ -36,14 +36,27 @@ const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 /// targets of other steps its questions read in (`reads`, idents::question_read: what its target's
 /// `Read::Built` reads wait for, task #1556). A head kept without them (None) stands for a step
 /// whose waits don't read them (`idents::waits_by_record`), read again only for one whose do: the
-/// peaks' 1,937 small records, not every step's (bldtiles' are 3.5 GB).
+/// peaks' 1,937 small records, not every step's (bldtiles' are 3.5 GB). Its cheap test (`version`,
+/// `answering`) is its record's, or one the record was asked again under and answered the same
+/// (`TerrainTiles::answered_same`), so a record isn't asked again on every start once the coverage's
+/// geometry or answering code moved under it without changing an answer. (A world step's record,
+/// held whole, has one too, for that test alone.)
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Head {
     fmt: u32,
     version: String,
+    /// buildstore::asked::Record::answering (a head kept before it was carried: its record's, 1).
+    #[serde(default = "first_answering")]
+    answering: u32,
     line: String,
     #[serde(default)]
     reads: Option<Vec<String>>,
+}
+
+/// A head's answering code kept before it was carried (`Head::answering`): its record's, put before
+/// records carried one.
+fn first_answering() -> u32 {
+    1
 }
 
 impl Head {
@@ -54,6 +67,7 @@ impl Head {
         Head {
             fmt: buildstore::asked::RECORD_FMT,
             version: r.version.clone(),
+            answering: r.answering,
             line: r.line.clone(),
             reads: Some(reads),
         }
@@ -132,13 +146,15 @@ pub struct TerrainTiles {
     /// the records `m` names, `asked::logical`), by content name (None: it can't be read now;
     /// Some(None): it reads but doesn't parse, buildstore::asked::Prev::Unparsed).
     asked: HashMap<String, Option<Option<std::sync::Arc<buildstore::asked::Record>>>>,
-    /// Of what each target keyed so last asked (`asked::target_logical`), by content name: what it
-    /// read of the coverage by geometry and the line it ran under (`Record::version`, `line`), all
-    /// a key reads of it while that geometry reads the same; the record itself is read again only
-    /// once it doesn't (`target_asked`). Read once each, several at a time, and kept in this Mac's
-    /// folder by content hash (`<hash>.asked-head`), so an agent's start reads only those new since
-    /// (one that can't be read now: tried again with the next load). None: one that reads but
-    /// doesn't parse (buildstore::asked::Prev::Unparsed).
+    /// Of what each target keyed so last asked (`asked::target_logical`), by content name: its cheap
+    /// test (what it read of the coverage by geometry, the answering code: `Record::version`,
+    /// `answering`, or a test it was asked again under and answered the same, `answered_same`) and
+    /// the line it ran under, all a key reads of it while that test holds; the record itself is read
+    /// again only once it doesn't (`target_asked`). Read once each, several at a time, and kept in
+    /// this Mac's folder by content hash (`<hash>.asked-head`), so an agent's start reads only those
+    /// new since (one that can't be read now: tried again with the next load). None: one that reads
+    /// but doesn't parse (buildstore::asked::Prev::Unparsed). The world steps' records, held whole
+    /// (`asked`), have theirs here too, for the cheap test.
     asked_heads: HashMap<String, Option<Head>>,
     /// Files kept in the agent's folder since its last `tidy` (water digests, record heads; new
     /// packs' indexes are counted by `load`).
@@ -443,38 +459,25 @@ impl TerrainTiles {
         use rayon::prelude::*;
         self.root = Some(root.clone());
         let all = || m.under("work/asked/");
+        let named: BTreeSet<&String> = all().map(|(_, c)| c).collect();
+        self.asked_heads.retain(|c, _| named.contains(c));
         // (The targets' records: their heads.)
-        let heads: BTreeSet<&String> = all().filter(|(l, _)| !buildstore::asked::is_world(l)).map(|(_, c)| c).collect();
-        self.asked_heads.retain(|c, _| heads.contains(c));
-        let missing: Vec<&String> = heads.into_iter().filter(|c| !self.asked_heads.contains_key(*c)).collect();
-        let dir = self.dir.clone();
-        let kept = |c: &str| {
-            let n = store::naming::parse_content_name(c)?;
-            Some(dir.as_deref()?.join(format!("{}.asked-head", n.hash16)))
-        };
+        let missing: Vec<&String> = all()
+            .filter(|(l, c)| !buildstore::asked::is_world(l) && !self.asked_heads.contains_key(*c))
+            .map(|(_, c)| c)
+            .collect();
         // (Its head kept here, of this build's record format (`Head`), else read whole and kept; an
         // I/O error tried again, a record that doesn't parse taken as one, never tried again.)
         let got: Vec<(&String, std::io::Result<Option<Head>>)> = missing
             .par_iter()
             .map(|c| {
-                let k = kept(c);
-                let here = k
-                    .as_ref()
-                    .and_then(|p| std::fs::read(p).ok())
-                    .and_then(|b| serde_json::from_slice::<Head>(&b).ok());
-                if let Some(h) = here.filter(|h| h.serves(c)) {
+                if let Some(h) = self.kept_head(c) {
                     return (*c, Ok(Some(h)));
                 }
                 let head =
                     root.join(c).read().map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| Head::of(&r)));
-                if let (Ok(Some(h)), Some(p)) = (&head, &k) {
-                    let b = serde_json::to_vec(h).expect("a head serializes");
-                    if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
-                        .map_err(anyhow::Error::from)
-                        .and_then(|()| store::whole::write(p, &b))
-                    {
-                        eprintln!("tiles: {c}'s head not kept: {e:#}");
-                    }
+                if let Ok(Some(h)) = &head {
+                    self.keep_head(c, h);
                 }
                 (*c, head)
             })
@@ -506,8 +509,49 @@ impl TerrainTiles {
                     None
                 }
             };
+            // (Its head, for the cheap test alone: one kept here once it answered the same under
+            // another, else its own.)
+            if let Some(Some(r)) = &r {
+                let h = self.kept_head(c).unwrap_or_else(|| Head::of(r));
+                self.asked_heads.insert(c.clone(), Some(h));
+            }
             self.asked.insert(c.clone(), r);
         }
+    }
+
+    /// Where the head of the record of content name `c` is kept (None: nowhere, `dir` none).
+    fn head_path(&self, c: &str) -> Option<PathBuf> {
+        let n = store::naming::parse_content_name(c)?;
+        Some(self.dir.as_deref()?.join(format!("{}.asked-head", n.hash16)))
+    }
+
+    /// The head kept here of the record of content name `c`, when it serves it (`Head::serves`).
+    fn kept_head(&self, c: &str) -> Option<Head> {
+        let b = std::fs::read(self.head_path(c)?).ok()?;
+        serde_json::from_slice::<Head>(&b).ok().filter(|h| h.serves(c))
+    }
+
+    /// Keeps `h` here as the head of the record of content name `c` (a failure said, not fatal: it's
+    /// read again from the NAS).
+    fn keep_head(&self, c: &str, h: &Head) {
+        let Some(p) = self.head_path(c) else { return };
+        let b = serde_json::to_vec(h).expect("a head serializes");
+        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
+            .map_err(anyhow::Error::from)
+            .and_then(|()| store::whole::write(&p, &b))
+        {
+            eprintln!("tiles: {c}'s head not kept: {e:#}");
+        }
+    }
+
+    /// Record `r` of content name `c`, asked again under cheap test `now` by this build's answering
+    /// code (buildstore::coverage::ANSWERING), answered the same: its head kept here with that test,
+    /// so the next start takes its line without asking again (this one finds it in the memo its key
+    /// asked through). A local file for each record a geometry or answering change asks again,
+    /// never the NAS.
+    pub fn answered_same(&self, c: &str, r: &buildstore::asked::Record, now: &str) {
+        let h = Head { version: now.to_string(), answering: buildstore::coverage::ANSWERING, ..Head::of(r) };
+        self.keep_head(c, &h);
     }
 
     /// The coverage record of content name `c` (buildstore::asked): Some(None) for one that doesn't
@@ -516,11 +560,11 @@ impl TerrainTiles {
         self.asked.get(c)?.clone()
     }
 
-    /// What a target's record of content name `c` read of the coverage by geometry and the line it
-    /// ran under (`asked_heads`): Some(None) for one that doesn't parse, None while it can't be
-    /// read now.
-    pub fn asked_head(&self, c: &str) -> Option<Option<(String, String)>> {
-        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| (h.version.clone(), h.line.clone())))
+    /// The cheap test of the record of content name `c` (`Head`: what it read of the coverage, by
+    /// geometry for a target's, and the answering code it was answered by) and the line it ran under
+    /// (`asked_heads`): Some(None) for one that doesn't parse, None while it can't be read now.
+    pub fn asked_head(&self, c: &str) -> Option<Option<(String, u32, String)>> {
+        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| (h.version.clone(), h.answering, h.line.clone())))
     }
 
     /// The targets of other steps a target's record of content name `c` says its run read in
@@ -1141,7 +1185,7 @@ mod tests {
             [good, bad, gone].iter().map(|c| (c.split('.').next().unwrap().to_string(), c.to_string())).collect();
         let mut t = TerrainTiles::new(Some(d.path().join("kept")));
         t.load_asked(&root, &m);
-        assert_eq!(t.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        assert_eq!(t.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
         let reads = ["terrain-lo 3/4/2".to_string(), "terrain-lo 3/5/2".to_string()];
         assert_eq!(t.asked_reads(good), Some(Some(&reads[..])));
         assert_eq!(t.asked_head(bad), Some(None));
@@ -1153,7 +1197,7 @@ mod tests {
         std::fs::rename(&nas_good, d.path().join("aside")).unwrap();
         let mut again = TerrainTiles::new(Some(d.path().join("kept")));
         again.load_asked(&root, &m);
-        assert_eq!(again.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        assert_eq!(again.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
         assert_eq!(again.asked_reads(good), Some(Some(&reads[..])));
         // A head kept by another record format, or a peaks record's without what its questions
         // read (its waits read them): read again from the NAS (here, gone: unread).
@@ -1176,14 +1220,92 @@ mod tests {
         with_plain.insert("work/asked/pois/6-1-5".into(), plain.into());
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
         other.load_asked(&root, &with_plain);
-        assert_eq!(other.asked_head(plain), Some(Some(("geo".into(), "old".into()))));
+        assert_eq!(other.asked_head(plain), Some(Some(("geo".into(), 1, "old".into()))));
         assert_eq!(other.asked_reads(plain), Some(Some(&[][..])));
         assert!(!other.unread.contains_key(plain));
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
         std::fs::rename(d.path().join("aside"), &nas_good).unwrap();
         other.load_asked(&root, &m);
-        assert_eq!(other.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        assert_eq!(other.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
         assert_eq!(other.asked_reads(good), Some(Some(&reads[..])));
+    }
+
+    /// Task #1590: a change to how the coverage works out answers (buildstore::coverage::ANSWERING)
+    /// asks every z6 tile's record again though its geometry reads the same. One the old code
+    /// answered differently moves its key (it rebuilds); one answered the same keeps it, its head
+    /// kept here with this build's code, so the next start takes its line without reading the
+    /// record again. The world steps' records alike.
+    #[test]
+    fn an_answering_change_rebuilds_only_what_it_answers_differently() {
+        use crate::agent::build::KeyCtx;
+        use buildstore::asked::{logical, target_logical, Record};
+        use buildstore::coverage::{fixture_circle, Asking, Coverage, Shape, ANSWERING};
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let shape = Shape::new("r0: c".into(), vec![fixture_circle(-21.9, 64.13, 20.0)], 1000.0);
+        let c = Coverage { shapes: vec![shape], ..Default::default() };
+        let inputs = BTreeMap::new();
+        // Its runs asked of Reykjavik (in); the old code, as one record has it, answered it out
+        // (that record's digest a point's out: what a code change can do to one answer).
+        let asking = Asking::new(&c);
+        assert!(asking.contains([-219_000_000, 641_300_000]));
+        let asked = asking.asked();
+        let out = Asking::new(&c);
+        assert!(!out.contains([-200_000_000, 641_300_000]));
+        let wrong = Record::new(&c, out.asked(), Vec::new(), String::new()).answers;
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut put = |l: String, hash: &str, r: &Record| {
+            let content = format!("{l}.{hash}.json.zst");
+            let p = d.path().join("nas").join(&content);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, r.to_bytes()).unwrap();
+            m.insert(l, content);
+        };
+        let (same, differs) = ("6/28/17", "6/27/17");
+        let geo = |t: &str| crate::agent::idents::clip_geo(&c, codecs::tile::TileId::parse(t).unwrap());
+        for (t, hash, answers) in [(same, "1111111111111111", None), (differs, "2222222222222222", Some(&wrong))] {
+            let mut r = Record::read_as(&c, geo(t), asked.clone(), Vec::new(), format!("ran {t}"));
+            r.answering = 1;
+            if let Some(a) = answers {
+                r.answers = a.clone();
+            }
+            put(target_logical("pois", t), hash, &r);
+        }
+        let mut world = Record::new(&c, asked.clone(), Vec::new(), "ran rail".into());
+        world.answering = 1;
+        put(logical("rail"), "3333333333333333", &world);
+        let world = Record { answers: wrong.clone(), line: "ran bld-fetch".into(), ..world };
+        put(logical("bld-fetch"), "4444444444444444", &world);
+        let kept = d.path().join("kept");
+        let lines = |tiles: &TerrainTiles| {
+            let x = KeyCtx::new(&c, "d", &m, &inputs, None, tiles);
+            let pois = [same, differs].map(|t| crate::agent::idents::coverage_clip(t, &x).unwrap().remove(0));
+            let world = ["rail", "bld-fetch"].map(|s| crate::agent::idents::coverage_asked(s, &x).unwrap().remove(0));
+            (pois, world)
+        };
+        let mut t = TerrainTiles::new(Some(kept.clone()));
+        t.load_asked(&root, &m);
+        let (pois, world) = lines(&t);
+        assert_eq!(pois[0], format!("ran {same}"));
+        assert_ne!(pois[1], format!("ran {differs}"));
+        assert_eq!(world[0], "ran rail");
+        assert_ne!(world[1], "ran bld-fetch");
+        // Those answered the same: their heads kept with this build's code and the test asked.
+        let head = |hash: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(kept.join(format!("{hash}.asked-head"))).unwrap()).unwrap()
+        };
+        assert_eq!(head("1111111111111111")["answering"], ANSWERING);
+        assert_eq!(head("1111111111111111")["version"], geo(same));
+        assert_eq!(head("3333333333333333")["version"], c.version());
+        assert_eq!(head("2222222222222222")["answering"], 1);
+        assert!(!kept.join("4444444444444444.asked-head").exists());
+        // The next start: the records the old code answered the same aren't read again (here, the
+        // target's gone from the NAS); the same lines.
+        std::fs::remove_file(d.path().join("nas").join(&m[&target_logical("pois", same)])).unwrap();
+        let mut again = TerrainTiles::new(Some(kept));
+        again.load_asked(&root, &m);
+        assert!(again.unread.is_empty(), "{:?}", again.unread);
+        assert_eq!(lines(&again), (pois, world));
     }
 
     /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,

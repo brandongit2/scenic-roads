@@ -171,8 +171,9 @@ pub fn coverage_cover(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// What world step `t`'s run asked of the coverage, as the coverage answers it now
-/// (buildstore::asked::line: its record's line while the coverage is the version it asked, or
-/// answers all it asked the same); asked again once a coverage version and record. A record that
+/// (buildstore::asked::line: its record's line while the coverage is the version it asked, answered
+/// by this build's code, or answers all it asked the same); asked again once a coverage version and
+/// record, and once answered the same, its head kept with that version (`answered_same`). A record that
 /// doesn't parse, or a question of another form, a new line (its step re-runs once). None while
 /// the record, or the outlines its questions name, can't be read now.
 pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
@@ -184,7 +185,12 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         return Some(vec![line(x.cov, Some((c, Prev::Unparsed)), &buildstore::asked::no_questions)?]);
     };
     let v = x.cov.version();
-    if r.version == v {
+    // (Its cheap test: its head's, one it answered the same under since, else its own.)
+    let (version, answering) = match x.tiles.asked_head(c) {
+        Some(Some((version, answering, _))) => (version, answering),
+        _ => (r.version.clone(), r.answering),
+    };
+    if buildstore::asked::as_read(&version, answering, &v) {
         return Some(vec![r.line.clone()]);
     }
     let reask = |q: &str| -> Answer {
@@ -202,7 +208,12 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .map(|(o, _)| x.m.holds(&o))
         .collect();
     let l = x.tiles.memo(&format!("coverage:asked {t}"), &format!("{v} {c} {named:?}"), || {
-        line(x.cov, Some((c, Prev::Record(&r))), &reask).ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
+        let l = line(x.cov, Some((c, Prev::Record(&r))), &reask)
+            .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))?;
+        if l == r.line {
+            x.tiles.answered_same(c, &r, &v);
+        }
+        Ok(l)
     });
     l.ok().map(|l| vec![l])
 }
@@ -221,9 +232,10 @@ pub fn extract(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// What target `t` of step `step` asked of the coverage, as the coverage answers it now
 /// (buildstore::asked::target_line): `geo`, what its key reads of the coverage by geometry, while
 /// it has no record (its line before it asked); its record's line while `geo` reads as its run's
-/// did (the record's head, `TerrainTiles::asked_head`) or the coverage answers what it asked the
-/// same (`reask` its questions asked whole), the record read and asked again once a `geo` and
-/// record (`TerrainTiles::memo`); else a new line (one that doesn't parse, or asks what can't be
+/// did, answered by this build's code (the record's head, `TerrainTiles::asked_head`), or the
+/// coverage answers what it asked the same (`reask` its questions asked whole), the record read and
+/// asked again once a `geo` and record (`TerrainTiles::memo`), then its head kept with `geo`
+/// (`TerrainTiles::answered_same`); else a new line (one that doesn't parse, or asks what can't be
 /// answered now, too: re-run once). None only while the record can't be read now.
 fn target_asked(
     step: &str,
@@ -248,16 +260,22 @@ fn asked_line<'m>(
 ) -> Option<String> {
     use buildstore::asked::{target_line, Prev};
     let Some(c) = m.get(&buildstore::asked::target_logical(step, t)) else { return Some(geo) };
-    let Some((version, line)) = tiles.asked_head(c)? else {
+    let Some((version, answering, line)) = tiles.asked_head(c)? else {
         return Some(target_line(cov, &geo, Some((c, Prev::Unparsed)), reask));
     };
-    if version == geo {
+    if buildstore::asked::as_read(&version, answering, &geo) {
         return Some(line);
     }
     tiles
         .memo(&format!("asked {step} {t}"), &format!("{c} {geo}"), || {
             Ok(match tiles.target_asked(c)? {
-                Some(r) => target_line(cov, &geo, Some((c, Prev::Record(&r))), reask),
+                Some(r) => {
+                    let l = target_line(cov, &geo, Some((c, Prev::Record(&r))), reask);
+                    if l == r.line {
+                        tiles.answered_same(c, &r, &geo);
+                    }
+                    l
+                }
                 None => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
             })
         })

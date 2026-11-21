@@ -954,16 +954,20 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   whether a box meets the land or any shape; no other way in: `asked::Run` hands it out) and puts
   what it asked as `work/asked/<step>`: every question once, its questions of the whole coverage
   with their answers (rail-feeds' countries), the digest of every answer (`Coverage::answers`, each
-  asked again: which region holds a point never enters it), the coverage's version it asked and the
-  key line it ran under. The key's line is that line while the coverage is that version (nothing
-  asked again) or answers it all the same; otherwise a new one naming the record, and none yet, one
-  of the coverage's version. The run works its line out from the record before it as the plan does
+  asked again: which region holds a point never enters it), its cheap test (the coverage's version
+  it asked and the answering code's, `coverage::ANSWERING`: a record put before it carried one,
+  1) and the key line it ran under. The key's line is that line while the coverage is that version
+  answered by this build's code (`asked::as_read`: nothing asked again) or answers it all the
+  same; otherwise a new one naming the record, and none yet, one of the coverage's version. So a
+  change to how answers are worked out (task #1462's centre parity, `ANSWERING` 2) moves no
+  identity: every record is asked again once and only one answered differently reruns. The run works its line out from the record before it as the plan does
   (`asked::Run::start`), so the key it's recorded done under is the plan's after it: one run. So a
   region change reruns these only where it changes an answer they read: water given from one region
   to another, or a region added where none of them asked, changes none (task #1127's regions
   change, measured on the real inputs, changed no answer of the four, nor the cover). The plan reads
-  a record once by content name (`TerrainTiles`) and asks it again only once a coverage version
-  other than the one it asked and the record (on the plan's thread: rail's 4.3 M points 1.2 s,
+  a record once by content name (`TerrainTiles`) and asks it again only once a cheap test other
+  than its own and the record, keeping it in its head (below) when it answers the same, so the
+  next start asks nothing again (on the plan's thread: rail's 4.3 M points 1.2 s,
   rail-feeds' countries 49 s, measured by task #1130 on the mini), opening the outlines a question
   names only then; outlines no longer named (a pass gone) answer `GONE`. A record that can't be
   read leaves its step waiting, its run failing.
@@ -985,13 +989,20 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   `coverage:ways`: `Reach::coverage_key`; `coverage:inside`: the tile; `coverage:shapes`:
   `Coverage::shapes_key` of the tile and 1 km around): with no record the key's line is that, so
   the keying itself moved no key; with one, the record's line while that geometry reads as its run
-  read it (the record's head, read once per record as the plan loads and kept in the agent's
-  folder by content hash with the record format it was read by, `<hash>.asked-head`, so a start
-  reads only new ones; one the manifest no longer names goes after a fortnight untouched, as the
-  packs' indexes and water digests do) or the coverage answers what it asked the same (the record
-  read and asked again once per geometry and record, every target's on rayon's threads as the plan
-  begins once the coverage, its countries, the pass, the spacing or the reaches change,
-  `idents::warm_asked`); else a new line naming the record. A record that reads but doesn't parse,
+  read it, answered by this build's code (the record's head, read once per record as the plan
+  loads and kept in the agent's folder by content hash with the record format it was read by,
+  `<hash>.asked-head`, so a start reads only new ones; one the manifest no longer names goes after
+  a fortnight untouched, as the packs' indexes and water digests do) or the coverage answers what
+  it asked the same (the record read and asked again once per geometry and record, every target's
+  on rayon's threads as the plan begins once the coverage, its countries, the pass, the spacing or
+  the reaches change, `idents::warm_asked`; answered the same, its head is kept with the geometry
+  and answering code it was asked under, `TerrainTiles::answered_same`, a local file, so the next
+  start reads the record no more); else a new line naming the record. An `ANSWERING` bump so
+  costs each Mac's plan one read of every record and reruns only the z6 tiles answered
+  differently: task #1590 measured, on the mini, the lead's 6,050 records of 21 Nov (3.7 GB, 3.5 GB
+  of it bldtiles') asked again by task #1462's code in 12 min on 6 threads (45 CPU min, bldtiles'
+  11 of them), 26 answered differently (19 bldtiles, 6 unit, 1 pois z6 tiles), the world steps'
+  none; the code before it answered all 6,050 as recorded. A record that reads but doesn't parse,
   or asks a question of another form, takes that new line too, plan and run alike, for the z6
   tiles and the world steps both (`asked::Answer::OfAnotherForm`): its step re-runs once, never
   waits for good; only what can't be read now (the record, outlines a question names) waits. A z6 tile's roads keep the record in their folder from preparing to

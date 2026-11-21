@@ -70,8 +70,21 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     (
         "crates/pipeline/src/agent/tiles.rs",
         "load_asked",
-        4,
-        "the plan's load, before its keys: the records' heads, kept here",
+        2,
+        "the plan's load, before its keys: the records, for their heads",
+    ),
+    (
+        "crates/pipeline/src/agent/tiles.rs",
+        "kept_head",
+        1,
+        "the plan's load, before its keys: a record's head, kept here",
+    ),
+    (
+        "crates/pipeline/src/agent/tiles.rs",
+        "keep_head",
+        1,
+        "a record's head written here (the load's; answered_same's, as a key asks a record again): \
+         no key's value reads it, the next start's load does",
     ),
     (
         "crates/pipeline/src/agent/tiles.rs",
