@@ -283,7 +283,7 @@ pub const KEEP_MB: u64 = 10_000;
 
 /// The pool's check's lasting folder (task #1566), in this Mac's cache (the job's
 /// `buildstore::coverage::CACHE_ENV`): on its local disk, never the NAS (a whole check writes
-/// about 4,900 small files). Room-making frees it as it frees the other cheap caches (agentcore's
+/// about 21,100 small files, 16,200 of them the cover check's cells). Room-making frees it as it frees the other cheap caches (agentcore's
 /// agent::room), the least recently used pieces first.
 pub const POOL_DIR: &str = "regions-pieces";
 

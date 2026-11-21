@@ -1124,10 +1124,10 @@ across versions: a piece of other code or other reads is another file and is nev
 invalidated by hand. The code digest covers this crate's code, not the crates it builds on (the
 `i_overlay`'s: a version of one that changes what a region resolves to needs `RESOLUTION` raised by
 hand, as the records' resolutions do). Keep the folder on a local
-disk: a whole check writes about 4,900 small files, which a NAS share takes 20–55 a second. A file holds its
+disk: a whole check writes about 21,100 small files (16,200 of them the cover check's cells), which a NAS share takes 20–55 a second. A file holds its
 key and the blake3 of its bytes: one cut short or changed is said, made again and written over; a
 write a stopped check left isn't read. Once the check is done the folder is held to `--keep-mb`
-MB (`kept::KEEP_MB`, 10,000, by default; a whole check's pieces came to about 2 GB when measured): its files, the most recently used (written, or read)
+MB (`kept::KEEP_MB`, 10,000, by default; a whole check's pieces came to about 2.1 GB when measured): its files, the most recently used (written, or read)
 first, are kept while they fit, the rest deleted; the check says what the folder holds and what
 it deleted (a file it can't delete, or a folder it can't list, is said, and the check goes on). With a lasting folder the check holds no copy of a piece in memory (it reads it back
 from there).
