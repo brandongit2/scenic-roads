@@ -9329,13 +9329,14 @@ mod tests {
         .unwrap();
         assert_eq!((floor_of(&c, "peaks", "6/1/1").map(|f| f.mb), floor_of(&c, "peaks", "6/7/7")), (Some(3500), None));
         // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
-        // step neither holds the target nor sizes it (crate::needs: a z6 tile's v1 floors held malloc's
-        // cached blocks).
+        // step sizes no measure of the target (crate::needs: a z6 tile's v1 floors held malloc's
+        // cached blocks), only its cold start's room (task #1253 review, `Sched::cold_floor`).
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
         assert_eq!(floor_of(&c, "peaks", "6/2/2"), Some(f(4000, true)));
         c.add_floors(&[(cost_key("terrain-hi", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
-        assert_eq!((c.holding_floor("terrain-hi", "6/3/3"), mem_of(&c, "terrain-hi", "6/3/3")), (None, None));
+        let cold = c.holding_floor("terrain-hi", "6/3/3").map(|f| f.mb);
+        assert_eq!((cold, mem_of(&c, "terrain-hi", "6/3/3")), (Some(20_000), None));
         // The OSM pass's floor puts an earlier pass's away.
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
