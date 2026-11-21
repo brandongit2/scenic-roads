@@ -13416,13 +13416,16 @@ mod tests {
     }
 
     /// Task #1586 confirm review: the Macs a spread is bounded by are those `too_big` weighs, heard
-    /// from lately: with the M4 (42 GB at its best) away, a 20 GB target of a spread of 2 is booked
-    /// at m1's 30 GB and granted there, not at 40 by the Mac away, flagged past every Mac.
+    /// from lately: while m2 (42 GB at its best) is around, a 20 GB target of a spread of 2 is
+    /// booked at 40 GB, past m1's 30; with m2 away, at m1's 30 GB and granted there, not at 40 by
+    /// the Mac away, flagged past every Mac.
     #[test]
     fn a_spread_is_bounded_by_the_macs_around() {
         let (_d, c, w, clock) = every((0, 0));
         spread_of_two(&c);
-        assert!(granted(&w, &limited_ask("m4", 0, 42_000)).is_empty());
+        let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        assert!(granted(&m2, &limited_ask("m2", 1_000, 42_000)).is_empty(), "1 GB free now");
+        assert!(granted(&w, &limited_ask("m1", 30_000, 30_000)).is_empty(), "booked at 40 GB while m2 is around");
         clock.advance(AROUND + Duration::from_secs(1));
         assert_eq!(granted(&w, &limited_ask("m1", 30_000, 30_000)), ["6/1/1"], "booked within m1's 30 GB");
         assert!(c.too_big().is_empty(), "{:?}", c.too_big());
