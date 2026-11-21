@@ -1859,7 +1859,7 @@ function eventText(m, e, k = 1) {
       return e.ok ? [`${who} finished ${job} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${job} ${e.note || "stopped"}${t.length ? ` (${S.counted(e.step, t.length)} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
     }
     case "lease": return [`${who} took ${what}`, "dim"];
-    // (One that failed after some: its note, the brake it put its Mac under, when it did.)
+    // (One that failed after handing some back: said so, with its note.)
     case "done": return e.ok === false ? [`${who} handed back ${what} and failed${e.note ? `: ${e.note}` : ""}`, "bad"] : [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
     // (A Mac's failed jobs of a step kept the whole step from it, its note how long: coord::sched::Brakes.)
     case "brake": return [e.note || `${e.step} kept from ${who}`, "bad"];

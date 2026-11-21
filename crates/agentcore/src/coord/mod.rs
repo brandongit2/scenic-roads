@@ -671,16 +671,23 @@ pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 
 impl Shared {
     /// A job of `step` failed on `worker` now (the backoff's: `finish_failed`, "/work/fail",
-    /// "/work/done" failed), not `excused` (its Mac's fault: `Fail::excused`): toward its Mac's
-    /// brake on the step (sched::Brakes), which, reached, keeps the whole step from the Mac as a
-    /// target's failure keeps the target (`sched::brake_key`, doubling as those do), said in the
-    /// log and the history ("brake"), as the asks it refuses say (`sched::brake_words`). Its
-    /// words, braked.
-    fn job_failed(&mut self, worker: &str, step: &str, excused: &str) -> Option<String> {
-        if !excused.is_empty() {
-            return None;
+    /// "/work/done" failed), held on `held`, not `excused` (its Mac's fault: `Fail::excused`):
+    /// toward its Mac's brake on the step once those are built well on another Mac
+    /// (sched::Brakes, `job_done`).
+    fn job_failed(&mut self, worker: &str, step: &str, held: &[&String], excused: &str) {
+        if excused.is_empty() {
+            let (b, unix) = (self.asks.settings.backoff(), self.wall_s());
+            self.brakes.job_failed(&b, worker, step, held, unix);
         }
-        let (now, unix) = (self.now(), self.wall_s());
+    }
+
+    /// A job of `step` done well on `worker` at `at` (unix s), its targets `done`: the other Macs'
+    /// failed jobs it leaves counted (sched::Brakes), those that reach their brake keeping the
+    /// whole step from their Mac as a target's failure keeps the target (`sched::brake_key`,
+    /// doubling as those do), said in the log and the history ("brake"), as the asks it refuses
+    /// say (`sched::brake_words`).
+    fn job_done(&mut self, worker: &str, step: &str, done: &[String], at: u64) {
+        let now = self.now();
         let b = self.asks.settings.backoff();
         let key = sched::brake_key(step);
         let braked: Vec<String> = self
@@ -689,26 +696,23 @@ impl Shared {
             .filter(|(m, k)| *k == key && self.braked(m, step, now))
             .map(|(m, _)| m.clone())
             .collect();
-        if !self.brakes.job_failed(&b, worker, step, unix, |m| braked.iter().any(|x| x == m)) {
-            return None;
+        for mac in self.brakes.job_done(&b, worker, step, done, at, |m| braked.iter().any(|x| x == m)) {
+            let e = self.sched.failed.entry((mac.clone(), key.clone())).or_insert((now, 0));
+            *e = (now, e.1 + 1);
+            let hold = b.hold(e.1);
+            let said = format!(
+                "{}, for {}",
+                sched::brake_words(step, &b).replace("this Mac", &mac),
+                jobrt::timings::secs(hold.as_secs_f64())
+            );
+            eprintln!("coordinator: {said}");
+            self.history.add(history::Event {
+                worker: Some(mac),
+                step: Some(step.to_string()),
+                note: said,
+                ..history::Event::new("brake")
+            });
         }
-        let mac = crate::paces::mac_of(worker).to_string();
-        let e = self.sched.failed.entry((mac.clone(), key)).or_insert((now, 0));
-        *e = (now, e.1 + 1);
-        let hold = b.hold(e.1);
-        let said = format!(
-            "{}, for {}",
-            sched::brake_words(step, &b).replace("this Mac", &mac),
-            jobrt::timings::secs(hold.as_secs_f64())
-        );
-        eprintln!("coordinator: {said}");
-        self.history.add(history::Event {
-            worker: Some(mac),
-            step: Some(step.to_string()),
-            note: said.clone(),
-            ..history::Event::new("brake")
-        });
-        Some(said)
     }
 
     /// `e` in the history (`history::History::add`); its number. A job's end that held its progress
@@ -724,12 +728,14 @@ impl Shared {
         let part_way = e.progress.as_ref().is_some_and(|p| p.done > p.since && p.done < p.total && p.secs > 0.0);
         let cleared = (e.ok == Some(true) && !e.targets.is_empty() && !part_way)
             .then(|| (e.step.clone().unwrap_or_default(), e.targets.clone()));
-        // (A job ended well: its Mac does its step, toward the others' brakes on it.)
-        if let Some((w, step)) = sched::good_job(&e) {
-            let at = if e.t > 0 { e.t } else { self.wall_s() };
-            self.brakes.job_done(w, step, at);
-        }
+        // (A job ended well: its Mac does its step, its targets built well, toward the others'
+        // brakes on it.)
+        let good = sched::good_job(&e).map(|(w, step)| (w.to_string(), step.to_string(), e.targets.clone()));
+        let at = if e.t > 0 { e.t } else { self.wall_s() };
         let n = self.history.add(e);
+        if let Some((w, step, done)) = good {
+            self.job_done(&w, &step, &done, at);
+        }
         // (A rewrite of the history's file drops its events older than the week: the stops among
         // them leave with them, read again as the discounts below are.)
         let rewritten = self.history.rewrites() != self.lefts_at;
@@ -2611,12 +2617,13 @@ impl Coordinator {
                 if let Some((on, excused)) = failed_on {
                     let left: Vec<&String> =
                         targets.iter().map(|t| &t.0).filter(|t| !done.iter().any(|d| d.0 == **t)).collect();
-                    for t in held_of(&left, on) {
+                    let held = held_of(&left, on);
+                    for t in &held {
                         let e = s.failed.entry((self.me.clone(), cost_key(step, t))).or_insert((now, 0));
                         *e = (now, e.1 + 1);
                     }
                     let me = self.me.clone();
-                    s.job_failed(&me, step, excused);
+                    s.job_failed(&me, step, &held, excused);
                 }
             }
             s.save_leases();
@@ -4946,16 +4953,19 @@ fn seed_backoff(s: &mut Shared, me: &str) {
     // as `job_failed` and `note` count them live.)
     let b = s.asks.settings.backoff();
     let mut brakes = sched::Brakes::default();
-    let job_failed = |failed: &mut Failed, brakes: &mut sched::Brakes, w: &str, step: &str, e: &history::Event| {
-        if !e.excused.is_empty() {
-            return;
+    let job_failed = |brakes: &mut sched::Brakes, w: &str, step: &str, held: &[&String], e: &history::Event| {
+        if e.excused.is_empty() {
+            brakes.job_failed(&b, w, step, held, e.t);
         }
+    };
+    let job_done = |failed: &mut Failed, brakes: &mut sched::Brakes, e: &history::Event| {
+        let Some((w, step)) = sched::good_job(e) else { return };
         let (at, key) = (e.t, sched::brake_key(step));
         let braked = |m: &str| {
             failed.get(&(m.to_string(), key.clone())).is_some_and(|(t, n)| at.saturating_sub(*t) < b.hold(*n).as_secs())
         };
-        if brakes.job_failed(&b, w, step, at, braked) {
-            let e = failed.entry((crate::paces::mac_of(w).to_string(), key)).or_insert((at, 0));
+        for mac in brakes.job_done(&b, w, step, &e.targets, at, braked) {
+            let e = failed.entry((mac, key.clone())).or_insert((at, 0));
             if at.saturating_sub(e.0) >= ceiling {
                 e.1 = 0;
             }
@@ -4966,9 +4976,7 @@ fn seed_backoff(s: &mut Shared, me: &str) {
         let (step, w) = (e.step.as_deref().unwrap_or(""), e.worker.as_deref().unwrap_or(""));
         let lease = e.job.and_then(|j| leases.get(&j).copied());
         let rest = || lease.into_iter().flat_map(|l| l.1.iter()).filter(|t| !e.targets.contains(t));
-        if let Some((w, step)) = sched::good_job(e) {
-            brakes.job_done(w, step, e.t);
-        }
+        job_done(&mut failed, &mut brakes, e);
         match e.kind.as_str() {
             "lease" => {
                 if let Some(j) = e.job {
@@ -4976,27 +4984,30 @@ fn seed_backoff(s: &mut Shared, me: &str) {
                 }
             }
             "fail" if !e.note.starts_with("stopped: ") => {
-                for t in held_of(&e.targets.iter().collect::<Vec<_>>(), &e.failed) {
+                let held = held_of(&e.targets.iter().collect::<Vec<_>>(), &e.failed);
+                for t in &held {
                     fail(&mut failed, w, step, t, e.t, None);
                 }
-                job_failed(&mut failed, &mut brakes, w, step, e);
+                job_failed(&mut brakes, w, step, &held, e);
             }
             "done" => {
                 for t in &e.targets {
                     failed.remove(&(w.to_string(), cost_key(step, t)));
                 }
                 if e.ok == Some(false) {
-                    for t in held_of(&rest().collect::<Vec<_>>(), &e.failed) {
+                    let held = held_of(&rest().collect::<Vec<_>>(), &e.failed);
+                    for t in &held {
                         fail(&mut failed, w, step, t, e.t, None);
                     }
-                    job_failed(&mut failed, &mut brakes, w, step, e);
+                    job_failed(&mut brakes, w, step, &held, e);
                 }
             }
             "end" if e.held && e.job.is_some_and(|j| !by_lead.contains(&j)) && lease.is_some_and(|l| l.0 == me) => {
-                for t in held_of(&rest().collect::<Vec<_>>(), &e.failed) {
+                let held = held_of(&rest().collect::<Vec<_>>(), &e.failed);
+                for t in &held {
                     fail(&mut failed, me, step, t, e.t, None);
                 }
-                job_failed(&mut failed, &mut brakes, me, step, e);
+                job_failed(&mut brakes, me, step, &held, e);
             }
             "retry" => {
                 for t in &e.targets {
@@ -5930,13 +5941,13 @@ fn route(
                     if d.failed {
                         let left: Vec<&String> =
                             lease_targets.iter().filter(|t| !targets.contains(t)).map(|t| &t.0).collect();
-                        for t in held_of(&left, &d.failed_on) {
+                        let held = held_of(&left, &d.failed_on);
+                        for t in &held {
                             let e = s.failed.entry((d.worker.clone(), cost_key(step, t))).or_insert((now, 0));
                             *e = (now, e.1 + 1);
                         }
+                        s.job_failed(&d.worker, step, &held, &d.excused);
                     }
-                    // (Its brake on the step, reached: said on its event.)
-                    let braked = if d.failed { s.job_failed(&d.worker, step, &d.excused) } else { None };
                     // (Its member wrote it to the pool's journal itself: nothing journaled here. Not
                     // while this coordinator's pool is off (switched off with the member's job
                     // under way): journaled, to be merged as any hand-off is.)
@@ -5996,7 +6007,6 @@ fn route(
                         ok: Some(!d.failed),
                         failed: if d.failed { d.failed_on.clone() } else { Vec::new() },
                         excused: if d.failed { d.excused.clone() } else { String::new() },
-                        note: braked.unwrap_or_default(),
                         ..history::Event::new("done")
                     };
                     let e = history::Event { left: s.leases.take_left(l.id, now), ..l.noted(e, now) };
@@ -6066,11 +6076,12 @@ fn route(
                 Work::Job { step, targets } => {
                     if !f.interrupted {
                         let all: Vec<&String> = targets.iter().map(|t| &t.0).collect();
-                        for t in held_of(&all, &f.failed_on) {
+                        let held = held_of(&all, &f.failed_on);
+                        for t in &held {
                             let e = s.failed.entry((f.worker.clone(), cost_key(step, t))).or_insert((now, 0));
                             *e = (now, e.1 + 1);
                         }
-                        s.job_failed(&f.worker, step, &f.excused);
+                        s.job_failed(&f.worker, step, &held, &f.excused);
                     }
                     // (What its targets took at least: a job stopped past its Mac's limit.)
                     let floors: Vec<(String, Floor)> = f
@@ -13727,12 +13738,12 @@ mod tests {
         (id, job)
     }
 
-    /// A job of pack done well on `worker`, as its "done" notes it.
-    fn did_pack(c: &Coordinator, worker: &str) {
+    /// A job of pack's `targets` done well on `worker`, as its "done" notes it.
+    fn did_pack(c: &Coordinator, worker: &str, targets: &[&str]) {
         c.note(history::Event {
             worker: Some(worker.into()),
             step: Some("pack".into()),
-            targets: vec!["6/8/8".into()],
+            targets: targets.iter().map(|t| t.to_string()).collect(),
             ok: Some(true),
             ..history::Event::new("done")
         });
@@ -13768,29 +13779,28 @@ mod tests {
     }
 
     /// Task #1567 review: a Mac failing one job of a step after another, whatever targets each
-    /// failed on (a fault of its own: its disk, the NAS from it), while another Mac does the
-    /// step's jobs well, is braked on the step: past `step-brake-jobs` (3) failed within
+    /// failed on (a fault of its own: its disk, the NAS from it), those targets built well on
+    /// another Mac since, is braked on the step: past `step-brake-jobs` (3) failed within
     /// `step-brake-minutes` (120), told by "/work/fail" or by "/work/done" failed, the whole step
-    /// is kept from it as a failed target is, said in the history (its "brake", and the "done"
-    /// that braked it) and in why its asks get none; again after a restart; a page's retry of a
-    /// target of the step, of any step, lets it go, then and after a restart.
+    /// is kept from it as a failed target is, said in the history ("brake") and in why its asks
+    /// get none; again after a restart; a page's retry of a target of the step, of any step, lets
+    /// it go, then and after a restart.
     #[test]
     fn a_mac_failing_job_after_job_of_a_step_is_braked_on_it() {
         let (d, c, w, _clock) = every((0, 0));
         c.set_epoch(1);
         let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
-        did_pack(&c, "m3");
         member_fails(&c, &w2, "m2", &["6/1/1"], 0, "");
         member_fails(&c, &w2, "m2", &["6/1/2"], 0, "");
-        assert!(!braked_on_pack(&c, "m2"), "two failed jobs: their targets alone held");
         member_fails(&c, &w2, "m2", &["6/2/1", "6/1/3"], 1, "");
-        assert!(braked_on_pack(&c, "m2"), "the third within the window, a \"done\" failed: the whole step held");
+        assert!(!braked_on_pack(&c, "m2"), "three failed jobs, their targets built nowhere else: theirs alone held");
+        did_pack(&c, "m3", &["6/1/1", "6/1/2"]);
+        assert!(!braked_on_pack(&c, "m2"), "two counted");
+        did_pack(&c, "m3", &["6/1/3"]);
+        assert!(braked_on_pack(&c, "m2"), "the third, a \"done\" failed, counted: the whole step held");
         let said = "pack kept from m2 after 3 of its jobs failed here within 120 min (step-brake-jobs, step-brake-minutes), for 1 h 0 min";
-        let notes = |kind: &str| -> Vec<String> {
-            c.history().iter().filter(|e| e.kind == kind).map(|e| e.note.clone()).collect()
-        };
-        assert_eq!(notes("brake"), [said]);
-        assert_eq!(notes("done").last().map(String::as_str), Some(said), "the done that braked it says so");
+        let notes: Vec<String> = c.history().iter().filter(|e| e.kind == "brake").map(|e| e.note.clone()).collect();
+        assert_eq!(notes, [said]);
         c.offer(
             "p",
             vec![Offer { step: "pack".into(), targets: vec![("6/9/9".into(), "k 6/9/9".into(), 0)], job: None }],
@@ -13815,7 +13825,6 @@ mod tests {
         let (d, c, _w, _clock) = every((0, 0));
         c.set_epoch(1);
         let me = c.me.clone();
-        did_pack(&c, "m3");
         for t in ["6/1/1", "6/1/2", "6/1/3"] {
             let (id, job) = grant_pack(&c, &me, &[t]);
             c.finish_failed(id, &[], &[], "");
@@ -13828,6 +13837,7 @@ mod tests {
                 ..history::Event::new("end")
             });
         }
+        did_pack(&c, "m3", &["6/1/1", "6/1/2", "6/1/3"]);
         assert!(braked_on_pack(&c, &me), "live");
         c.stop();
         let (b, _) = start_for_test(&d.path().join("coord"), &me, "");
@@ -13835,35 +13845,67 @@ mod tests {
     }
 
     /// Task #1567 review: a brake is for a faulty Mac, not a faulty step or data (a server's
-    /// outage, targets failing on every Mac): a Mac's failed jobs count only while another Mac
-    /// does the step's jobs well within the window; the last Mac a step goes well on isn't
-    /// braked, its fellows braked; a failure that isn't its Mac's (`Fail::excused`: z6 tiles set
-    /// aside alone, a memory-guard stop) counts nothing; each so after a restart too.
+    /// outage, targets failing wherever they run): a Mac's failed job counts only once every
+    /// target it was held on is built well on another Mac since, not on the Mac itself; three
+    /// bad targets failing on every Mac while the step's others go well brake none. The last Mac
+    /// a step goes well on isn't braked, its fellows braked; a failure that isn't its Mac's
+    /// (`Fail::excused`: z6 tiles set aside alone, a memory-guard stop) counts nothing; each so
+    /// after a restart too.
     #[test]
     fn a_brake_is_for_a_mac_s_fault_not_its_step_s() {
         let (d, c, w, _clock) = every((0, 0));
         c.set_epoch(1);
         let at = |m: &str| client::Client::at(w.urls(), c.contact.token.clone(), m);
-        let (w2, w3, w4, w5) = (at("m2"), at("m3"), at("m4"), at("m5"));
-        // (No other Mac did a job of it well: every Mac failing it is the step's fault, uncounted.)
-        for t in ["6/1/1", "6/1/2"] {
+        let macs = ["m2", "m3", "m4"];
+        // (Three bad targets, failing on every Mac, the others going well on each.)
+        for (i, m) in macs.iter().enumerate() {
+            let wm = at(m);
+            for t in ["6/1/1", "6/1/2", "6/1/3"] {
+                member_fails(&c, &wm, m, &[t], 0, "");
+            }
+            did_pack(&c, m, &[&format!("6/7/{i}")]);
+        }
+        assert!(macs.iter().all(|m| !braked_on_pack(&c, m)), "the targets' fault: no Mac braked");
+        // (m5's failed targets built well since on m5 alone: not counted.)
+        let w5 = at("m5");
+        for t in ["6/2/1", "6/2/2", "6/2/3"] {
             member_fails(&c, &w5, "m5", &[t], 0, "");
         }
-        // (m2 braked while m3 does it well; m3 then, its one fellow braked, isn't.)
-        did_pack(&c, "m2");
-        did_pack(&c, "m3");
+        did_pack(&c, "m5", &["6/2/1", "6/2/2", "6/2/3"]);
+        assert!(!braked_on_pack(&c, "m5"), "built on the Mac that failed them");
+        // (m6's, two targets each, counted once both are built elsewhere.)
+        let w6 = at("m6");
+        for ts in [["6/3/1", "6/3/2"], ["6/3/3", "6/3/4"], ["6/3/5", "6/3/6"]] {
+            member_fails(&c, &w6, "m6", &ts, 0, "");
+        }
+        did_pack(&c, "m2", &["6/3/1", "6/3/3", "6/3/5"]);
+        assert!(!braked_on_pack(&c, "m6"), "half of what each was held on built: none counted");
+        did_pack(&c, "m2", &["6/3/2", "6/3/4", "6/3/6"]);
+        assert!(braked_on_pack(&c, "m6"), "all built elsewhere: its own fault");
+        c.stop();
+        let (b, _) = start_for_test(&d.path().join("coord"), &c.me, "");
+        let braked: Vec<bool> = ["m2", "m3", "m4", "m5", "m6"].iter().map(|m| braked_on_pack(&b, m)).collect();
+        assert_eq!(braked, [false, false, false, false, true], "the same after a restart");
+        b.stop();
+        // (Two Macs: m2 braked; m3 then, its one fellow braked, isn't; m4's failures excused.)
+        let (d, c, w, _clock) = every((0, 0));
+        c.set_epoch(1);
+        let at = |m: &str| client::Client::at(w.urls(), c.contact.token.clone(), m);
+        let (w2, w3, w4) = (at("m2"), at("m3"), at("m4"));
         for t in ["6/2/1", "6/2/2", "6/2/3"] {
             member_fails(&c, &w2, "m2", &[t], 0, "");
         }
+        did_pack(&c, "m3", &["6/2/1", "6/2/2", "6/2/3"]);
         assert!(braked_on_pack(&c, "m2"));
         for t in ["6/3/1", "6/3/2", "6/3/3"] {
             member_fails(&c, &w3, "m3", &[t], 0, "");
         }
+        did_pack(&c, "m2", &["6/3/1", "6/3/2", "6/3/3"]);
         assert!(!braked_on_pack(&c, "m3"), "the last Mac it went well on, not braked");
-        // (m4's failures not its own: a server's outage, a squeeze; m3 does it well, unbraked.)
         for (t, why) in [("6/4/1", SOURCE_DOWN), ("6/4/2", SQUEEZED), ("6/4/3", SOURCE_DOWN)] {
             member_fails(&c, &w4, "m4", &[t], 0, why);
         }
+        did_pack(&c, "m3", &["6/4/1", "6/4/2", "6/4/3"]);
         assert!(!braked_on_pack(&c, "m4"), "excused, nothing counted");
         let excused: Vec<String> = c
             .history()
@@ -13872,12 +13914,10 @@ mod tests {
             .map(|e| e.excused.clone())
             .collect();
         assert_eq!(excused, [SOURCE_DOWN, SQUEEZED, SOURCE_DOWN], "said on their events");
-        member_fails(&c, &w5, "m5", &["6/1/3"], 0, "");
-        assert!(!braked_on_pack(&c, "m5"), "its first two, none doing it well, not counted");
         c.stop();
         let (b, _) = start_for_test(&d.path().join("coord"), &c.me, "");
-        let braked: Vec<bool> = ["m2", "m3", "m4", "m5"].iter().map(|m| braked_on_pack(&b, m)).collect();
-        assert_eq!(braked, [true, false, false, false], "the same after a restart");
+        let braked: Vec<bool> = ["m2", "m3", "m4"].iter().map(|m| braked_on_pack(&b, m)).collect();
+        assert_eq!(braked, [true, false, false], "the same after a restart");
     }
 
     /// Task #1447 review: a page's retry (`clear_failed`) is in the history, so a restarted lead
@@ -13891,13 +13931,13 @@ mod tests {
             |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 0)], job: None };
         c.offer("p", vec![offer("pack", "6/1/1"), offer("pack", "6/1/2"), offer("pack", "6/1/3")]);
         let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
-        // (m3 does the step well: m2's failures are its own, toward its brake.)
-        did_pack(&c, "m3");
         // (Each failed in turn: one held, the next ask is granted the next.)
         for _ in 0..3 {
             let g = w2.ask(&every_ask("m2", "pack", 24_000, 50_000)).unwrap().expect("granted");
             w2.fail(g.lease, "boom", None).unwrap();
         }
+        // (m3 builds them well: m2's failures were its own, toward its brake.)
+        did_pack(&c, "m3", &["6/1/1", "6/1/2", "6/1/3"]);
         let refused = crate::pool::records::Again {
             member: "m-000000000000000b".into(),
             job: jobrt::jobid::JobId { epoch: 1, n: 900 },
@@ -13906,7 +13946,7 @@ mod tests {
             refused: Some("writes outside its step's names".into()),
         };
         c.merged(&[], &[refused]);
-        // (Three failed jobs of the step on m2, m3 doing it well, brake it there too: sched::Brakes.)
+        // (Three failed jobs of the step on m2, m3 building them well, brake it there too: sched::Brakes.)
         assert_eq!(c.shared.lock().unwrap().failed.len(), 4, "all three failed on m2, and its brake");
         assert_eq!(c.shared.lock().unwrap().handoffs_refused.len(), 1);
         assert_eq!(c.clear_failed(Some("pack"), "6/1/1", "a test"), 2, "the target and its step's brake");

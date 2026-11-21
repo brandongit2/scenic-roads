@@ -771,22 +771,28 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   the first brake, twice as long after each more, at most `backoff-ceiling-hours`; a brake counts
   its jobs afresh. The failures counted are those that hold targets above (a member's "fail" not
   interrupted, its "done" that failed, the lead's own failed "end"), and only those:
-  - made while another Mac did a job of the step well (an "end" or "done" ok) within the window:
-    a step failing on every Mac (a server's outage, targets bad wherever they run) brakes none;
+  - whose every target held has been built well on another Mac since (an "end" or "done" ok of
+    it there, within the window; the Mac's own later success of it counts nothing): a target
+    failing wherever it runs is the target's fault, held by its own backoff alone, so bad targets
+    failing on every Mac brake none however many there are; a failure is counted as the job that
+    builds its last target ends;
   - not excused (`Fail::excused`, the events' `excused`): a job the memory guard stopped (a
     squeeze by the Mac's other work) or one held on z6 tiles set aside alone (a server giving no
     answer, scenic-build's `{unit, failed, also, aside}` lines) counts nothing, its targets held
-    all the same.
-  A count reached brakes only while one of the Macs that did the step well isn't braked on it
-  itself: the last Mac a step goes well on is never braked. Each brake is a "brake" event, its
-  note saying the Mac, the step, the settings and the hold (the lead logs it too; the member's
-  "done" that braked it says it as its note), shown in the build page's feed with a "Try again";
+    all the same. While a rollout is under way, a lead on this app counts a member's squeezed and
+    set-aside failures from an older app, and replays events from before `excused`, as failures
+    of its own.
+  A count reached brakes only while one of the Macs that did the step well within the window
+  isn't braked on it itself: the last Mac a step goes well on is never braked. Each brake is a
+  "brake" event, its note saying the Mac, the step, the settings and the hold (the lead logs it
+  too), shown in the build page's feed with a "Try again";
   while it holds the step's refusal to the Mac says "{step} kept from this Mac after …
   (step-brake-jobs, step-brake-minutes)". A page's retry lets every Mac's brake on the step go
   and counts their failed jobs afresh: a retry of a step's target, or the feed's of the brake
   (its target `*`); a retry of a target of any step, for each step a hold of the target is of
-  (one held nowhere names none, so lets no brake go). A lead's start counts the brakes, the
-  failed jobs and the good ones within the window again from the history (`seed_backoff`). Pool
+  (one held nowhere names none, so lets no brake go); the failed jobs not counted yet are
+  forgotten with it. A lead's start counts the brakes, the failed jobs and the good ones within
+  the window again from the history (`seed_backoff`). Pool
   settings, in the build page's "Backoff" (2 to 100 jobs, 5 to 1,440 min), taken from the next
   failed job. The build page has no view of the targets and steps held: the feed's events say
   them.

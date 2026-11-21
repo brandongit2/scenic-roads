@@ -21871,6 +21871,51 @@ mod membership_tests {
         assert_eq!(fail_why(Outcome::Failed, "boom", true), "boom");
     }
 
+    /// Task #1567 review: a member's job the memory guard stopped tells the lead its failure isn't
+    /// its Mac's fault (crate::coord::Fail::excused, Done::excused: `SQUEEZED`), with no
+    /// hand-off ("/work/fail") or with one of what it did ("/work/done" failed); one that failed
+    /// of itself, nothing.
+    #[test]
+    fn a_member_s_squeezed_job_tells_the_lead_its_failure_is_excused() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        // (A job of 6/12/25 and 6/12/26 out of the pool, its lead not reached: what it tells owed.)
+        let run = |a: &mut Agent, n: u64, guard_stopped: bool, done: &[(String, String)]| {
+            let dir = d.path().join(format!("home/pool/jobs/1-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let kept = membership::JobKept {
+                step: "unit".into(),
+                targets: vec![("6/12/25".into(), "k".into()), ("6/12/26".into(), "k".into())],
+                job: jobrt::jobid::JobId { epoch: 1, n },
+            };
+            std::fs::write(dir.join("work.json"), serde_json::to_vec(&kept).unwrap()).unwrap();
+            a.slots[0].lease = Some(Held::Pooled { id: n, epoch: 1, dir, own: false });
+            a.slots[0].guard_stopped = guard_stopped;
+            a.end_lease(0, Outcome::Failed, done, "it stopped");
+        };
+        let did = [("6/12/25".to_string(), "k".to_string())];
+        run(&mut a, 7, true, &[]);
+        run(&mut a, 8, true, &did);
+        run(&mut a, 9, false, &did);
+        match a.owed.as_slice() {
+            [Tell::End(f), Tell::Done(s), Tell::Done(o)] => {
+                assert_eq!((f.excused.as_str(), f.interrupted), (crate::coord::SQUEEZED, false));
+                assert_eq!((s.excused.as_str(), s.failed), (crate::coord::SQUEEZED, true));
+                assert_eq!((o.excused.as_str(), o.failed), ("", true), "failed of itself");
+            }
+            o => panic!("told {} things", o.len()),
+        }
+    }
+
     /// Task #1567: a failed job is held on what its costs file says it failed on, not the last
     /// target it began (unit job 1078: 6/5/18 failed while 6/17/22 was under way), less those done
     /// and others' keys; one that named none, killed mid-target, on the one target under way; else

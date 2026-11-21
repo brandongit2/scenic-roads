@@ -3615,58 +3615,103 @@ pub fn brake_key(step: &str) -> String {
 /// the step (jobrt::backoff::Backoff::brakes, its `step-brake-jobs` within `step-brake-minutes`),
 /// by Mac (crate::paces::mac_of: its second job's its own): the lead's (`Shared::brakes`), counted
 /// again from its history at its start (`seed_backoff`). A brake is for a faulty Mac, not a
-/// faulty step or data: a failed job counts only while another Mac did a job of the step well
-/// within the window, and brakes only while one of those isn't braked on it itself, so the last
-/// Mac a step goes well on is never braked. A failure that isn't its Mac's (`excused`: stopped by
-/// the memory guard, z6 tiles set aside alone) isn't brought here.
+/// faulty step or data: a failed job counts only once every target it was held on has been built
+/// well on another Mac since (`Pending`), within the window (a target failing wherever it runs is
+/// its own fault, held by its own backoff alone), and brakes only while one of the Macs that did
+/// the step well within the window isn't braked on it itself, so the last Mac a step goes well on
+/// is never braked. A failure that isn't its Mac's (`excused`: stopped by the memory guard, z6
+/// tiles set aside alone) isn't brought here.
 #[derive(Debug, Default)]
 pub struct Brakes {
     /// (Mac, step) → its failed jobs' times counted (unix s).
     fails: BTreeMap<(String, String), Vec<u64>>,
     /// (step, Mac) → its last good job's time (unix s).
     good: BTreeMap<(String, String), u64>,
+    /// By step, its failed jobs not counted yet.
+    pending: BTreeMap<String, Vec<Pending>>,
+}
+
+/// A failed job not counted yet toward its Mac's brake (`Brakes`): its Mac, its time (unix s),
+/// and the targets it was held on not built well on another Mac since.
+#[derive(Debug)]
+struct Pending {
+    mac: String,
+    at: u64,
+    left: BTreeSet<String>,
 }
 
 impl Brakes {
-    /// A job of `step` done well on `worker` at `at` (unix s).
-    pub fn job_done(&mut self, worker: &str, step: &str, at: u64) {
-        let e = self.good.entry((step.to_string(), crate::paces::mac_of(worker).to_string())).or_insert(at);
-        *e = (*e).max(at);
+    /// A job of `step` failed on `worker` at `at` (unix s), held on `held` (crate::coord's
+    /// `held_of`): counted toward its Mac's brake once each of those is built well on another Mac
+    /// (`job_done`), within `b`'s window.
+    pub fn job_failed(&mut self, b: &jobrt::backoff::Backoff, worker: &str, step: &str, held: &[&String], at: u64) {
+        let window = (b.brake_minutes * 60.0) as u64;
+        let p = self.pending.entry(step.to_string()).or_default();
+        p.retain(|p| at.saturating_sub(p.at) < window);
+        if !held.is_empty() {
+            let left = held.iter().map(|t| t.to_string()).collect();
+            p.push(Pending { mac: crate::paces::mac_of(worker).to_string(), at, left });
+        }
     }
 
-    /// A job of `step` failed on `worker` at `at` (unix s): whether it brakes the step on its Mac,
-    /// as `b` sets the brake, `braked` whether a Mac is braked on the step now.
-    pub fn job_failed(
+    /// A job of `step` done well on `worker` at `at` (unix s), its targets `done`: the other Macs'
+    /// failed jobs it leaves nothing they were held on unbuilt counted, as `b` sets the brake; the
+    /// Macs that braked so, `braked` saying whether a Mac is braked on the step now.
+    pub fn job_done(
         &mut self,
         b: &jobrt::backoff::Backoff,
         worker: &str,
         step: &str,
+        done: &[String],
         at: u64,
         braked: impl Fn(&str) -> bool,
-    ) -> bool {
+    ) -> Vec<String> {
         let mac = crate::paces::mac_of(worker);
         let window = (b.brake_minutes * 60.0) as u64;
-        let others: Vec<&str> = self
-            .good
-            .range((step.to_string(), String::new())..)
-            .take_while(|((s, _), _)| s == step)
-            .filter(|((_, m), t)| m != mac && at.saturating_sub(**t) < window)
-            .map(|((_, m), _)| m.as_str())
-            .collect();
-        if others.is_empty() {
-            return false;
+        let e = self.good.entry((step.to_string(), mac.to_string())).or_insert(at);
+        *e = (*e).max(at);
+        let mut counted: Vec<(String, u64)> = Vec::new();
+        if let Some(ps) = self.pending.get_mut(step) {
+            ps.retain_mut(|p| {
+                if at.saturating_sub(p.at) >= window {
+                    return false;
+                }
+                if p.mac != mac {
+                    for t in done {
+                        p.left.remove(t);
+                    }
+                }
+                if p.left.is_empty() {
+                    counted.push((p.mac.clone(), p.at));
+                }
+                !p.left.is_empty()
+            });
         }
-        b.brakes(self.fails.entry((mac.to_string(), step.to_string())).or_default(), at)
-            && others.iter().any(|m| !braked(m))
+        let mut out: Vec<String> = Vec::new();
+        for (m, t) in counted {
+            let others = self
+                .good
+                .range((step.to_string(), String::new())..)
+                .take_while(|((s, _), _)| s == step)
+                .any(|((_, o), g)| *o != m && at.saturating_sub(*g) < window && !braked(o));
+            if b.brakes(self.fails.entry((m.clone(), step.to_string())).or_default(), t) && others && !out.contains(&m)
+            {
+                out.push(m);
+            }
+        }
+        out
     }
 
-    /// A page's retry of `step`: its failed jobs counted afresh on every Mac.
+    /// A page's retry of `step`: its failed jobs counted afresh on every Mac, those not counted
+    /// yet forgotten.
     pub fn forget(&mut self, step: &str) {
         self.fails.retain(|(_, s), _| s != step);
+        self.pending.remove(step);
     }
 }
 
-/// The Mac and step of a job `e` ended well (an "end" or "done" ok), for `Brakes::job_done`.
+/// The Mac and step of a job `e` ended well (an "end" or "done" ok, its targets done), for
+/// `Brakes::job_done`.
 pub fn good_job(e: &super::history::Event) -> Option<(&str, &str)> {
     let ok = matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true);
     Some((e.worker.as_deref().filter(|_| ok)?, e.step.as_deref().filter(|s| !s.is_empty())?))
