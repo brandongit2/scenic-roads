@@ -1043,7 +1043,8 @@ thousandths:
 - **Ways past the window**: a job weighing under a step (`nas-small`) isn't paced, though never past
   the whole with the jobs out. A job alone goes whatever its weight, but only while the last
   reading taken with nothing of the pool's running, its answers read, was near: spare, the disks
-  with room for that job (an outside load near the cliff shows there). A congested reading, or such
+  with room for that job (an outside load near the cliff shows there), or, for a job heavier than
+  quiet disks (under half the target) leave of it, the disks quiet. A congested reading, or such
   a reading without room, holds it back until a near one, for 80 minutes at most
   (`nas-lone-most-minutes`): then one goes, the next 80 minutes after it, so nothing waits for good.
 - **The bounds are the pool's settings** (`nas::KNOBS`; `scenic pool set <name> [<value> | off]`,
@@ -1212,7 +1213,8 @@ tile's area, one a target, and its source's time below):
 - **parallelism** (`model::Par`): a run that kept every thread busy while not waiting is a floor;
   one that didn't says what the step can use (their median); waits left out, so a step crowded off
   the NAS doesn't read as serial. A run that would have kept more cores busy while not waiting than
-  it had threads computed through its waits and says nothing of it: left out (task #1510).
+  it had threads computed through its waits: it counts at its CPU over its whole time, waits and
+  all (task #1510).
 - **memory**: the `needs-mem-pct` percentile (98) of the peaks of its step's runs at or above its
   size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, a smaller run's
   peak grown by the step's slope over size, `model::slope`, at most in proportion; no slope, and no

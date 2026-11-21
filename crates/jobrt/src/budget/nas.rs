@@ -190,7 +190,8 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// A job beside nothing that the window doesn't take goes all the same (`Pace::lone`), but only
 /// while the last reading taken with nothing of the pool's running, its answers read, was near:
 /// spare, with the disks' room for the job waiting (an outside load near the cliff shows there with
-/// nothing of the pool's out, and one job beside it would take the NAS over). A congested reading
+/// nothing of the pool's out, and one job beside it would take the NAS over), or, for a job heavier
+/// than quiet disks (`QUIET_SHARE` of the target) leave of it, the disks quiet. A congested reading
 /// shuts the way too, until such a reading. Shut for `Tuning::lone_most_s`, one goes all the same
 /// (the hold, the escape: nothing waits for good), and the next goes a `lone_most_s` after it.
 ///
@@ -1102,12 +1103,15 @@ impl Pace {
         // not held at the knee.)
         let load = self.load;
         let room_for = |w: u32| load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
-        let room = room_for(s.wants.unwrap_or(k.step));
+        let fits = room_for(s.wants.unwrap_or(k.step));
         let spare = ratio.is_some() && !rising && !j.swelling && !knee && room_for(k.step);
         // (The lone way: opened by a near reading taken with nothing of the pool's running (spare,
-        // the disks with room for the job waiting); shut by such a reading not near, or by a
-        // congested one. A job gone beside nothing through the escape (shut a `lone_most_s`)
-        // shuts it a `lone_most_s` more from then.)
+        // the disks with room for the job waiting, or for what quiet disks leave of the target
+        // where it weighs more: a job heavier than that goes once the disks are quiet); shut by
+        // such a reading not near, or by a congested one. A job gone beside nothing through the
+        // escape (shut a `lone_most_s`) shuts it a `lone_most_s` more from then.)
+        let lone_w = f64::from(s.wants.unwrap_or(k.step)) / 10.0;
+        let room = load.is_none_or(|l| l + lone_w.min(f64::from(s.pct) - quiet) <= f64::from(s.pct));
         let idle = s.in_use == 0 && ratio.is_some();
         let escaped = self.st.lone_at.is_some_and(|at| t >= at + k.lone_most_s);
         if escaped && prev == 0 && s.in_use > 0 {
@@ -1146,7 +1150,7 @@ impl Pace {
             Some(Hold::Rising)
         } else if knee {
             Some(Hold::Slow)
-        } else if !room {
+        } else if !fits {
             Some(Hold::Busy)
         } else if !fresh {
             Some(Hold::NotFresh)
@@ -3068,10 +3072,30 @@ mod tests {
         assert_eq!(q.window(), 800, "too old: afresh");
     }
 
+    /// Task #1494's review: a job heavier than quiet disks leave of the target (the whole NAS's
+    /// weight, against 85 %) goes beside nothing at the first near reading after a congested one,
+    /// the disks quiet; not shut until the escape for never fitting.
+    #[test]
+    fn a_whole_nas_job_goes_on_quiet_disks_once_the_congestion_passed() {
+        let mut p = Pace::default();
+        miss(&mut p, 0, 0, Some(WHOLE));
+        assert!(!p.lone(), "congested with nothing out");
+        at(&mut p, 10, 5.0, 0, Some(WHOLE));
+        assert!(p.lone(), "near with nothing out, the disks quiet");
+        assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, WHOLE));
+        // (The disks busy past what quiet ones leave: shut.)
+        let mut p = Pace::default();
+        miss(&mut p, 0, 0, Some(WHOLE));
+        p.load = Some(50.0);
+        disks(&mut p, 10, &[ans("m1", 5.0, 5.0)], &[50.0], 0, Some(WHOLE));
+        assert!(!p.lone(), "the disks at 50 %: not quiet");
+    }
+
     /// Task #1494 (R3): a job beside nothing goes only while the last reading taken with nothing of
-    /// the pool's running was near (spare, the disks with room for the job waiting); a congested
-    /// reading, or such a reading with no room, shuts the way until a near one, `lone_most_s` at
-    /// most (the escape), and the next goes a `lone_most_s` after a job gone through it.
+    /// the pool's running was near (spare, the disks with room for the job waiting, or for what
+    /// quiet disks leave of the target where it weighs more); a congested reading, or such a
+    /// reading with no room, shuts the way until a near one, `lone_most_s` at most (the escape),
+    /// and the next goes a `lone_most_s` after a job gone through it.
     #[test]
     fn a_lone_job_goes_only_after_a_near_reading_with_nothing_running() {
         let mut p = Pace::default();
@@ -3105,9 +3129,7 @@ mod tests {
         miss(&mut p, 0, 400, None);
         at(&mut p, 10, 5.0, 100, Some(900));
         assert!(!p.lone(), "spare, but with the pool's jobs out");
-        at(&mut p, 20, 5.0, 0, Some(900));
-        assert!(!p.lone(), "the disks quiet but no room for the job waiting (90 %)");
-        at(&mut p, 30, 5.0, 0, Some(150));
+        at(&mut p, 20, 5.0, 0, Some(150));
         assert!(p.lone(), "near: open");
         assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, 150));
         // (A reading with nothing out and no answers read says nothing: the way as it was.)

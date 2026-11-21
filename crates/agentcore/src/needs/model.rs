@@ -802,17 +802,19 @@ fn past_read(pts: &[(f64, f64)], u: f64, at: f64) -> Option<f64> {
 /// `runs`' parallelism (`Par`): a run is a floor when the cores it kept busy while not waiting were
 /// within `CHECK_SHARE` of its threads. A run that kept more cores busy while not waiting than its
 /// threads, past that share, computed through its waits (its threads working while one waited;
-/// task #1510: peaks' runs read as floors so), so it says nothing of the cores it
-/// kept busy and is left out.
+/// task #1510: peaks' runs read as floors so): it counts at its CPU over its whole time, waits and
+/// all, the cores it kept busy at least.
 fn par(runs: &[&Obs], t: &Tuning) -> Par {
     let mut out = Par::default();
     let mut under = Vec::new();
     let mut kept = Vec::new();
     for r in runs.iter().filter(|r| r.timed && r.threads > 0) {
         let Some(b) = r.busy() else { continue };
-        if b > f64::from(r.threads) * (1.0 + jobrt::timings::CHECK_SHARE) {
-            continue;
-        }
+        let b = if b > f64::from(r.threads) * (1.0 + jobrt::timings::CHECK_SHARE) {
+            r.work.unwrap_or(0.0) / r.wall.max(1.0)
+        } else {
+            b
+        };
         out.runs += 1;
         kept.push(r.work.unwrap_or(0.0) / r.wall.max(1.0));
         if b >= f64::from(r.threads) * (1.0 - jobrt::timings::CHECK_SHARE) {
@@ -985,9 +987,9 @@ mod tests {
     }
 
     /// Task #1510: a run that kept more cores busy while not waiting than it had threads (its
-    /// threads computing through its waits) says nothing of the step's parallelism: no floor of it.
+    /// threads computing through its waits) counts at its CPU over its whole time: no false floor.
     #[test]
-    fn parallelism_leaves_out_runs_busier_than_their_threads() {
+    fn parallelism_counts_runs_busier_than_their_threads_over_their_whole_time() {
         let t = Tuning::default();
         let mut runs: Vec<Obs> = (0..10).map(|i| obs(i, 1.0, 40.0, 4, 100)).collect();
         // (At 8 threads, its 16 s of CPU in 4 s all waiting: 16 cores busy, read as 8 at least.)
@@ -999,7 +1001,21 @@ mod tests {
         }
         let m = Model::of(runs, &[], &[], &t);
         assert_eq!(m.par.floor, 4, "not 8");
-        assert_eq!(m.par.runs, 10);
+        assert_eq!(m.par.runs, 20);
+        // (A step whose every run is so still has its parallelism: each at its CPU over its time,
+        // 16 s in 4 s, 4 cores; at 4 threads that's a floor.)
+        let busy: Vec<Obs> = (0..10)
+            .map(|i| {
+                let mut o = obs(i, 1.0, 16.0, 4, 100);
+                o.wall = 4.0;
+                o.wait = 4.0;
+                o
+            })
+            .collect();
+        let m = Model::of(busy, &[], &[], &t);
+        assert_eq!(m.par.runs, 10, "its runs kept");
+        assert_eq!(m.par.floor, 4);
+        assert_eq!(m.par.cores(), 4.0);
     }
 
     /// Memory is a high percentile of the runs at the target's size or more: small runs, however
