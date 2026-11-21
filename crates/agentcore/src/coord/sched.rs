@@ -205,6 +205,9 @@ pub struct Sched {
     /// `backoff-ceiling-hours`), set by the lead as it packs.
     pub fail_hold: jobrt::backoff::Backoff,
     pub workers: BTreeMap<String, Worker>,
+    /// Each step's Macs' most memory for jobs at their best (`set_step_rooms`, MB): what a measured
+    /// target's spread is bounded by.
+    pub step_rooms: BTreeMap<String, u64>,
     pub costs: BTreeMap<String, Cost>,
     /// What a target takes at least (by cost key: crate::agent::memguard::Floor), as a run that
     /// didn't measure it saw it hold: its predicted memory is never below it. A measure of the
@@ -1262,17 +1265,30 @@ impl Sched {
         got
     }
 
-    /// The most memory a Mac that runs `step` holds for jobs at its best (MB, `best_room`, by the
-    /// last asks of the Macs heard from); None with none heard from. A measured target's own run is
-    /// booked at most this times its spread (crate::needs::Book::mem_within, task #1586 review):
-    /// derived from the Macs, so a spread never books a target that fits one past them all.
+    /// The most memory a Mac that runs `step` holds for jobs at its best (MB, `step_rooms`); None
+    /// with none known. A measured target's own run is booked at most this times its spread
+    /// (crate::needs::Book::mem_within, task #1586 review): derived from the Macs, so a spread
+    /// never books a target that fits one past them all.
     fn step_room(&self, step: &str) -> Option<u64> {
-        self.workers
-            .values()
-            .filter_map(|w| w.ask.as_ref())
-            .filter(|a| a.can.iter().any(|c| c == step))
-            .map(|a| best_room(a).0)
-            .max()
+        self.step_rooms.get(step).copied()
+    }
+
+    /// The Macs' rooms each step's spread is bounded by (`step_rooms`), from `macs`: the Macs
+    /// `too_big` weighs (those heard from lately, the lead's own with its capacity: crate::coord's
+    /// `Shared::macs`), each step the most memory one that runs it holds for jobs at its best, as
+    /// its capacity's limit says (a Mac whose capacity says none counts for none: its ask's memory
+    /// is its room now, not at its best, and moves with every ask). Set as the lead packs, weighs
+    /// what is too big and records its state, so a packing reads each once.
+    pub fn set_step_rooms<'a>(&mut self, macs: impl IntoIterator<Item = &'a Ask>) {
+        let mut rooms: BTreeMap<String, u64> = BTreeMap::new();
+        for a in macs {
+            let Some(mb) = super::ask_limit(a) else { continue };
+            for step in &a.can {
+                let e = rooms.entry(step.clone()).or_default();
+                *e = (*e).max(mb);
+            }
+        }
+        self.step_rooms = rooms;
     }
 
     /// Each Mac's time and jobs' start now (`paces`): the models made again when they changed.
@@ -3378,6 +3394,8 @@ pub struct State {
     pub failed: Vec<(String, String, u64, u32)>,
     /// Each worker's last ask (the lead's own with its capacity: `Coordinator::sched_state`).
     pub workers: Vec<Asked>,
+    /// Each step's Macs' room at their best (`Sched::step_rooms`; a record before them has none).
+    pub step_rooms: BTreeMap<String, u64>,
     pub costs: BTreeMap<String, Cost>,
     pub floors: BTreeMap<String, Floor>,
     pub disks: BTreeMap<String, u64>,
@@ -3527,6 +3545,7 @@ impl Sched {
                 .values()
                 .filter_map(|w| Some(Asked { ask: w.ask.clone()?, seen_s: age(w.seen), asked_s: w.asked.map(age) }))
                 .collect(),
+            step_rooms: self.step_rooms.clone(),
             costs: self.costs.clone(),
             floors: self.floors.clone(),
             disks: self.disks.clone(),
@@ -3620,6 +3639,7 @@ impl Sched {
             failed: s.failed.iter().map(|(w, k, a, n)| ((w.clone(), k.clone()), (ago(now, *a), *n))).collect(),
             fail_hold: s.fail_hold,
             workers,
+            step_rooms: s.step_rooms.clone(),
             costs: s.costs.clone(),
             floors: s.floors.clone(),
             disks: s.disks.clone(),

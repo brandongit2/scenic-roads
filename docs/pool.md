@@ -1197,8 +1197,11 @@ that reran one of the way it runs now on as many threads (`Cost::was_mb`) after 
 about as much as its own (half to twice it; fewer than `MIN_RUNS`, the nearest that peaked at half
 of it or more: a lighter run's swing never books a heavier target), its peak over its
 run before's, at the `needs-mem-pct` percentile, never under 1 (none: 1), and at most the most a
-Mac that runs the step holds for jobs at its best (`Sched::step_room`, `best_room`), never under
-its peak: a target its own peak fits on a Mac is never booked off them all. A target's peaks move
+Mac that runs the step holds for jobs at its best (its capacity's limit; `Sched::set_step_rooms`),
+never under its peak: a target its own peak fits on a Mac is never booked off them all. The Macs
+are those a target too big is weighed against: those heard from in the last two minutes, the lead
+by its own capacity; a Mac whose capacity says no limit counts for none, and a paused Mac still
+beating keeps counting. A target's peaks move
 run to run, by their level: depth's reruns take up to 3.6 times their runs before; pack's of tens
 of MB up to 30 times (its base packs fetched or not), of 3 GB about as much again. Else a tile target's memory
 (not unit's or pois', whose guess comes first: `GUESS_FIRST`) **by its place** (`needs::Near`): the

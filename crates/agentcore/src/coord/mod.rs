@@ -820,6 +820,25 @@ impl Shared {
         }
     }
 
+    /// The Macs whose room the scheduler weighs a target against (`Sched::too_big`, its spread's
+    /// bound: `Sched::set_step_rooms`): the workers heard from within `AROUND` by their last asks,
+    /// this Mac's own with its capacity (`own_cap`), as a member's carries its (its ask is kept
+    /// without it, `ask_own`). A paused Mac still beating is among them.
+    fn macs(&self) -> Vec<(String, Ask)> {
+        let me = &self.sched.lead_name;
+        let own =
+            self.workers.get(me).and_then(|w| w.ask.as_ref()).map(|a| Ask { cap: self.own_cap.clone(), ..a.clone() });
+        self.workers_around()
+            .filter_map(|(n, w)| Some((n.clone(), if n == me { own.clone()? } else { w.ask.clone()? })))
+            .collect()
+    }
+
+    /// The scheduler's spreads bounded by the rooms of the Macs around now (`macs`).
+    fn take_rooms(&mut self) {
+        let macs = self.macs();
+        self.sched.set_step_rooms(macs.iter().map(|m| &m.1));
+    }
+
     /// The workers heard from within `AROUND`, by name.
     fn workers_around(&self) -> impl Iterator<Item = (&String, &Worker)> {
         let now = self.now();
@@ -1021,6 +1040,7 @@ impl Shared {
     /// (`answered`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         self.take_settings();
+        self.take_rooms();
         let unix = self.wall_s();
         let (picks, mut why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
         // (Nothing granted for a rule that doesn't weigh the disk (memory held back, the load, …:
@@ -2275,6 +2295,7 @@ impl Coordinator {
                 failed: BTreeMap::new(),
                 fail_hold: Default::default(),
                 workers: BTreeMap::new(),
+                step_rooms: BTreeMap::new(),
                 costs,
                 floors,
                 disks,
@@ -2716,14 +2737,11 @@ impl Coordinator {
     /// `Sched::too_big`), by their last asks: this Mac's own with its capacity (`own_cap`), as a
     /// member's carries its (its ask is kept without it, `ask_own`).
     pub fn too_big(&self) -> Vec<TooBig> {
-        let s = self.shared.lock().unwrap();
+        let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        let own =
-            s.workers.get(&self.me).and_then(|w| w.ask.as_ref()).map(|a| Ask { cap: s.own_cap.clone(), ..a.clone() });
-        let macs: Vec<(&str, &Ask)> = s
-            .workers_around()
-            .filter_map(|(n, w)| Some((n.as_str(), if *n == self.me { own.as_ref()? } else { w.ask.as_ref()? })))
-            .collect();
+        s.take_rooms();
+        let macs = s.macs();
+        let macs: Vec<(&str, &Ask)> = macs.iter().map(|(n, a)| (n.as_str(), a)).collect();
         s.sched.too_big(&macs, now)
     }
 
@@ -2776,7 +2794,8 @@ impl Coordinator {
     /// This Mac's own ask with its capacity (`own_cap`), as a member's carries its; the batch length
     /// as set.
     pub fn sched_state(&self) -> sched::State {
-        let s = self.shared.lock().unwrap();
+        let mut s = self.shared.lock().unwrap();
+        s.take_rooms();
         let now = s.now();
         let mut st = s.sched.state(sched::Clock { now, unix: unix_of(now) });
         st.batch_s = s.asks.settings.batch_s().unwrap_or(0);
@@ -13338,12 +13357,27 @@ mod tests {
         assert!(c.too_big().iter().all(|b| b.step != "lo"));
     }
 
-    /// Task #1501: a target is weighed against each Mac at its best, not its room now: past a busy
-    /// member's memory and disk now but within its memory less its floor and its disk with its
-    /// jobs' reservations given back, it isn't flagged; past every Mac's best, it is. The lead's
-    /// own ask is weighed with its capacity (its ask is kept without it), and an ask bounding no
-    /// disk (the lead's own while it runs nothing, a member's that says none) fits any disk, as
-    /// packing grants it: what's granted there is never flagged as granted nowhere.
+    /// Task #1586 review: ten pack targets of 15 GB that reran at twice that (a spread of 2), and
+    /// 6/1/1 measured at 20 GB, offered alone.
+    fn spread_of_two(c: &Coordinator) {
+        let rerun: Vec<(&str, Option<(u64, u64, u64)>)> =
+            ["6/2/0", "6/2/1", "6/2/2", "6/2/3", "6/2/4", "6/2/5", "6/2/6", "6/2/7", "6/2/8", "6/2/9"]
+                .iter()
+                .map(|t| (*t, Some((15_000, 100, 2000))))
+                .collect();
+        measured_offer(c, "pack", &rerun);
+        let twice: Vec<(&str, Option<(u64, u64, u64)>)> =
+            rerun.iter().map(|r| (r.0, Some((30_000, 100, 2000)))).collect();
+        measured_offer(c, "pack", &twice);
+        measured_offer(c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
+    }
+
+    /// `worker`'s ask for pack with `mem_mb` free now and `limit_mb` at its best.
+    fn limited_ask(worker: &str, mem_mb: u64, limit_mb: u64) -> Ask {
+        let cap = Capacity { limit_mb, ..every_ask(worker, "pack", 0, 0).cap.unwrap() };
+        Ask { cap: Some(cap), want: 1, ..every_ask(worker, "pack", mem_mb, 10_000) }
+    }
+
     /// Task #1586 review: a measured target is booked at its peak times its step's rerun spread,
     /// at most the most a Mac that runs its step holds for jobs at its best: a spread read off other
     /// targets' reruns (each twice its run before here) never books one whose own peak fits a Mac
@@ -13351,23 +13385,55 @@ mod tests {
     #[test]
     fn a_spread_never_books_a_measured_target_past_every_mac() {
         let (_d, c, w, _clock) = every((0, 0));
-        // (Ten reruns of about 20 GB, each twice its run before.)
-        let rerun: Vec<(&str, Option<(u64, u64, u64)>)> =
-            ["6/2/0", "6/2/1", "6/2/2", "6/2/3", "6/2/4", "6/2/5", "6/2/6", "6/2/7", "6/2/8", "6/2/9"]
-                .iter()
-                .map(|t| (*t, Some((15_000, 100, 2000))))
-                .collect();
-        measured_offer(&c, "pack", &rerun);
-        let twice: Vec<(&str, Option<(u64, u64, u64)>)> =
-            rerun.iter().map(|r| (r.0, Some((30_000, 100, 2000)))).collect();
-        measured_offer(&c, "pack", &twice);
-        measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
-        let cap = Capacity { limit_mb: 30_000, ..every_ask("m1", "pack", 0, 0).cap.unwrap() };
-        let a = Ask { cap: Some(cap), want: 1, ..every_ask("m1", "pack", 30_000, 10_000) };
-        assert_eq!(granted(&w, &a), ["6/1/1"], "booked within m1's 30 GB, not at 40");
+        spread_of_two(&c);
+        assert_eq!(granted(&w, &limited_ask("m1", 30_000, 30_000)), ["6/1/1"], "booked within m1's 30 GB, not at 40");
         assert!(c.too_big().is_empty(), "{:?}", c.too_big());
     }
 
+    /// Task #1586 confirm review: the lead's own room at its best is its capacity's limit (its ask
+    /// is kept without its capacity, `ask_own`), not the memory it has free now: with 42 GB at its
+    /// best and 25 GB free, a 20 GB target of a spread of 2 is booked at 40 GB and waits for room,
+    /// never packed at its own 20 beside the jobs there to grow past them.
+    #[test]
+    fn the_leads_own_room_at_its_best_bounds_a_spread() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        spread_of_two(&c);
+        let cap = Capacity {
+            at: unix_now(),
+            limit_mb: 42_000,
+            disk_mb: 10_000,
+            cores: 8,
+            cores_free: 8,
+            ..Default::default()
+        };
+        c.set_capacity(Some(cap.clone()));
+        let own =
+            Ask { mem_mb: 25_000, disk_mb: None, cap: Some(cap.clone()), want: 1, ..every_ask("m4", "pack", 0, 0) };
+        assert!(c.ask_own(&own, &BTreeSet::new(), 0).is_none(), "booked at 40 GB: not in 25");
+        assert!(c.too_big().is_empty(), "within its 42 GB at its best: {:?}", c.too_big());
+        let room = Ask { mem_mb: 41_000, ..own };
+        assert!(c.ask_own(&room, &BTreeSet::new(), 0).is_some(), "granted once 40 GB is free");
+    }
+
+    /// Task #1586 confirm review: the Macs a spread is bounded by are those `too_big` weighs, heard
+    /// from lately: with the M4 (42 GB at its best) away, a 20 GB target of a spread of 2 is booked
+    /// at m1's 30 GB and granted there, not at 40 by the Mac away, flagged past every Mac.
+    #[test]
+    fn a_spread_is_bounded_by_the_macs_around() {
+        let (_d, c, w, clock) = every((0, 0));
+        spread_of_two(&c);
+        assert!(granted(&w, &limited_ask("m4", 0, 42_000)).is_empty());
+        clock.advance(AROUND + Duration::from_secs(1));
+        assert_eq!(granted(&w, &limited_ask("m1", 30_000, 30_000)), ["6/1/1"], "booked within m1's 30 GB");
+        assert!(c.too_big().is_empty(), "{:?}", c.too_big());
+    }
+
+    /// Task #1501: a target is weighed against each Mac at its best, not its room now: past a busy
+    /// member's memory and disk now but within its memory less its floor and its disk with its
+    /// jobs' reservations given back, it isn't flagged; past every Mac's best, it is. The lead's
+    /// own ask is weighed with its capacity (its ask is kept without it), and an ask bounding no
+    /// disk (the lead's own while it runs nothing, a member's that says none) fits any disk, as
+    /// packing grants it: what's granted there is never flagged as granted nowhere.
     #[test]
     fn too_big_weighs_each_mac_at_its_best() {
         let (_d, c, w, _clock) = every((0, 0));
