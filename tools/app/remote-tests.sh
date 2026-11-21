@@ -208,8 +208,10 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # tests' own threads and builds beside, put the M4's load at 108-229 on 14 cores, and tests of
 # 14-17 s alone timed out at 3 min). Derived from its cores and memory: a slot per 4 cores and per
 # 12 GB, the fewer (the M4, 14 cores and 48 GB: 3), each run's test threads its share of the cores
-# the pool's jobs leave, two threads a test (RAYON_NUM_THREADS, share_out), rounded down, one at
-# least (the M4 with no pool: 14 / 3 / 2, 2). So every slot's tests at once stay within those cores
+# the pool's jobs leave, over the check slots taken as it starts (its own too: share_out reads them)
+# and two threads a test (RAYON_NUM_THREADS), within what the other live runs' tests take, rounded
+# down, one at least (the M4 with no pool: alone 14 / 1 / 2, 7; beside a run of 7, 1; derived with
+# no runs read, as every slot taken). So every slot's tests at once stay within those cores
 # (#1583: the tests, at the default QoS, outrank the pool's jobs only within that share; read from
 # the jobs' own CPU, which a share past it would starve, reading fewer busy cores at the next run).
 # Publish's run (key `publish`, publish.sh's alone: SCENIC_PUBLISH in its command)
@@ -224,7 +226,7 @@ make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder
 # --test-threads) is taken as it is. Builds aren't shared out: a run's cargo builds with every core,
 # below every run's tests (low_builds, #1583: a check's compile is the larger part of its time on the
 # test Mac, and its tests are what time out).
-capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep busy>]: reply=(<slots> <test threads a run> <where each was set> <publish's test threads, set, or none> <publish's wait for the other runs, s> <measurement runs at once>)
+capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep busy> [<check slots taken, this run's too: every slot by default> [<cores the other live runs' tests take>]]]: reply=(<slots> <test threads a run> <where each was set> <publish's test threads, set, or none> <publish's wait for the other runs, s> <measurement runs at once>)
   local f=$1 cores=$2 gb=$3 pool=${4:-0} slots threads line k v n=0 from_s from_t pthreads= pwait=$(( 30 * 60 )) measures=1
   local -A at  # (the line each key was read from)
   slots=$(( cores / 4 < gb / 12 ? cores / 4 : gb / 12 )); (( slots < 1 )) && slots=1
@@ -254,9 +256,14 @@ capacity() {  # <capacity file> <cores> <memory GB> [<cores the pool's jobs keep
     done < $f
   fi
   if [[ -z $threads ]]; then
-    local free=$(( cores - pool < 1 ? 1 : cores - pool ))
-    threads=$(( free / (2 * slots) )); (( threads < 1 )) && threads=1
-    from_t="derived: $cores cores"; (( pool )) && from_t+=" less $pool the pool's jobs keep busy"; from_t+=" / $slots slots / 2 threads a test"
+    local free=$(( cores - pool < 1 ? 1 : cores - pool )) live=${5:-$slots} others=${6:-0} left
+    (( live < 1 )) && live=1
+    threads=$(( free / (2 * live) )); left=$(( (free - others) / 2 ))
+    (( left < threads )) && threads=$left
+    (( threads < 1 )) && threads=1
+    from_t="derived: $cores cores"; (( pool )) && from_t+=" less $pool the pool's jobs keep busy"
+    (( others )) && from_t+=" less $others the other runs' tests take"
+    from_t+=" / $live slots taken / 2 threads a test"
   fi
   reply=($slots $threads "slots $from_s; threads $from_t" "$pthreads" $pwait $measures)
 }
@@ -343,8 +350,23 @@ publish_share() {  # <cores> <pool's busy cores> <publish_threads set, or empty>
 # naming its wait (wait_alone), its tests' threads publish_share's as they start (every core until
 # then). REPLY: the threads; reply[1]: where they came from, said on the run's line.
 share_out() {  # <base> <slot> <slots> <cores> <owner>
-  local base=$1 p=($(pool_busy)) t
-  capacity $base/capacity $4 $(( $(sysctl -n hw.memsize) / 1073741824 )) ${p[1]} >/dev/null
+  local base=$1 p=($(pool_busy)) t s o live=1 others=0 c
+  # (A check's share, of the check slots taken as it starts, its own too, and within what the other
+  # live runs' tests take: each slot's `cores`, written below; one without, a run starting or from a
+  # branch before this, its whole share of every slot. #1583: sized by every slot, a lone check on
+  # the free M4 had 2 test threads, its tests 170 s against 87 s at 5.)
+  if [[ $2 != 0 ]]; then
+    for s in $base/.slots/<1->(N/); do
+      [[ ${s:t} == $2 ]] && continue
+      o=$(cat $s/owner 2>/dev/null)
+      [[ -n $o ]] && proc_alive "${o% *}" || continue
+      (( live++ ))
+      c=$(cat $s/cores 2>/dev/null)
+      [[ $c == <-> ]] || c=$(( ($4 - ${p[1]}) / $3 ))
+      (( others += c ))
+    done
+  fi
+  capacity $base/capacity $4 $(( $(sysctl -n hw.memsize) / 1073741824 )) ${p[1]} $live $others >/dev/null
   local how=$reply[3] pthreads=$reply[4] pwait=$reply[5]
   if [[ $2 == 0 ]]; then
     ( trap - TERM HUP INT EXIT; reserve_all $base $3 "$5" ) </dev/null >/dev/null 2>&1 &
@@ -362,6 +384,7 @@ share_out() {  # <base> <slot> <slots> <cores> <owner>
   # pipeline's case_threads; two, so a test's parallel code runs parallel, as the code it tests
   # does, and a check's tests count two threads each in its share: capacity.)
   export NEXTEST_TEST_THREADS=$t RUST_TEST_THREADS=$t RAYON_NUM_THREADS=2
+  [[ $2 != 0 ]] && print -r -- $(( 2 * t )) > $base/.slots/$2/cores
   REPLY=$t; reply=("capacity: $how; 2 threads a test")
 }
 

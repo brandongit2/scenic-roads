@@ -142,14 +142,23 @@ rm -f $tmp/capacity
 [[ $(cap 14 48) == "3 2" && $(cap 10 16) == "1 5" && $(cap 2 4) == "1 1" && $(cap 16 24) == "2 4" ]] \
   && ok "the capacity, from the cores and the memory" || no "the capacity, from the cores and the memory" "$(cap 14 48), $(cap 10 16), $(cap 2 4), $(cap 16 24)"
 # (#1583) Every slot's tests together, two threads a test, within the cores the pool's jobs leave
-# (one test thread a run at least).
+# (one test thread a run at least), the runs coming one by one, each sized by the slots taken then
+# and what the others take; the first, alone, half those cores.
 over=
 for c in 4 8 10 12 14 16 24 32; do for p in 0 1 3 5 9; do
   (( p < c )) || continue
-  capacity $tmp/capacity $c 48 $p >/dev/null
-  (( reply[1] * reply[2] * 2 <= c - p || reply[2] == 1 )) || over+=" $c cores less $p: $reply[1] x $reply[2] x 2;"
+  taken=0 ones=0
+  for k in 1 2 3; do
+    capacity $tmp/capacity $c 48 $p $k $taken >/dev/null
+    (( k == 1 && reply[2] != ((c - p) / 2 < 1 ? 1 : (c - p) / 2) )) && over+=" $c cores less $p: alone $reply[2];"
+    (( reply[2] == 1 )) && (( ones++ ))
+    (( taken += 2 * reply[2] ))
+  done
+  (( taken <= c - p || taken - 2 * ones <= c - p )) || over+=" $c cores less $p: $taken taken;"
 done; done
-[[ -z $over ]] && ok "the capacity: every slot's tests within the cores the pool's jobs leave" || no "the capacity: every slot's tests within the cores the pool's jobs leave" "$over"
+capacity $tmp/capacity 14 48 0 2 4 >/dev/null; a=$reply[2]  # (one other run on 4: min(14 / 4, (14 - 4) / 2))
+capacity $tmp/capacity 14 48 0 2 14 >/dev/null; b=$reply[2]  # (the other on all: one)
+[[ -z $over && $a == 3 && $b == 1 ]] && ok "the capacity: every slot's tests within the cores the pool's jobs leave" || no "the capacity: every slot's tests within the cores the pool's jobs leave" "$over $a $b"
 print 'slots=2' > $tmp/capacity; a=$(cap 14 48)
 print -n 'threads=3' > $tmp/capacity; b=$(cap 14 48)
 [[ $a == "2 3" && $b == "3 3" ]] && ok "the capacity, as its file sets it, a last line without its newline too" || no "the capacity, as its file sets it, a last line without its newline too" "$a, $b"
@@ -181,7 +190,7 @@ rm -f $tmp/warn
 print 'threads=3' > $tmp/capacity; capacity $tmp/capacity 14 48
 [[ $reply[3] == "slots derived: 14 cores / 4, 48 GB / 12; threads set in $tmp/capacity" ]] && ok "the capacity: the slots' and the threads' sources, each" || no "the capacity: the slots' and the threads' sources, each" "$reply[3]"
 print 'slots=2' > $tmp/capacity; capacity $tmp/capacity 14 48
-[[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots / 2 threads a test" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
+[[ $reply[3] == "slots set in $tmp/capacity; threads derived: 14 cores / 2 slots taken / 2 threads a test" ]] && ok "the capacity: threads derived from the slots set" || no "the capacity: threads derived from the slots set" "$reply[3]"
 
 # Ended as a run ends, with a test's server left: it goes first, then the slot.
 # (publish_wait 1 min: a publish run waiting for slots never freed ends its wait within the test.)
@@ -252,8 +261,16 @@ out=$(run_remote publish "export SCENIC_PUBLISH=1; print -r -- \$PWD \$NEXTEST_T
 [[ $(<$tmp/pub) == */.build/0/src\ $(sysctl -n hw.ncpu) && $out == *"slot 0 of 3, $(sysctl -n hw.ncpu) test threads"* ]] \
   && ok "publish's run: its own slot, every core as it builds" || no "publish's run: its own slot, every core as it builds" "$(<$tmp/pub): $out"
 out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS \$RAYON_NUM_THREADS > $tmp/chk")
-n=$(( $(sysctl -n hw.ncpu) / 6 )); (( n < 1 )) && n=1
-[[ $(<$tmp/chk) == "$n 2" && $out == *" of 3, $n test threads"*"2 threads a test"* ]] && ok "a check's run: its share of the cores, a test's own threads its share of those" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+n=$(( $(sysctl -n hw.ncpu) / 2 )); (( n < 1 )) && n=1  # (alone: every slot free)
+[[ $(<$tmp/chk) == "$n 2" && $out == *" of 3, $n test threads"*"2 threads a test"* ]] && ok "a check's run alone: the cores over the slots taken, its own, two threads a test" || no "a check's run: its share of the cores" "$(<$tmp/chk): $out"
+# Beside another live run whose tests take 4 cores (its slot's `cores`): the cores over the two
+# slots taken, within what that run leaves; its own cores said in its slot.
+mkdir -p $fb/.slots/2; print -r -- $holdme > $fb/.slots/2/owner; print 4 > $fb/.slots/2/cores
+out=$(run_remote c1 "print -r -- \$NEXTEST_TEST_THREADS \$(cat ../../../.slots/\$(cat ../../../c1/slot)/cores) > $tmp/chk")
+nc=$(sysctl -n hw.ncpu); n=$(( nc / 4 )); l=$(( (nc - 4) / 2 )); (( l < n )) && n=$l; (( n < 1 )) && n=1
+[[ $(<$tmp/chk) == "$n $(( 2 * n ))" && $out == *"less 4 the other runs' tests take / 2 slots taken"* ]] \
+  && ok "a check's run beside another: sized by the slots taken, within what the other's tests leave" || no "a check's run beside another: sized by the slots taken" "$(<$tmp/chk): $out"
+rm -rf $fb/.slots/2
 
 # The pool's jobs (#1563): the CPU of the agent's process and every process under it, nothing else;
 # taken off a check's share, and off publish's tests' threads, half the cores left them at least.
@@ -276,7 +293,7 @@ print -r -- "91014     1   0.0 /bin/sh -c s=\$1; shift; \"\$@\"
 [[ $(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy) == "7 6.5 6" ]] && ok "the pool's jobs: one left by an agent's restart too" || no "the pool's jobs: one left by an agent's restart too" "$(SCENIC_TESTS_PS=$tmp/ps-orphan pool_busy)"
 [[ $(SCENIC_TESTS_PS=$tmp/ps0 pool_busy) == "0 0.0 0" ]] && ok "the pool's jobs: no agent, none" || no "the pool's jobs: no agent, none" "$(SCENIC_TESTS_PS=$tmp/ps0 pool_busy)"
 rm -f $tmp/capacity; capacity $tmp/capacity 14 48 5
-[[ "$reply[1] $reply[2]" == "3 1" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots / 2 threads a test" ]] \
+[[ "$reply[1] $reply[2]" == "3 1" && $reply[3] == *"threads derived: 14 cores less 5 the pool's jobs keep busy / 3 slots taken / 2 threads a test" ]] \
   && ok "the capacity: a check's share of what the pool leaves" || no "the capacity: a check's share of what the pool leaves" "$reply"
 capacity $tmp/capacity 14 48 20
 [[ $reply[2] == 1 ]] && ok "the capacity: a test thread at least" || no "the capacity: a test thread at least" "$reply[2]"
@@ -368,6 +385,7 @@ rm -rf $fb/.slots $tmp/agent-w
 
 # A run on the test Mac itself (no copy): a slot taken, behind publish's run too, freed as it ends.
 mkdir -p $tmp/here; hold_two
+nc=$(sysctl -n hw.ncpu); n=$(( nc / 6 )); l=$(( (nc - 2 * (nc / 3)) / 2 )); (( l < n )) && n=$l; (( n < 1 )) && n=1  # (three slots taken, the other two with no cores said: a slot's share each)
 out=$(HOME=$fh here_on_test_mac h1 $tmp/here "cat $fb/.slots/1/owner; print \$NEXTEST_TEST_THREADS" 2>&1)
 [[ $out == *"running here (this is the test Mac;"*"slot 1 of 3, $n test threads"* && $out == *" h1"$'\n'$n && ! -e $fb/.slots/1 ]] \
   && ok "a run on the test Mac itself: counted in a slot, its share, freed" || no "a run on the test Mac itself: counted in a slot, its share, freed" "$out; $(ls $fb/.slots)"
