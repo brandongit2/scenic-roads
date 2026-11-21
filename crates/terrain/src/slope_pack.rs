@@ -928,7 +928,9 @@ fn mids_order(mut fs: Vec<(u32, u32)>, threads: usize) -> Vec<(u32, u32)> {
 }
 
 /// A deep mid's bytes read ahead of its pyramid's taking it (`DeepQuadrants`): a few at a time
-/// (each a few MB), at most `MIDS_AHEAD` read and not yet taken.
+/// (each a few MB), at most `MIDS_AHEAD` read and not yet taken, or one for each of the threads
+/// walking its pyramid where they are more (`build_hi_with`: a live target's walk on as many as
+/// the Mac's cores).
 const MIDS_AHEAD: usize = 8;
 
 /// Makes z6 tile `t`'s slope (a slope-hi z6 tile) from the build's terrain packs and its z10 tiles'
@@ -1009,10 +1011,13 @@ fn build_hi_with(
         failed: Default::default(),
     };
     let done = |z: u8, x: u32, y: u32| if z == FIRST_Z { deep.take(x, y) } else { None };
-    // (On the target's threads as it begins: a live target's grant now, jobrt::control::in_force.)
-    let threads = jobrt::control::in_force().unwrap_or_else(rayon::current_num_threads);
-    let order = mids_order(mids.keys().copied().collect(), threads.min(THREADS));
-    let (hi, lo) = mids_ahead.beside(&order, MIDS_AHEAD / 2, MIDS_AHEAD, read_mids, || {
+    // (By the threads walking its pyramid (`on_pool`): a live target's as many as the Mac's cores,
+    // whatever its grant, jobrt::control::width; another's its grant. A mid read ahead for each,
+    // `MIDS_AHEAD` at least.)
+    let walkers = jobrt::control::width().min(THREADS);
+    let order = mids_order(mids.keys().copied().collect(), walkers);
+    let ahead = MIDS_AHEAD.max(walkers);
+    let (hi, lo) = mids_ahead.beside(&order, ahead / 2, ahead, read_mids, || {
         terr.reading_ahead(&want, || piece(&terrain, &tiles, &done, t, &count))
     });
     if let Some(e) = deep.failed.into_inner().unwrap() {
@@ -2279,7 +2284,8 @@ mod tests {
     /// on_grant_live, its parallel levels on the outside pool, as wide as the Mac's cores) makes
     /// its tiles on no more threads at once than its grant, and on all of them: 2 at once on a
     /// grant of 2, as tops (a slope-deep target's) too; begun on 1 and grown to 3 once its first tile
-    /// is made, 1 at once until then and 3 after, on 3 at its end; the same tiles each time as made
+    /// is made, 1 at once until then and 3 after, on 3 at its end; begun on 3 and cut to 1 so, 1 at
+    /// once once the cut is seen, on 1 at its end; the same tiles each time as made
     /// outside a target. (In a process of its own: the threads file and the target are the
     /// process's.)
     #[test]
@@ -2362,6 +2368,30 @@ mod tests {
                 });
                 assert!(tiles == first, "the same tiles grown within the target");
                 assert_eq!((before, most.load(SeqCst), at_end), (1, 3, Some(3)), "on 1, then grown: 3 at once");
+                // Begun on 3 and cut to 1 once its first tile is made (most of its tiles still to
+                // make: 3 at once take a second at most to see it): 1 at once once the turns held
+                // are given back, on 1 at its end, the same tiles.
+                jobrt::control::grant(&f, 3).unwrap();
+                made.store(0, SeqCst);
+                let (tiles, at_end, after) = jobrt::control::on_grant_live(|| {
+                    std::thread::scope(|s| {
+                        let cutter = s.spawn(|| {
+                            while made.load(SeqCst) == 0 {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                // (sleep ok: a test's look)
+                            }
+                            jobrt::control::grant(&f, 1).unwrap();
+                            // (Seen within the poll, the turns held then given back as their tiles end.)
+                            std::thread::sleep(jobrt::control::POLL + std::time::Duration::from_millis(300)); // (sleep ok: the cut seen)
+                            most.store(0, SeqCst);
+                        });
+                        let tiles = run();
+                        cutter.join().unwrap();
+                        (tiles, jobrt::control::in_force(), most.load(SeqCst))
+                    })
+                });
+                assert!(tiles == first, "the same tiles cut within the target");
+                assert_eq!((after, at_end), (1, Some(1)), "cut to 1: 1 at once after");
             }
         });
         std::env::remove_var(jobrt::control::THREADS_ENV);

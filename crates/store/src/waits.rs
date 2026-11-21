@@ -527,6 +527,11 @@ fn lend(on: On) -> (Option<Arc<TurnsState>>, bool) {
     })
 }
 
+/// Whether this thread holds a turn of some `Turns` (`Turns::computing`, `Turns::take`).
+pub fn holding() -> bool {
+    HELD.with(|h| h.borrow().is_some())
+}
+
 /// A turn held by this thread (`Turns::computing`, `Turns::take`), given back as it's dropped.
 #[must_use]
 pub struct Turn {

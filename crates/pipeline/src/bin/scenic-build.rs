@@ -7420,11 +7420,6 @@ mod tests {
         assert_eq!((t.also, t.aside), (vec![key("6/1/1")], Vec::new()), "its landing noted failed, not set aside");
     }
 
-    /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.
-    /// Paused at a safe point with a target's uploads in flight, that target is landed (saved, noted
-    /// done) and nothing after it, and the job's copies are deleted; the rest made after, the same
-    /// bytes as a batch made at one go. An upload that fails: no target from it on is noted done or
-    /// named, the job fails; made again, the same bytes. (In processes of their own: a pause exits.)
     /// Terrain for three z10 tiles of z6 tile 6/28/16 in `root` (its fixture's work in `scratch`):
     /// its hi pack (their z12 tiles) and a deep pack each (z13 tiles), each tile its own hill.
     fn slope_terrain(root: &std::path::Path, scratch: &std::path::Path) {
@@ -7567,6 +7562,11 @@ mod tests {
         }
     }
 
+    /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.
+    /// Paused at a safe point with a target's uploads in flight, that target is landed (saved, noted
+    /// done) and nothing after it, and the job's copies are deleted; the rest made after, the same
+    /// bytes as a batch made at one go. An upload that fails: no target from it on is noted done or
+    /// named, the job fails; made again, the same bytes. (In processes of their own: a pause exits.)
     #[test]
     fn a_slope_deep_batch_lands_each_target_beside_the_next() {
         use std::io::Write;

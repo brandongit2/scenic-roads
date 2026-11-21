@@ -1333,13 +1333,18 @@ pub fn turns() -> store::waits::Turns {
 /// parallel work on a turn each until every one has ended: one task a thread of the pool (rayon's
 /// broadcast), so no more than `k` runs at once, and no thread computes off a turn. A live target's
 /// parallel work (`on_grant_live`) goes on its grant's threads so: terrain's base sampling's chunks
-/// (task #1550) and `par_map`. The first failure.
+/// (task #1550) and `par_map`. The first failure. Called from a thread holding a turn (work nested in
+/// such work), `run` on that thread alone, on its turn: a broadcast would need every thread of the
+/// outside pool, each waiting for a turn, on a grant of 1 for the very one this thread holds.
 pub fn on_turn_threads(
     k: usize,
     turns: &store::waits::Turns,
     run: &(dyn Fn() -> anyhow::Result<()> + Sync),
 ) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    if store::waits::holding() {
+        return run();
+    }
     // (The threads still running.)
     let running = AtomicUsize::new(k);
     struct Ran<'a>(&'a AtomicUsize);
@@ -1376,11 +1381,17 @@ pub fn on_turn_threads(
 /// each item on a turn of the target's (`turns`), so no more at once than its grant now, a grow
 /// taken and a cut given back between items (`on_turn_threads`); elsewhere `items`' parallel
 /// iterator on this thread's pool (an `on_grant` target's, its grant wide). The same results
-/// whatever the threads: each item's own.
+/// whatever the threads: each item's own. Called from a thread holding a turn (in an item of
+/// another's, say), `items`' parallel iterator on the target's pool for that thread
+/// (`on_target_pool`), its pieces computed by it and by the threads that take a turn to help
+/// (`on_turn_threads`): never a broadcast waiting for the turn its caller holds.
 pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let Some(t) = live_target() else { return items.par_iter().map(f).collect() };
+    if store::waits::holding() {
+        return on_target_pool(|| items.par_iter().map(f).collect());
+    }
     let next = AtomicUsize::new(0);
     let got: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
     let run = || -> anyhow::Result<()> {
@@ -2015,7 +2026,7 @@ mod tests {
     /// the grant, and on all of them (items of 20 ms on a grant of 2: 2 at once); begun on 1 and
     /// grown to 3 once its first item is done, 1 at once until then and 3 after; the same results,
     /// in order, as outside a target. On a grant of 1, items whose work is parallel too (each a
-    /// rayon pass) are done, not waiting forever on a turn. (In a process of its own: the file's
+    /// rayon pass, or a par_map of their own) are done, not waiting forever on a turn. (In a process of its own: the file's
     /// variable and the target are the process's.)
     #[test]
     fn par_map_keeps_a_live_target_to_its_grant_as_it_changes() {
@@ -2089,6 +2100,18 @@ mod tests {
         let sums: Vec<u64> =
             rx.recv_timeout(Duration::from_secs(10)).expect("nested parallel work on a grant of 1: deadlocked"); // (bound ok: a deadlock's, the work instant)
         assert_eq!(sums, [499_500, 999_000, 1_498_500, 1_998_000]);
+        // A par_map inside a par_map's item, on a grant of 1: done on the item's turn (task #1557
+        // review: its broadcast waited, every outside thread waiting for that one turn).
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let nested = on_grant_live(|| {
+                par_map(&[1u64, 2, 3], |&k| par_map(&[10u64, 20, 30, 40], |&i| i * k).into_iter().sum::<u64>())
+            });
+            drop(tx.send(nested));
+        });
+        let nested: Vec<u64> =
+            rx.recv_timeout(Duration::from_secs(10)).expect("a nested par_map on a grant of 1: deadlocked"); // (bound ok: a deadlock's, the work instant)
+        assert_eq!(nested, [100, 200, 300]);
         std::env::remove_var(THREADS_ENV);
     }
 }
