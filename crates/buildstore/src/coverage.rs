@@ -2185,22 +2185,27 @@ mod tests {
         // at 1,057.18 each way and `inside` starts from 1,057. The hole's lower edge, from
         // (1000, 1057) to (1500, 1058), passes between them (at 1,057.114 there): 1,057 is below it,
         // in the shape; 1,057.18 above it, in the hole. (Task #1462: the cell's state, counted at
-        // 1,057.18, inverted every answer in the cell.)
+        // 1,057.18, inverted every answer in the cell.) The second hole's right edge, from
+        // (1057, 1056) to (1056, 1500), crosses the centre's row 0.002 left of it, at a negative
+        // offset from its start: counted left only if that offset is floored, not truncated.
         let n = 103_100;
-        let rings = vec![vec![[0, 0], [n, 0], [n, n], [0, n]], vec![[1000, 1057], [1500, 1058], [1000, 2000]]];
-        let s = Shape::new("t".into(), rings.clone(), 0.0);
-        let c = 10 * s.grid.nx + 10;
-        assert_eq!((s.grid.nx, s.grid.cw), (1024, 100.68359375));
-        assert_eq!(s.grid.centre_of(c), [1057, 1057]);
-        let mut checked = 0;
-        for y in (1007..1107).step_by(3) {
-            for x in (1007..1107).step_by(3) {
-                assert_eq!(s.cell([x, y]), c);
-                assert_eq!(s.inside([x, y]), inside_plain(&rings, [x, y]), "at {x},{y}");
-                checked += 1;
+        let holes = [vec![[1000, 1057], [1500, 1058], [1000, 2000]], vec![[900, 1056], [1057, 1056], [1056, 1500]]];
+        for hole in holes {
+            let rings = vec![vec![[0, 0], [n, 0], [n, n], [0, n]], hole];
+            let s = Shape::new("t".into(), rings.clone(), 0.0);
+            let c = 10 * s.grid.nx + 10;
+            assert_eq!((s.grid.nx, s.grid.cw), (1024, 100.68359375));
+            assert_eq!(s.grid.centre_of(c), [1057, 1057]);
+            let mut checked = 0;
+            for y in (1007..1107).step_by(3) {
+                for x in (1007..1107).step_by(3) {
+                    assert_eq!(s.cell([x, y]), c);
+                    assert_eq!(s.inside([x, y]), inside_plain(&rings, [x, y]), "at {x},{y} of {:?}", rings[1]);
+                    checked += 1;
+                }
             }
+            assert_eq!(checked, 34 * 34);
         }
-        assert_eq!(checked, 34 * 34);
     }
 
     #[test]

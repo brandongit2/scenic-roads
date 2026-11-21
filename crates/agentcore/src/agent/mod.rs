@@ -3454,8 +3454,10 @@ impl Agent {
                 // backoff holds what it failed on, as a pooled job's end does (task #1571: only its
                 // finished targets went on, drained into the pool's hand-offs, `Run::drain_outbox`,
                 // and its targets could be granted again at once). Its lease, owed, stays listed
-                // in the beats till then (`held_of_lead`). (A task's end goes by `send_outbox`.)
-                if task.is_none() && outcome.holds(guard_stopped) {
+                // in the beats till then (`held_of_lead`). (A job's folder has its `work.json`; a
+                // task's has none, whether or not `scenic run-task` wrote its result: its end goes by
+                // `send_outbox`.)
+                if dir.join("work.json").is_file() && outcome.holds(guard_stopped) {
                     let tell = Tell::End(Box::new(crate::coord::Fail {
                         lease,
                         error: fail_why(outcome, note, true),
@@ -22047,6 +22049,16 @@ mod membership_tests {
         let failed: BTreeSet<(String, String)> = c.shared.lock().unwrap().failed.keys().cloned().collect();
         assert_eq!(failed, [(a.host.clone(), crate::coord::cost_key("unit", "6/12/25"))].into());
         assert!(!c.held("unit").contains("6/12/25"), "its lease ended");
+        // A task leased so, killed before `scenic run-task` wrote its result (no task.json): its end
+        // is the outbox's to send (`send_outbox`), not told here as a job's.
+        let task_dir = a.outbox().join("77");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(task_dir.join("spec.json"), "{}").unwrap();
+        a.slots[0].lease = Some(Held::Leased { lease: 77, dir: task_dir.clone() });
+        a.client = None;
+        a.end_lease(0, Outcome::Failed, &[], "killed");
+        assert!(a.owed.is_empty(), "a task's end isn't told as a job's");
+        assert!(task_dir.join("result.json").is_file(), "left for the outbox to send");
     }
 
     /// Task #1158: a member holding a job's lease while the lead hasn't heard from it for 5 min is
