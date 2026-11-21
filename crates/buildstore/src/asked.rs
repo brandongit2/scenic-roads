@@ -145,6 +145,107 @@ pub fn record_cost(p: &store::nasfs::NasPath) -> std::io::Result<u64> {
     Ok(file + 2 * json)
 }
 
+/// The memory available above the floor now (bytes; None: unknown), pipeline's `TerrainTiles::room`.
+pub type Room = std::sync::Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// The coverage records asked again off the plan's thread (task #1590: every record once the
+/// answering code changed, coverage::ANSWERING; any whose cheap test moved), shared by pipeline's
+/// `TerrainTiles` and its copies: whether a pass runs (`running`: the plan's keys of a record
+/// it hasn't asked yet wait), how far it is (records gone through of those it looks at), how many
+/// passes ended (in the tiles' `state`, so a plan after one finds their lines), and the records'
+/// memory in flight (`admit`).
+#[derive(Default)]
+pub struct Reask {
+    state: std::sync::Mutex<ReaskState>,
+    freed: std::sync::Condvar,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReaskState {
+    pub running: bool,
+    /// Records gone through (`done`) of those the pass looks at (`total`).
+    pub done: usize,
+    pub total: usize,
+    /// Passes ended.
+    pub ended: u64,
+    /// The records' memory in flight (bytes: `record_cost`, `admit`).
+    pub in_flight: u64,
+    /// A record held back for memory: its cost and the room there was (bytes).
+    pub held: Option<(u64, u64)>,
+}
+
+impl Reask {
+    /// Its state now.
+    pub fn now(&self) -> ReaskState {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&mut ReaskState) -> T) -> T {
+        f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// A pass begins (false: one runs already).
+    pub fn begin(&self) -> bool {
+        self.with(|s| {
+            let was = s.running;
+            if !was {
+                (s.running, s.done, s.total) = (true, 0, 0);
+            }
+            !was
+        })
+    }
+
+    /// The pass ends.
+    pub fn end(&self) {
+        self.with(|s| {
+            s.running = false;
+            s.ended += 1;
+        });
+    }
+
+    /// `n` records more to go through.
+    pub fn looks_at(&self, n: usize) {
+        self.with(|s| s.total += n);
+    }
+
+    /// One gone through.
+    pub fn went_through(&self) {
+        self.with(|s| s.done += 1);
+    }
+
+    /// Admits a record costing `cost` bytes in memory (`record_cost`): at once while what's
+    /// in flight with it fits in what `room` says is available above the floor now (no reading: no
+    /// bound), else once it does, read again every `every` (the guard's sample) and as each in
+    /// flight lets go. What's in flight is counted beside the room read, though the room already
+    /// holds what of it is allocated: the bound errs on the side of less. Held to its drop.
+    pub fn admit(&self, cost: u64, room: Option<&Room>, every: std::time::Duration) -> Admitted<'_> {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(r) = room.and_then(|f| f()) {
+            if g.in_flight + cost <= r {
+                break;
+            }
+            g.held = Some((cost, r));
+            g = self.freed.wait_timeout(g, every).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        g.held = None;
+        g.in_flight += cost;
+        Admitted { reask: self, cost }
+    }
+}
+
+/// A record's memory admitted (`Reask::admit`), let go as it drops.
+pub struct Admitted<'a> {
+    reask: &'a Reask,
+    cost: u64,
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        self.reask.with(|s| s.in_flight = s.in_flight.saturating_sub(self.cost));
+        self.reask.freed.notify_all();
+    }
+}
+
 /// A question of a record's `also` answered again now (`line`'s and `target_line`'s `reask`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
@@ -449,6 +550,45 @@ mod tests {
         std::fs::write(&p, b"not a record").unwrap();
         assert_eq!(record_cost(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), 12);
         assert!(record_cost(&store::nasfs::NasPath::local_for_test(d.path().join("gone"))).is_err());
+    }
+
+    /// Task #1590 review: the records asked again are admitted within the memory above the floor
+    /// (`Reask::admit`): one at once while what's in flight with it fits, the next held until one
+    /// lets go; one larger than the room, with nothing in flight, until the room grows; no reading,
+    /// no bound.
+    #[test]
+    fn records_asked_again_are_held_to_the_room_above_the_floor() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+        let r = std::sync::Arc::new(Reask::default());
+        let room_now = std::sync::Arc::new(AtomicU64::new(100));
+        let at = room_now.clone();
+        let room: Room = std::sync::Arc::new(move || Some(at.load(Ordering::SeqCst)));
+        let first = r.admit(60, Some(&room), EVERY);
+        assert_eq!(r.now().in_flight, 60);
+        std::thread::scope(|s| {
+            let second = s.spawn(|| {
+                let _a = r.admit(60, Some(&room), EVERY);
+                r.now().in_flight
+            });
+            store::testkit::eventually("held back", || r.now().held.is_some());
+            assert_eq!(r.now().held, Some((60, 100)));
+            drop(first);
+            assert_eq!(second.join().unwrap(), 60, "admitted once the first let go");
+        });
+        assert_eq!(r.now(), ReaskState::default());
+        std::thread::scope(|s| {
+            let big = s.spawn(|| r.admit(150, Some(&room), EVERY).cost);
+            store::testkit::eventually("held back", || r.now().held.is_some());
+            assert_eq!(r.now().held, Some((150, 100)));
+            room_now.store(200, Ordering::SeqCst);
+            r.freed.notify_all();
+            assert_eq!(big.join().unwrap(), 150);
+        });
+        // No reading: no bound.
+        let a = r.admit(u64::MAX / 2, None, EVERY);
+        assert_eq!(r.now().in_flight, u64::MAX / 2);
+        drop(a);
     }
 
     #[test]

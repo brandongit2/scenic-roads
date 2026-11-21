@@ -1014,7 +1014,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   the same, else the new one), so the next start reads it no more, whether its target reran yet
   or not. The pass reads the records on a rayon pool of its own, as many threads as cores, each
   admitted within the memory available above the Mac's floor as the guard last read it
-  (`tiles::Reask::admit`, `memguard::live`: what's in flight with it at most the reading's
+  (`asked::Reask::admit`, `memguard::live`: what's in flight with it at most the reading's
   `low_usable_mb` less the floor, a record's cost its file and twice its JSON,
   `asked::record_cost`, from its zstd frame's header, or decoded once for one put before the
   header held it); one that doesn't fit waits for room, said in the status. Only the lead plans,

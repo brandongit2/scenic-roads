@@ -420,7 +420,7 @@ fn warm(x: &KeyCtx, fine: &inputs::dem::spacing::Fine, each: &[(&str, String)]) 
     });
 }
 
-/// A record gone through by a warm, counted as it drops (`tiles::Reask::went_through`), however
+/// A record gone through by a warm, counted as it drops (`buildstore::asked::Reask::went_through`), however
 /// it returned.
 struct WentThrough<'a>(&'a super::tiles::TerrainTiles);
 

@@ -340,7 +340,7 @@ struct Held {
     shadow_failed: Arc<AtomicBool>,
     /// Whether each plan has its shadow made (off only in a test of what it costs).
     shadowing: Cell<bool>,
-    /// How many passes asking records again had ended at the last `kick` (tiles::Reask): one more
+    /// How many passes asking records again had ended at the last `kick` (buildstore::asked::Reask): one more
     /// since, and a plan is due for the lines it put.
     reask_seen: Cell<u64>,
 }
@@ -816,7 +816,7 @@ impl Held {
     /// Starts the pass asking the records again off the plan's thread, when one is due
     /// (idents::warm_due) and none runs: on a thread of its own, its records on a rayon pool of its
     /// own (as many threads as cores; each record admitted within the memory above the floor,
-    /// tiles::Reask::admit), the lines it works out put in the memo the plan's keys read, their
+    /// buildstore::asked::Reask::admit), the lines it works out put in the memo the plan's keys read, their
     /// heads kept. Until it ends the keys of a record it hasn't asked yet wait (`defers_now`), and
     /// the plan offers the rest; its end kicks a plan (`kick`).
     fn start_reask(&self, r: &Round, reach: Option<Arc<Reaches>>, tiles: &TerrainTiles) {
