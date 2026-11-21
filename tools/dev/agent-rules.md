@@ -68,8 +68,9 @@ Each turn re-reads the whole context, so a turn spent on a refusal, a slice or a
 - **One git command per call:** `git add … && git commit … && zsh tools/dev/check.sh` is refused
   as too complex to verify; send `git add`, `git commit` and the run as separate calls.
 - **The app's home is `~/scenic`** on every Mac (a link to `~/Library/Application Support/scenic`
-  that each Mac's agent makes as it starts, `agent::applink`): name `~/scenic/agent/…`, over ssh
-  too, never `Application\ Support`, whose space the worktree check refuses.
+  that each Mac's dev setup makes, `tools/dev/install-sweep.sh` through `app-link.sh`): name
+  `~/scenic/agent/…`, over ssh too, never `Application\ Support`, whose space the worktree check
+  refuses.
 - **Read the part of a file you need in one call:** find it with `grep -n`, then one Read with
   `offset` and `limit` round it, not successive `sed -n` slices of 40 lines, one turn each. Don't
   read a big file whole either: it stays in every later turn's context (testing.md is 900 lines;

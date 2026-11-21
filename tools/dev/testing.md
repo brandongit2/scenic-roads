@@ -950,7 +950,10 @@ assignments; a variable set from another (`U=$T`); `find -exec sh -c 'rm …'`. 
 Every script finds the repo from its own location (the main checkout from the shared `.git`, the
 checkout it runs in from the top level), so a worktree has its own copy and no path is held. Per Mac, once:
 - `tools/dev/install-sweep.sh` fills `local.scenic.sweep.plist` (launchd can't compute paths) with the
-  main checkout's path, installs it in ~/Library/LaunchAgents and loads it.
+  main checkout's path, installs it in ~/Library/LaunchAgents and loads it; and makes `~/scenic` a
+  link to `~/Library/Application Support/scenic` (`tools/dev/app-link.sh`, tested by
+  `tools/dev/test/app-link.zsh`, check.sh's `applink` part): the app's home without a space, for
+  agents' commands. A link to elsewhere, a file or a folder there is left as it is, with a warning.
 - The hooks go in the untracked `.claude/settings.local.json`. Claude Code sets `$CLAUDE_PROJECT_DIR`
   (the session's project folder) for hook commands, so no absolute path is needed:
 ```json

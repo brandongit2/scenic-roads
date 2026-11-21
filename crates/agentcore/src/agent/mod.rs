@@ -48,7 +48,6 @@ pub mod tiles;
 pub mod allocs;
 pub mod answered;
 pub mod apart;
-pub mod applink;
 pub mod asks;
 pub mod backup;
 pub mod beat;

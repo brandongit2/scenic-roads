@@ -1519,14 +1519,6 @@ fn cli_main() -> Result<()> {
             // (Every Mac's app kept current from here, the map server's Mac too: coordwire::releases.)
             if places.home.is_none() {
                 coordwire::releases::spawn(app_home(), o.root.clone());
-                // (~/scenic, the app's home without a space, for agents' commands: agent::applink.)
-                if let Some(home) = std::env::var_os("HOME") {
-                    match agent::applink::ensure(Path::new(&home), &app_home()) {
-                        Ok(Some(did)) => eprintln!("agent: {did}"),
-                        Ok(None) => {}
-                        Err(e) => eprintln!("agent: WARNING: ~/{}: {e}", agent::applink::NAME),
-                    }
-                }
             }
             let mut a = agent::Agent::new(o)?;
             a.run()?;

@@ -31,6 +31,7 @@
 #   record    tools/dev/test/check-record.zsh (this script on a toy repo: what it records, its
 #             live span, its stop at a failed part, its tests' key), when it changed
 #   reportguard tools/dev/test/report-guard.zsh (the SubagentStop hook's verdicts), when it changed
+#   applink   tools/dev/test/app-link.zsh (~/scenic, the app's home without a space), when app-link.sh changed
 #   prodtest  tools/dev/test/check-prod.zsh (this script's clippy and prod on a toy workspace, real cargo),
 #             when it changed
 #   reuse     tools/dev/test/check-reuse.zsh (the reuse rule, below), when it or what it tests changed
@@ -225,6 +226,8 @@ if has 'tools/dev/check.sh' || has 'tools/dev/test/check-record.zsh'; then part 
 else skip record "check.sh unchanged"; fi
 if has 'tools/dev/report-guard.sh' || has 'tools/dev/test/report-guard.zsh'; then part reportguard zsh tools/dev/test/report-guard.zsh
 else skip reportguard "report-guard.sh unchanged"; fi
+if has 'tools/dev/app-link.sh' || has 'tools/dev/test/app-link.zsh'; then part applink zsh tools/dev/test/app-link.zsh
+else skip applink "app-link.sh unchanged"; fi
 if has 'tools/dev/check.sh' || has 'tools/dev/test/check-prod.zsh'; then part prodtest zsh tools/dev/test/check-prod.zsh
 else skip prodtest "check.sh unchanged"; fi
 if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev/rustitems.py' || has 'tools/dev/merge-ok.sh' || has 'tools/dev/test/check-reuse.zsh'; then
