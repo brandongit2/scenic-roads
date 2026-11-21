@@ -13,8 +13,8 @@
 #                            [--https-port <n>]
 #   services.zsh update [--reload]
 #
-# setup (once per service, by hand, from the installed app's copy: ~/Library/Application
-# Support/scenic/app/current/services/services.zsh) writes the service's settings
+# setup (once per service, by hand, from the installed app's copy, run as a program:
+# ~/scenic/app/current/services/services.zsh) writes the service's settings
 # (<home>/services/<service>/setup) and its LaunchAgent, which runs it from <home>/services/, then
 # runs update, that service's jobs loaded again from their new plists. Its defaults are what that
 # LaunchAgent runs now, if anything: the dev tools' node and data folder (`--data`, else its
@@ -40,8 +40,6 @@
 # - Caddy: this version's Caddyfile checked (caddy validate, with the job's names), put in
 #   <home>/services/caddy/Caddyfile, Caddy restarted and checked (a new process answering HTTPS on
 #   its port within 10 s); else the last one seen serving (Caddyfile.before) put back.
-# Where the dev tools are set up, a backup job an older release set up (<prefix>.devtools-backup)
-# is unloaded and its plist deleted (failing, the run fails; the update is done all the same).
 # A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: every
 # service's jobs loaded again from their plists, as setup does for its own). The versions done are
 # in <home>/services/version; one that failed in `failed`, which the agent doesn't try again (a run
@@ -106,15 +104,6 @@ gone() {  # gone <label>: unloaded, waited for until launchd has let it go
   launchctl bootout $domain/$1 2>/dev/null || true
   for (( i = 0; i < 100; i++ )); do loaded $1 || return 0; sleep 0.1; done
   say "$1 still loaded after 10 s"; return 1
-}
-# no_backup_job: the dev tools have no backup job: one an older release set up
-# (<prefix>.devtools-backup, a nightly copy to the NAS) unloaded and its plist deleted; nothing
-# done on a Mac without it.
-no_backup_job() {
-  local l=$prefix.devtools-backup
-  loaded $l || [[ -e $agents/$l.plist ]] || return 0
-  if gone $l && rm -f $agents/$l.plist; then say "devtools: backup job $l removed"; return 0; fi
-  say "devtools: backup job $l not removed"; return 1
 }
 # reloads <service>: its jobs are to be loaded again from their plists (setup's of it, --reload's).
 reloads() { [[ ${opt[reload]:-} == (all|$1) ]] }
@@ -362,8 +351,6 @@ any=
 for s in devtools caddy; do
   [[ -f $H/$s/setup ]] || continue
   any=1
-  # (The dev tools' backup job removed apart: its failing is reported, the update done all the same.)
-  if [[ $s == devtools ]]; then no_backup_job || failed+=(devtools-backup); fi
   update_$s || failed+=($s)
 done
 [[ -n $any ]] || { say "nothing set up in $H"; exit 1; }

@@ -15,7 +15,7 @@ box=${box:A}
 prefix=local.scenic-sandbox.${box:t}
 cleanup() {
   local l
-  for l in $prefix.devtools $prefix.devtools-backup $prefix.caddy; do launchctl bootout gui/$UID/$l 2>/dev/null; done
+  for l in $prefix.devtools $prefix.caddy; do launchctl bootout gui/$UID/$l 2>/dev/null; done
   rm -rf $box
 }
 trap cleanup EXIT
@@ -83,7 +83,8 @@ items() { curl -sf --max-time 2 "$B/api/c/items?limit=1" | python3 -c 'import js
 uv() { /usr/bin/sqlite3 $data/jobs.db 'PRAGMA user_version' }
 # (The form this checkout's dev tools make and keep jobs.db at: jobs.mjs's FORM.)
 jform=$($node --input-type=module -e "import('$repo/tools/devtools/jobs.mjs').then((m) => console.log(m.FORM))") || { no setup "jobs.mjs's FORM"; exit 1 }
-run() { out=$(zsh "$@" 2>&1); rc=$? }
+# (The script run as a program, as by hand and by the agent: services_stage ships it executable.)
+run() { out=$("$@" 2>&1); rc=$? }
 
 # ---- setup ------------------------------------------------------------------------------------------
 # As on the Mac mini before: the dev tools and Caddy run from a git checkout by LaunchAgents of the
@@ -104,8 +105,6 @@ old() {  # old <label> <working folder> <program> <arg>…: a LaunchAgent as the
 }
 old $prefix.devtools $data $node $data/server.mjs --host :: --port $port
 launchctl bootstrap gui/$UID $REPLY
-old $prefix.devtools-backup $data /bin/sleep 600   # (the nightly backup job an older release ran)
-launchctl bootstrap gui/$UID $REPLY
 old $prefix.caddy $co/caddy $box/bin/caddy run --config $co/caddy/Caddyfile --adapter caddyfile
 plutil -insert EnvironmentVariables -dictionary $REPLY
 plutil -insert EnvironmentVariables.SCENIC_MAP_NAME -string svc.test $REPLY
@@ -118,12 +117,13 @@ curl -sf -X POST $B/api/c/items -H 'content-type: application/json' -d '{"text":
 [[ $(items) == 1 ]] || no "the checkout's dev tools" "items $(items 2>&1)"
 
 version one; v1=$REPLY
+# (Task #1214: staged executable, so the documented `…/services/services.zsh setup devtools` runs.)
+[[ -x $v1 && $(head -1 $v1) == "#!/bin/zsh" ]] && ok "services_stage: the script is executable" \
+  || no "services_stage: the script is executable" "$(ls -l $v1)"
 run $v1 setup devtools
 if (( rc )); then no "setup devtools" "exit $rc: $out"
 elif [[ $(page) != "<!-- ${v1:h:h:t} -->" ]]; then no "setup devtools" "the page isn't one's: $(page)"
 elif [[ $(items) != 1 ]]; then no "setup devtools" "items $(items), not the checkout's 1"
-elif launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1 || [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "setup devtools" "the old backup job is still there"
-elif grep -q backup $H/devtools/setup; then no "setup devtools" "the setup file names a backup job: $(<$H/devtools/setup)"
 elif [[ $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist) != "[\"${node//\//\\/}\",\"${${H//\//\\/}}\\/devtools\\/current\\/tools\\/devtools\\/server.mjs\",\"--host\",\"::\",\"--port\",\"$port\",\"--data\",\"${data//\//\\/}\"]" ]]; then
   no "setup devtools" "the plist: $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist)"
 else ok "setup devtools: from the checkout's, its data kept where it is"; fi
@@ -141,21 +141,6 @@ else ok "setup caddy: from the checkout's, the dev tools left running"; fi
 run $v1 setup caddy --bogus x
 (( rc == 2 )) && ok "setup refuses an unknown option" || no "setup refuses an unknown option" "exit $rc"
 
-# An existing backup job (here put back by hand) is unloaded and its plist deleted by update too,
-# the dev tools left running; a plist alone (not loaded) deleted as well.
-old $prefix.devtools-backup $data /bin/sleep 600
-launchctl bootstrap gui/$UID $REPLY
-run $v1 update
-if (( rc )); then no "update drops a backup job" "exit $rc: $out"
-elif launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1 || [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "update drops a backup job" "still there"
-elif [[ $out != *"devtools: at "*" already"* ]]; then no "update drops a backup job" "the dev tools restarted: $out"
-else ok "update: an existing backup job is booted out and its plist deleted, the dev tools left running"; fi
-old $prefix.devtools-backup $data /bin/sleep 600
-run $v1 update
-if (( rc )); then no "update drops a backup job's plist" "exit $rc: $out"
-elif [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "update drops a backup job's plist" "still there"
-else ok "update: a backup job's plist, not loaded, deleted"; fi
-
 # ---- update -----------------------------------------------------------------------------------------
 version two; v2=$REPLY
 run $v2 update
@@ -165,7 +150,6 @@ elif [[ $(page) != "<!-- ${v2:h:h:t} -->" || $(mark) != two ]]; then no "update"
 elif [[ $(items) != 1 ]]; then no "update" "items $(items), not 1"
 elif [[ $order != *devtools* ]]; then no "update" "Caddy before the dev tools: $out"
 elif [[ $(<$H/version) != ${v2:h:h:t} ]]; then no "update" "version $(<$H/version)"
-elif [[ $out == *"backup job"* ]]; then no "update" "a backup job named, with none there: $out"
 else ok "update: the dev tools, then Caddy, the data kept"; fi
 p0=$(pid devtools) c0=$(pid caddy)
 run $v2 update
@@ -243,7 +227,7 @@ else ok "no copy of the databases: nothing switched"; fi
 # A run cut short after its switch (killed while the new version, which changed jobs.db's form,
 # starts): the next run goes on from it, back to the version before, the copy taken before put back.
 version ten late; v10=$REPLY
-zsh $v10 update > $box/cut.log 2>&1 &
+$v10 update > $box/cut.log 2>&1 &
 cut=$!
 for (( i = 0; i < 100; i++ )); do [[ $(uv) == 99 ]] && break; sleep 0.1; done
 kill $cut 2>/dev/null; wait $cut 2>/dev/null

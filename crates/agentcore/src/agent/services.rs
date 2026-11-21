@@ -36,7 +36,8 @@ pub fn serving(agent_home: &Path) {
             .name("services".into())
             .spawn(move || {
                 eprintln!("agent: the services to {v} ({})", script.display());
-                match store::spawn::output(store::spawn::command("/bin/zsh").arg(&script).arg("update")) {
+                // (Run as the program it is, as by hand: services_stage ships it executable.)
+                match store::spawn::output(store::spawn::command(&script).arg("update")) {
                     Ok(o) => {
                         for l in
                             String::from_utf8_lossy(&o.stdout).lines().chain(String::from_utf8_lossy(&o.stderr).lines())

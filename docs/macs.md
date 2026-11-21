@@ -287,8 +287,8 @@ task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtool
 script, `caddy/Caddyfile`, and `devtools/` laid out as in the repo, with the build page's modules
 the dashboard serves), and run from `~/Library/Application Support/scenic/services/`, not from a
 git checkout. The dev tools' data has no copy off the mini.
-- **Set up once per service**, by hand, from the installed app:
-  `~/Library/Application\ Support/scenic/app/current/services/services.zsh setup devtools`, then
+- **Set up once per service**, by hand, from the installed app, whose copy of the script is
+  executable (`services_stage`): `~/scenic/app/current/services/services.zsh setup devtools`, then
   `… setup caddy`. Each writes its LaunchAgent and its settings (`services/<service>/setup`), taking
   what the LaunchAgent of that label ran before as its defaults (the dev tools' node, port and data
   folder; Caddy's program, name, certificate and key; an option changes each: `--help`), loads it
@@ -312,10 +312,7 @@ git checkout. The dev tools' data has no copy off the mini.
   power cut) leaves `services/devtools/backup/pending`, and the next run goes on from it: the
   version before and the copies taken before it. Then Caddy: the new Caddyfile validated with the
   job's settings, put in `services/caddy/Caddyfile`, Caddy restarted and checked (a new process
-  answering HTTPS within 10 s), else the last one seen serving put back. Each run where the dev
-  tools are set up also unloads a backup job an older release set up
-  (`local.scenic.devtools-backup`) and deletes its plist (failing, the run fails; the update is
-  done all the same). A failure goes to the
+  answering HTTPS within 10 s), else the last one seen serving put back. A failure goes to the
   agent's log, and the agent doesn't try that version again; `services.zsh update` by hand does.
   One run at a time (`services/lock`), setup's too.
 - **The board's data stays where it was**: the data folder its setup names (on the Mac mini, the
