@@ -10909,7 +10909,12 @@ mod tests {
         // then given back, moving the generation alone.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
-        assert_eq!(a.planner().plan_seen(&r), last);
+        // (A coordinator here, the pool's: today's files are no longer the records, nor statted.)
+        let now = a.planner().plan_seen(&r);
+        assert_eq!(now.changed(Some(&last)), "the records");
+        last = now;
+        std::fs::write(root.join("state/build/jobs.json"), "{\"y\":2}").unwrap();
+        assert_eq!(a.planner().plan_seen(&r), last, "today's files not read in the pool");
         let mut granting = a.planner().granting();
         let granting_changed = |a: &mut Agent, last: &plan::Seen, granting: &mut plan::Granting, what: Option<&str>| {
             assert_eq!(a.planner().plan_seen(&r), *last, "{what:?}");
@@ -19506,8 +19511,8 @@ mod membership_tests {
 
     /// docs/coordination.md step 8d: a member's job of a pool's lease opens the lead's brief as it
     /// starts. Its lead not answering, none: the job isn't started, its lease given back (a stale
-    /// copy is what the merge's refusals come from); a lead on an app before this step (no such
-    /// route), the NAS's, as before; the lead back, its brief, written again only once it's another.
+    /// copy is what the merge's refusals come from), a 404 alike; the lead back, its brief, written
+    /// again only once it's another.
     #[test]
     fn a_members_job_has_the_leads_brief_or_waits_for_the_lead() {
         let d = tempfile::tempdir().unwrap();
@@ -19540,10 +19545,10 @@ mod membership_tests {
         // The lead away: no brief, so no start.
         m.client = at(coordwire::testkit::dead());
         assert!(m.brief_for_job(0).is_err() && !file.exists());
-        // A lead on an older app: the NAS's (no file named).
-        let (old, _) = coordwire::testkit::answering(404);
-        m.client = at(old);
-        assert_eq!(m.brief_for_job(0), Ok(None));
+        // A 404: the lead not answering as a lead does, so no start either.
+        let (lost, _) = coordwire::testkit::answering(404);
+        m.client = at(lost);
+        assert!(m.brief_for_job(0).is_err() && !file.exists());
         // The lead back: its brief, the bytes it serves.
         m.client = at(format!("http://127.0.0.1:{}", lead.coord.as_ref().unwrap().port()));
         assert_eq!(m.brief_for_job(0), Ok(Some(file.clone())));
