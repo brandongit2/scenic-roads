@@ -1000,11 +1000,16 @@ async function run() {
         await js(`(() => { const c = ${c}; c.dispatchEvent(new PointerEvent("pointerout", { pointerType: "mouse", bubbles: true, relatedTarget: null })); c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); })()`);
         check("overview: the card goes on leaving the window", !(await seen()));
         // (A card's element, the stage bar's segment: on it, then off it.)
+        const strip = await js(`[...document.querySelectorAll(".strip > i")].some((e) => e.getClientRects().length)`);
         const seg = await js(`(() => { const e = [...document.querySelectorAll("[data-card]:not(canvas)")].find((e) => e.getClientRects().length && e.getBoundingClientRect().width > 4); if (!e) return null; e.scrollIntoView({ block: "center" }); const r = e.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; return document.elementFromPoint(x, y)?.closest("[data-card]") === e ? [x, y] : null; })()`);
         await sleep(300);
         const off = seg && (await js(`(() => { for (let y = 20; y < innerHeight - 20; y += 10) for (let x = 6; x < innerWidth - 6; x += 10) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, canvas, .card-tip")) return [x, y]; } return null; })()`));
-        if (off) { await mouse(...seg); const on = await seen(); await mouse(...off); check("overview: a card goes on leaving its element", on && !(await seen()), on ? "" : "no card shown on it"); }
-        else check("overview: a card goes on leaving its element", false, "no card element or empty spot found");
+        // (On the Overview the only such elements are the stage bar's segments, there with work queued:
+        // an idle build shows none. A segment shown with no card on it fails.)
+        if (!seg && !strip) console.log("INFO overview: no stage bar shown, no stage with work queued (the live build's state): a card's leaving its element not checked");
+        else if (!seg) check("overview: a card goes on leaving its element", false, "a stage bar shown, no segment of it carrying a card");
+        else if (off) { await mouse(...seg); const on = await seen(); await mouse(...off); check("overview: a card goes on leaving its element", on && !(await seen()), on ? "" : "no card shown on it"); }
+        else check("overview: a card goes on leaving its element", false, "no empty spot found");
         // (A tall card, the pointer near the window's bottom, then near its top: wholly above or
         // below the pointer's line, never across it, and no taller than 50svh.)
         for (const [where, frac] of [["bottom", 0.85], ["top", 0.15]]) {
