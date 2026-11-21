@@ -2473,7 +2473,7 @@ mod tests {
         };
         assert_eq!(
             w.floors(crate::agent::seam::for_tests(), &[]),
-            [("water water".to_string(), Floor { mb: 33000, alone: true, v: 0 })]
+            [("water water".to_string(), Floor { mb: 33000, alone: true, v: crate::coord::cost_version("water") })]
         );
         assert_eq!((step_of_key("6/1/1"), step_of_key("terrain 6/1/1")), ("unit", "terrain"));
         // (A key of no space that isn't a z6 tile is no z6 tile's: task #849.)

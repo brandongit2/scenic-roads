@@ -8394,7 +8394,7 @@ mod tests {
         assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "slope-hi", "3/0/2", 2000), 2000);
         costs.insert(
             cost_key("peaks", "6/1/1"),
-            Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() },
+            Cost { peak_mb: 5000, secs: 300, worker: None, v: cost_version("peaks"), ..Default::default() },
         );
         assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "peaks", "6/1/1", 2500), 5000);
     }
@@ -8815,7 +8815,7 @@ mod tests {
         // The z6 tile's run, then its own.
         costs.insert("6/1/1".to_string(), cost(4200));
         assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 100 << 20), 4200);
-        costs.insert("pois 6/1/1".to_string(), cost(1200));
+        costs.insert("pois 6/1/1".to_string(), Cost { v: cost_version("pois"), ..cost(1200) });
         assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 100 << 20), 1200);
         // Another step: its own, else its offer's guess.
         assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "slope-hi", "3/2/2", 3000), 3000);
@@ -9120,7 +9120,7 @@ mod tests {
         // (a prior learned), until its own run says.
         c.add_costs(&[(
             cost_key("peaks", "6/1/1"),
-            Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
+            Cost { peak_mb: 3000, secs: 60, worker: None, v: cost_version("peaks"), ..Default::default() },
         )]);
         assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
@@ -9287,7 +9287,7 @@ mod tests {
         };
         c.offer("p", vec![o(&[("6/1/1", 2500)], 1)]);
         let can = |mem: u64| Ask { can: vec!["peaks".into()], ..ask(mem) };
-        let f = |mb: u64, alone: bool| Floor { mb, alone, v: 0 };
+        let f = |mb: u64, alone: bool| Floor { mb, alone, v: cost_version("peaks") };
         let g = w.ask(&can(4096)).unwrap().unwrap();
         // Stopped past its Mac's limit: given back with what it held, the floor of its target (not
         // another's, nor a target of no lease of it).
@@ -9385,7 +9385,7 @@ mod tests {
             "p",
             vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k".into(), 2500)], job: None }],
         );
-        c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
+        c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 43_000, alone: true, v: cost_version("peaks") })]);
         assert_eq!(mem_of(&c, "peaks", "6/1/1"), Some(43_000));
         assert!(c.holding_floor("peaks", "6/1/1").is_some());
         let (code, v) = w.post_json("/api/floors", &serde_json::json!({ "clear": true, "step": "peaks" })).unwrap();

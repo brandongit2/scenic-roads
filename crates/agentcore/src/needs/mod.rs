@@ -1332,10 +1332,16 @@ mod tests {
         let c: Case = serde_json::from_slice(&zstd::decode_all(&z[..]).unwrap()).unwrap();
         let the_plan = crate::agent::seam::for_tests();
         let inputs = Inputs { paces: &c.paces, records: &c.facts, tuning: Default::default() };
-        let b = Book::pool(the_plan, &c.costs, None, inputs);
+        // (Recorded under lake-depth's way then, 1: its measures of it taken as the way it runs
+        // now, those before it as of another.)
         let v = the_plan.cost_version("lake-depth");
-        let now: Vec<&Cost> = c.costs.values().filter(|c| c.v >= v && !is_drop(c)).collect();
-        let older: Vec<&String> = c.costs.iter().filter(|(_, c)| c.v < v).map(|(k, _)| k).collect();
+        let mut costs = c.costs.clone();
+        for (_, r) in costs.iter_mut().filter(|(k, r)| k.starts_with("lake-depth ") && r.v == 1) {
+            r.v = v;
+        }
+        let b = Book::pool(the_plan, &costs, None, inputs);
+        let now: Vec<&Cost> = costs.values().filter(|c| c.v == v && !is_drop(c)).collect();
+        let older: Vec<&String> = costs.iter().filter(|(_, c)| c.v != v).map(|(k, _)| k).collect();
         assert!(now.len() > 100 && older.len() > 1000 && older.iter().any(|k| *k == "lake-depth 6/10/22"));
         for w in ["MacBook-Pro-de-Brandon", "Brandons-MacBook-Pro", "Mac-mini-de-Brandon"] {
             let ratio = |m: &str| c.paces.get(m);
@@ -1795,12 +1801,13 @@ mod tests {
     fn memory_is_the_models_high_percentile_and_none_the_guess() {
         let mut costs = BTreeMap::new();
         for i in 1..=30u64 {
-            costs.insert(format!("peaks 6/{i}/1"), cost(if i % 7 == 0 { 9000 } else { 300 + (i * 37) % 200 }, 5, &[]));
+            let c = cost(if i % 7 == 0 { 9000 } else { 300 + (i * 37) % 200 }, 5, &[]);
+            costs.insert(format!("peaks 6/{i}/1"), Cost { v: cost_version("peaks"), ..c });
         }
-        costs.insert("peaks 6/31/1".into(), cost(40_000, 5, &[]));
+        costs.insert("peaks 6/31/1".into(), Cost { v: cost_version("peaks"), ..cost(40_000, 5, &[]) });
         let floors = BTreeMap::from([
-            ("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
-            ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
+            ("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: cost_version("peaks") }),
+            ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: cost_version("terrain") + 1 }),
         ]);
         let mut b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
         // (At the 95th percentile, the one outlier of 31 runs left out.)
@@ -1921,14 +1928,15 @@ mod tests {
         let (f, d) = (BTreeMap::new(), BTreeMap::new());
         let (paces, records) = (crate::paces::Paces::default(), Records::new());
         let inputs = Inputs { paces: &paces, records: &records, tuning: Default::default() };
-        let mut costs = BTreeMap::from([("peaks 6/1/1".to_string(), cost(1000, 5, &[]))]);
+        let peaks = |c: Cost| Cost { v: cost_version("peaks"), ..c };
+        let mut costs = BTreeMap::from([("peaks 6/1/1".to_string(), peaks(cost(1000, 5, &[])))]);
         let mem = |costs: &BTreeMap<String, Cost>, rev| {
             Book::kept(crate::agent::seam::for_tests(), costs, &f, &d, inputs, &cache, rev)
                 .mem("peaks", "6/9/9", 0, 0)
                 .0
         };
         assert_eq!(mem(&costs, 1), 1000);
-        costs.insert("peaks 6/1/2".into(), cost(5000, 5, &[]));
+        costs.insert("peaks 6/1/2".into(), peaks(cost(5000, 5, &[])));
         assert_eq!(mem(&costs, 1), 1000, "kept");
         assert!(mem(&costs, 2) > 1000);
     }
