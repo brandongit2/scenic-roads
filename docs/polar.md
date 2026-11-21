@@ -224,7 +224,7 @@ Memory: 0.3–0.9 GB a terrain job as measured.
    `inputs/elevation/`. **What accepting it re-keys: the polar targets alone.** The keys name the
    pool's datasets meeting each target's box (`declared::meeting`, unexpanded tile boxes); REMA's
    cells reach 86° S and the Mercator tiles' last row ends at 85.05° S, so no Mercator terrain,
-   slope, deep, lo, root or road (`unit`) key changes, nor peaks and summits (they read the
+   slope, deep, lo, root or road (`unit`) key changes, nor peaks (they read the
    terrain packs' z8). The roads' spacing doesn't change: GLO-30 holds the world before REMA, so
    REMA is no place's source for its finest zoom (crate::terrain_zoom::sources). Tested by
    `polar::tests::rema_south_of_87_meets_no_mercator_tile`. Two side effects, neither a re-key: a

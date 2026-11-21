@@ -1033,7 +1033,7 @@ commit; re-exports at the old paths as before.
           `answered`, `alone`, `records_only`, `fetches`, `cost_version`, `sources_naming` (needs'
           `source_secs`), `noun`, `said`, `task_kinds`, `task_disk`, `is_none_key`, `output_named`,
           `output_names`, `saves`, `outside`, `outside_by`, `read_steps`, `read_targets_passing`,
-          `input_readers`, `summits_waits`, `table_json`); of build.rs (`reads_sources`,
+          `input_readers`, `table_json`); of build.rs (`reads_sources`,
           `reads_lakefill`, `catalogue_waits_for`, `job_of`, `worldwide_steps`, `fold`,
           `checklist_to_come`); of the families (`terrain_peak`, `task_what`, `tree_task_kind`,
           `task_kind`, `names_todo_inputs`, `names_todo_key`, `canopy_files`, `unit_margin_km`,

@@ -1975,18 +1975,8 @@ impl Planner {
                 why: format!("the regions' z6 tiles wait: {why}"),
             });
         }
-        // The pass's summits (worldwide), once the terrain packs they read are built (as the
-        // peaks after them): held, said.
-        let summits = pw.summits.take();
-        // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
-        let mut summits_held = None;
-        let summits_waits = self.o.the_plan.summits_waits(&planned.left);
-        if let Some(why) =
-            summits_waits.filter(|_| summits.is_some() || manifest.contains_key(&format!("work/summits/{date}")))
-        {
-            summits_held = summits;
-            waiting.push(Waiting { step: Some("summits".into()), what: "summits".into(), why });
-        } else if let Some(w) = summits {
+        // The pass's summits (worldwide): they read the pass's set alone, waiting for nothing.
+        if let Some(w) = pw.summits.take() {
             let j = job(
                 format!("summits {date}"),
                 "summits",
@@ -2273,9 +2263,7 @@ impl Planner {
                     .filter(|w| matches!(w.step.as_str(), "heritage-sites" | "pyramids-fill"))
                     .map(|w| job(format!("{} {date}", w.step), &w.step, Vec::new(), Some(w.clone()))),
             );
-            let mut chains = self.held_plan.chains_left(&round);
-
-            chains[1].splice(0..0, summits_held);
+            let chains = self.held_plan.chains_left(&round);
             self.forecast_record(
                 &before,
                 &planned.regions,

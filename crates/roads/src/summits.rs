@@ -1,10 +1,10 @@
 //! Every summit, worldwide (docs/phase5.md "summits"): the pass's `summits` set (natural=peak or
 //! volcano, nodes and ways), each with the position and `ele` it has as a candidate (extract's
 //! rules: a node's position; a way's centre, the integer mean of its nodes, the closing node
-//! counted twice, truncated; `ele` parsed and rounded, nodes only), and its height for the peaks'
-//! z8 overlay: its tagged `ele` where that is plausible at the terrain packs' z8 (crate::peaks::z8;
-//! 0 m where nothing is built), else none. Sorted by OSM type and id; written as zstd JSON
-//! lines (`work/summits/<d>`).
+//! counted twice, truncated; `ele` parsed and rounded, nodes only). Sorted by OSM type and id;
+//! written as zstd JSON lines (`work/summits/<d>`). Their heights in the peaks' z8 overlay
+//! (`z8_height`) are each peaks run's own, from the z8 it reads (crate::peaks::unit::Z8Base), so
+//! the summits read no terrain.
 
 use crate::peaks::z8::Z8;
 use anyhow::{Context, Result};
@@ -25,9 +25,6 @@ pub struct Summit {
     pub lat: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ele: Option<f32>,
-    /// Its height in the peaks' z8 overlay (`z8_height`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub z8: Option<f32>,
 }
 
 impl Summit {
@@ -66,7 +63,7 @@ fn concat<T>(mut a: Vec<T>, mut b: Vec<T>) -> Vec<T> {
     a
 }
 
-/// The summits of `pbf` (the `summits` set), without their z8 heights.
+/// The summits of `pbf` (the `summits` set).
 pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
     // Pass 1: the summits mapped as nodes, and the ways' node lists.
     let (mut nodes, mut ways): (Vec<Summit>, Vec<(i64, &'static str, Vec<i64>)>) =
@@ -80,7 +77,6 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
                         lon,
                         lat,
                         ele: crate::candidates::parse_ele(ele).map(f32::round),
-                        z8: None,
                     })
                 };
                 match el {
@@ -141,7 +137,6 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
             lon: (sx / n) as i32,
             lat: (sy / n) as i32,
             ele: None,
-            z8: None,
         });
     }
     nodes.sort_by_key(Summit::order);
@@ -155,39 +150,34 @@ pub fn z8_pixel(lon: i32, lat: i32) -> (i64, i64) {
     ((x * w).floor() as i64, (y * w).floor() as i64)
 }
 
-/// The z8 pixels a summit's z8 height reads (`add_z8`): those within one pixel of its own, x
-/// wrapping, none past the poles.
-fn z8_around(s: &Summit) -> impl Iterator<Item = (i64, i64)> {
+/// The z8 pixels a z8 height on pixel `p` reads (`z8_max_around`): those within one pixel of it,
+/// x wrapping, none past the poles.
+fn z8_around((px, py): (i64, i64)) -> impl Iterator<Item = (i64, i64)> {
     let w = 256i64 << crate::peaks::z8::Z;
-    let (px, py) = z8_pixel(s.lon, s.lat);
     (-1..=1i64)
         .flat_map(move |dy| (-1..=1i64).map(move |dx| ((px + dx).rem_euclid(w), py + dy)))
         .filter(move |&(_, gy)| (0..w).contains(&gy))
 }
 
-/// The z8 tiles a summit's z8 height reads (`add_z8`): none without a tagged height (its z8 is
-/// none whatever the terrain), else those of the pixels within one of its own. What a peaks run
-/// records of a summit it read (crate::peaks::unit::run).
+/// The z8 tiles a summit's z8 height reads (`z8_max_around`): none without a tagged height (its
+/// z8 height is none whatever the terrain), else those of the pixels within one of its own. What
+/// a peaks run records of a summit it read (crate::peaks::unit::run).
 pub fn z8_tiles_read(s: &Summit) -> impl Iterator<Item = (u32, u32)> + '_ {
-    s.ele.into_iter().flat_map(move |_| z8_around(s)).map(|(gx, gy)| ((gx / 256) as u32, (gy / 256) as u32))
+    s.ele
+        .into_iter()
+        .flat_map(move |_| z8_around(z8_pixel(s.lon, s.lat)))
+        .map(|(gx, gy)| ((gx / 256) as u32, (gy / 256) as u32))
 }
 
-/// Each summit's z8 height (`z8_height`), from the highest pixel within one pixel of it.
-pub fn add_z8(summits: &mut [Summit], z8: &Z8) -> Result<usize> {
-    use rayon::prelude::*;
-    summits
-        .par_iter_mut()
-        .map(|s| -> Result<usize> {
-            let Some(ele) = s.ele else { return Ok(0) };
-            let mut max3 = f32::MIN;
-            for (gx, gy) in z8_around(s) {
-                let t = z8.tile((gx / 256) as u32, (gy / 256) as u32)?;
-                max3 = max3.max(t[(gy % 256 * 256 + gx % 256) as usize].max(0.0));
-            }
-            s.z8 = z8_height(ele, max3);
-            Ok(s.z8.is_some() as usize)
-        })
-        .sum()
+/// The highest z8 pixel within one of pixel `p` (0 m where nothing is built), which a tagged height
+/// on it is held to (`z8_height`).
+pub fn z8_max_around(p: (i64, i64), z8: &Z8) -> Result<f32> {
+    let mut max3 = f32::MIN;
+    for (gx, gy) in z8_around(p) {
+        let t = z8.tile((gx / 256) as u32, (gy / 256) as u32)?;
+        max3 = max3.max(t[(gy % 256 * 256 + gx % 256) as usize].max(0.0));
+    }
+    Ok(max3)
 }
 
 pub fn write(path: &Path, summits: &[Summit]) -> Result<()> {
@@ -236,14 +226,8 @@ mod tests {
             let w = 256.0 * 256.0;
             let (x, y) = ((gx + 0.5) / w, (gy + 0.5) / w);
             let (lon, lat) = (x * 360.0 - 180.0, roadcore::geo::merc_lat(y));
-            let s = Summit {
-                id: "n1".into(),
-                kind: "peak".into(),
-                lon: (lon * 1e7) as i32,
-                lat: (lat * 1e7) as i32,
-                ele,
-                z8: None,
-            };
+            let s =
+                Summit { id: "n1".into(), kind: "peak".into(), lon: (lon * 1e7) as i32, lat: (lat * 1e7) as i32, ele };
             let mut t: Vec<(u32, u32)> = z8_tiles_read(&s).collect();
             t.sort_unstable();
             t.dedup();
@@ -258,7 +242,7 @@ mod tests {
 
     #[test]
     fn order_nodes_then_ways_by_id() {
-        let s = |id: &str| Summit { id: id.into(), kind: "peak".into(), lon: 0, lat: 0, ele: None, z8: None };
+        let s = |id: &str| Summit { id: id.into(), kind: "peak".into(), lon: 0, lat: 0, ele: None };
         let mut v = vec![s("w2"), s("n10"), s("n9")];
         v.sort_by_key(Summit::order);
         assert_eq!(v.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["n9", "n10", "w2"]);

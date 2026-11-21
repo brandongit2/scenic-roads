@@ -17,7 +17,7 @@ and keys):
    heritage-named objects, water), the worldwide basemap, z6 tile extracts (filtered OSM per z6 tile, 10 km
    buffer, ways whole) and worldwide road values (docs/steps.md).
 2. **Worldwide jobs, once per pass:** missing sets, the outlines, hiking routes' ends, each z6 tile's
-   reach (docs/regions.md), summits (once the terrain packs are built), place labels, the water, the lake fill.
+   reach (docs/regions.md), summits, place labels, the water, the lake fill.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
 4. **Global-source layers near the coverage:** terrain, slope and tree cover, a run per z6 tile
    and an assembly per z3 tile.
@@ -300,7 +300,7 @@ from the first (`edit_held`).
   Work in a job's own process says how far it is every 5 s beside it (`jobrt::jobs::saying`: the
   staging, a depth level's blocks and the floor's shading, terrain-hi's, terrain-lo's and
   terrain-deep's tiles, the regions check's resolve by its steps (docs/inputs.md §6.1.4), the
-  summits' z8 packs copied, the items' z6 tiles' candidates read), so the slow and stuck flags
+  peaks' z8 packs copied, the items' z6 tiles' candidates read), so the slow and stuck flags
   (docs/pool.md §10) judge it by its progress while it works; heritage's park facts say theirs as
   each Wikidata batch comes. Within a stage the share never goes back (`jobs::within`: a stage's
   second program from 0 says the most so far until it passes it). A part's time left comes from
@@ -357,7 +357,7 @@ from the first (`edit_held`).
   slot's lane until its measured time. The departure check leaves them out (docs/pool.md §7.2,
   One scheduler), and a test holds every job the plan makes outside the forecast to that list.
   The forecast's input before the regions' is every job the plan makes ahead of the regions' work (the pass's
-  worldwide jobs, the timetables' to-do, the summits unless held: held, they are the landmarks chain's first step), and a
+  worldwide jobs, the timetables' to-do, the summits), and a
   held catalogue is its `catalog-held`, as it is granted.
   Every plan has its forecast, whichever way the planner leaves (`Planner::region_jobs`, the one exit): the
   regions' work as above, or, where it stops short of it (the build's records unread, an app older than the
@@ -511,8 +511,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 1. **The OSM pass**, when the declared planet is newer than the last pass: `planet-fetch` first,
    when the NAS lacks it (docs/steps.md §1).
 2. **The pass's worldwide jobs:** `pass-sets`, `outlines` (the rest waits for them), hiking routes'
-   ends, `reach`, roadside buildings (once per release; z6 tiles wait), summits (once terrain-hi
-   and terrain-lo have no work left: they read the lo packs' z8),
+   ends, `reach`, roadside buildings (once per release; z6 tiles wait), summits,
    labels, the lake fill, the water.
 3. **The regions' build,** a region at a time (`agent::build::plan`):
    - heritage-sites first;

@@ -32,12 +32,24 @@ const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 
 /// A target record's head as kept here (`<hash16>.asked-head`, `TerrainTiles::asked_heads`), with
 /// the record format it was read by (buildstore::asked::RECORD_FMT): one of another is read again,
-/// so a build reading records otherwise can't take an old head for one it would parse.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// so a build reading records otherwise can't take an old head for one it would parse; with the
+/// targets of other steps its questions read in (`reads`, idents::question_read: what its target's
+/// `Read::Built` reads wait for, task #1556). A head kept without them doesn't parse: read again.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Head {
     fmt: u32,
     version: String,
     line: String,
+    reads: Vec<String>,
+}
+
+impl Head {
+    fn of(r: &buildstore::asked::Record) -> Head {
+        let mut reads: Vec<String> = r.also.iter().filter_map(|(q, _)| super::idents::question_read(q)).collect();
+        reads.sort_unstable();
+        reads.dedup();
+        Head { fmt: buildstore::asked::RECORD_FMT, version: r.version.clone(), line: r.line.clone(), reads }
+    }
 }
 
 /// What's kept in the agent's folder by content hash, with the manifest entries naming them: each
@@ -113,7 +125,7 @@ pub struct TerrainTiles {
     /// folder by content hash (`<hash>.asked-head`), so an agent's start reads only those new since
     /// (one that can't be read now: tried again with the next load). None: one that reads but
     /// doesn't parse (buildstore::asked::Prev::Unparsed).
-    asked_heads: HashMap<String, Option<(String, String)>>,
+    asked_heads: HashMap<String, Option<Head>>,
     /// Files kept in the agent's folder since its last `tidy` (water digests, record heads; new
     /// packs' indexes are counted by `load`).
     kept_new: usize,
@@ -428,7 +440,7 @@ impl TerrainTiles {
         };
         // (Its head kept here, of this build's record format (`Head`), else read whole and kept; an
         // I/O error tried again, a record that doesn't parse taken as one, never tried again.)
-        let got: Vec<(&String, std::io::Result<Option<(String, String)>>)> = missing
+        let got: Vec<(&String, std::io::Result<Option<Head>>)> = missing
             .par_iter()
             .map(|c| {
                 let k = kept(c);
@@ -437,15 +449,12 @@ impl TerrainTiles {
                     .and_then(|p| std::fs::read(p).ok())
                     .and_then(|b| serde_json::from_slice::<Head>(&b).ok());
                 if let Some(h) = here.filter(|h| h.fmt == buildstore::asked::RECORD_FMT) {
-                    return (*c, Ok(Some((h.version, h.line))));
+                    return (*c, Ok(Some(h)));
                 }
-                let head = root
-                    .join(c)
-                    .read()
-                    .map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| (r.version, r.line)));
-                if let (Ok(Some((version, line))), Some(p)) = (&head, &k) {
-                    let h = Head { fmt: buildstore::asked::RECORD_FMT, version: version.clone(), line: line.clone() };
-                    let b = serde_json::to_vec(&h).expect("a head serializes");
+                let head =
+                    root.join(c).read().map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| Head::of(&r)));
+                if let (Ok(Some(h)), Some(p)) = (&head, &k) {
+                    let b = serde_json::to_vec(h).expect("a head serializes");
                     if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
                         .map_err(anyhow::Error::from)
                         .and_then(|()| store::whole::write(p, &b))
@@ -497,7 +506,14 @@ impl TerrainTiles {
     /// ran under (`asked_heads`): Some(None) for one that doesn't parse, None while it can't be
     /// read now.
     pub fn asked_head(&self, c: &str) -> Option<Option<(String, String)>> {
-        self.asked_heads.get(c).cloned()
+        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| (h.version.clone(), h.line.clone())))
+    }
+
+    /// The targets of other steps a target's record of content name `c` says its run read in
+    /// (`Head`'s `reads`, "<step> <target>"): Some(None) for one that doesn't parse, None while it
+    /// can't be read now.
+    pub fn asked_reads(&self, c: &str) -> Option<Option<&[String]>> {
+        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| h.reads.as_slice()))
     }
 
     /// A target's record of content name `c`, read now (one held, `hold_asked`: that): Ok(None) for
@@ -533,7 +549,7 @@ impl TerrainTiles {
     /// no file).
     #[cfg(test)]
     pub fn hold_asked(&mut self, content: &str, r: buildstore::asked::Record) {
-        self.asked_heads.insert(content.to_string(), Some((r.version.clone(), r.line.clone())));
+        self.asked_heads.insert(content.to_string(), Some(Head::of(&r)));
         self.asked.insert(content.to_string(), Some(Some(std::sync::Arc::new(r))));
     }
 
@@ -1094,7 +1110,9 @@ mod tests {
     fn target_records_heads_are_kept_here_and_one_unparsed_is_held_as_such() {
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
-        let r = buildstore::asked::Record { version: "geo".into(), line: "l".into(), ..Default::default() };
+        // (Task #1556: with the lo packs its z8 questions read in, each once.)
+        let also = ["z8 8/133/90", "z8 8/134/90", "z8 8/160/90"].map(|q| (q.to_string(), "-".to_string())).to_vec();
+        let r = buildstore::asked::Record { version: "geo".into(), line: "l".into(), also, ..Default::default() };
         let (good, bad, gone) = (
             "work/asked/pois/6-1-2.1111111111111111.json.zst",
             "work/asked/pois/6-1-3.2222222222222222.json.zst",
@@ -1108,6 +1126,8 @@ mod tests {
         let mut t = TerrainTiles::new(Some(d.path().join("kept")));
         t.load_asked(&root, &m);
         assert_eq!(t.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        let reads = ["terrain-lo 3/4/2".to_string(), "terrain-lo 3/5/2".to_string()];
+        assert_eq!(t.asked_reads(good), Some(Some(&reads[..])));
         assert_eq!(t.asked_head(bad), Some(None));
         assert!(t.target_asked(bad).unwrap().is_none());
         assert_eq!(t.asked_head(gone), None);
@@ -1118,16 +1138,24 @@ mod tests {
         let mut again = TerrainTiles::new(Some(d.path().join("kept")));
         again.load_asked(&root, &m);
         assert_eq!(again.asked_head(good), Some(Some(("geo".into(), "l".into()))));
-        // A head kept by another record format: read again from the NAS (here, gone: unread).
+        assert_eq!(again.asked_reads(good), Some(Some(&reads[..])));
+        // A head kept by another record format, or without what its questions read: read again
+        // from the NAS (here, gone: unread).
         let kept = d.path().join("kept/1111111111111111.asked-head");
-        let old = serde_json::json!({"fmt": buildstore::asked::RECORD_FMT - 1, "version": "geo", "line": "old"});
-        std::fs::write(&kept, old.to_string()).unwrap();
+        for old in [
+            serde_json::json!({"fmt": buildstore::asked::RECORD_FMT - 1, "version": "geo", "line": "old", "reads": []}),
+            serde_json::json!({"fmt": buildstore::asked::RECORD_FMT, "version": "geo", "line": "old"}),
+        ] {
+            std::fs::write(&kept, old.to_string()).unwrap();
+            let mut other = TerrainTiles::new(Some(d.path().join("kept")));
+            other.load_asked(&root, &m);
+            assert_eq!(other.asked_head(good), None, "{old}");
+        }
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
-        other.load_asked(&root, &m);
-        assert_eq!(other.asked_head(good), None);
         std::fs::rename(d.path().join("aside"), &nas_good).unwrap();
         other.load_asked(&root, &m);
         assert_eq!(other.asked_head(good), Some(Some(("geo".into(), "l".into()))));
+        assert_eq!(other.asked_reads(good), Some(Some(&reads[..])));
     }
 
     /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,

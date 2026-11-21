@@ -199,10 +199,12 @@ pub enum Read {
     /// that `Targets` read's tiles, which name what's read in them.
     Along { step: &'static str, of: fn(&str, &roads::reach::Reach) -> Vec<String> },
     /// Some targets of another step that a target reads where what's built says, not its name (the
-    /// terrain's lo packs under an enclosed sea, which the water step finds: task #982): worked out
-    /// by the caller from what it holds into its view (`along_add_built`: the planner's
-    /// `Left::along`, the forecast's input), none where it hasn't. Waited for as an `Along`; keyed
-    /// by `grain`, as a `Targets` read of the targets `of` names.
+    /// terrain's lo packs under an enclosed sea, which the water step finds: task #982; those
+    /// holding the z8 tiles a peaks z6 tile's record says it read, task #1556): worked out by the
+    /// caller from what it holds into its view (`along_add_built`: the planner's `Left::along`, the
+    /// forecast's input), none where it hasn't. Waited for as a `Targets` read of them, passing on
+    /// what they wait for by `grain`; keyed by `grain`, as a `Targets` read of the targets `of`
+    /// names.
     Built { step: &'static str, of: fn(&str, &super::build::KeyCtx) -> Vec<String>, grain: Grain },
 }
 
@@ -301,16 +303,16 @@ pub fn read_targets_passing(step: &str, t: &str, along: Option<&Along>) -> Vec<(
 }
 
 /// Whether a wait passes on through read `r` (`readiness`): a target read that isn't left still
-/// holds its reader while it waits itself (`held`: a `Read::Targets` of a grain that `passes_on`,
-/// a `Read::Mids`), and so does a step read whole none of whose targets is left while anything it
-/// reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an `Along` or `Built` read
-/// holds it only while left. The one rule `readiness` and the forecast (agentcore::agent::forecast's
-/// `Waits`, through `read_targets_passing` and `read_steps`) wait by.
+/// holds its reader while it waits itself (`held`: a `Read::Targets` or `Read::Built` of a grain
+/// that `passes_on`, a `Read::Mids`), and so does a step read whole none of whose targets is left
+/// while anything it reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an `Along`
+/// read holds it only while left. The one rule `readiness` and the forecast
+/// (agentcore::agent::forecast's `Waits`, through `read_targets_passing` and `read_steps`) wait by.
 fn passes_on(r: &Read) -> bool {
     match *r {
-        Read::Targets { grain, .. } | Read::Whole { grain, .. } => grain.passes_on(),
+        Read::Targets { grain, .. } | Read::Whole { grain, .. } | Read::Built { grain, .. } => grain.passes_on(),
         Read::Mids { .. } => true,
-        Read::Along { .. } | Read::Built { .. } | Read::Input { .. } => false,
+        Read::Along { .. } | Read::Input { .. } => false,
     }
 }
 
@@ -981,7 +983,7 @@ pub const TABLE: [Step; 65] = [
     Step {
         alone: true,
         versions: &[("summits", || super::build::SUMMITS_V.to_string())],
-        reads: &[In { name: "set:summits", of: idents::set_summits }, All { step: "terrain-lo", grain: Outputs }],
+        reads: &[In { name: "set:summits", of: idents::set_summits }],
         ..step("pass", Derive, World, "summits", "Finds the world's summits.", w_summits) },
     Step {
         alone: true,
@@ -1523,7 +1525,7 @@ pub const TABLE: [Step; 65] = [
     Step {
         shared: true,
         versions: &[("peaks", || super::build::PEAKS_V.to_string())],
-        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::peaks_summits) }, All { step: "terrain-lo", grain: Grain::Read(idents::peaks_lo) }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
+        reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::pass_summits) }, Built { step: "terrain-lo", of: idents::peaks_lo_packs, grain: Grain::Read(idents::peaks_lo) }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
@@ -2672,6 +2674,34 @@ mod tests {
             assert!(l.along.is_empty());
             assert_eq!(readiness("unit", t, &l), Ready::Yes);
         }
+    }
+
+    /// Task #1556: a peaks z6 tile waits for the lo packs its record says its run read (its
+    /// `Read::Built`, worked out into the view: idents::peaks_lo_packs), not every lo pack, so a lo
+    /// pack made again holds only the peaks under it: while it's left, and while it waits itself
+    /// for a z6 tile's mid (the grain passes that on). The summits read no terrain: a lo pack
+    /// left holds no peaks through them.
+    #[test]
+    fn a_peaks_tile_waits_for_the_lo_packs_its_run_read_alone() {
+        use super::{read_targets, readiness, Left, ReadTarget, Ready};
+        let (under, elsewhere) = ("6/33/22", "6/40/22");
+        let mut left = Left::default();
+        left.along.put("peaks", under, "terrain-lo", vec!["3/4/2".into()]);
+        left.along.put("peaks", elsewhere, "terrain-lo", vec!["3/5/2".into()]);
+        assert!(
+            read_targets("peaks", under, Some(&left.along)).contains(&ReadTarget::One("terrain-lo", "3/4/2".into()))
+        );
+        assert!(!read_targets("peaks", under, None).iter().any(|r| matches!(r, ReadTarget::Whole(_))), "no whole read");
+        left.set("terrain-lo", ["3/4/2".to_string()]);
+        assert_eq!(readiness("peaks", under, &left), Ready::Waits(vec![("terrain-lo", "3/4/2".into())]));
+        assert_eq!(readiness("peaks", elsewhere, &left), Ready::Yes, "a lo pack it didn't read");
+        assert_eq!(readiness("summits", "summits", &left), Ready::Yes, "the summits read no terrain");
+        // 3/5/2 current, but its z6 tile 6/46/16 (far from either's hi packs) left: 3/5/2 is about to
+        // be made again, so what read it waits.
+        let mut mids = Left { along: left.along.clone(), ..Left::default() };
+        mids.set("terrain-hi", ["6/46/16".to_string()]);
+        assert_eq!(readiness("peaks", elsewhere, &mids), Ready::Waits(vec![("terrain-lo", "3/5/2".into())]));
+        assert_eq!(readiness("peaks", under, &mids), Ready::Yes);
     }
 
     /// A pole's root waits for its own pole's blocks only, both of their steps; a block's slope for

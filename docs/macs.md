@@ -91,7 +91,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   - **Deleted always** (`room::retire`, at the agent's start and daily, room needed or not): caches no
     code reads any more (`room::RETIRED`: the old DEM cache, `dem-cache.*`; the worldwide z8
     terrain's copies, `sources-terrain-z8-*`), and local copies of NAS files (`sources-*`, `work-*`,
-    `layers-*`: the summits' and peaks' terrain lo packs) a day old whose logical name the build
+    `layers-*`: the peaks' terrain lo packs) a day old whose logical name the build
     manifest no longer names (an older pass's). Without the NAS or a readable manifest, only the retired caches;
     not while a job an earlier agent left runs. A file a job holds stays.
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile

@@ -813,13 +813,11 @@ pub fn heritage_sites_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
         .then(|| Work { step: "heritage-sites".into(), targets: vec![("heritage-sites".into(), k)] })
 }
 
-/// Every summit worldwide with its z8 height, once per pass (roads::summits): what the z6 tiles' peaks
-/// read.
-pub const SUMMITS_V: u32 = 1;
+/// Every summit worldwide, once per pass (roads::summits): what the z6 tiles' peaks read. (2: no z8
+/// heights, each peaks run working out its own from the z8 it reads, task #1556.)
+pub const SUMMITS_V: u32 = 2;
 
-/// Its key: the pass's summits set and the terrain packs' z8 it reads (every lo pack).
-/// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
-/// a lo pack still to be made doesn't make it twice.
+/// Its key: the pass's summits set.
 fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&inputs::osmpass::set_name(x.date, "summits"))?;
     let k = world_key("summits", x)?;
@@ -859,7 +857,7 @@ pub(crate) fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 }
 
 /// The coverage's z6 tiles with candidates, each with its peaks' key: the candidates, the summits
-/// and the z8 tiles its run read (crate::agent::idents::peaks_summits, peaks_lo) and the terrain
+/// (crate::agent::idents::pass_summits), the z8 tiles its run read (peaks_lo) and the terrain
 /// hi packs within 30 km of it, across the antimeridian too (its z12).
 pub fn peaks_keys(x: &KeyCtx) -> Vec<(TileId, String)> {
     let (cov, date, m) = (x.cov, x.date, x.m.whole());
@@ -3690,6 +3688,10 @@ fn landmarks_work(
     };
     left.world("peaks", keyed.is_none());
     left.set("peaks", stale_peaks.iter().map(|t| t.0.clone()));
+    // (The lo packs each stale peaks tile waits for: those its record says it read.)
+    for (t, _) in &stale_peaks {
+        along_add_built(&mut left.along, "peaks", t, x);
+    }
     // (The items are left without candidates now: their key reads them.)
     let pois_now = if keyed.is_some() { current_pois(cov, date, m) } else { Vec::new() };
     let items = (!pois_now.is_empty()).then(|| items_key(x));
@@ -5230,17 +5232,15 @@ mod tests {
 
     /// Task #1475: a peaks z6 tile's key reads the terrain's lo packs by the z8 tiles its run read
     /// (buildstore::asked::Run over an `Out`, answered by roads::peaks::z8::Z8 from the packs' own
-    /// indexes), and (#1545) the summits by what it asked of them: their set and version, the z8
-    /// tiles behind their heights recorded with those it read (roads::peaks::unit::run). With no
-    /// record, its lo lines are every lo pack by content and its summits line the summits whole, as
-    /// before it recorded, and its first record keeps them: rolling it out moves no key, nor does a
-    /// run after a record from before it asked of the summits (which reads them whole). Then the
-    /// summits made again with a change to z8 tiles it didn't read keep the key, through the plan's
-    /// warm pass too (`warm_peaks`); a change to the summits set, or to a tile it read, moves it,
-    /// once.
+    /// indexes), with those behind the z8 heights of the summits it read there, and the summits by
+    /// content (task #1556: the pass's set alone, no terrain). With no record, its lo lines are
+    /// every lo pack by content, and its first record keeps them: a change to z8 tiles it didn't
+    /// read keeps the key, through the plan's warm pass too (`warm_peaks`); a change to the
+    /// summits, or to a tile it read, moves it, once. It waits for the lo packs its record names
+    /// (`idents::peaks_lo_packs`), every lo pack while it has none.
     #[test]
     fn a_peaks_key_moves_only_with_the_z8_tiles_and_summits_its_run_read() {
-        use crate::agent::idents::{peaks_geo, peaks_lines, peaks_summits_answer, peaks_summits_line, PEAKS_SUMMITS_Q};
+        use crate::agent::idents::{peaks_geo, peaks_lines, peaks_lo_packs};
         use buildstore::asked::{target_logical, Record, Run};
         use buildstore::out::Out;
         use roads::peaks::z8::{question_tile, tile_answer, tile_question, Z8};
@@ -5250,17 +5250,15 @@ mod tests {
         let c = Coverage::default();
         let t = "6/33/22";
         let inputs = BTreeMap::new();
-        // (The pass's summits set and the summits made from it, each a blob of its own.)
-        let set = inputs::osmpass::set_name("d", "summits");
-        let summits = |out: &mut Out, set_blob: &str, made: &str| {
-            out.put_bytes(&set, "pbf", set_blob.as_bytes()).unwrap();
+        // (The summits made from the pass's set.)
+        let summits = |out: &mut Out, made: &str| {
             out.put_bytes("work/summits/d", "jsonl.zst", made.as_bytes()).unwrap();
             out.save().unwrap();
         };
-        summits(&mut out, "set a", "summits 1");
-        // (Two lo packs, two z8 tiles each; its run read one of each.)
+        summits(&mut out, "summits 1");
+        // (Two lo packs, three z8 tiles each; its run read two of the first's.)
         let packs = [(4u32, 2u32), (5, 2)];
-        let read: BTreeSet<(u32, u32)> = [(133, 89), (160, 90)].into();
+        let read: BTreeSet<(u32, u32)> = [(133, 89), (134, 89)].into();
         let put = |out: &mut Out, tiles: &mut TerrainTiles, blob: &dyn Fn(u32, u32) -> Vec<u8>| {
             let mut local = Vec::new();
             for (a, b) in packs {
@@ -5281,61 +5279,32 @@ mod tests {
             out.save().unwrap();
             local
         };
-        let hold = |out: &Out, tiles: &mut TerrainTiles| {
-            let content = out.get(&target_logical("peaks", t)).unwrap().to_string();
-            tiles.hold_asked(&content, Record::from_bytes(&root.join(&content).read().unwrap()).unwrap());
-        };
         // (Its run as scenic-build's peaks_from makes it.)
         let run = |out: &mut Out, tiles: &mut TerrainTiles, local: &[((u32, u32), std::path::PathBuf)]| {
             let z8 = Z8::open(local, 16).unwrap();
-            let answer = peaks_summits_answer(&out.manifest, "d");
-            let reask = |q: &str| {
-                if q == PEAKS_SUMMITS_Q {
-                    return Some(answer.clone());
-                }
-                question_tile(q).map(|(x, y)| tile_answer(z8.hash(x, y)))
-            };
-            let (geo, lines) = peaks_geo(&out.manifest, "d");
-            let now = peaks_summits_line(&out.manifest, "d");
+            let reask = |q: &str| question_tile(q).map(|(x, y)| tile_answer(z8.hash(x, y)));
+            let (geo, lines) = peaks_geo(&out.manifest);
             let r = Run::start_target(out, "peaks", t, &c, geo.clone(), &reask)
                 .unwrap()
-                .spelled(|l| peaks_lines(&l, &geo, &lines, &now).join("\n"));
-            let mut also: Vec<(String, String)> =
-                read.iter().map(|&q| (tile_question(q), tile_answer(z8.hash(q.0, q.1)))).collect();
-            also.push((PEAKS_SUMMITS_Q.to_string(), answer.clone()));
-            r.put(out, also).unwrap();
-            out.save().unwrap();
-            hold(out, tiles);
-        };
-        // (A run as #1475 made it: the lo packs its cheap test, its line their lines, the z8 alone.)
-        let run_1475 = |out: &mut Out, tiles: &mut TerrainTiles, local: &[((u32, u32), std::path::PathBuf)]| {
-            let z8 = Z8::open(local, 16).unwrap();
-            let reask = |q: &str| question_tile(q).map(|(x, y)| tile_answer(z8.hash(x, y)));
-            let lines = crate::agent::steps::whole_outputs("terrain-lo", &out.manifest);
-            let geo = store::naming::hash16(lines.join("\n").as_bytes());
-            let r = Run::start_target(out, "peaks", t, &c, geo.clone(), &reask).unwrap().spelled(|l| {
-                if l == geo {
-                    lines.join("\n")
-                } else {
-                    l
-                }
-            });
+                .spelled(|l| peaks_lines(&l, &geo, &lines).join("\n"));
             r.put(out, read.iter().map(|&q| (tile_question(q), tile_answer(z8.hash(q.0, q.1)))).collect()).unwrap();
             out.save().unwrap();
-            hold(out, tiles);
+            let content = out.get(&target_logical("peaks", t)).unwrap().to_string();
+            tiles.hold_asked(&content, Record::from_bytes(&root.join(&content).read().unwrap()).unwrap());
         };
-        // Its key's lo and summits lines. (`moved`: its record's lo packs or summits not the
-        // manifest's: the warm pass worked its line out.)
-        let lo = |out: &Out, tiles: &TerrainTiles, moved: bool| -> Vec<String> {
+        // Its key's lo and summits lines, and the lo packs it waits for. (`moved`: its record's lo
+        // packs not the manifest's: the warm pass worked its line out.)
+        let lo = |out: &Out, tiles: &TerrainTiles, moved: bool| -> (Vec<String>, Vec<String>) {
             let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, tiles);
             crate::agent::idents::warm_peaks(&x);
             if moved {
                 let rc = out.get(&target_logical("peaks", t)).unwrap();
-                let geo = peaks_geo(&out.manifest, "d").0;
+                let geo = peaks_geo(&out.manifest).0;
                 assert!(tiles.memo_found(&format!("asked peaks {t}"), &format!("{rc} {geo}")).is_some(), "warmed");
             }
             let lines = crate::agent::steps::key_lines("peaks", t, &x).unwrap();
-            lines.into_iter().filter(|l| l.starts_with("w terrain-lo ") || l.starts_with("w summits ")).collect()
+            let lines = lines.into_iter().filter(|l| l.starts_with("t terrain-lo ") || l.starts_with("w summits "));
+            (lines.collect(), peaks_lo_packs(t, &x))
         };
         let first = |x: u32, y: u32| format!("{x} {y}").into_bytes();
         let mut tiles = TerrainTiles::default();
@@ -5344,44 +5313,37 @@ mod tests {
         let x = KeyCtx::new(&c, "d", &out.manifest, &inputs, None, &unread);
         assert_eq!(crate::agent::steps::key_lines("peaks", t, &x), None, "it waits while a lo pack's index isn't read");
         let before = lo(&out, &tiles, false);
-        let whole = |out: &Out| -> Vec<String> {
-            std::iter::once(format!("w summits work/summits/d={}", out.get("work/summits/d").unwrap()))
-                .chain(
-                    packs
-                        .iter()
-                        .map(|(a, b)| format!("layers/terrain/lo/3-{a}-{b}"))
-                        .map(|l| format!("w terrain-lo {l}={}", out.get(&l).unwrap())),
-                )
-                .collect()
-        };
-        assert_eq!(before, whole(&out), "no record: the summits whole and every lo pack by content, as before");
-        // A record from before it asked of the summits: the same key, and the summits read whole.
-        run_1475(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles, false), before, "#1475's record moves no key");
-        summits(&mut out, "set a", "summits 2");
-        let before = lo(&out, &tiles, true);
-        assert_eq!(before, whole(&out), "#1475's record reads the summits whole");
+        let whole = std::iter::once(format!("w summits work/summits/d={}", out.get("work/summits/d").unwrap()))
+            .chain(
+                packs
+                    .iter()
+                    .map(|(a, b)| format!("layers/terrain/lo/3-{a}-{b}"))
+                    .map(|l| format!("t terrain-lo {l}={}", out.get(&l).unwrap())),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(before.0, whole, "no record: the summits and every lo pack by content");
+        assert_eq!(before.1, ["3/4/2", "3/5/2"], "no record: it waits for every lo pack");
         run(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles, false), before, "its first record moves no key");
-        // Tiles it didn't read changed in both packs, and the summits made again from them: the
-        // key kept, and kept by its run again.
+        let recorded = lo(&out, &tiles, false);
+        assert_eq!(recorded.0, before.0, "its first record moves no key");
+        assert_eq!(recorded.1, ["3/4/2"], "it waits for the lo pack its record names alone");
+        // Tiles it didn't read changed in both packs: the key kept, and kept by its run again.
         let outside = |x: u32, y: u32| if !read.contains(&(x, y)) { b"changed".to_vec() } else { first(x, y) };
         let local = put(&mut out, &mut tiles, &outside);
-        summits(&mut out, "set a", "summits 3");
-        assert_eq!(lo(&out, &tiles, true), before, "a summits change outside what it read keeps the key");
+        assert_eq!(lo(&out, &tiles, true), recorded, "a change outside what it read keeps the key");
         run(&mut out, &mut tiles, &local);
-        assert_eq!(lo(&out, &tiles, false), before);
-        // The summits set changed: a new key, once.
-        summits(&mut out, "set b", "summits 4");
-        let moved = lo(&out, &tiles, true);
-        assert_ne!(moved, before, "a change in the summits set moves the key");
+        assert_eq!(lo(&out, &tiles, false), recorded);
+        // The summits made again (a new pass's set): a new key, once.
+        summits(&mut out, "summits 2");
+        let moved = lo(&out, &tiles, false);
+        assert_ne!(moved.0, recorded.0, "a change in the summits moves the key");
         run(&mut out, &mut tiles, &local);
         assert_eq!(lo(&out, &tiles, false), moved, "one run per change");
         // One it read changed: a new key, and its run's record keys as the plan worked it out.
-        let inside = |x: u32, y: u32| if (x, y) == (160, 90) { b"changed again".to_vec() } else { outside(x, y) };
+        let inside = |x: u32, y: u32| if (x, y) == (134, 89) { b"changed again".to_vec() } else { outside(x, y) };
         let local = put(&mut out, &mut tiles, &inside);
         let moved2 = lo(&out, &tiles, true);
-        assert_ne!(moved2, moved, "a change in a tile it read moves the key");
+        assert_ne!(moved2.0, moved.0, "a change in a tile it read moves the key");
         run(&mut out, &mut tiles, &local);
         assert_eq!(lo(&out, &tiles, false), moved2, "one run per change");
     }

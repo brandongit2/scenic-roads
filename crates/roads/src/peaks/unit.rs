@@ -233,34 +233,75 @@ impl Ov for Overlay {
     }
 }
 
-/// Every summit's tagged z8 height, by z8 pixel (summit index, height), and the pixels by tile.
-pub struct Z8Base {
-    px: FxMap<(i64, i64), Vec<(u32, f32)>>,
-    tiles: FxMap<(i64, i64), Vec<(i64, i64)>>,
+/// Every summit's tagged z8 height where plausible (crate::summits::z8_height), by z8 tile and
+/// pixel (summit index, height): each tile's worked out from the z8 on its first read and kept, so
+/// a run works out only the summits in the tiles it reads (those its record names with the tiles
+/// behind them, `z8_behind`), from the z8 it reads (task #1556: not a worldwide summits step's,
+/// which read every lo pack).
+pub struct Z8Base<'a> {
+    z8: &'a Z8,
+    tiles: FxMap<(i64, i64), Tagged>,
+    /// A z8 read that failed (the lo packs' local copies): fails the run.
+    failed: std::sync::Mutex<Option<String>>,
 }
 
-impl Z8Base {
-    pub fn new(summits: &[Summit]) -> Z8Base {
+/// A z8 tile's tagged summits: (summit index, tagged height) by pixel; their z8 heights by pixel,
+/// once worked out (`Z8Base::heights`).
+struct Tagged {
+    px: Vec<((i64, i64), Vec<(u32, f32)>)>,
+    heights: std::sync::OnceLock<FxMap<(i64, i64), Vec<(u32, f32)>>>,
+}
+
+impl<'a> Z8Base<'a> {
+    pub fn new(summits: &[Summit], z8: &'a Z8) -> Z8Base<'a> {
         let mut px: FxMap<(i64, i64), Vec<(u32, f32)>> = FxMap::default();
         for (i, s) in summits.iter().enumerate() {
-            if let Some(h) = s.z8 {
-                px.entry(crate::summits::z8_pixel(s.lon, s.lat)).or_default().push((i as u32, h));
+            if let Some(ele) = s.ele {
+                px.entry(crate::summits::z8_pixel(s.lon, s.lat)).or_default().push((i as u32, ele));
             }
         }
-        let mut tiles: FxMap<(i64, i64), Vec<(i64, i64)>> = FxMap::default();
-        for &(x, y) in px.keys() {
-            tiles.entry((x.div_euclid(TS), y.div_euclid(TS))).or_default().push((x, y));
+        let mut tiles: FxMap<(i64, i64), Tagged> = FxMap::default();
+        for (p, v) in px {
+            let t = tiles
+                .entry((p.0.div_euclid(TS), p.1.div_euclid(TS)))
+                .or_insert_with(|| Tagged { px: Vec::new(), heights: std::sync::OnceLock::new() });
+            t.px.push((p, v));
         }
-        for v in tiles.values_mut() {
-            v.sort_unstable_by_key(|p| (p.1, p.0));
-        }
-        Z8Base { px, tiles }
+        Z8Base { z8, tiles, failed: std::sync::Mutex::new(None) }
+    }
+
+    /// Tile `t`'s summits' z8 heights by pixel, those plausible; None for a tile with none tagged.
+    fn heights(&self, t: (i64, i64)) -> Option<&FxMap<(i64, i64), Vec<(u32, f32)>>> {
+        let tagged = self.tiles.get(&t)?;
+        Some(tagged.heights.get_or_init(|| {
+            let mut out: FxMap<(i64, i64), Vec<(u32, f32)>> = FxMap::default();
+            for (p, v) in &tagged.px {
+                let max3 = match crate::summits::z8_max_around(*p, self.z8) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        self.failed.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("{e:#}"));
+                        continue;
+                    }
+                };
+                let h: Vec<(u32, f32)> =
+                    v.iter().filter_map(|&(i, ele)| crate::summits::z8_height(ele, max3).map(|h| (i, h))).collect();
+                if !h.is_empty() {
+                    out.insert(*p, h);
+                }
+            }
+            out
+        }))
+    }
+
+    /// A z8 read that failed while working out heights.
+    fn failed(&self) -> Option<String> {
+        self.failed.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
 /// A peak's z8 overlay: the base without the summits near it, which count at their z12 heights.
 struct Ov8<'a> {
-    base: &'a Z8Base,
+    base: &'a Z8Base<'a>,
     near: &'a FxSet<u32>,
     over: FxMap<(i64, i64), f32>,
 }
@@ -270,8 +311,8 @@ impl Ov for Ov8<'_> {
         let a = self.over.get(&p).copied();
         let b = self
             .base
-            .px
-            .get(&p)
+            .heights((p.0.div_euclid(TS), p.1.div_euclid(TS)))
+            .and_then(|h| h.get(&p))
             .and_then(|v| v.iter().filter(|(i, _)| !self.near.contains(i)).map(|x| x.1).reduce(f32::max));
         match (a, b) {
             (Some(a), Some(b)) => Some(a.max(b)),
@@ -279,7 +320,7 @@ impl Ov for Ov8<'_> {
         }
     }
     fn tile_pixels(&self, t: (i64, i64)) -> Vec<(i64, i64, f32)> {
-        let mut ps: Vec<(i64, i64)> = self.base.tiles.get(&t).cloned().unwrap_or_default();
+        let mut ps: Vec<(i64, i64)> = self.base.heights(t).map(|h| h.keys().copied().collect()).unwrap_or_default();
         ps.extend(self.over.keys().filter(|p| (p.0.div_euclid(TS), p.1.div_euclid(TS)) == t));
         ps.sort_unstable_by_key(|p| (p.1, p.0));
         ps.dedup();
@@ -584,7 +625,7 @@ fn z8_behind(summits: &[Summit], read: &BTreeSet<(u32, u32)>) -> Vec<(u32, u32)>
 pub fn run(
     peaks: &[UnitPeak],
     summits: &[Summit],
-    base8: &Z8Base,
+    base8: &Z8Base<'_>,
     z12: &UnitZ12,
     z8: &Z8,
     coarse_threads: usize,
@@ -627,7 +668,7 @@ pub fn run(
     for p in peaks {
         need.extend(within(p.lon, p.lat, claim_km));
         if !by_id.contains_key(p.id.as_str()) {
-            extra.push(Summit { id: p.id.clone(), kind: "peak".into(), lon: p.lon, lat: p.lat, ele: p.ele, z8: None });
+            extra.push(Summit { id: p.id.clone(), kind: "peak".into(), lon: p.lon, lat: p.lat, ele: p.ele });
         }
     }
     // (The summits as the peaks see them a piece kept, task #889: each its id, its summit pixel and
@@ -938,7 +979,7 @@ pub fn run(
                                 }
                             }
                         }
-                        if let Some(e) = d.failed {
+                        if let Some(e) = d.failed.or_else(|| base8.failed()) {
                             anyhow::bail!("peaks: z8 read failed: {e}");
                         }
                         let mut read = maxed.into_inner();
@@ -1032,7 +1073,7 @@ mod tests {
             let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);
             (
                 UnitPeak { key: format!("k{n}"), id: format!("n{n}"), lon, lat, ele },
-                Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele, z8: None },
+                Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele },
             )
         };
         let units: Vec<Vec<(UnitPeak, Summit)>> = vec![
@@ -1091,7 +1132,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let z8 = Z8::open(&[((0, 0), z8p.local.clone())], 64).unwrap();
-        let base8 = Z8Base::new(&summits);
+        let base8 = Z8Base::new(&summits, &z8);
         // (Its results, then the z8 tiles it read: a resumed run's are its pieces'.)
         let bytes = |(res, read): (Vec<(String, Out)>, BTreeSet<(u32, u32)>)| -> Vec<u8> {
             let mut b = Vec::new();
@@ -1203,7 +1244,7 @@ mod tests {
                 let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);
                 (
                     UnitPeak { key: format!("k{n}"), id: format!("n{n}"), lon, lat, ele: None },
-                    Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele: None, z8: None },
+                    Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele: None },
                 )
             })
             .collect();
@@ -1238,7 +1279,6 @@ mod tests {
             .unwrap();
         }
         let z12 = UnitZ12::load_from(&ManifestTiles::new(&out, "terrain"), &want).unwrap();
-        let base8 = Z8Base::new(&summits);
         // The z8 as lo packs holding `tiles` (each flat at its height), a pack per z3 tile.
         let z8_of = |name: &str, tiles: &[((u32, u32), f32)]| {
             let mut packs: BTreeMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
@@ -1268,7 +1308,8 @@ mod tests {
         };
         let measure = |z8: &Z8| {
             let (res, read) =
-                run(&peaks, &summits, &base8, &z12, z8, 2, &mut jobrt::resume_log::Pieces::none()).unwrap();
+                run(&peaks, &summits, &Z8Base::new(&summits, z8), &z12, z8, 2, &mut jobrt::resume_log::Pieces::none())
+                    .unwrap();
             (res.iter().map(|(k, o)| format!("{k} {}", o.json())).collect::<Vec<_>>(), read)
         };
         let far = (200, 200);
@@ -1297,18 +1338,11 @@ mod tests {
             lon: (edge.0 * 1e7) as i32,
             lat: (edge.1 * 1e7) as i32,
             ele: Some(500.0),
-            z8: None,
         });
-        let (res, read_with) = run(
-            &peaks,
-            &with,
-            &Z8Base::new(&with),
-            &z12,
-            &z8_of("e", &[(far, 0.0)]),
-            2,
-            &mut jobrt::resume_log::Pieces::none(),
-        )
-        .unwrap();
+        let z8e = z8_of("e", &[(far, 0.0)]);
+        let (res, read_with) =
+            run(&peaks, &with, &Z8Base::new(&with, &z8e), &z12, &z8e, 2, &mut jobrt::resume_log::Pieces::none())
+                .unwrap();
         assert_eq!(res.iter().map(|(k, o)| format!("{k} {}", o.json())).collect::<Vec<_>>(), first, "the same results");
         assert!(read_with.contains(&edge.2), "its unread neighbour {:?} recorded: {read_with:?}", edge.2);
         assert_eq!(read_with.len(), read.len() + 1, "that neighbour alone added");
@@ -1332,14 +1366,7 @@ mod tests {
         let at = |gx: f64, gy: f64, ele: Option<f32>| {
             let w = 256.0 * 256.0;
             let (lon, lat) = ((gx + 0.5) / w * 360.0 - 180.0, roadcore::geo::merc_lat((gy + 0.5) / w));
-            Summit {
-                id: "n1".into(),
-                kind: "peak".into(),
-                lon: (lon * 1e7) as i32,
-                lat: (lat * 1e7) as i32,
-                ele,
-                z8: None,
-            }
+            Summit { id: "n1".into(), kind: "peak".into(), lon: (lon * 1e7) as i32, lat: (lat * 1e7) as i32, ele }
         };
         let read: BTreeSet<(u32, u32)> = [(133, 90)].into();
         let edge = at(133.0 * 256.0 + 255.0, 90.0 * 256.0 + 7.0, Some(1200.0));
@@ -1349,6 +1376,53 @@ mod tests {
         got.sort_unstable();
         got.dedup();
         assert_eq!(got, [(133, 90), (134, 90)]);
+    }
+
+    /// Task #1556: the overlay's summit heights are the run's own, from the z8 it reads: a tagged
+    /// height plausible over the z8 there counts, one implausible (feet over flat ground) or
+    /// untagged doesn't, and a tile with no tagged summit has none.
+    #[test]
+    fn the_overlays_summit_heights_are_worked_out_from_the_runs_z8() {
+        let d = tempfile::tempdir().unwrap();
+        let out = buildstore::out::Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
+            &d.path().join("scratch"),
+        )
+        .unwrap();
+        let png = roadcore::grid::encode_terrain_png(&vec![900.0; 256 * 256], 256, 256).unwrap();
+        let p = terrain::layers::write_pack_local(
+            &out,
+            "z8h",
+            "terrarium-png",
+            false,
+            "lo",
+            (3, 133 >> 5, 90 >> 5),
+            &mut [(8u8, 133, 90, png, 1)].into_iter(),
+        )
+        .unwrap()
+        .unwrap();
+        let z8 = Z8::open(&[((133 >> 5, 90 >> 5), p.local.clone())], 64).unwrap();
+        let at = |id: &str, gx: f64, gy: f64, ele: Option<f32>| {
+            let w = 256.0 * 256.0;
+            let (lon, lat) = ((gx + 0.5) / w * 360.0 - 180.0, roadcore::geo::merc_lat((gy + 0.5) / w));
+            Summit { id: id.into(), kind: "peak".into(), lon: (lon * 1e7) as i32, lat: (lat * 1e7) as i32, ele }
+        };
+        let (gx, gy) = (133.0 * 256.0 + 100.0, 90.0 * 256.0 + 100.0);
+        let summits = [
+            at("n1", gx, gy, Some(1500.0)),
+            at("n2", gx + 10.0, gy, Some(9000.0)),
+            at("n3", gx + 20.0, gy, None),
+            // (Over flat ground where nothing is built: 2,000 m is past twice 0 m plus 300.)
+            at("n4", 140.0 * 256.0 + 100.0, gy, Some(2000.0)),
+        ];
+        let base = Z8Base::new(&summits, &z8);
+        let h = base.heights((133, 90)).unwrap();
+        let px = |s: &Summit| crate::summits::z8_pixel(s.lon, s.lat);
+        assert_eq!(h.get(&px(&summits[0])), Some(&vec![(0, 1500.0)]));
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(base.heights((140, 90)).unwrap().is_empty());
+        assert!(base.heights((134, 90)).is_none(), "no tagged summit there");
+        assert_eq!(base.failed(), None);
     }
 
     /// A load that fails fails in its turn, after the z6 tiles before it were done.

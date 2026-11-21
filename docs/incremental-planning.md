@@ -216,7 +216,7 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      `warm_peaks`) read the map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the
      compiler refuses one captured there): each key reads again what finds its line (lake-depth's:
      its record and its ring's hi packs, `asked_line`, `lake_ring_geo`; peaks': its record and the
-     lo packs' indexes and the summits, `peaks_geo`). The terrain-targets cell
+     lo packs' indexes, `peaks_geo`). The terrain-targets cell
      (`TerrainTiles::memo("terrain-targets")`) is read by no key, and the terrain and slope keys
      it serves aren't derived in a plan that finds it, so they get no read set there: they are
      kept by that cell's digest until step 6a. The shadow plan (step 4) reads the cell where the

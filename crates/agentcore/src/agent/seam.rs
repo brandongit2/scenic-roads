@@ -308,8 +308,6 @@ pub trait Plan: Send + Sync {
     fn read_targets_passing(&self, step: &str, t: &str, along: Option<&Along>) -> Vec<(ReadTarget, bool)>;
     /// The steps reading input `name`.
     fn input_readers(&self, name: &str) -> Vec<&'static str>;
-    /// What the summits wait for by `left`; None: nothing.
-    fn summits_waits(&self, left: &Left) -> Option<String>;
     /// The table and its stages for the build page's words and colours.
     fn table_json(&self) -> serde_json::Value;
     /// Whether `step` reads the declared sources (held while no version is accepted).

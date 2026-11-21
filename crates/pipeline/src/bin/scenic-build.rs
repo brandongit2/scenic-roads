@@ -3133,31 +3133,23 @@ fn open_z8(out: &Out, cache: &Path) -> Result<roads::peaks::z8::Z8> {
     roads::peaks::z8::Z8::open(&packs, 4096)
 }
 
-/// summits [--pass <date>] [--cache dir]: every summit worldwide with its z8 height (roads::summits).
+/// summits [--pass <date>] [--cache dir]: every summit worldwide (roads::summits).
 fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date =
         opt(args, "--pass").or_else(|| ::inputs::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache =
         PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t = std::time::Instant::now();
-    let parts =
-        Parts(&["Copying the summits", "Reading them", "Taking their heights from the terrain packs' z8", "Uploading"]);
+    let parts = Parts(&["Copying the summits", "Reading them", "Uploading"]);
     parts.start(0);
     let p = phase("copying the summits set here");
     let set = local_copy(out, &::inputs::osmpass::set_name(&date, "summits"), &cache)?;
     drop(p);
     parts.start(1);
     let p = phase("reading the summits");
-    let mut summits = roads::summits::read_set(&set)?;
+    let summits = roads::summits::read_set(&set)?;
     drop(p);
     parts.start(2);
-    let p = phase("copying the terrain packs' z8 here");
-    let z8 = open_z8(out, &cache)?;
-    drop(p);
-    let p = phase("taking their z8 heights");
-    let raised = roads::summits::add_z8(&mut summits, &z8)?;
-    drop(p);
-    parts.start(3);
     let p = phase("writing");
     std::fs::create_dir_all(scratch)?;
     let file = scratch.join("summits.jsonl.zst");
@@ -3168,7 +3160,7 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     out.save()?;
     std::fs::remove_file(&file).ok();
-    eprintln!("summits: {} ({} with a z8 height) ({:.0?})", summits.len(), raised, t.elapsed());
+    eprintln!("summits: {} ({:.0?})", summits.len(), t.elapsed());
     Ok(())
 }
 
@@ -3184,11 +3176,11 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("copying the summits here and reading them");
     let summits = roads::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
     drop(p);
-    let p = phase("making the summits' z8 base");
-    let base8 = unit::Z8Base::new(&summits);
-    drop(p);
     let p = phase("copying the terrain packs' z8 here");
     let z8 = open_z8(out, &cache)?;
+    drop(p);
+    let p = phase("making the summits' z8 base");
+    let base8 = unit::Z8Base::new(&summits, &z8);
     drop(p);
     std::fs::create_dir_all(scratch)?;
     let units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
@@ -3203,21 +3195,20 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::iter::once(format!("work/summits/{date}"))
             .chain(roads::peaks::z8::lo_packs(&out.manifest).into_iter().map(|(l, _)| l)),
     );
-    peaks_from(out, scratch, &date, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads, &read)
+    peaks_from(out, scratch, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads, &read)
 }
 
 /// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`, the summits `summits` the
-/// pass `date`'s.
+/// pass's.
 #[allow(clippy::too_many_arguments)]
 fn peaks_from(
     out: &mut Out,
     scratch: &Path,
-    date: &str,
     units: &[TileId],
     pois: &[Option<store::nasfs::NasPath>],
     packs: &terrain::terrain_pack::ManifestTiles,
     summits: &[roads::summits::Summit],
-    base8: &roads::peaks::unit::Z8Base,
+    base8: &roads::peaks::unit::Z8Base<'_>,
     z8: &roads::peaks::z8::Z8,
     coarse_threads: usize,
     read: &str,
@@ -3267,26 +3258,19 @@ fn peaks_from(
             &u.slash(),
             &[read, &jobrt::resume_log::names(out, near), "z8 read"],
         );
-        // (What its coarse stage reads of the z8, the tiles by their XXH3, and of the summits,
-        // recorded with its results: its key's lo and summits lines move only once one of those
-        // does, pipeline::agent::idents::peaks_lo and peaks_summits. Its line worked out as the plan
-        // did, from the record before it, and spelled as the plan's key lines; it asks nothing of
-        // the coverage.)
-        use pipeline::agent::idents::{
-            peaks_geo, peaks_lines, peaks_summits_answer, peaks_summits_line, PEAKS_SUMMITS_Q,
-        };
-        let (geo, lines) = peaks_geo(&out.manifest, date);
-        let summits_now = peaks_summits_line(&out.manifest, date);
-        let summits_answer = peaks_summits_answer(&out.manifest, date);
-        let reask = |q: &str| {
-            if q == PEAKS_SUMMITS_Q {
-                return Some(summits_answer.clone());
-            }
-            roads::peaks::z8::question_tile(q).map(|(x, y)| roads::peaks::z8::tile_answer(z8.hash(x, y)))
-        };
+        // (What its coarse stage reads of the z8, the tiles by their XXH3 (with those behind the
+        // z8 heights of the summits it read there), recorded with its results: its key's lo line
+        // moves only once one of those does, pipeline::agent::idents::peaks_lo, and the plan's
+        // waits read the lo packs they're in, idents::peaks_lo_packs. Its line worked out as the
+        // plan did, from the record before it, and spelled as the plan's key lines; it asks
+        // nothing of the coverage.)
+        use pipeline::agent::idents::{peaks_geo, peaks_lines};
+        let (geo, lines) = peaks_geo(&out.manifest);
+        let reask =
+            |q: &str| roads::peaks::z8::question_tile(q).map(|(x, y)| roads::peaks::z8::tile_answer(z8.hash(x, y)));
         let cov = buildstore::coverage::Coverage::default();
         let asked = buildstore::asked::Run::start_target(out, "peaks", &u.slash(), &cov, geo.clone(), &reask)?
-            .spelled(|l| peaks_lines(&l, &geo, &lines, &summits_now).join("\n"));
+            .spelled(|l| peaks_lines(&l, &geo, &lines).join("\n"));
         let mut pieces =
             jobrt::resume_log::Pieces::open(scratch, (u.z, u.x, u.y), "peaks", &id, jobrt::resume_log::on());
         let (res, z8_read) = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
@@ -3311,7 +3295,6 @@ fn peaks_from(
         let answers = z8_read
             .iter()
             .map(|&t| (roads::peaks::z8::tile_question(t), roads::peaks::z8::tile_answer(z8.hash(t.0, t.1))))
-            .chain([(PEAKS_SUMMITS_Q.to_string(), summits_answer.clone())])
             .collect();
         asked.put(out, answers)?;
         drop(p);

@@ -9,7 +9,7 @@ use agentcore::agent::jobs::Work;
 use agentcore::agent::nasread;
 use agentcore::agent::progress::{Item, Line};
 use agentcore::agent::seam::{
-    Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round, Shadow,
+    Along, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round, Shadow,
 };
 use agentcore::pool::records::Keys;
 use roads::reach::Reaches;
@@ -108,12 +108,6 @@ impl Plan for ThePlan {
     }
     fn input_readers(&self, name: &str) -> Vec<&'static str> {
         steps::input_readers(name).collect()
-    }
-    fn summits_waits(&self, left: &Left) -> Option<String> {
-        match steps::readiness("summits", "summits", left) {
-            steps::Ready::Waits(w) => Some(steps::wait_note(&w)),
-            _ => None,
-        }
     }
     fn table_json(&self) -> serde_json::Value {
         serde_json::json!({ "steps": steps::table(), "stages": steps::STAGES })

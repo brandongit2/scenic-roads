@@ -41,8 +41,11 @@ pub enum Read {
     Along { step: &'static str, of: fn(&str, &Reach) -> Vec<String> },
     /// Some targets of another step read where what's built says, not by the target's name (a
     /// depth target's terrain lo packs, where it meets an enclosed sea the water step found: task
-    /// #982), which the caller works into its view from what it holds (`steps::along_add_built`, beside
-    /// the `Along`s in `Left::along`). Waited for as an `Along`; keyed by `grain`.
+    /// #982; a peaks z6 tile's, those holding the z8 tiles its record says it read, every lo pack
+    /// while it has none: task #1556), which the caller works into its view from what it holds
+    /// (`steps::along_add_built`, beside the `Along`s in `Left::along`; a record's targets read, by
+    /// its kept head: `TerrainTiles::asked_reads`). Waited for as a `Targets` read of them, passing
+    /// on by `grain`; keyed by `grain`.
     Built { step: &'static str, of: fn(&str, &KeyCtx) -> Vec<String>, grain: Grain },
 }
 
@@ -187,8 +190,8 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | available-built | `available::built::KEY_V`, every accepted elevation dataset (`id keyed` and the digest of its measures), the pass's coastline's land (content) | versions; `in elevation` (`idents::built_datasets`), `in land` (`idents::pass_land`), `All pyramids-fill` (`Grain::Read(idents::nothing)`: it waits, its fills not keyed) | new (task #1349); the land since task #1361 |
 | region-tiles | `regionlayer::KEY_V`, each accepted region's file path and geometry content name | versions; `in regions:geometry` (`idents::regions_geometry`) | new (task #1129): names, flags and `disabled` not keyed (the app reads them from the list) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
-| summits | (pass) | `Input`s | same |
-| peaks | candidates, summits, hi packs within 30 km, the z8 tiles its run read | `Targets pois` (its tile), `Whole summits` (`Grain::Read`: the summits set and version and the z8 tiles behind the heights of the summits it read, as its run recorded them, `idents::peaks_summits`), `Targets terrain-hi` (30 km box), `Whole terrain-lo` (`Grain::Read`: the z8 tiles its coarse stage read, as its run recorded them, `idents::peaks_lo`) | the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box; task #1475: keyed on the z8 tiles read, not every lo pack; task #1545: on the summits read, not the summits whole |
+| summits | `SUMMITS_V`, the pass's summits set | `in set:summits` | task #1556: no terrain (the peaks work out the summits' z8 heights from the z8 they read) |
+| peaks | candidates, summits, hi packs within 30 km, the z8 tiles its run read | `Targets pois` (its tile), `Whole summits` (`Grain::Read`: the pass's summits by content, `idents::pass_summits`), `Targets terrain-hi` (30 km box), `Built terrain-lo` (the lo packs holding the z8 tiles its record names, `idents::peaks_lo_packs`, every lo pack while it has none; `Grain::Read`: those z8 tiles, its coarse stage's and those behind the z8 heights of the summits it read there, as its run recorded them, `idents::peaks_lo`) | the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box; task #1475: keyed on the z8 tiles read, not every lo pack; task #1556: waits on the lo packs read, not every lo pack |
 | items | date, current candidates | `Whole pois` | same |
 | heritage | heritage-sources, sets, coverage | `Whole heritage-sites`, `in pass:*`, `in coverage:cover` | task #1130: the cover |
 | marks | facts, views, heritage files, every tile's pois and peaks | `Whole items`, `Whole heritage`, `Whole pois`, `Whole peaks` | same |
@@ -208,21 +211,22 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      function come with scheme 2, which needs them for the key lines. `Mids` is what terrain-lo
      and trees-lo read of their z6 tiles: the mids, left while a z6 tile is stale or isn't current
      with its mid (made again for it alone, its packs unchanged); what reads the packs (slope, the
-     z6 tiles, the summits and peaks) waits only for those stale. `View` is `left`, `mid_left`
+     z6 tiles, the peaks) waits only for those stale. `View` is `left`, `mid_left`
      (a `Mids` read), `any_left` (a `Whole` read) and `known` (an `Input`); `seam::Left` is the
      planner's view (`seam::Planned::left`).
    - `steps::readiness` gives `Yes`, `Waits` (with targets) or `Unknown`; `steps::read_targets`
      lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
      The planner holds every target through it (terrain, slope, trees, the z6 tiles' wait for
-     heritage-sites, reach and buildings, the landmarks, the 3D buildings, depth, polar, the
-     summits' hold in the agent); the forecast's items wait on the same reads (`forecast::Waits`, a
+     heritage-sites, reach and buildings, the landmarks, the 3D buildings, depth, polar); the forecast's items wait on the same reads (`forecast::Waits`, a
      `Whole` read one shared set); the page and `scenic status` show the planner's notes.
      `/api/tocome` gives job-to-job dependencies (`jobs`, `deps`, `after` per job) and the build
      page draws single-job arrows.
    - Declared reads that differ from §5's table, because the planner held them so and the keys
-     read so: the peaks wait for all terrain-hi and terrain-lo (their coarse stage may read any lo
-     pack's z8; their key names the z8 tiles it read, `idents::peaks_lo`, and the summits it read, `idents::peaks_summits`), their own tile's candidates and the hiking-route ends; the items, the
-     marks and the overlays also declare what their reads' keys read (trailends, summits,
+     read so: the peaks wait for the lo packs their record says they read (their coarse stage may
+     read any lo pack's z8: every lo pack while a z6 tile has no record; their key names the z8
+     tiles it read, `idents::peaks_lo`; task #1556), their own tile's candidates and the
+     hiking-route ends; the items, the marks and the overlays also declare what their reads' keys
+     read (trailends, summits,
      heritage-sites, the spacing and registers inputs) so none runs on a read about to change;
      bldprep reads an input (the declared release), not `Whole bld-fetch`: it runs beside the
      fetch, as the planner had it; depth-root reads `Whole depth` as well as `Whole depth-lo`; a
@@ -278,7 +282,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        step read whole while anything a target of it reads is left (`whole_left`), so a step
        declares only what its run reads. Step 1's waits standing for a read's own reads went (the
        peaks' for the trailends and the spacing, the items', the marks' and the overlays' for the
-       chain's earlier steps, summits' and peaks' for all terrain-hi, depth-root's for depth).
+       chain's earlier steps, the peaks' for all terrain-hi, depth-root's for depth).
        Only a mid made again for a target whose packs stay passes nothing on (`held` reads
        through a view where `mid_left` is `left`), and a `Grain::Tiles` read (`passes_on`)
        neither: the tiles it names may not change when what it reads is made again (a unit
