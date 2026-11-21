@@ -10,8 +10,9 @@
 //! of the way it runs now (only a cold start's packing reads it, `Book::older_mem`, below). Disk
 //! floors carry no version and always count.
 //!
-//! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
-//!   floor alone counts as its measure. Its time on another Mac at that Mac's speed (crate::paces).
+//! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor), its
+//!   memory times its step's spread over its reruns about its peak (`Reruns::spread`); a floor alone counts as its
+//!   measure. Its time on another Mac at that Mac's speed (crate::paces).
 //! - **Near** (memory, a tile target; task #931): the most its nearest measured targets of the step
 //!   took (`Near`: `NEAR_RUNS` within `NEAR_RINGS` rings of tiles), × `MARGIN`, where that's judged
 //!   good on the step's own measures (each predicted from the others). What a target holds is its
@@ -307,6 +308,43 @@ pub struct Models {
     pub needs: model::Model,
     pub near: Option<Arc<Near>>,
     older: Option<(u32, model::Model)>,
+    /// What its targets' reruns took against their runs before (`Reruns`): a target's own run's
+    /// peak is booked times their spread about it.
+    pub reruns: Reruns,
+}
+
+/// A step's reruns (task #1586): of each target's run the way its step runs now that reran one of
+/// that way on as many threads (`Cost::was_mb`), that run's peak (MB) and its peak over it, by the
+/// run before's peak; with the percentile its spread is read at (the pool's `needs-mem-pct`).
+#[derive(Debug, Default)]
+pub struct Reruns {
+    by_was: Vec<(f64, f64)>,
+    pct: f64,
+}
+
+impl Reruns {
+    fn of(runs: impl Iterator<Item = (f64, f64)>, pct: f64) -> Reruns {
+        let mut by_was: Vec<(f64, f64)> = runs.collect();
+        by_was.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Reruns { by_was, pct }
+    }
+
+    /// What a target's next run takes against its run that peaked at `mb` (MB), at most: the
+    /// percentile of the ratios of the step's reruns whose runs before peaked at about as much
+    /// (half to twice it; fewer than `MIN_RUNS`, the nearest of those that peaked at half of it or
+    /// more), never under 1 (1 with none). A target's peak moves run to run by its level: depth's
+    /// reruns took up to 3.6 times their runs before (6/20/17: 564 MB, then 1,605); pack's of tens
+    /// of MB up to 30 times (its base packs fetched or not), of 3 GB about as much again. So a
+    /// lighter run's swing never books a heavier target: one spread for every level booked a 3.8 GB
+    /// pack at 36 GB.
+    pub fn spread(&self, mb: f64) -> f64 {
+        let mb = mb.max(1.0);
+        // (Sorted by their runs before's peaks: those from half of it up, the nearest first.)
+        let above = &self.by_was[self.by_was.partition_point(|r| r.0 < mb / 2.0)..];
+        let about = above.partition_point(|r| r.0 <= mb * 2.0);
+        let near: Vec<f64> = above[..about.max(MIN_RUNS.min(above.len()))].iter().map(|r| r.1).collect();
+        model::pct(&model::sorted(near), self.pct).map_or(1.0, |s| s.max(1.0))
+    }
 }
 
 /// The models made, kept until the measures they're made from change: the change count they were
@@ -702,7 +740,14 @@ impl<'a> Book<'a> {
             })
             .collect();
         let needs = model::Model::of(self.obs(step, v), &older_obs, &disks, &self.tuning);
-        let m = Arc::new(Models { needs, near, older });
+        let reruns = self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v == v && !is_drop(c)).filter_map(
+            |(_, c)| {
+                let was = c.was_mb.filter(|&w| w > 0)? as f64;
+                Some((was, c.peak_mb as f64 / was))
+            },
+        );
+        let reruns = Reruns::of(reruns, self.tuning.mem_pct);
+        let m = Arc::new(Models { needs, near, older, reruns });
         cache.models.lock().unwrap_or_else(|e| e.into_inner()).1.insert(step.to_string(), m.clone());
         m
     }
@@ -806,8 +851,9 @@ impl<'a> Book<'a> {
     }
 
     /// The memory (MB) a job of `step` for `target` needs on `threads` (0: as measured), and where
-    /// it came from: `need`'s, alone (what the picks read). Its own run on fewer threads than
-    /// `threads` (`own_threads`): each thread more its `thread_mb`. A floor, or its place's figure
+    /// it came from: `need`'s, alone (what the picks read). Its own run: its peak (never below its
+    /// floor) times its step's spread over its reruns (`Models::spread`); on fewer threads than
+    /// `threads` (`own_threads`), each thread more its `thread_mb`. A floor, or its place's figure
     /// (`near`), says no threads: each grown by its step's model's growth from its runs' threads
     /// to `threads` (`model::Model::mem` on them past it as measured). `guess`: the caller's
     /// first guess (MB); for a step offered by an input measure (`OFFERED_BY`), that measure of the
@@ -819,15 +865,16 @@ impl<'a> Book<'a> {
         };
         let key = cost_key(step, target);
         let floor = self.current_floor(step, &key);
+        let md = self.model(step);
         if let Some(c) = self.own(step, target) {
-            let mb = c.peak_mb.max(floor.unwrap_or(0));
+            let peak = c.peak_mb.max(floor.unwrap_or(0)) as f64;
+            let mb = (peak * md.reruns.spread(peak)).ceil() as u64;
             let more = match own_threads(c) {
                 Some(ran) if threads > ran => u64::from(threads - ran) * self.own_thread_mb(step, target, c, ran),
                 _ => 0,
             };
             return (mb + more, From::Measured);
         }
-        let md = self.model(step);
         let sizes = self.sizes(step, target, offered);
         // (A floor or a place's figure says no threads: grown by what the step's runs grow by from
         // their own threads to `threads`, its model's figure on them past its figure as measured.)
@@ -1310,6 +1357,39 @@ mod tests {
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             ..Default::default()
         }
+    }
+
+    /// Task #1586: a target's own run is booked at its peak times the spread of its step's reruns
+    /// whose runs before peaked about as much (the memory percentile of each rerun's peak over its
+    /// run before's), never under its peak; with no reruns, at its peak.
+    #[test]
+    fn an_own_run_is_booked_by_its_steps_rerun_spread() {
+        let v = cost_version("depth");
+        let at = |peak: u64, was: Option<u64>| Cost { v, was_mb: was, ..cost(peak, 60, &[("threads", 2)]) };
+        let mut costs = BTreeMap::from([("depth 6/2/1".to_string(), at(800, None))]);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(
+            (b.model("depth").reruns.spread(800.0), b.mem("depth", "6/2/1", 2, 0)),
+            (1.0, (800, From::Measured))
+        );
+        // (At 1 GB, nine reruns as their runs before, one twice: at the 98th percentile, 1.82. At
+        // 50 GB, ten as their runs before.)
+        for i in 0..10u64 {
+            costs.insert(format!("depth 6/1/{i}"), at(if i == 9 { 2000 } else { 1000 }, Some(1000)));
+            costs.insert(format!("depth 6/3/{i}"), at(50_000, Some(50_000)));
+        }
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        let s = b.model("depth").reruns.spread(800.0);
+        assert!((s - 1.82).abs() < 1e-9, "{s}");
+        let (mb, from) = b.mem("depth", "6/2/1", 2, 0);
+        assert!((1456..=1457).contains(&mb) && from == From::Measured, "{mb}");
+        assert_eq!(b.model("depth").reruns.spread(40_000.0), 1.0, "a level's own reruns");
+        // (Reruns that took less never book a target under its own peak.)
+        for i in 0..10u64 {
+            costs.insert(format!("depth 6/1/{i}"), at(500, Some(1000)));
+        }
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
+        assert_eq!(b.mem("depth", "6/2/1", 2, 0), (800, From::Measured));
     }
 
     /// A run of `step` the way it runs now: `secs` of wall, as much CPU on one thread, on `worker`.
@@ -2028,6 +2108,109 @@ mod tests {
                 paces.macs
             );
         }
+    }
+
+    /// By hand (task #1586): the lead's grants replayed. `SCENIC_GRANTS_REPLAY` names a folder of
+    /// `book.json` (the costs before the window, as `read_costs` reads them) and `SCENIC_GRANTS_RUNS`
+    /// a file in it of the window's job runs in lease order, a JSON line each (`job`, `step`,
+    /// `targets`, `threads`, `worker`, `lease_t`, `end_t`, `secs`, `grant`, `whole`, `ok`, each
+    /// target's `peaks` and `sizes`). Each run is booked as the scheduler books it, from the costs
+    /// of the runs ended before its lease (each target's cost its run's peak, `was_mb` its run
+    /// before's of the way its step runs now on as many threads, as the lead sets it): the most of
+    /// its targets' memory on its threads (`Book::mem`, the run's grant standing in for its plan's
+    /// guess), a cold start's (`From::Table`) its provisional need (crate::coord::sched's
+    /// `provisional_mb` of its step's earlier way's, else the grant). Writes `<runs>.booked.jsonl`, a
+    /// line a run: the run's line less its peaks and sizes, with `booked`, `from` and `unspread` (as
+    /// `booked`, its targets' own runs at their peaks alone, without their step's spread). Without the
+    /// folder it prints that it skipped and checks nothing.
+    #[test]
+    fn replay_grants_on_the_leads_records() {
+        use std::io::Write;
+        let Ok(dir) = std::env::var("SCENIC_GRANTS_REPLAY") else {
+            eprintln!("grants replay skipped: SCENIC_GRANTS_REPLAY unset (nothing checked)");
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        let runs_at = dir.join(std::env::var("SCENIC_GRANTS_RUNS").unwrap());
+        let mut costs = read_costs(&dir.join("book.json")).unwrap();
+        let runs: Vec<serde_json::Value> =
+            std::fs::read_to_string(&runs_at).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let the_plan = crate::agent::seam::for_tests();
+        let (paces, records, cache) = (crate::paces::Paces::default(), Records::default(), Cache::default());
+        let inputs = Inputs { paces: &paces, records: &records, tuning: Default::default() };
+        let (floors, disks) = (BTreeMap::new(), BTreeMap::new());
+        let mut ended: Vec<&serde_json::Value> = runs.iter().filter(|r| r["ok"] == true).collect();
+        ended.sort_by(|a, b| a["end_t"].as_f64().unwrap().total_cmp(&b["end_t"].as_f64().unwrap()));
+        let (mut next, mut rev) = (0usize, 0u64);
+        let mut out = std::fs::File::create(runs_at.with_extension("booked.jsonl")).unwrap();
+        for r in &runs {
+            let at = r["lease_t"].as_f64().unwrap();
+            while next < ended.len() && ended[next]["end_t"].as_f64().unwrap() <= at {
+                let e = ended[next];
+                next += 1;
+                rev += 1;
+                let step = e["step"].as_str().unwrap();
+                let v = the_plan.cost_version(step);
+                for t in e["targets"].as_array().unwrap() {
+                    let t = t.as_str().unwrap();
+                    let key = cost_key(step, t);
+                    let mut sizes: BTreeMap<String, u64> =
+                        serde_json::from_value(e["sizes"][t].clone()).unwrap_or_default();
+                    sizes.insert("threads".into(), e["threads"].as_u64().unwrap());
+                    sizes.remove("threads_peak");
+                    let mut c = Cost {
+                        peak_mb: e["peaks"][t].as_u64().unwrap(),
+                        secs: e["secs"].as_f64().unwrap() as u64,
+                        worker: e["worker"].as_str().map(str::to_string),
+                        job: e["job"].as_str().and_then(|j| j.parse().ok()),
+                        v,
+                        sizes,
+                        was_mb: None,
+                    };
+                    let threads = |c: &Cost| c.sizes.get("threads").copied();
+                    c.was_mb = costs
+                        .get(&key)
+                        .filter(|k| k.v == v && threads(k) == threads(&c) && !is_drop(k) && k.peak_mb > 0)
+                        .map(|k| k.peak_mb);
+                    costs.insert(key, c);
+                }
+            }
+            let book = Book::kept(the_plan, &costs, &floors, &disks, inputs, &cache, rev);
+            let step = r["step"].as_str().unwrap();
+            let threads = r["threads"].as_u64().unwrap() as u32;
+            let grant = r["grant"].as_u64().unwrap_or(0);
+            let (mut booked, mut from, mut unspread) = (0u64, From::Measured, 0u64);
+            for t in r["targets"].as_array().unwrap() {
+                let t = t.as_str().unwrap();
+                let guess = match offered_by(step) {
+                    Some(m) => r["sizes"][t][m].as_u64().unwrap_or(0),
+                    None => grant,
+                };
+                let (mb, f) = match book.mem(step, t, threads, guess) {
+                    (_, From::Table) => {
+                        (crate::coord::sched::provisional_mb(book.older_mem(step, t).unwrap_or(grant)), From::Table)
+                    }
+                    m => m,
+                };
+                // (Its own run's peak alone, as booked before the spread.)
+                let spread = book.own(step, t).map_or(0, |c| {
+                    (c.peak_mb as f64 * book.model(step).reruns.spread(c.peak_mb as f64)).ceil() as u64 - c.peak_mb
+                });
+                unspread = unspread.max(mb - spread);
+                if mb >= booked {
+                    (booked, from) = (mb, f);
+                }
+            }
+            let mut line = r.clone();
+            let o = line.as_object_mut().unwrap();
+            o.remove("peaks");
+            o.remove("sizes");
+            o.insert("booked".into(), booked.into());
+            o.insert("unspread".into(), unspread.into());
+            o.insert("from".into(), format!("{from:?}").into());
+            writeln!(out, "{line}").unwrap();
+        }
+        eprintln!("grants replay: {} runs booked", runs.len());
     }
 
     /// A target held out of its step's costs (`held_out`): its step and cost key, the memory

@@ -244,7 +244,12 @@ fn build_main(args: Vec<String>) -> Result<()> {
     // Its phases' times (jobrt::timings: the log's table, the agent's record), however it ends.
     // (A pause any step stops on, at a piece it kept, ends the job as paused, exit 75, wherever the
     // step itself didn't: jobrt::control::piece_saved.)
-    jobrt::timings::job(&step, || step_main(&args, &step).map_err(|e| jobrt::control::stop_if_paused(&step, e)))
+    // (Its memory sampled from its start, its first target's window: `write_cost_line`.)
+    jobrt::sys::reset_group_peak();
+    let r =
+        jobrt::timings::job(&step, || step_main(&args, &step).map_err(|e| jobrt::control::stop_if_paused(&step, e)));
+    note_cost_tail();
+    r
 }
 
 /// inputs <unit> [--full] [--listing f]: a gate unit's inputs folder checked against its accepted version
@@ -2550,11 +2555,12 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
-/// Target `target` of `step` begins, for `note_cost`: its time, and the job's peak memory started
-/// again; noted for the agent (`SCENIC_COSTS`, a `started` line), which keeps what the job holds
-/// while a target is under way as what that target takes at least (agentcore::agent::memguard).
+/// Target `target` of `step` begins, for `note_cost`: its time; noted for the agent
+/// (`SCENIC_COSTS`, a `started` line), which keeps what the job holds while a target is under way
+/// as what that target takes at least (agentcore::agent::memguard). Its memory's window began with
+/// the cost line before it (`write_cost_line`), or the job: what the job did between targets (a
+/// halo's base packs fetched, the declared datasets read) is the next target's.
 fn cost_start(step: &str, target: &str) -> std::time::Instant {
-    jobrt::sys::reset_group_peak();
     note_started(&agentcore::coord::cost_key(step, target));
     // (A tile's area, among its inputs' measures: buildstore::costin.)
     if let Some(u) = TileId::parse(target) {
@@ -2693,24 +2699,45 @@ fn run_drop(step: &str, target: &str, drop: impl FnOnce() -> Result<usize>) -> R
     Ok(n)
 }
 
-/// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
-/// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
-/// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a member only
-/// work that fits its memory (agentcore::coord::job_peak); with its inputs' measures (buildstore::costin).
+/// What a job of `step` took for `target` (its time since its `cost_start`): the most memory the
+/// job's processes held together over its window (`write_cost_line`) and its time, noted for the
+/// coordinator (`SCENIC_COSTS`), which gives a member only work that fits its memory; with its
+/// inputs' measures (buildstore::costin).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     write_cost_line(step, target, &done_line(step, target, t0));
 }
 
-/// Writes a target's cost line (`done_line`) to `SCENIC_COSTS`.
+/// Whether the job has written a cost line (`note_cost_tail`).
+static COST_LINES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Writes a target's cost line (`done_line`) to `SCENIC_COSTS`, its `peak_mb` the most the job's
+/// processes held together over its window (task #1586): from the job's start or the cost line
+/// before it to this line, so every phase of the job falls in some target's line (a landing's,
+/// written after the next target's work began, takes that too), and the job's whole-process peak is
+/// the most of its lines (with `note_cost_tail`). A halo step's (agentcore::needs::HALO_STEPS)
+/// window never starts again: its targets share the halo the job fetched for them all (pack's 3 GB
+/// fetching the z6 tiles' base packs, before its first target, against 44-99 MB lines), so each
+/// line is the job's most so far.
 fn write_cost_line(step: &str, target: &str, line: &serde_json::Value) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let r = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
-    if let Err(e) = r {
-        eprintln!("{step} {target}: noting what it cost: {e}");
+    let mut line = line.clone();
+    let most = (jobrt::sys::group_peak() >> 20).max(line["peak_mb"].as_u64().unwrap_or(0));
+    line["peak_mb"] = most.into();
+    note_cost_line(&p, &format!("{step} {target}"), "what it cost", &line);
+    COST_LINES.store(true, std::sync::atomic::Ordering::Relaxed);
+    if !agentcore::needs::HALO_STEPS.contains(&step) {
+        jobrt::sys::reset_group_peak();
+    }
+}
+
+/// The job's end, past its last cost line (`write_cost_line`): the most its processes held since,
+/// a `tail_mb` line its agent counts in that line (agentcore's `read_costs`: its saving, its last
+/// uploads, a z6 tile's tail).
+fn note_cost_tail() {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    if COST_LINES.load(std::sync::atomic::Ordering::Relaxed) {
+        let line = serde_json::json!({ "tail_mb": jobrt::sys::group_peak() >> 20 });
+        note_cost_line(&p, "the job", "its tail", &line);
     }
 }
 
@@ -4385,8 +4412,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             a.on(&u.slash());
             a.say(true);
         });
-        // (Its processes' most held from here, and its inputs' measures, its measure.)
-        jobrt::sys::reset_group_peak();
+        // (Its inputs' measures from here; its processes' most held from the z6 tile before's
+        // measure on, or the job's start: `group`, below.)
         buildstore::costin::begin();
         // (What the caches' accessor had written as it began: its own disk, carried with it, as a
         // later z6 tile begins before its tail ends.)
@@ -4640,7 +4667,14 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             piece,
             t,
             peak: roads::unit::take_peak(),
-            group: jobrt::sys::group_peak(),
+            // (Its window ends here, the next z6 tile's begins: what follows, its tail and its
+            // saving, beside the next's work, is the next's, the last's the job's tail,
+            // `note_cost_tail`.)
+            group: {
+                let g = jobrt::sys::group_peak();
+                jobrt::sys::reset_group_peak();
+                g
+            },
             disk: store::cachefile::written().saturating_sub(written_at),
             anywhere: anywhere.to_vec(),
             sizes,
@@ -5068,14 +5102,8 @@ fn commit_tile(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     );
     if let Some(p) = std::env::var_os("SCENIC_COSTS") {
         let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::agent::theplan::the_plan().cost_version("unit"), "disk_mb": disk >> 20, "sizes": sizes });
-        let r = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&p)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
-        if let Err(e) = r {
-            eprintln!("unit {}: noting what it cost: {e}", u.slash());
-        }
+        note_cost_line(&p, &format!("unit {}", u.slash()), "what it cost", &line);
+        COST_LINES.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
 }
@@ -7352,6 +7380,72 @@ mod tests {
         let t = agentcore::agent::memguard::targets(&costs);
         let set_aside_ones = vec!["6/5/18".to_string()];
         assert_eq!((t.failed, t.also, t.aside), (vec![key("6/1/4")], set_aside_ones.clone(), set_aside_ones));
+    }
+
+    /// Task #1586: every phase of a job falls in some target's cost line. A target's window runs
+    /// from the line before it (or the job's start) to its own: what the job held before its first
+    /// target is the first's, and the next target's window starts again; a halo step's never does
+    /// (each line the job's most so far); what it held past its last line is its tail's line.
+    #[test]
+    fn every_phase_of_a_job_falls_in_some_cost_line() {
+        use super::{cost_start, note_cost, note_cost_tail};
+        // (Alone in a process of its own: its memory is the test's, its costs file its environment's.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "tests::every_phase_of_a_job_falls_in_some_cost_line"]).env(ALONE, "1");
+            let out = store::spawn::output(&mut c).unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let costs = d.path().join("costs");
+        let _costs = store::testkit::EnvVar::set("SCENIC_COSTS", &costs);
+        let _done = store::testkit::EnvVar::set(jobrt::control::DONE_ENV, d.path().join("done"));
+        // (Held long enough for the sampler, four times a second, to see it; then let go.)
+        let hold = || {
+            let a = vec![1u8; 300 << 20];
+            std::thread::sleep(std::time::Duration::from_millis(800)); // (sleep ok: sampled four times a second)
+            drop(std::hint::black_box(a));
+        };
+        let lines = || -> Vec<serde_json::Value> {
+            std::fs::read_to_string(&costs)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .filter(|v| v.get("peak_mb").is_some() || v.get("tail_mb").is_some())
+                .collect()
+        };
+        let mb = |v: &serde_json::Value| v["peak_mb"].as_u64().or(v["tail_mb"].as_u64()).unwrap();
+        // The job's start: 300 MB held before its first target (a halo's fetch), then two targets.
+        jobrt::sys::reset_group_peak();
+        hold();
+        for t in ["6/1/1", "6/1/2"] {
+            let c = cost_start("slope-hi", t);
+            note_cost("slope-hi", t, c);
+        }
+        // A halo step's: its targets share what the job held for them; the next step's line the
+        // window since the last that started one again.
+        hold();
+        for (s, t) in [("pack", "6/1/3"), ("pack", "6/1/4"), ("slope-hi", "6/1/5")] {
+            let c = cost_start(s, t);
+            note_cost(s, t, c);
+        }
+        // Past its last line.
+        hold();
+        note_cost_tail();
+        let got: Vec<u64> = lines().iter().map(mb).collect();
+        assert_eq!(got.len(), 6, "{got:?}");
+        assert!(got[0] >= 300, "the first target's line holds what the job held before it: {got:?}");
+        assert!(got[1] + 200 < got[0], "the next one's window began at the line before it: {got:?}");
+        assert!(got[2] >= 300 && got[3] >= 300, "a halo step's lines hold the job's most so far: {got:?}");
+        assert!(got[4] >= 300, "a halo step's lines start no window: {got:?}");
+        assert!(got[5] >= 300, "the tail holds what came past the last line: {got:?}");
     }
 
     /// Task #1567 review: an upload put off by a target landing beside the next one's work, failing

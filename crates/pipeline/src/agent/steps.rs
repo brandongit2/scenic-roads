@@ -1381,14 +1381,18 @@ pub const TABLE: [Step; 65] = [
             w_unit,
         )
     },
+    // (Cost version: 1, its targets' cost lines holding the base packs' fetch for them all (task
+    // #1586, scenic-build's `write_cost_line`), ~3 GB where 0's lines began after it, at 44-99 MB.)
     Step {
+        cost_v: 1,
         ..step("tiles", Pack, Z6, "pack", "Draws a tile's road and rail map tiles and its data.", w_pack)
     },
     // (Cost version: 1, its z3 tile's road and rail tiles drawn a tile at a time, each tile's ways
     // cut a run at a time (codecs::hipack::tiles_one_by_one, task #1182), where 0 held the z3 tile's
-    // ways cut at once: 17.5 GB for 3/4/2.)
+    // ways cut at once: 17.5 GB for 3/4/2. 2: its cost lines holding the base packs' fetch, as
+    // pack's 1.)
     Step {
-        cost_v: 1,
+        cost_v: 2,
         ..step(
             "tiles",
             Pack,

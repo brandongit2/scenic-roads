@@ -868,7 +868,7 @@ pub(super) fn keeps_threads(step: &str) -> bool {
 /// A cold start's provisional memory (MB) from `mb`, the most its step's runs of its latest earlier
 /// way measured or it was offered with: times 3/2 (task #499; `Sched::provisional`, the forecast's
 /// packing too).
-pub(super) fn provisional_mb(mb: u64) -> u64 {
+pub(crate) fn provisional_mb(mb: u64) -> u64 {
     mb.saturating_mul(3) / 2
 }
 

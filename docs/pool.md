@@ -1191,7 +1191,15 @@ thousandths:
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
 the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and
 floors of an older way are no measure (disk floors carry no version and always count). A target's
-memory, disk and time are its own run's (memory never below its floor). Else a tile target's memory
+memory, disk and time are its own run's (memory never below its floor), its memory times its
+step's **spread over its reruns** (`needs::Reruns::spread`, task #1586): of each of its targets
+that reran one of the way it runs now on as many threads (`Cost::was_mb`) after a run that peaked
+about as much as its own (half to twice it; fewer than `MIN_RUNS`, the nearest that peaked at half
+of it or more: a lighter run's swing never books a heavier target), its peak over its
+run before's, at the `needs-mem-pct` percentile, never under 1 (none: 1). A target's peaks move run
+to run, by their level: depth's reruns took up to 3.6 times their runs before, so its last peak
+alone booked 6/20/17 at 564 MB where it took 1,605; pack's of tens of MB up to 30 times (its base
+packs fetched or not), of 3 GB about as much again. Else a tile target's memory
 (not unit's or pois', whose guess comes first: `GUESS_FIRST`) **by its place** (`needs::Near`): the
 most its nearest measured targets of the step took (rings outward until they hold 5 runs,
 `NEAR_RUNS`, or 8 rings), × 1.1, where that is judged good on the step's own measures (at most 5 %
@@ -1282,8 +1290,9 @@ the cautious limit; the memory guard and brake (§7.1, The memory floor) stand b
 - **On its threads** (`Sched::measures`): each target's memory (`needs::Book::mem`) is read on the
   threads a job of it starts on (its grant by the cost book), whatever cores the Mac has, so a
   target's memory is one figure everywhere: what `pack` packs, what room is held for it, what a
-  Mac's last ask is weighed by, what flags it too big. A target with its own run: that peak plus
-  its memory per thread past the threads it ran on, by the rule its step's runs are grown by
+  Mac's last ask is weighed by, what flags it too big. A target with its own run: that peak times
+  its step's spread over its reruns, plus its memory per thread past the threads it ran on, by the
+  rule its step's runs are grown by
   (`needs::Book::thread_mb`, task #1584): the memory per thread fitted over its step's runs'
   sizes and threads, at least `needs-thread-share` of its peak over its threads; that whole where
   its step's runs fit nothing a thread (fewer than ten said their threads, or all the same

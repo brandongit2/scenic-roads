@@ -921,32 +921,41 @@ fn read_timings(dir: &Path) -> Option<jobrt::timings::RunRec> {
     std::fs::read(dir.join(TIMINGS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// What a `unit` job's z6 tiles cost (`SCENIC_COSTS`: a JSON line per z6 tile), measured by run
-/// `job` (jobrt::jobid).
+/// What a job's targets cost (`SCENIC_COSTS`: a JSON line a target), measured by run `job`
+/// (jobrt::jobid). The job's memory past its last target's line (its `tail_mb` line, scenic-build's
+/// `note_cost_tail`: its saving, its last uploads) is that line's too, so the most of its lines is
+/// the job's whole-process peak (task #1586).
 fn read_costs(p: &Path, job: Option<jobrt::jobid::JobId>) -> Vec<(String, crate::coord::Cost)> {
     let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
-    s.lines()
-        .filter_map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            // (`sizes`: a line from a job before them has none.)
-            let sizes = v["sizes"]
-                .as_object()
-                .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect())
-                .unwrap_or_default();
-            Some((
-                v["unit"].as_str()?.to_string(),
-                crate::coord::Cost {
-                    peak_mb: v["peak_mb"].as_u64()?,
-                    secs: v["secs"].as_u64().unwrap_or(0),
-                    worker: None,
-                    job,
-                    v: v["v"].as_u64().unwrap_or(0) as u32,
-                    sizes,
-                    ..Default::default()
-                },
-            ))
-        })
-        .collect()
+    let mut out: Vec<(String, crate::coord::Cost)> = Vec::new();
+    for l in s.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
+        if let Some(tail) = v["tail_mb"].as_u64() {
+            if let Some((_, c)) = out.last_mut() {
+                c.peak_mb = c.peak_mb.max(tail);
+            }
+            continue;
+        }
+        let (Some(unit), Some(peak_mb)) = (v["unit"].as_str(), v["peak_mb"].as_u64()) else { continue };
+        // (`sizes`: a line from a job before them has none.)
+        let sizes = v["sizes"]
+            .as_object()
+            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect())
+            .unwrap_or_default();
+        out.push((
+            unit.to_string(),
+            crate::coord::Cost {
+                peak_mb,
+                secs: v["secs"].as_u64().unwrap_or(0),
+                worker: None,
+                job,
+                v: v["v"].as_u64().unwrap_or(0) as u32,
+                sizes,
+                ..Default::default()
+            },
+        ));
+    }
+    out
 }
 
 /// The heartbeat (the agent's `status.json`, the lead's asked of its coordinator by other Macs:
@@ -10712,6 +10721,21 @@ mod tests {
         assert!(j.get("sizes").is_none());
         let back: crate::coord::Cost = serde_json::from_value(serde_json::to_value(&c[0].1).unwrap()).unwrap();
         assert_eq!(back, c[0].1);
+        // (Task #1586: the job's memory past its last line, its tail, is that line's: only a rise.)
+        std::fs::write(
+            &p,
+            concat!(
+                "{\"unit\":\"pack 6/1/1\",\"peak_mb\":900,\"secs\":4}\n",
+                "{\"unit\":\"pack 6/1/2\",\"peak_mb\":300,\"secs\":4}\n",
+                "{\"unit\":\"pack 6/1/3\",\"failed\":true}\n",
+                "{\"tail_mb\":700}\n",
+            ),
+        )
+        .unwrap();
+        let peaks: Vec<u64> = read_costs(&p, None).iter().map(|c| c.1.peak_mb).collect();
+        assert_eq!(peaks, [900, 700]);
+        std::fs::write(&p, "{\"unit\":\"pack 6/1/1\",\"peak_mb\":900,\"secs\":4}\n{\"tail_mb\":700}\n").unwrap();
+        assert_eq!(read_costs(&p, None)[0].1.peak_mb, 900);
         // (An older reader's Cost: no `sizes`, unknown fields ignored.)
         #[derive(serde::Deserialize)]
         #[allow(dead_code)]

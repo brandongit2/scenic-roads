@@ -456,7 +456,8 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   z6 tiles, roads (`unit`), the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
   any member may take with ⇄ (`agent::steps::place`).
 - **What fits a member:** each target is offered with its expected memory: a `unit` job's from its extract;
-  another's what its last run took (sampled four times a second, `SCENIC_COSTS`), else a related
+  another's what its last run took (sampled four times a second, every phase of its job in some
+  target's line, `SCENIC_COSTS`) times its step's spread over its reruns, else a related
   measure (its neighbours', its step's fit or runs: `needs::Book`; the 3D buildings fitted by the
   rows they read). Nothing is a hand-kept figure: before its step has run the way it runs now, a
   target is a cold start (docs/pool.md §7.7), sized by its step's runs of an earlier way, terrain-hi's

@@ -154,7 +154,7 @@ Common rules:
 
 ## 6. Fitting the work to the worker
 
-- **Predicted peaks:** a z6 tile's `unit` job is its last measured peak (`SCENIC_COSTS`), else about ten times
+- **Predicted peaks:** a z6 tile's `unit` job is its last measured peak (`SCENIC_COSTS`) times its step's spread over its reruns (docs/pool.md §7.7), else about ten times
   its extract, at least 3.7 GB and its floor (docs/pool.md §7.2). A task's: §3, Memory.
 
 ## 7. The build page
