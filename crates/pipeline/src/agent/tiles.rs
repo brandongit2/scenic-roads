@@ -160,13 +160,18 @@ pub struct TerrainTiles {
     /// The records asked again off the plan's thread, shared by the copies (`Reask`).
     reask: std::sync::Arc<buildstore::asked::Reask>,
     /// Whether its keys leave a record that must be asked again to a pass off the plan's thread
-    /// while one runs (`Reask::running`), waiting meanwhile: the agent's plan's (`defer`), not a
+    /// while one runs (`Reask::running`), waiting meanwhile: the agent's plan's (`defer`) and its
+    /// copies (the shadow's, the regions' counts'), never reading a record for a key then; not a
     /// test's, nor the pass's own copy, which asks them.
     defers: bool,
     /// The memory available above this Mac's floor now, as the memory guard last read it (bytes;
-    /// None: unread, the guard guarding nothing): what the records asked again may hold in flight
-    /// (`Reask::admit`). None: no bound (a test's).
+    /// None: unread, the guard guarding nothing): what the records the pass asks again may hold in
+    /// flight (`Reask::admit`). The pass's copy's alone (`for_reask`): no other reads a record but
+    /// a few on the plan's thread, never waiting for memory there.
     room: Option<buildstore::asked::Room>,
+    /// A probe's (`for_probe`): every key of a record that must be asked again waits, the record
+    /// named here, none read.
+    probe: Option<std::sync::Arc<buildstore::asked::Found>>,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -194,9 +199,9 @@ impl TerrainTiles {
     }
 
     /// The agent's plan's: its keys leave the records that must be asked again to a pass off the
-    /// plan's thread (`defers`), which holds them in flight within `room`.
-    pub fn defer(&mut self, room: buildstore::asked::Room) {
-        (self.defers, self.room) = (true, Some(room));
+    /// plan's thread while one runs (`defers`).
+    pub fn defer(&mut self) {
+        self.defers = true;
     }
 
     /// The records asked again off the plan's thread (`Reask`).
@@ -204,9 +209,22 @@ impl TerrainTiles {
         &self.reask
     }
 
-    /// A copy for that pass: it asks the records itself, the memo and `Reask` shared.
-    pub fn for_reask(&self) -> TerrainTiles {
-        TerrainTiles { defers: false, ..self.clone() }
+    /// A copy for that pass: it asks the records itself, each held within `room`, the memo and
+    /// `Reask` shared.
+    pub fn for_reask(&self, room: buildstore::asked::Room) -> TerrainTiles {
+        TerrainTiles { defers: false, room: Some(room), probe: None, ..self.clone() }
+    }
+
+    /// A copy that finds the records that must be asked again (into `found`: (step, target), the
+    /// world steps' as (step, "")) and reads none: each key of one waits. Its `Reask` its own, the
+    /// memo shared.
+    pub fn for_probe(&self, found: std::sync::Arc<buildstore::asked::Found>) -> TerrainTiles {
+        TerrainTiles { defers: true, room: None, probe: Some(found), reask: Default::default(), ..self.clone() }
+    }
+
+    /// Where a probe names what must be asked again (`for_probe`).
+    pub fn probe(&self) -> Option<&buildstore::asked::Found> {
+        self.probe.as_deref()
     }
 
     /// Whether its keys leave the records that must be asked again to a pass off the plan's thread
@@ -218,7 +236,7 @@ impl TerrainTiles {
     /// Whether a key now leaves a record that must be asked again to the pass (`defers`, one
     /// running), its target waiting.
     pub fn defers_now(&self) -> bool {
-        self.defers && self.reask.now().running
+        self.defers && (self.probe.is_some() || self.reask.now().running)
     }
 
     /// A digest of what the keys read of it now: the packs whose indexes it holds and those it
@@ -516,8 +534,7 @@ impl TerrainTiles {
                 if let Some(h) = self.kept_head(c) {
                     return (*c, Ok(Some(h)));
                 }
-                let head =
-                    root.join(c).read().map(|b| buildstore::asked::Record::from_bytes(&b).ok().map(|r| Head::of(&r)));
+                let head = buildstore::asked::Record::read(&root.join(c)).map(|r| r.map(|r| Head::of(&r)));
                 if let Ok(Some(h)) = &head {
                     self.keep_head(c, h);
                 }
@@ -544,8 +561,8 @@ impl TerrainTiles {
             }
             // (One that can't be read now: tried again with the next load; one that doesn't
             // parse, held as such: its step re-runs once.)
-            let r = match root.join(c).read() {
-                Ok(b) => Some(buildstore::asked::Record::from_bytes(&b).ok().map(std::sync::Arc::new)),
+            let r = match buildstore::asked::Record::read(&root.join(c)) {
+                Ok(r) => Some(r.map(std::sync::Arc::new)),
                 Err(e) => {
                     eprintln!("agent: {c} can't be read now ({e:#})");
                     None
@@ -636,12 +653,15 @@ impl TerrainTiles {
         // (By the content name its key read in the manifest: store::keyread's recorded read.)
         let _r = store::keyread::recorded();
         let p = root.join(c);
-        let cost = buildstore::asked::record_cost(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
-        // (Held while it's read, parsed and asked again: `f`.)
-        let _a = self.reask.admit(cost, self.room.as_ref(), agentcore::agent::memguard::EVERY);
-        let b = p.read().map_err(|e| Unread(format!("{c}: {e:#}")))?;
-        let r = buildstore::asked::Record::from_bytes(&b).ok();
-        drop(b);
+        // (Held, by the pass's copy alone, while it's read, parsed and asked again: `f`.)
+        let _a = match &self.room {
+            Some(room) => {
+                let cost = buildstore::asked::record_cost(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
+                Some(self.reask.admit(cost, Some(room), agentcore::agent::memguard::EVERY))
+            }
+            None => None,
+        };
+        let r = buildstore::asked::Record::read(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
         Ok(f(r.as_ref()))
     }
 
@@ -1383,13 +1403,14 @@ mod tests {
     }
 
     /// Task #1590 review: the agent's plan leaves the records that must be asked again to a pass
-    /// off its thread. While one runs, the key of a record it hasn't asked yet waits (None), met as
-    /// a load, and the keys of every other target are worked out as ever: the plan offers them; once
-    /// the pass has asked it, the key is its line, and the tiles' state has moved.
+    /// off its thread. A probe names them and reads none; while the pass runs, the key of a record
+    /// it hasn't asked yet waits (None), met as a load, and the keys of every other target are
+    /// worked out as ever: the plan offers them; once the pass has asked it, the key is its line,
+    /// and the tiles' state has moved.
     #[test]
     fn a_record_left_to_the_pass_waits_alone() {
         use crate::agent::build::KeyCtx;
-        use buildstore::asked::{target_logical, Record};
+        use buildstore::asked::{target_logical, Found, Record};
         use buildstore::coverage::{fixture_circle, Asking, Coverage, Shape};
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
@@ -1412,31 +1433,44 @@ mod tests {
             m.insert(target_logical("pois", t), content);
         }
         let mut t = TerrainTiles::new(Some(d.path().join("kept")));
-        t.defer(std::sync::Arc::new(|| None));
+        t.defer();
         t.load_asked(&root, &m);
-        let key = |tiles: &TerrainTiles, u: &str| {
-            crate::agent::idents::coverage_clip(u, &KeyCtx::new(&c, "d", &m, &inputs, None, tiles))
-                .map(|mut l| l.remove(0))
-        };
+        macro_rules! x {
+            ($t:expr) => {
+                KeyCtx::new(&c, "d", &m, &inputs, None, $t)
+            };
+        }
+        let key =
+            |tiles: &TerrainTiles, u: &str| crate::agent::idents::coverage_clip(u, &x!(tiles)).map(|mut l| l.remove(0));
         // No pass running: asked on the plan's thread, as a test's plan does.
         assert!(!t.defers_now());
         let (state, load) = (t.state(), t.load_state());
-        assert!(t.reask().begin());
+        // A probe: the record named, none read, the other keys as ever; the plan's tiles untouched.
+        let found = std::sync::Arc::new(Found::default());
+        let probe = t.for_probe(found.clone());
+        crate::agent::idents::ask_all(&x!(&probe));
+        assert_eq!(key(&probe, old), None);
+        assert_eq!(key(&probe, none), Some(geo(none)));
+        assert_eq!(found.take(), vec![("pois".to_string(), old.to_string())]);
+        assert!(!t.defers_now() && t.state() == state && t.reask().now().done == 0);
+        let pass = t.reask().pass(1).expect("none running");
         assert!(t.defers_now() && t.state() != state && t.load_state() != load);
         assert_eq!(key(&t, old), None, "left to the pass");
         assert_eq!(key(&t, fresh).as_deref(), Some(format!("ran {fresh}").as_str()));
         assert_eq!(key(&t, none), Some(geo(none)));
-        // The pass, on its copy: it asks the record, and the plan's key finds its line.
-        let pass = t.for_reask();
-        assert!(!pass.defers_now());
-        crate::agent::idents::warm_all(&KeyCtx::new(&c, "d", &m, &inputs, None, &pass));
-        assert_eq!(t.reask().now().total, 2);
-        assert_eq!(t.reask().now().done, 2);
-        t.reask().end();
+        // The pass, on its copy: it asks the record, admitted within its room (the copy's alone
+        // has one), and the plan's key finds its line.
+        let p = t.for_reask(std::sync::Arc::new(|| Some(1 << 40)));
+        assert!(!p.defers_now());
+        crate::agent::idents::warm_all(&x!(&p));
+        assert_eq!(t.reask().now().room, Some(1 << 40), "admitted by the room");
+        assert_eq!(t.reask().now().done, 1, "the record whose cheap test moved");
+        assert!(t.reask().now().took.contains_key("pois"));
+        drop(pass);
         assert_eq!(key(&t, old).as_deref(), Some(format!("ran {old}").as_str()));
         assert!(!t.defers_now() && t.state() != state);
         // Nothing new to ask: no pass due.
-        assert!(!crate::agent::idents::warm_due(&KeyCtx::new(&c, "d", &m, &inputs, None, &t)));
+        assert!(!crate::agent::idents::warm_due(&x!(&t)));
     }
 
     /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,

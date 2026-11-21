@@ -343,6 +343,65 @@ struct Held {
     /// How many passes asking records again had ended at the last `kick` (buildstore::asked::Reask): one more
     /// since, and a plan is due for the lines it put.
     reask_seen: Cell<u64>,
+    /// The agent's folder, where the memory guard writes its latest sample (memguard::LIVE).
+    home: std::path::PathBuf,
+    /// How long the last plan took (`build::plan_with`'s wall time): records that take less to ask
+    /// again are asked on the plan's thread, with no pass (`start_reask`).
+    last_plan: Cell<Option<Duration>>,
+}
+
+/// The threads of the pass asking records again (`Held::start_reask`), each at the utility QoS and
+/// `unphased`. Measured on the lead (task #1590, its 6,050 records on 6 threads): 45 CPU minutes in
+/// 12, 3.75 threads busy on average, the rest waiting on the NAS; 4 keep it about as fast, and
+/// leave the Mac's other cores to its jobs, its plan and the plan's shadow.
+const REASK_THREADS: usize = 4;
+
+/// The pass's pool (`REASK_THREADS`).
+fn reask_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(REASK_THREADS)
+        .thread_name(|i| format!("reask-{i}"))
+        .start_handler(|_| {
+            nasread::unphased();
+            agentcore::agent::forecast::low_priority();
+        })
+        .build()
+}
+
+/// Runs `work` as pass `pass` on a thread of its own, on the pass's pool (`reask_pool`; on that
+/// thread alone when none can be built). The pass ends as its work returns, an unwind too (the
+/// `Pass` dropped), a panic said as the plan part says its own.
+fn run_pass(
+    pass: buildstore::asked::Pass,
+    work: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("reask".into()).spawn(move || {
+        let _pass = pass;
+        nasread::unphased();
+        agentcore::agent::forecast::low_priority();
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match reask_pool() {
+            Ok(pool) => pool.install(work),
+            Err(_) => work(),
+        }));
+        if let Err(e) = made {
+            let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
+            eprintln!(
+                "agent: the pass asking coverage records again panicked ({}); those it hadn't asked are asked by the plan's keys",
+                why.unwrap_or_default()
+            );
+        }
+    })
+}
+
+/// The memory available above this Mac's floor as the memory guard last read it (bytes; its
+/// reading's `low_usable_mb` less the floor): None while it guards nothing, or when its reading is
+/// older than two of its samples (memguard::EVERY: its thread not sampling).
+fn room_now(home: &std::path::Path) -> Option<u64> {
+    use agentcore::agent::memguard;
+    let l = memguard::live(home).filter(|l| l.on)?;
+    let fresh = jobrt::jobs::now_s().saturating_sub(l.at) <= 2 * memguard::EVERY.as_secs();
+    let r = l.reading.filter(|_| fresh)?;
+    Some(r.low_usable_mb().saturating_sub(r.floor_mb) << 20)
 }
 
 /// What a shadow plan's keys read their context as, for the next one's diff: the manifest and the
@@ -393,6 +452,10 @@ struct Ask {
     keys: HashMap<(String, String), Option<String>>,
     cpu: Duration,
     wall: Duration,
+    /// Whether a pass asked records again as the plan was made, and how many had ended
+    /// (buildstore::asked::Reask): while one runs, or after one ended since, the shadow's keys of the
+    /// records it asks read what the plan's couldn't.
+    reask: (bool, u64),
 }
 
 impl Ask {
@@ -542,6 +605,17 @@ const SAID_KEYS: usize = 5;
 /// since it was kept.
 fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
     use buildstore::reads::{Changes, Diff};
+    // (A pass asking records again running, or ended since the plan: the shadow's keys of its
+    // records would read what the plan's waited for. Not compared; the shadow kept as it was.)
+    let now = ask.tiles.reask().now();
+    if ask.reask.0 || now.running || now.ended != ask.reask.1 {
+        let said = format!(
+            "plan shadow {}: not compared: the coverage records were being asked again off the plan's thread \
+             as it was made, or have been since (their keys read what the plan's waited for)",
+            ask.n
+        );
+        return Shadow::new(said, Vec::new(), 0, 0);
+    }
     let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
     let reach = ask.reach.as_ref().map(|(_, r)| &**r);
     let rest = build::context_rest(&ask.covs.all, &ask.date, ask.reach.as_ref().map(|(c, _)| c.as_str()));
@@ -791,15 +865,10 @@ fn first_difference(a: &Planned, b: &Planned) -> String {
 impl Held {
     /// Nothing held yet, the terrain packs' indexes kept in the agent's folder `home` (`pack-idx/`),
     /// its keys leaving the records that must be asked again to a pass off the plan's thread
-    /// (`start_reask`), which holds them in flight within the memory available above the floor as
-    /// the guard last read it (memguard::live: its reading's `low_usable_mb` less the floor).
+    /// (`start_reask`).
     fn new(home: &std::path::Path) -> Held {
         let mut tiles = TerrainTiles::new(Some(home.join("pack-idx")));
-        let at = home.to_path_buf();
-        tiles.defer(Arc::new(move || {
-            let r = agentcore::agent::memguard::live(&at).filter(|l| l.on)?.reading?;
-            Some(r.low_usable_mb().saturating_sub(r.floor_mb) << 20)
-        }));
+        tiles.defer();
         Held {
             tiles: RefCell::new(tiles),
             reach: RefCell::default(),
@@ -810,34 +879,40 @@ impl Held {
             shadow_failed: Arc::default(),
             shadowing: Cell::new(true),
             reask_seen: Cell::new(0),
+            home: home.to_path_buf(),
+            last_plan: Cell::new(None),
         }
     }
 
-    /// Starts the pass asking the records again off the plan's thread, when one is due
-    /// (idents::warm_due) and none runs: on a thread of its own, its records on a rayon pool of its
-    /// own (as many threads as cores; each record admitted within the memory above the floor,
-    /// buildstore::asked::Reask::admit), the lines it works out put in the memo the plan's keys read, their
-    /// heads kept. Until it ends the keys of a record it hasn't asked yet wait (`defers_now`), and
-    /// the plan offers the rest; its end kicks a plan (`kick`).
+    /// Asks again the records that must be, when that's due (idents::warm_due) and no pass runs:
+    /// those found by a probe, which reads none (`TerrainTiles::for_probe`). Asked here, on the
+    /// plan's thread, when they take less than the last plan took, by what records of their steps
+    /// took to ask so far (`Reask::estimate`: none measured yet, not here); else by a pass off it
+    /// (`run_pass`: each record admitted within the memory above the floor as the guard last read
+    /// it, `room_now`, buildstore::asked::Reask::admit), the lines it works out put in the memo the
+    /// plan's keys read, their heads kept. Until the pass ends the keys of a record it hasn't asked
+    /// yet wait (`defers_now`), and the plan offers the rest; its end kicks a plan (`kick`).
     fn start_reask(&self, r: &Round, reach: Option<Arc<Reaches>>, tiles: &TerrainTiles) {
         let x = KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), tiles);
-        if !tiles.defers() || !super::idents::warm_due(&x) || !tiles.reask().begin() {
+        if !tiles.defers() || tiles.defers_now() || !super::idents::warm_due(&x) {
             return;
         }
+        let found = Arc::new(buildstore::asked::Found::default());
+        let probe = tiles.for_probe(found.clone());
+        super::idents::ask_all(&KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), &probe));
+        let items = found.take();
+        let est = tiles.reask().estimate(items.iter().map(|(step, _)| step.as_str()));
+        if items.is_empty() || est.zip(self.last_plan.get()).is_some_and(|(e, p)| e <= p.as_secs_f64()) {
+            super::idents::warm_all(&x);
+            return;
+        }
+        let Some(pass) = tiles.reask().pass(items.len()) else { return };
         let (covs, date, m, inputs) = (r.covs.clone(), r.date.to_string(), r.manifest.clone(), r.inputs.clone());
-        let t = tiles.for_reask();
-        let run = move || {
-            nasread::unphased();
-            let all = || super::idents::warm_all(&KeyCtx::new(&covs.all, &date, &m, &inputs, reach.as_deref(), &t));
-            match rayon::ThreadPoolBuilder::new().thread_name(|i| format!("reask-{i}")).build() {
-                Ok(pool) => pool.install(all),
-                Err(_) => all(),
-            }
-            t.reask().end();
-        };
-        if let Err(e) = std::thread::Builder::new().name("reask".into()).spawn(run) {
+        let home = self.home.clone();
+        let t = tiles.for_reask(Arc::new(move || room_now(&home)));
+        let work = move || super::idents::warm_all(&KeyCtx::new(&covs.all, &date, &m, &inputs, reach.as_deref(), &t));
+        if let Err(e) = run_pass(pass, work) {
             eprintln!("agent: the thread asking records again: {e}");
-            tiles.reask().end();
         }
     }
 
@@ -929,6 +1004,7 @@ impl Held {
             keys: memo.keys(),
             wall: made.0,
             cpu: made.1,
+            reask: (tiles.defers_now(), tiles.reask().now().ended),
         };
         // (One waits at most, the latest: one it replaces is never shadowed.)
         sh.asks.put(ask);
@@ -1008,6 +1084,7 @@ impl PlanHeld for Held {
                 let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
                 let hold = self.shadow_hold();
                 let p = build::plan_with(&memo, cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
+                self.last_plan.set(Some(t.elapsed()));
                 if self.shadowing.get() {
                     let cpu = Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu));
                     nasread::PLAN.enter("its shadow's copy");
@@ -1046,9 +1123,13 @@ impl PlanHeld for Held {
     fn reasking(&self) -> Option<String> {
         let s = self.tiles.borrow().reask().now();
         let gb = |b: u64| format!("{:.1} GB", b as f64 / (1u64 << 30) as f64);
-        let held = s.held.map_or_else(String::new, |(cost, room)| {
-            format!("; one of {} waits for room above the memory floor ({} there)", gb(cost), gb(room))
-        });
+        let held = match (s.held(), s.alone) {
+            (Some((cost, room)), _) => {
+                format!("; one of {} waits for room above the memory floor ({} there)", gb(cost), gb(room))
+            }
+            (None, Some(cost)) => format!("; one of {}, more than the room above the memory floor, alone", gb(cost)),
+            (None, None) => String::new(),
+        };
         s.running.then(|| {
             format!(
                 "asked again by this build's answering code off the plan's thread, {} of {}{held}: \
@@ -1194,6 +1275,7 @@ mod tests {
                 keys: memo.keys(),
                 wall: Duration::ZERO,
                 cpu: Duration::ZERO,
+                reask: (false, 0),
             });
         }
         let said = held.shadow().expect("the new worker's shadow plan").said;
@@ -1208,5 +1290,169 @@ mod tests {
         assert_eq!([say_once(&said, "down"), say_once(&said, "down")], [true, false]);
         said.store(false, Ordering::Relaxed);
         assert!(say_once(&said, "down"), "said again after one started");
+    }
+
+    /// Two pois records on a NAS at `d`, one put by answering code 1 (asked again) and one by this
+    /// build's; the coverage they read, and the manifest naming them, by target.
+    fn two_records(
+        d: &std::path::Path,
+    ) -> (buildstore::coverage::Coverage, BTreeMap<String, String>, [&'static str; 2]) {
+        use buildstore::asked::{target_logical, Record};
+        use buildstore::coverage::{fixture_circle, Asking, Coverage, Shape};
+        let shape = Shape::new("r0: c".into(), vec![fixture_circle(-21.9, 64.13, 20.0)], 1000.0);
+        let c = Coverage { shapes: vec![shape], ..Default::default() };
+        let asking = Asking::new(&c);
+        assert!(asking.contains([-219_000_000, 641_300_000]));
+        let asked = asking.asked();
+        let (old, fresh) = ("6/28/17", "6/27/17");
+        let mut m = BTreeMap::new();
+        for (t, hash, answering) in [(old, "1111111111111111", 1), (fresh, "2222222222222222", 2)] {
+            let geo = super::super::idents::clip_geo(&c, codecs::tile::TileId::parse(t).unwrap());
+            let mut r = Record::read_as(&c, geo, asked.clone(), Vec::new(), format!("ran {t}"));
+            r.answering = answering;
+            let content = format!("{}.{hash}.json.zst", target_logical("pois", t));
+            let p = d.join("nas").join(&content);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, r.to_bytes()).unwrap();
+            m.insert(target_logical("pois", t), content);
+        }
+        (c, m, [old, fresh])
+    }
+
+    /// Task #1590 review: the agent's plan asks the records again by a pass off its thread
+    /// (`Held::start_reask`) when it has no measure of what they take, or they take more than a
+    /// plan: the record whose cheap test moved left to it, one pass at a time; its end lets the key
+    /// find its line and kicks one plan. With a measure less than the last plan's, on the plan's
+    /// thread: the line there at once, no pass, no kick.
+    #[test]
+    fn records_asked_again_by_a_pass_end_it_and_kick_a_plan_or_are_asked_inline_when_small() {
+        let d = tempfile::tempdir().unwrap();
+        let root = NasRoot::local_for_test(d.path().join("nas"));
+        let (c, m, [old, fresh]) = two_records(d.path());
+        let covs = Arc::new(agentcore::agent::Coverages { all: c.clone(), each: Vec::new() });
+        let (inputs, done) = (BTreeMap::new(), Keys::default());
+        let r = Round { root: &root, covs: &covs, date: "d", manifest: &m, inputs: &inputs, done: &done };
+        let key = |tiles: &TerrainTiles, u: &str| {
+            super::super::idents::coverage_clip(u, &KeyCtx::new(&c, "d", &m, &inputs, None, tiles))
+                .map(|mut l| l.remove(0))
+        };
+        let ran = |t: &str| Some(format!("ran {t}"));
+        // By a pass: no measure yet.
+        let held = Held::new(&d.path().join("by-pass"));
+        assert_eq!(held.kick(), None);
+        let tiles = held.terrain_tiles(&root, &m);
+        held.start_reask(&r, None, &tiles);
+        store::testkit::eventually("the pass ended", || tiles.reask().now().ended == 1);
+        let s = tiles.reask().now();
+        assert_eq!((s.running, s.total, s.done), (false, 1, 1), "one record, a true total");
+        assert_eq!((key(&tiles, old), key(&tiles, fresh)), (ran(old), ran(fresh)));
+        drop(tiles);
+        assert_eq!(held.reasking(), None);
+        assert_eq!(held.kick(), Some("the records asked again are in"));
+        assert_eq!(held.kick(), None, "one kick a pass");
+        // Inline: a pois record measured at less than the last plan took.
+        let held = Held::new(&d.path().join("inline"));
+        held.last_plan.set(Some(Duration::from_secs(1)));
+        let tiles = held.terrain_tiles(&root, &m);
+        tiles.reask().took("pois", 0.001);
+        held.start_reask(&r, None, &tiles);
+        let s = tiles.reask().now();
+        assert_eq!((s.running, s.ended, s.done), (false, 0, 1), "asked on the plan's thread");
+        assert_eq!(key(&tiles, old), ran(old));
+        drop(tiles);
+        assert_eq!(held.kick(), None, "no pass, no kick");
+        // A plan longer than none: by a pass again (another Mac's home, nothing asked yet).
+        let held = Held::new(&d.path().join("measured-longer"));
+        held.last_plan.set(Some(Duration::ZERO));
+        let tiles = held.terrain_tiles(&root, &m);
+        tiles.reask().took("pois", 0.001);
+        held.start_reask(&r, None, &tiles);
+        store::testkit::eventually("the pass ended", || tiles.reask().now().ended == 1);
+    }
+
+    /// Task #1590 review: a pass whose work panics, on its pool, ends all the same (its `Pass`
+    /// dropped as it unwinds), the panic said: the keys of the records it hadn't asked don't wait
+    /// for good.
+    #[test]
+    fn a_pass_that_panics_ends() {
+        let r = Arc::new(buildstore::asked::Reask::default());
+        let pass = r.pass(4).unwrap();
+        let work = || (0..4).into_par_iter().for_each(|i| assert!(i < 2, "a warm's"));
+        run_pass(pass, work).unwrap().join().expect("the panic caught");
+        let s = r.now();
+        assert_eq!((s.running, s.ended), (false, 1));
+    }
+
+    /// Task #1590 review: the pass's room is the guard's reading's low usable memory less the
+    /// floor; none when the guard guards nothing or its sample is older than two of its samples.
+    #[test]
+    fn the_room_is_none_when_the_guards_sample_is_stale() {
+        use agentcore::agent::memguard::{Live, Reading, EVERY, LIVE};
+        let d = tempfile::tempdir().unwrap();
+        let reading = Reading { avail_mb: 9000, floor_mb: 2000, ..Default::default() };
+        let put = |at: u64, on: bool| {
+            let l = Live { at, on, reading: Some(reading), ..Default::default() };
+            std::fs::write(d.path().join(LIVE), serde_json::to_vec(&l).unwrap()).unwrap();
+            room_now(d.path())
+        };
+        let now = jobrt::jobs::now_s();
+        assert_eq!(put(now, true), Some((reading.low_usable_mb() - 2000) << 20));
+        assert_eq!(put(now - 2 * EVERY.as_secs(), true), Some((reading.low_usable_mb() - 2000) << 20));
+        assert_eq!(put(now - 2 * EVERY.as_secs() - 2, true), None, "stale");
+        assert_eq!(put(now, false), None, "guarding nothing");
+    }
+
+    /// An `Ask` of an empty round on `tiles`, as a plan made with `reask` (whether a pass asking
+    /// records again ran, and how many had ended).
+    fn empty_ask(tiles: &TerrainTiles, reask: (bool, u64)) -> Ask {
+        let covs = Arc::new(agentcore::agent::Coverages { all: Default::default(), each: Vec::new() });
+        let (none, memo, on_map) = (BTreeMap::<String, String>::new(), KeyMemo::default(), BTreeMap::new());
+        let publish = Publish {
+            each: &covs.each,
+            on_map: &on_map,
+            served: &none,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+        };
+        let planned = build::plan_with(&memo, &covs.all, "d", &none, &Keys::default(), &none, None, tiles, publish);
+        Ask {
+            n: 1,
+            covs: covs.clone(),
+            date: "d".into(),
+            manifest: none.clone(),
+            inputs: none.clone(),
+            done: Keys::default(),
+            reach: None,
+            tiles: tiles.clone(),
+            on_map,
+            served: none,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+            planned,
+            keys: memo.keys(),
+            wall: Duration::ZERO,
+            cpu: Duration::ZERO,
+            reask,
+        }
+    }
+
+    /// Task #1590 review: no false DIFFERS from the plan's shadow (#1077) while records are asked
+    /// again off the plan's thread: one made while a pass ran, as one ran, or after one ended since
+    /// the plan, compares nothing and says so; one with none since compares.
+    #[test]
+    fn a_shadow_compares_nothing_while_records_are_asked_again() {
+        let tiles = TerrainTiles::default();
+        let compared = |ask: Ask| !shadow(&mut None, ask, 0).said.contains("not compared");
+        assert!(compared(empty_ask(&tiles, (false, 0))));
+        assert!(!compared(empty_ask(&tiles, (true, 0))), "one ran as the plan was made");
+        let pass = tiles.reask().pass(0).unwrap();
+        assert!(!compared(empty_ask(&tiles, (false, 0))), "one runs");
+        drop(pass);
+        assert!(!compared(empty_ask(&tiles, (false, 0))), "one ended since");
+        assert!(compared(empty_ask(&tiles, (false, 1))));
     }
 }

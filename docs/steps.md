@@ -1003,28 +1003,37 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   before goes.
 - **The records asked again** (task #1590; the world steps', the z6 tiles', the lake-depth's and
   the peaks'): once a cheap test moves under records (a regions intake, the terrain rebuilt, an
-  `ANSWERING` bump: all of them), the lead's plan asks them again in a pass off its own thread
-  (pipeline's theplan `start_reask`, `idents::warm_all`), started as a plan begins once the
+  `ANSWERING` bump: all of them), the lead's plan asks them again, as a plan begins once the
   coverage, its countries, the pass, the spacing, the reaches, the terrain's packs or the records
-  change. Meanwhile the plan goes on: the key of a record the pass hasn't asked yet waits (None,
-  met as a load), every other target's is worked out and offered, and the status says "The
-  coverage records: asked again … n of N" (`PlanHeld::reasking`); the pass's end kicks a plan,
-  which finds the lines it put in the memo. Each record asked again has its head kept with the
-  test and the line it gave (`TerrainTiles::answered`, a local file: its own line when it answered
-  the same, else the new one), so the next start reads it no more, whether its target reran yet
-  or not. The pass reads the records on a rayon pool of its own, as many threads as cores, each
-  admitted within the memory available above the Mac's floor as the guard last read it
-  (`asked::Reask::admit`, `memguard::live`: what's in flight with it at most the reading's
-  `low_usable_mb` less the floor, a record's cost its file and twice its JSON,
-  `asked::record_cost`, from its zstd frame's header, or decoded once for one put before the
-  header held it); one that doesn't fit waits for room, said in the status. Only the lead plans,
-  so only the lead pays: task #1590 measured, on the mini, the lead's 6,050 records of 21 Nov (3.7
-  GB, 3.5 GB of it bldtiles', the largest 86 MB on the NAS and about 1 GB to ask) asked again by
-  task #1462's code in 12 min (45 CPU min, bldtiles' 11 of them), 26 answered differently (19
-  bldtiles, 6 unit, 1 pois z6 tiles), the world steps' none; the code before it answered all 6,050
-  as recorded. A prune and a
-  "none" tile's drop remove it with the tile's files, and a z3 tile's whole tree run (`put_z3`,
-  which asks nothing) its z6 tiles'.
+  change (pipeline's theplan `start_reask`). A probe first finds which, reading none
+  (`TerrainTiles::for_probe`, `idents::ask_all`). Those taking less than the last plan took, by
+  the mean time a record of each step has taken to ask again so far (`asked::Reask::estimate`),
+  are asked on the plan's thread, with no further plan; the rest, or any while no time is measured
+  yet, by a pass off it (`run_pass`, `idents::warm_all`). Meanwhile the plan goes on: the key of a
+  record the pass hasn't asked yet waits (None, met as a load), every other target's is worked out
+  and offered, and the status says "The coverage records: asked again … n of N", N those the probe
+  found (`PlanHeld::reasking`); the pass's end kicks a plan, which finds the lines it put in the
+  memo. A pass ends however its work returns, a panic too, said in the agent's log (`asked::Pass`).
+  The plan's copies (its shadow's, the regions' counts') read no record while one runs; the
+  shadow compares nothing for a plan made while one ran, or with one ended since, and says so.
+  Each record asked again has its head kept with the test and the line it gave
+  (`TerrainTiles::answered`, a local file: its own line when it answered the same, else the new
+  one), so the next start reads it no more, whether its target reran yet or not. The pass reads
+  the records on a pool of its own (4 threads at the utility QoS: the 6,050 records below kept 3.75
+  of 6 busy), each parsed as it's decoded (`asked::Record::read`) and admitted within the memory
+  available above the Mac's floor as the guard last read it (`asked::Reask::admit`,
+  `memguard::live`: what's in flight with it at most the reading's `low_usable_mb` less the floor;
+  a reading older than two of the guard's samples is none, no bound). A record's cost is 4 times
+  its file and 2 MB (`asked::record_cost`, measured on the M4: a parsed record's footprint 1.25
+  times its file for the largest bldtiles', 3.5 at most among small ones, 1.8 MB for one of 0.2
+  MB). One that doesn't fit waits for room, the largest waiting said in the status; one larger
+  than the room runs alone once nothing else is in flight, said too. Only the lead plans, so only
+  the lead pays: task #1590 measured, on the mini, the lead's 6,050 records of 21 Nov (3.7 GB, 3.5
+  GB of it bldtiles', the largest 86 MB on the NAS and 107 MB parsed) asked again by task #1462's
+  code in 12 min (45 CPU min, bldtiles' 11 of them), 26 answered differently (19 bldtiles, 6 unit,
+  1 pois z6 tiles), the world steps' none; the code before it answered all 6,050 as recorded. A
+  prune and a "none" tile's drop remove it with the tile's files, and a z3 tile's whole tree run
+  (`put_z3`, which asks nothing) its z6 tiles'.
 - **water:** its version and the pass's basemap.
 - **bld-fetch** (network): its version, the release and the coverage as its run asked it (each row
   group's and GHSL tile's box grown by 20 km, `bld::fetch::Near`).
