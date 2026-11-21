@@ -71,7 +71,7 @@ RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-
 # Every top-level entry of the repo, so a file under a new one is unknown (doubt: both parts run).
 # tools/dev/test/check-reuse.zsh checks every tracked file's entry is here.
 KNOWN = set(BUILD) | {"docs", "web", "producers", "dem", "tools", "scripts", ".claude", "README.md",
-                      ".gitignore", ".git-blame-ignore-revs"}
+                      "CLAUDE.md", ".gitignore", ".git-blame-ignore-revs"}
 
 
 # How many of the newest passes are weighed (each a tree diff against HEAD's).
