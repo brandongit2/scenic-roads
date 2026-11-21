@@ -296,6 +296,59 @@ fn another_code_makes_every_cells_cover_check_again() {
     assert_eq!(cover_check(&w, &f, d.path(), &now), (BTreeSet::new(), all.len()));
 }
 
+/// Task #1572: a check paused midway through the cover check (its cells kept in the job's scratch
+/// as they're made, each a safe point) resumes to the same outcome, to the bit, each cell's check
+/// made once over the two runs.
+#[test]
+fn a_check_paused_in_the_cover_check_resumes_to_the_same() {
+    use jobrt::resume_log::STOP_AFTER;
+    let w = super::water_tests::world();
+    let f = cover_files();
+    let m: BTreeMap<String, Vec<u8>> = f.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+    let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
+    let others = BTreeMap::new();
+    let window = cover_window();
+    let run = |kept: Option<&Kept>| {
+        let ctx = resolve::Context {
+            pass: Some(PASS),
+            outlines: Some(&w.o),
+            extract: None,
+            others: &others,
+            memo: None,
+            kept,
+            reuse: None,
+            names: String::new(),
+            data: Some(&w.data),
+            progress: Default::default(),
+            window: Some(&window),
+        };
+        resolve::resolve(&folder, &ctx)
+    };
+    let fresh = run(None);
+    let cover = |made: Vec<(u8, String)>| made.iter().filter(|(s, _)| *s == kept::COVER).count();
+    // (The pieces kept before the cover check: all but the cells' and the stored shapes, made after.)
+    let (first, d0) = (Kept::default(), tempfile::tempdir().unwrap());
+    first.open(d0.path(), "a", true);
+    run(Some(&first));
+    let before = first.made_keys().iter().filter(|(s, _)| *s != kept::COVER && *s != kept::STORED).count();
+    let d = tempfile::tempdir().unwrap();
+    let paused = Kept::default();
+    STOP_AFTER.set(Some(before + 5));
+    paused.open(d.path(), "a", true);
+    run(Some(&paused));
+    assert!(jobrt::control::is_paused(&paused.stopped().unwrap_err()));
+    let made = cover(paused.made_keys());
+    assert!((5..window.len()).contains(&made), "paused in the cover check, after {made} cells");
+    let resumed = Kept::default();
+    resumed.open(d.path(), "a", true);
+    let out = run(Some(&resumed));
+    resumed.stopped().unwrap();
+    assert_eq!(made + cover(resumed.made_keys()), window.len(), "each cell made once");
+    assert_eq!(out.resolved, fresh.resolved);
+    assert_eq!(out.problems, fresh.problems);
+    assert_eq!(format!("{:?}", out.fit), format!("{:?}", fresh.fit), "how they fit, to the bit");
+}
+
 /// The stage and name of the piece a lasting file holds (its whole key's last line).
 fn piece_of(file: &Path) -> (String, String) {
     let b = std::fs::read(file).unwrap();
