@@ -371,7 +371,13 @@ fn a_stale_held_digest_is_printed_with_the_value_to_set() {
     let (step, now) = rule_codes(&w).swap_remove(1);
     let stale = stale_codes(&w, &regions, &elevation.replace(&now, old));
     assert_eq!(stale.len(), 1, "{stale:?}");
-    assert!(stale[0].starts_with(&format!("elevation::RULE_CODES' {step} is \"{old}\", and its measuring code is now \"{now}\": set it to \"{now}\"")), "{}", stale[0]);
+    assert!(
+        stale[0].starts_with(&format!(
+            "elevation::RULE_CODES' {step} is \"{old}\", and its measuring code is now \"{now}\": set it to \"{now}\""
+        )),
+        "{}",
+        stale[0]
+    );
     let gone = stale_codes(&w, "", &elevation);
     assert!(gone[0].starts_with("regions::RESOLUTION_CODE is missing,"), "{gone:?}");
     assert_eq!(
