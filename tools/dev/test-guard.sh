@@ -1,10 +1,7 @@
 #!/bin/zsh
-# Claude Code hook (PreToolUse on Bash and Agent; .claude/settings.local.json). Enforces
-# tools/dev/testing.md (the checks: tools/dev/test-guard.py); exits 2 with the reason, which Claude
-# Code shows while blocking the call, when
-# - the PM's Agent brief doesn't name tools/dev/agent-rules.md (the standing rules; but for
-#   web-fetch, claude-code-guide and statusline-setup agents, which never touch the repo);
-# - the PM's Agent brief mentions tests without pointing at tools/dev/testing.md;
+# Claude Code hook (PreToolUse on Bash; .claude/settings.local.json). Enforces tools/dev/testing.md
+# for subagents' commands (the checks: tools/dev/test-guard.py; the PM's own calls aren't checked);
+# exits 2 with the reason, which Claude Code shows while blocking the call, when
 # - a subagent's cargo test or nextest run (not --no-run) is on a Mac that isn't the test Mac
 #   (tools/app/test-mac.zsh), unless tests_local holds in this hook's environment (Claude Code's:
 #   SCENIC_TESTS_LOCAL or SCENIC_CHECK_LOCAL, or the PM's .claude/tests-local); check.sh and

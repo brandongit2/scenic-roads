@@ -1,11 +1,8 @@
 # Standing rules for agents
 
 Rules every agent working on this repo follows, whatever its brief says. A brief adds the task;
-it never needs to repeat these. Every agent brief the PM writes names this file:
-`tools/dev/test-guard.py` refuses an Agent call whose prompt doesn't mention
-`tools/dev/agent-rules.md` (agents that never touch the repo are exempt: web-fetch,
-claude-code-guide, statusline-setup). Rules marked *enforced* are also checked by a hook; the rest
-rely on the agent.
+it never needs to repeat these. Rules marked *enforced* are also checked by a hook; the rest rely
+on the agent.
 
 ## Where things run
 
