@@ -2691,7 +2691,7 @@ mod tests {
         assert!(
             read_targets("peaks", under, Some(&left.along)).contains(&ReadTarget::One("terrain-lo", "3/4/2".into()))
         );
-        assert!(!read_targets("peaks", under, None).iter().any(|r| matches!(r, ReadTarget::Whole(_))), "no whole read");
+        assert!(!read_targets("peaks", under, None).contains(&ReadTarget::Whole("terrain-lo")), "no whole lo read");
         left.set("terrain-lo", ["3/4/2".to_string()]);
         assert_eq!(readiness("peaks", under, &left), Ready::Waits(vec![("terrain-lo", "3/4/2".into())]));
         assert_eq!(readiness("peaks", elsewhere, &left), Ready::Yes, "a lo pack it didn't read");

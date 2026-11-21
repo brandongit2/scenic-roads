@@ -743,17 +743,22 @@ pub fn peaks_lo(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The terrain-lo targets a peaks z6 tile waits for (steps::Read::Built, task #1556): the lo
 /// packs holding the z8 tiles its record says its run read (`peaks_lo`'s questions, the head's
-/// `question_read`s: tiles::TerrainTiles::asked_reads); every lo pack the manifest names while it
-/// has no record or its record's head can't be read, as its key reads them all then.
+/// `question_read`s: tiles::TerrainTiles::asked_reads); while it has no record or its record's head
+/// can't be read, every lo pack the manifest names or the coverage wants (one still to be made
+/// too), as its key reads them all then.
 pub fn peaks_lo_packs(t: &str, x: &KeyCtx) -> Vec<String> {
     let lo = || {
-        super::steps::whole_outputs("terrain-lo", x.m)
+        let mut v: Vec<String> = super::steps::whole_outputs("terrain-lo", x.m)
             .iter()
             .filter_map(|l| {
                 let u = TileId::parse(&l.split_once('=')?.0.strip_prefix("layers/terrain/lo/")?.replace('-', "/"))?;
                 (u.z == 3).then(|| u.slash())
             })
-            .collect()
+            .chain(buildstore::coverage::coverage_tiles(x.cov).into_keys().map(|(a, b)| format!("3/{a}/{b}")))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     };
     let Some(c) = x.m.get(&buildstore::asked::target_logical("peaks", t)) else { return lo() };
     match x.tiles.asked_reads(c) {

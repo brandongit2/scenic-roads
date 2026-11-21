@@ -5320,8 +5320,12 @@ mod tests {
                     .map(|(a, b)| format!("layers/terrain/lo/3-{a}-{b}"))
                     .map(|l| format!("t terrain-lo {l}={}", out.get(&l).unwrap())),
             )
-            .collect::<Vec<_>>();
-        assert_eq!(before.0, whole, "no record: the summits and every lo pack by content");
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            before.0.iter().cloned().collect::<BTreeSet<_>>(),
+            whole,
+            "no record: the summits and every lo pack by content"
+        );
         assert_eq!(before.1, ["3/4/2", "3/5/2"], "no record: it waits for every lo pack");
         run(&mut out, &mut tiles, &local);
         let recorded = lo(&out, &tiles, false);
@@ -11939,8 +11943,8 @@ mod tests {
         let w = plan(&m, &done);
         assert_eq!(line(&w)[3..], ["pois 6/28/16", "heritage heritage"]);
         // All made: the items' facts; the peaks only once no terrain-hi or terrain-lo work is left
-        // anywhere (they read every lo pack's z8: Nuuk's 3/2/2 built isn't enough while
-        // Reykjavik's terrain isn't).
+        // anywhere (with no record yet they wait for every lo pack the coverage wants: Nuuk's
+        // 3/2/2 built isn't enough while Reykjavik's terrain isn't).
         done.record("pois", &[w[3].targets[0].clone()]);
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         let w = plan(&m, &done);
