@@ -2153,16 +2153,38 @@ mod tests {
         let file = served(v1.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), usize::MAX, 0);
         let fetcher = || Fetcher::new(None, true).keeping(Some(kept.clone()));
+        // (Each job a phase of a timed run: its record says what it fetched and what it read from
+        // the disk, task #1511.)
+        jobrt::timings::reset();
+        jobrt::timings::start("test");
         // A job reads a range: fetched, and kept.
-        let r = fetcher().open(&url).unwrap().unwrap();
-        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
+        {
+            let _p = jobrt::timings::phase("first job");
+            let r = fetcher().open(&url).unwrap().unwrap();
+            assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
+        }
         assert_eq!(asked_past_head(&file), [(98_304, 163_839)]);
         // A later job (a fetcher and file of its own) reads it from the disk, and fetches only
         // what the disk lacks.
-        let r = fetcher().open(&url).unwrap().unwrap();
-        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
-        assert_eq!(r.read_at(120_000, 100_000).unwrap(), v1[120_000..220_000]);
+        {
+            let _p = jobrt::timings::phase("later job");
+            let r = fetcher().open(&url).unwrap().unwrap();
+            assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
+            assert_eq!(r.read_at(120_000, 100_000).unwrap(), v1[120_000..220_000]);
+        }
         assert_eq!(asked_past_head(&file), [(98_304, 163_839), (163_840, 229_375)]);
+        let rec = jobrt::timings::snapshot(true).unwrap();
+        let bytes = |name: &str| {
+            let w = rec.phases.iter().find(|p| p.name == name).and_then(|p| p.waits).unwrap();
+            (w.net_b, w.kept_b)
+        };
+        // (Each job's open fetches the file's first 64 KiB, its head; then the first job's range
+        // fetched, the later one's read here, the next 64 KiB fetched.)
+        let head = READ_AHEAD_TEST as u64;
+        assert_eq!((bytes("first job"), bytes("later job")), ((head + 65_536, 0), (head + 65_536, 65_536)));
+        let line = serde_json::to_string(&rec).unwrap();
+        assert!(line.contains(r#""kept_b":65536"#), "the record as written says it: {line}");
+        jobrt::timings::reset();
         // The file changed on the server: what's kept is the old one's, never read for it.
         let v2: Vec<u8> = (0..300_000u32).map(|i| (i % 241) as u8).collect();
         {

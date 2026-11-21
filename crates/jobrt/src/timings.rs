@@ -45,7 +45,8 @@
 //!   (`RunRec::stamp`, `implausible`) as it takes the record.
 //! - Waits (task #870): as a span opens and closes it takes store::waits' totals, the job's wall
 //!   time blocked in NAS calls, network requests, local disk calls and waits on other work so far,
-//!   and the NAS's and the network's bytes (store::nasio, crate::fetch); the differences are its
+//!   and the NAS's and the network's bytes (store::nasio, crate::fetch) and the bytes read from the
+//!   fetcher's kept ranges in place of a fetch (`kept`, task #1511); the differences are its
 //!   `Waits`, the rest of its wall time computing. They count by the job's wall clock (an instant
 //!   is the NAS's when any of its threads is in a NAS call, else the network's, else the disk's,
 //!   else other work's: store::waits), so a phase's parts add up to its wall time. A phase that
@@ -88,7 +89,8 @@ pub const VERSION: u32 = 4;
 
 /// A phase's wall time by what the job waited on while it was open, measured (store::waits): by
 /// the job's wall clock, so the waits never sum past the phase's wall time; the rest is computing.
-/// The NAS's and the network's bytes moved meanwhile beside them (the job's, all its threads').
+/// The NAS's and the network's bytes moved meanwhile beside them (the job's, all its threads'), and
+/// the bytes read from this Mac's kept ranges rather than fetched again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Waits {
     #[serde(default)]
@@ -109,6 +111,11 @@ pub struct Waits {
     pub nas_b: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub net_b: u64,
+    /// The bytes read from the kept ranges, those the fetcher keeps on this Mac's disk
+    /// (buildstore::fetch::kept: the agent's cache's `blobs/net`), in place of fetching them (task
+    /// #1511): beside `net_b`, what that reuse saved the network.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kept_b: u64,
 }
 
 /// The pairs `Waits::both_s` counts (store::waits::PAIRS).
@@ -134,6 +141,7 @@ impl Waits {
         }
         self.nas_b += o.nas_b;
         self.net_b += o.net_b;
+        self.kept_b += o.kept_b;
     }
 
     /// Held to `wall`: scaled down when they sum past it (a child's waits taken in beside its
@@ -174,7 +182,7 @@ impl Waits {
     }
 
     /// The waits between two of store::waits' totals and the bytes then (`at` the earlier).
-    fn between(at: &(store::waits::Totals, u64, u64), now: &(store::waits::Totals, u64, u64)) -> Waits {
+    fn between(at: &(store::waits::Totals, u64, u64, u64), now: &(store::waits::Totals, u64, u64, u64)) -> Waits {
         let d = |i: usize| now.0[i].saturating_sub(at.0[i]) as f64 / 1e9;
         Waits {
             nas_s: d(0),
@@ -184,6 +192,7 @@ impl Waits {
             both_s: std::array::from_fn(|p| d(store::waits::KINDS + p)),
             nas_b: now.1.saturating_sub(at.1),
             net_b: now.2.saturating_sub(at.2),
+            kept_b: now.3.saturating_sub(at.3),
         }
     }
 
@@ -221,6 +230,15 @@ pub fn fetched_bytes() -> u64 {
     FETCHED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The bytes this process has read from the fetcher's kept ranges (buildstore::fetch::kept counts
+/// them, `kept`), for a phase's count.
+static KEPT: AtomicU64 = AtomicU64::new(0);
+
+/// Counts `n` bytes read from a kept range in place of a fetch.
+pub fn kept(n: u64) {
+    KEPT.fetch_add(n, Ordering::Relaxed);
+}
+
 /// The blocks or pieces this process's runs took from an earlier run's resume log, and those they
 /// made and kept (crate::resume_log; a child program's taken in as it ends): its record's `done`.
 pub(crate) static RESUMED: AtomicU64 = AtomicU64::new(0);
@@ -236,10 +254,15 @@ pub fn made() {
     MADE.fetch_add(1, Ordering::Relaxed);
 }
 
-/// store::waits' totals and the NAS's and network's bytes now (a span's ends).
-fn waits_now() -> (store::waits::Totals, u64, u64) {
+/// store::waits' totals and the NAS's, the network's and the kept ranges' bytes now (a span's ends).
+fn waits_now() -> (store::waits::Totals, u64, u64, u64) {
     use store::nasio::{get, Count};
-    (store::waits::totals(), get(Count::ReadBytes) + get(Count::WroteBytes), fetched_bytes())
+    (
+        store::waits::totals(),
+        get(Count::ReadBytes) + get(Count::WroteBytes),
+        fetched_bytes(),
+        KEPT.load(Ordering::Relaxed),
+    )
 }
 
 fn add_waits(a: &mut Option<Waits>, b: Option<Waits>) {
@@ -766,7 +789,7 @@ struct Open {
     /// When it opened: a span still open as the run ends counts to then.
     t0: Instant,
     /// store::waits' totals and the bytes as it opened.
-    w0: (store::waits::Totals, u64, u64),
+    w0: (store::waits::Totals, u64, u64, u64),
     /// The span it opened within on its thread (a sub-phase's parent's): what's charged to it is
     /// charged to that one too.
     parent: Option<Arc<Open>>,

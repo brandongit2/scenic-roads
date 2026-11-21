@@ -80,7 +80,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`; and the ranges the
     fetcher fetched of remote files, `blobs/net/<host>/<path>/<length>.<hash of URL and version>/<start>-<end>.<hash of bytes>`,
     by the file's version as its server names it (none named: not kept), kept only while the disk has them free past the room
-    target, not counted as a job's disk, checked against their hash as they're read, and read by the jobs after on this Mac rather than fetched again: buildstore::fetch::kept,
+    target, not counted as a job's disk, checked against their hash as they're read, and read by the jobs after on this Mac rather than fetched again, each phase's reads of them in its job's record (`kept_b`, task #1511): buildstore::fetch::kept,
     task #1099), pageview month indexes (`items/months/`), and the regions inputs check's lasting
     pieces (`regions-pieces/`, task #1566: docs/inputs.md §6.1.7; made again by the next check, never
     asked of the NAS; held to the build page's "Regions check's pieces" cap once a check is done and as the cap is set).

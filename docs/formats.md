@@ -934,7 +934,7 @@ A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
 {v: 3, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, threads_most, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, work, peak_mb, peak_threads, nas, done, implausible: [said, …], unchecked: [said, …], supply}
-phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
+phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b, kept_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0; kept_b, task #1511: the bytes read from the ranges the fetcher keeps on this Mac, `blobs/net/`, in place of fetching them, beside net_b, absent when 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 work: {insn, cycles, p_insn, p_cycles, p_cpu_s, cpu_s, uncounted_s, procs, pid, pid_start}
 nas: {read_b, held_b, read_back_b, wrote_b, files, creates, listed, stats, deletes}
 done: {end, targets, of, resumed, made}

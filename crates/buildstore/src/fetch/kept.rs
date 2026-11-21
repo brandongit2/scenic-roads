@@ -23,7 +23,9 @@
 //! - **Read** under the cache's shared lock (store::cachefile::read: a range read whole), its bytes
 //!   checked against its name's hash (a file whose bytes never reached the disk, a Mac's crash
 //!   after its naming: deleted, fetched again), marked used, its bytes counted as this Mac's
-//!   disk's (store::range's `count_local`). A process lists a
+//!   disk's (store::range's `count_local`) and as the open phases' kept bytes (jobrt::timings's
+//!   `Waits::kept_b`, task #1511: a job's record says what each phase read here, beside what it
+//!   fetched). A process lists a
 //!   version's folder as it first reads past what it holds in memory, and again when the folder has
 //!   changed, at most every `RELIST` (a range another process kept since then is fetched again:
 //!   never wrong, only missed).
@@ -151,7 +153,9 @@ impl Version {
         };
         let whole = got.as_ref().is_some_and(|bytes| bytes.len() as u64 == b - a && store::naming::xxh3(bytes) == h);
         self.forget_unless(whole, a, &p, got.is_some());
-        Some((a, got.filter(|_| whole)?))
+        let got = got.filter(|_| whole)?;
+        jobrt::timings::kept(got.len() as u64);
+        Some((a, got))
     }
 
     /// When `whole`, marks kept range `p` used; else forgets it, and deletes it when it's `there`
