@@ -13845,11 +13845,10 @@ mod tests {
         c.set_epoch(1);
         let at = |m: &str| client::Client::at(w.urls(), c.contact.token.clone(), m);
         let (w2, w3, w4, w5) = (at("m2"), at("m3"), at("m4"), at("m5"));
-        // (No other Mac did a job of it well: every Mac failing it is the step's fault.)
-        for t in ["6/1/1", "6/1/2", "6/1/3"] {
+        // (No other Mac did a job of it well: every Mac failing it is the step's fault, uncounted.)
+        for t in ["6/1/1", "6/1/2"] {
             member_fails(&c, &w5, "m5", &[t], 0, "");
         }
-        assert!(!braked_on_pack(&c, "m5"), "none did it well");
         // (m2 braked while m3 does it well; m3 then, its one fellow braked, isn't.)
         did_pack(&c, "m2");
         did_pack(&c, "m3");
@@ -13873,6 +13872,8 @@ mod tests {
             .map(|e| e.excused.clone())
             .collect();
         assert_eq!(excused, [SOURCE_DOWN, SQUEEZED, SOURCE_DOWN], "said on their events");
+        member_fails(&c, &w5, "m5", &["6/1/3"], 0, "");
+        assert!(!braked_on_pack(&c, "m5"), "its first two, none doing it well, not counted");
         c.stop();
         let (b, _) = start_for_test(&d.path().join("coord"), &c.me, "");
         let braked: Vec<bool> = ["m2", "m3", "m4", "m5"].iter().map(|m| braked_on_pack(&b, m)).collect();
