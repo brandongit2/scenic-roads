@@ -212,7 +212,9 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      (a z6 tile's terrain digest, a target's asked line, the slope's tiles) is kept with what it
      was made from (`from`), which the key works out by reading the manifest itself before asking:
      a hit's reads are those. The deep answers are kept by the coverage and the declared sets the
-     key reads likewise. The caches warmed on rayon's threads (`warm_asked`, `warm_lakes`,
+     key reads likewise. The caches warmed (`warm_world`, `warm_asked`, `warm_lakes`, `warm_peaks`)
+     run, on the lead, on the pool of the pass asking records again off the plan's thread, or on
+     the plan's own when they take less than a plan (docs/steps.md §12). Those warmed on rayon's threads (`warm_asked`, `warm_lakes`,
      `warm_peaks`) read the map unrecorded (`Reads::unrecorded_map`; the view isn't `Sync`, so the
      compiler refuses one captured there): each key reads again what finds its line (lake-depth's:
      its record and its ring's hi packs, `asked_line`, `lake_ring_geo`; peaks': its record and the

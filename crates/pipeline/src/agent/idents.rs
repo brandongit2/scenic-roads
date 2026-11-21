@@ -187,9 +187,9 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     };
     let v = x.cov.version();
     // (Its cheap test and line: its head's, one it was asked again under since, else its own.)
-    let (version, answering, l) = match x.tiles.asked_head(c) {
+    let (version, answering, l, size) = match x.tiles.asked_head(c) {
         Some(Some(h)) => h,
-        _ => (r.version.clone(), r.answering, r.line.clone()),
+        _ => (r.version.clone(), r.answering, r.line.clone(), 0),
     };
     if buildstore::asked::as_read(&version, answering, &v) {
         return Some(vec![l]);
@@ -211,16 +211,16 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let (key, from) = (format!("coverage:asked {t}"), format!("{v} {c} {named:?}"));
     if x.tiles.defers_now() && x.tiles.memo_found(&key, &from).is_none() {
         if let Some(f) = x.tiles.probe() {
-            f.push(t, "");
+            f.push(t, "", size);
         }
         x.m.met_load();
         return None;
     }
     let l = x.tiles.memo(&key, &from, || {
-        let _n = x.tiles.reask().asking(t);
+        let _n = x.tiles.reask().asking(t, size);
         let l = line(x.cov, Some((c, Prev::Record(&r))), &reask)
             .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))?;
-        x.tiles.answered(c, &r, &v, &l);
+        x.tiles.answered(c, &r, size, &v, &l);
         Ok(l)
     });
     l.ok().map(|l| vec![l])
@@ -269,7 +269,7 @@ fn asked_line<'m>(
 ) -> Option<String> {
     use buildstore::asked::{target_line, Prev};
     let Some(c) = m.get(&buildstore::asked::target_logical(step, t)) else { return Some(geo) };
-    let Some((version, answering, line)) = tiles.asked_head(c)? else {
+    let Some((version, answering, line, size)) = tiles.asked_head(c)? else {
         return Some(target_line(cov, &geo, Some((c, Prev::Unparsed)), reask));
     };
     if buildstore::asked::as_read(&version, answering, &geo) {
@@ -278,18 +278,18 @@ fn asked_line<'m>(
     let (key, from) = (format!("asked {step} {t}"), format!("{c} {geo}"));
     if tiles.defers_now() && tiles.memo_found(&key, &from).is_none() {
         if let Some(f) = tiles.probe() {
-            f.push(step, t);
+            f.push(step, t, size);
         }
         m.met_load();
         return None;
     }
     tiles
         .memo(&key, &from, || {
-            let _n = tiles.reask().asking(step);
-            tiles.target_asked(c, |r| match r {
+            let n = tiles.reask().asking(step, size);
+            tiles.target_asked(c, &n, |r, size| match r {
                 Some(r) => {
                     let l = target_line(cov, &geo, Some((c, Prev::Record(r))), reask);
-                    tiles.answered(c, r, &geo, &l);
+                    tiles.answered(c, r, size, &geo, &l);
                     l
                 }
                 None => target_line(cov, &geo, Some((c, Prev::Unparsed)), reask),
@@ -386,11 +386,18 @@ fn world_warm(x: &KeyCtx) -> (&'static str, String) {
 /// Whether a pass asking records again has work now (`warm_all`): a warm not done for what it's
 /// worked out from, with records to ask. False in a shadow plan, which warms nothing.
 pub fn warm_due(x: &KeyCtx) -> bool {
-    !x.shadow()
-        && x.m.unrecorded_map().under("work/asked/").next().is_some()
-        && [asked_warm(x), world_warm(x), lakes_warm(x), peaks_warm(x)]
-            .iter()
-            .any(|(k, from)| x.tiles.memo_found(k, from).is_none())
+    !x.shadow() && x.m.unrecorded_map().under("work/asked/").next().is_some() && WARMS.iter().any(|w| due(w, x))
+}
+
+/// The warms (`warm_all`): what each is worked out from, and its work, whatever that is.
+type Warm = (fn(&KeyCtx) -> (&'static str, String), fn(&KeyCtx));
+const WARMS: [Warm; 4] =
+    [(world_warm, ask_world), (asked_warm, ask_targets), (lakes_warm, ask_lakes), (peaks_warm, ask_peaks)];
+
+/// Whether warm `w` isn't done for what it's worked out from now.
+fn due(w: &Warm, x: &KeyCtx) -> bool {
+    let (k, from) = (w.0)(x);
+    x.tiles.memo_found(k, &from).is_none()
 }
 
 /// Every record that must be asked again, asked (`warm_world`, `warm_asked`, `warm_lakes`,
@@ -404,13 +411,13 @@ pub fn warm_all(x: &KeyCtx) {
     warm_peaks(x);
 }
 
-/// Every record that must be asked again, asked, whatever the warms were worked out from, none
-/// marked done: a probe's (`TerrainTiles::for_probe`), which names each and reads none.
-pub fn ask_all(x: &KeyCtx) {
-    ask_world(x);
-    ask_targets(x);
-    ask_lakes(x);
-    ask_peaks(x);
+/// The records of each warm not done for what it's worked out from now (`due`), asked, none marked
+/// done: a probe's (`TerrainTiles::for_probe`), which names each and reads none. A warm done is
+/// asked nothing (task #1590 review: a hi pack landing moves the lake-depth's warm alone).
+pub fn ask_due(x: &KeyCtx) {
+    for w in WARMS.iter().filter(|w| due(w, x)) {
+        (w.1)(x);
+    }
 }
 
 /// `warm_asked`'s work: each of `each` (step, target) asked again where its geometry moved.

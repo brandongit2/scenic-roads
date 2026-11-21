@@ -120,10 +120,32 @@ impl Record {
         serde_json::from_reader(std::io::BufReader::new(d)).map_err(|e| Unparsed(format!("not a coverage record: {e}")))
     }
 
-    /// The record at `p`, read and parsed as it's decoded (`from_reader`): Ok(None) for one that
+    /// The record at `p`, read and parsed as it's decoded (`Opened::read`), and its file's size.
+    pub fn read(p: &store::nasfs::NasPath) -> std::io::Result<(Option<Record>, u64)> {
+        let o = Record::open(p)?;
+        let size = o.size();
+        Ok((o.read()?, size))
+    }
+
+    /// The record file at `p` opened, its size known from the open (no stat of its own).
+    pub fn open(p: &store::nasfs::NasPath) -> std::io::Result<Opened> {
+        Ok(Opened(p.open()?))
+    }
+}
+
+/// A record's file opened (`Record::open`).
+pub struct Opened(store::nasfs::NasFile);
+
+impl Opened {
+    /// Its file's size (bytes), as it was opened.
+    pub fn size(&self) -> u64 {
+        self.0.opened_len()
+    }
+
+    /// The record, read and parsed as it's decoded (`Record::from_reader`): Ok(None) for one that
     /// doesn't parse (`Prev::Unparsed`), an error only when the file can't be read (its own reads'
     /// errors told from a decode's or a parse's).
-    pub fn read(p: &store::nasfs::NasPath) -> std::io::Result<Option<Record>> {
+    pub fn read(self) -> std::io::Result<Option<Record>> {
         struct Told<R> {
             inner: R,
             failed: Option<std::io::Error>,
@@ -133,7 +155,7 @@ impl Record {
                 self.inner.read(b).inspect_err(|e| self.failed = Some(std::io::Error::new(e.kind(), e.to_string())))
             }
         }
-        let mut f = Told { inner: p.open()?, failed: None };
+        let mut f = Told { inner: self.0, failed: None };
         let r = Record::from_reader(&mut f);
         match (r, f.failed) {
             (_, Some(e)) => Err(e),
@@ -155,19 +177,20 @@ impl std::fmt::Display for Unparsed {
 impl std::error::Error for Unparsed {}
 
 /// What reading a record and asking it again holds in memory: `PARSED_PER_FILE_BYTE` bytes per byte
-/// of its file, and `PARSED_BASE` whatever its size. Measured on the M4 (task #1590, phys_footprint
-/// of one record parsed as it's decoded, `Record::from_reader`, against its file; its peak the
-/// same): the bldtiles records of 86, 76 and 65 MB 1.25 to 1.27 times their file, unit's of 7 MB
-/// 2.1, rail's of 3.2 MB 3.1, bld-fetch's of 1.5 MB 3.5, a bldtiles one of 0.7 MB 3.6 MB, a pois
-/// one of 0.2 MB 1.8 MB. Four times and 2 MB is above every one, with room for its asking.
+/// of its file, and `PARSED_BASE` whatever its size. Measured on the M4 (task #1590: the
+/// phys_footprint of one record parsed as it's decoded, `Record::from_reader`, against its file,
+/// its peak the same; `parsed_records_footprint`, an ignored test, measures it again): bldtiles
+/// records of 86, 76 and 65 MB held 1.25 to 1.27 times their file, unit's of 7 MB 2.1 times,
+/// rail's of 3.2 MB 3.1, bld-fetch's of 1.5 MB 3.5, a bldtiles one of 0.7 MB 3.6 MB, a pois one of
+/// 0.2 MB 1.8 MB. Four times and 2 MB is above every one, with room for its asking.
 pub const PARSED_PER_FILE_BYTE: u64 = 4;
-/// (Bytes: `PARSED_PER_FILE_BYTE`'s.)
+/// (Bytes, 2 MB: `PARSED_PER_FILE_BYTE`'s.)
 pub const PARSED_BASE: u64 = 2 << 20;
 
-/// What reading record `p` and asking it again holds in memory (bytes): its file's size times
-/// `PARSED_PER_FILE_BYTE`, and `PARSED_BASE`. An error only when it can't be stated.
-pub fn record_cost(p: &store::nasfs::NasPath) -> std::io::Result<u64> {
-    Ok(p.metadata()?.len() * PARSED_PER_FILE_BYTE + PARSED_BASE)
+/// What reading a record of `size` bytes and asking it again holds in memory (bytes): its size
+/// times `PARSED_PER_FILE_BYTE`, and `PARSED_BASE`.
+pub fn record_cost(size: u64) -> u64 {
+    size * PARSED_PER_FILE_BYTE + PARSED_BASE
 }
 
 /// The memory available above the floor now (bytes; None: unknown), pipeline's `TerrainTiles::room`.
@@ -177,8 +200,9 @@ pub type Room = std::sync::Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 /// answering code changed, coverage::ANSWERING; any whose cheap test moved), shared by pipeline's
 /// `TerrainTiles` and its copies: whether a pass runs (`running`: the plan's keys of a record it
 /// hasn't asked yet wait), how far it is (records asked of those it asks), how many passes ended
-/// (in the tiles' `state`, so a plan after one finds their lines), the records' memory in flight
-/// (`admit`), and how long a record of each step took to ask again (`took`, `estimate`).
+/// (in the tiles' `state`, so a plan after one finds their lines), whether one panicked, the
+/// records' memory in flight (`admit`), and how long a byte of each step's records took to ask
+/// again (`took`, `estimate`).
 #[derive(Default)]
 pub struct Reask {
     state: std::sync::Mutex<ReaskState>,
@@ -193,6 +217,9 @@ pub struct ReaskState {
     pub total: usize,
     /// Passes ended.
     pub ended: u64,
+    /// Why a pass panicked, when one did (`Pass::panicked`): no other starts in this process, and
+    /// the records it hadn't asked wait (a panic of the code's own would only come again).
+    pub panicked: Option<String>,
     /// The records' memory in flight (bytes: `record_cost`, `admit`).
     pub in_flight: u64,
     /// The costs of the records waiting for memory, and the room last read (bytes).
@@ -201,11 +228,26 @@ pub struct ReaskState {
     /// A record admitted alone though larger than the room (its cost, bytes): with nothing else
     /// in flight one is, never left waiting for good.
     pub alone: Option<u64>,
-    /// By step, the records asked again and the seconds they took, each on its own (`took`).
-    pub took: std::collections::BTreeMap<String, (u64, f64)>,
+    /// By step, the records of known size asked again, the seconds they took, each on its own, and
+    /// their files' bytes (`Timed`).
+    pub took: std::collections::BTreeMap<String, Took>,
+}
+
+/// A step's records asked again (`ReaskState::took`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Took {
+    pub records: u64,
+    pub secs: f64,
+    pub bytes: u64,
 }
 
 impl ReaskState {
+    /// Whether the keys of the records a pass hasn't asked wait: while one runs, and once one
+    /// panicked.
+    pub fn stops_keys(&self) -> bool {
+        self.running || self.panicked.is_some()
+    }
+
     /// The largest record waiting for memory, and the room there was (bytes).
     pub fn held(&self) -> Option<(u64, u64)> {
         Some((*self.waiting.iter().max()?, self.room.unwrap_or(0)))
@@ -216,6 +258,13 @@ impl ReaskState {
 /// too (task #1590 review: a panic had left it running for good, every key of a record not asked
 /// waiting).
 pub struct Pass(std::sync::Arc<Reask>);
+
+impl Pass {
+    /// Its work panicked (`why`): said in the state, so no pass starts again in this process.
+    pub fn panicked(&self, why: String) {
+        self.0.with(|s| s.panicked = Some(why));
+    }
+}
 
 impl Drop for Pass {
     fn drop(&mut self) {
@@ -237,10 +286,11 @@ impl Reask {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// A pass of `total` records begins, ended as the `Pass` drops; None while one runs.
+    /// A pass of `total` records begins, ended as the `Pass` drops; None while one runs, or once
+    /// one panicked.
     pub fn pass(self: &std::sync::Arc<Self>, total: usize) -> Option<Pass> {
         self.with(|s| {
-            if s.running {
+            if s.running || s.panicked.is_some() {
                 return None;
             }
             (s.running, s.done, s.total) = (true, 0, total);
@@ -249,25 +299,33 @@ impl Reask {
     }
 
     /// A record of step `step` asked again (its read and asking: pipeline's `asked_line`,
-    /// `coverage_asked`), counted and timed as the `Timed` drops, however it returned (`took`).
-    pub fn asking<'a>(&'a self, step: &'a str) -> Timed<'a> {
-        Timed { reask: self, step, at: std::time::Instant::now() }
+    /// `coverage_asked`) of `size` bytes (0: not known yet, `Timed::sized`), counted as the `Timed`
+    /// drops, however it returned, and timed when its size is known (`took`).
+    pub fn asking<'a>(&'a self, step: &'a str, size: u64) -> Timed<'a> {
+        Timed { reask: self, step, size: std::cell::Cell::new(size), at: std::time::Instant::now() }
     }
 
-    /// A record of step `step` asked again in `secs` seconds (its own read and asking, measured as
-    /// it ran).
-    pub fn took(&self, step: &str, secs: f64) {
+    /// A record of step `step` of `bytes` bytes asked again in `secs` seconds (its own read and
+    /// asking, measured as it ran).
+    pub fn took(&self, step: &str, secs: f64, bytes: u64) {
         self.with(|s| {
             let e = s.took.entry(step.to_string()).or_default();
-            (e.0, e.1) = (e.0 + 1, e.1 + secs);
+            (e.records, e.secs, e.bytes) = (e.records + 1, e.secs + secs, e.bytes + bytes);
         })
     }
 
-    /// The seconds asking again records of `steps` (one entry a record) takes, one by one, by the
-    /// mean each step's took so far; None while a step among them has none measured.
-    pub fn estimate<'a>(&self, steps: impl IntoIterator<Item = &'a str>) -> Option<f64> {
+    /// The seconds asking again `records` takes ((step, file bytes) each), one by one, by the
+    /// seconds a byte of each step's took so far; None while one's size isn't known, or its step
+    /// has none measured.
+    pub fn estimate<'a>(&self, records: impl IntoIterator<Item = (&'a str, u64)>) -> Option<f64> {
         let s = self.now();
-        steps.into_iter().map(|step| s.took.get(step).map(|(n, secs)| secs / *n as f64)).sum()
+        records
+            .into_iter()
+            .map(|(step, size)| {
+                let t = s.took.get(step).filter(|t| t.bytes > 0 && size > 0)?;
+                Some(size as f64 * t.secs / t.bytes as f64)
+            })
+            .sum()
     }
 
     /// Admits a record costing `cost` bytes in memory (`record_cost`): at once while what's in
@@ -308,13 +366,23 @@ impl Reask {
 pub struct Timed<'a> {
     reask: &'a Reask,
     step: &'a str,
+    size: std::cell::Cell<u64>,
     at: std::time::Instant,
+}
+
+impl Timed<'_> {
+    /// Its file's size, known once it's opened (bytes).
+    pub fn sized(&self, bytes: u64) {
+        self.size.set(bytes);
+    }
 }
 
 impl Drop for Timed<'_> {
     fn drop(&mut self) {
         self.reask.with(|s| s.done += 1);
-        self.reask.took(self.step, self.at.elapsed().as_secs_f64());
+        if self.size.get() > 0 {
+            self.reask.took(self.step, self.at.elapsed().as_secs_f64(), self.size.get());
+        }
     }
 }
 
@@ -338,17 +406,27 @@ impl Drop for Admitted<'_> {
 }
 
 /// The records a probe found must be asked again (pipeline's `TerrainTiles::for_probe`), by
-/// (step, target; a world step's "").
+/// (step, target; a world step's ""), with their files' sizes as their heads keep them (bytes; 0:
+/// not known).
 #[derive(Default)]
-pub struct Found(std::sync::Mutex<Vec<(String, String)>>);
+pub struct Found(std::sync::Mutex<Vec<Named>>);
+
+/// A record a probe found (`Found`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Named {
+    pub step: String,
+    pub target: String,
+    pub size: u64,
+}
 
 impl Found {
-    pub fn push(&self, step: &str, target: &str) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((step.to_string(), target.to_string()));
+    pub fn push(&self, step: &str, target: &str, size: u64) {
+        let n = Named { step: step.to_string(), target: target.to_string(), size };
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(n);
     }
 
     /// Those found, each once, sorted.
-    pub fn take(&self) -> Vec<(String, String)> {
+    pub fn take(&self) -> Vec<Named> {
         let mut v = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
         v.sort_unstable();
         v.dedup();
@@ -633,8 +711,9 @@ mod tests {
     }
 
     /// Task #1590 review: a record put as ever (zstd'd JSON, level 9, byte for byte), read as its
-    /// stream is decoded; one that doesn't parse read as such, one that can't be read an error; what
-    /// asking it again holds in memory its file times `PARSED_PER_FILE_BYTE`, and `PARSED_BASE`.
+    /// stream is decoded, with its file's size from the open; one that doesn't parse read as such,
+    /// one that can't be read an error; what asking it again holds in memory its file times
+    /// `PARSED_PER_FILE_BYTE`, and `PARSED_BASE`.
     #[test]
     fn a_record_is_parsed_as_it_is_decoded_and_costs_its_file_times_the_factor() {
         let c = cov(&[(4.85, 45.75, 60.0)]);
@@ -649,17 +728,40 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let at = |name: &str| store::nasfs::NasPath::local_for_test(d.path().join(name));
         std::fs::write(d.path().join("rec"), &b).unwrap();
-        assert_eq!(Record::read(&at("rec")).unwrap(), Some(r));
-        assert_eq!(record_cost(&at("rec")).unwrap(), b.len() as u64 * PARSED_PER_FILE_BYTE + PARSED_BASE);
+        let n = b.len() as u64;
+        assert_eq!(Record::read(&at("rec")).unwrap(), (Some(r), n));
+        assert_eq!(record_cost(n), n * PARSED_PER_FILE_BYTE + PARSED_BASE);
         std::fs::write(d.path().join("not"), b"not a record").unwrap();
-        assert_eq!(Record::read(&at("not")).unwrap(), None);
+        assert_eq!(Record::read(&at("not")).unwrap(), (None, 12));
         std::fs::write(d.path().join("cut"), &b[..b.len() / 2]).unwrap();
-        assert_eq!(Record::read(&at("cut")).unwrap(), None);
+        assert_eq!(Record::read(&at("cut")).unwrap(), (None, n / 2));
         assert!(Record::read(&at("gone")).is_err());
-        assert!(record_cost(&at("gone")).is_err());
     }
 
-    /// Task #1590 review: one pass at a time, ended as its `Pass` drops, an unwind too.
+    /// Task #1590 review: the seconds records take to ask again, by the seconds a file byte of
+    /// their step took: none for a step unmeasured, or a record whose size isn't known; a record
+    /// of no known size counted, not timed.
+    #[test]
+    fn records_take_by_their_bytes_what_their_steps_took() {
+        let r = Reask::default();
+        drop(r.asking("bldtiles", 1_000));
+        r.took("bldtiles", 2.0, 1_000);
+        drop(r.asking("pois", 0));
+        let s = r.now();
+        assert_eq!((s.done, s.took.len(), s.took["bldtiles"].records), (2, 1, 2));
+        let per = s.took["bldtiles"].secs / 2_000.0;
+        let e = r.estimate([("bldtiles", 86_000), ("bldtiles", 700)]).unwrap();
+        assert!((e - 86_700.0 * per).abs() < 1e-9, "{e}");
+        assert_eq!(r.estimate([("bldtiles", 700), ("pois", 100)]), None, "pois unmeasured");
+        assert_eq!(r.estimate([("bldtiles", 0)]), None, "a size not known");
+        let t = r.asking("pois", 0);
+        t.sized(50);
+        drop(t);
+        assert_eq!(r.now().took["pois"].bytes, 50, "sized once opened");
+    }
+
+    /// Task #1590 review: one pass at a time, ended as its `Pass` drops, an unwind too; once one
+    /// panicked, none again, its keys waiting.
     #[test]
     fn a_pass_runs_alone_and_ends_however_it_returns() {
         let r = std::sync::Arc::new(Reask::default());
@@ -667,7 +769,7 @@ mod tests {
         assert!(r.pass(1).is_none(), "one running");
         assert_eq!((r.now().running, r.now().total), (true, 3));
         drop(p);
-        assert_eq!((r.now().running, r.now().ended), (false, 1));
+        assert_eq!((r.now().running, r.now().ended, r.now().stops_keys()), (false, 1, false));
         let p = r.pass(2).expect("the last ended");
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _p = p;
@@ -675,6 +777,11 @@ mod tests {
         }));
         assert!(unwound.is_err());
         assert_eq!((r.now().running, r.now().ended), (false, 2));
+        let p = r.pass(1).unwrap();
+        p.panicked("a warm's".into());
+        drop(p);
+        assert!(r.pass(1).is_none(), "none after a panic");
+        assert!(r.now().stops_keys());
     }
 
     /// Task #1590 review: the records asked again are admitted within the memory above the floor
@@ -976,5 +1083,39 @@ mod tests {
             h.update(&b);
         }
         assert_eq!(c.answers(&asked), store::naming::hex16(&h.finalize()));
+    }
+
+    /// What a parsed record holds against its file (`PARSED_PER_FILE_BYTE`, `PARSED_BASE`), measured
+    /// on this Mac: each record file `SCENIC_RECORDS` names (space-separated paths), smallest first,
+    /// parsed as it's decoded (`Record::from_reader`), the process's phys_footprint after it and its
+    /// peak against the footprint before, in MB, and each against its file. Smallest first, so each
+    /// one's peak is its own (a peak never falls); after the first, what the allocator kept of the
+    /// one before is reused, so a record's own figure is one path a run (`PARSED_PER_FILE_BYTE`'s
+    /// were so). Run with `--ignored --nocapture`, release.
+    #[test]
+    #[ignore]
+    fn parsed_records_footprint() {
+        let Ok(paths) = std::env::var("SCENIC_RECORDS") else { return };
+        let mut each: Vec<(u64, &str)> =
+            paths.split_whitespace().map(|p| (std::fs::metadata(p).unwrap().len(), p)).collect();
+        each.sort_unstable();
+        let mb = |b: u64| b as f64 / 1e6;
+        for (size, p) in each {
+            let before = jobrt::sys::rusage(std::process::id() as i32).unwrap();
+            let r = Record::from_reader(std::fs::File::open(p).unwrap()).unwrap();
+            let after = jobrt::sys::rusage(std::process::id() as i32).unwrap();
+            let held = after.footprint.saturating_sub(before.footprint);
+            let peak = after.peak.saturating_sub(before.footprint);
+            eprintln!(
+                "{p}: file {:.1} MB, held {:.1} MB ({:.2}x), peak {:.1} MB ({:.2}x); costed {:.1} MB",
+                mb(size),
+                mb(held),
+                held as f64 / size as f64,
+                mb(peak),
+                peak as f64 / size as f64,
+                mb(record_cost(size)),
+            );
+            drop(r);
+        }
     }
 }

@@ -51,10 +51,14 @@ struct Head {
     line: String,
     #[serde(default)]
     reads: Option<Vec<String>>,
+    /// Its record's file's size (bytes; 0 in a head kept before it was carried): what a record
+    /// costs to ask again is worked out from it (theplan's `start_reask`), with no stat.
+    #[serde(default)]
+    size: u64,
 }
 
 impl Head {
-    fn of(r: &buildstore::asked::Record) -> Head {
+    fn of(r: &buildstore::asked::Record, size: u64) -> Head {
         let mut reads: Vec<String> = r.also.iter().filter_map(|(q, _)| super::idents::question_read(q)).collect();
         reads.sort_unstable();
         reads.dedup();
@@ -64,6 +68,7 @@ impl Head {
             answering: r.answering,
             line: r.line.clone(),
             reads: Some(reads),
+            size,
         }
     }
 
@@ -234,9 +239,9 @@ impl TerrainTiles {
     }
 
     /// Whether a key now leaves a record that must be asked again to the pass (`defers`, one
-    /// running), its target waiting.
+    /// running, or one panicked: `Reask::pass`), its target waiting.
     pub fn defers_now(&self) -> bool {
-        self.defers && (self.probe.is_some() || self.reask.now().running)
+        self.defers && (self.probe.is_some() || self.reask.now().stops_keys())
     }
 
     /// A digest of what the keys read of it now: the packs whose indexes it holds and those it
@@ -274,7 +279,7 @@ impl TerrainTiles {
     /// how many ended (the lines they put in the memo).
     fn reask_state(&self) -> (bool, u64) {
         let s = self.reask.now();
-        (self.defers && s.running, s.ended)
+        (self.defers && s.stops_keys(), s.ended)
     }
 
     /// A digest of what of it the manifest's entries don't show: what it can't read now (the packs'
@@ -534,7 +539,8 @@ impl TerrainTiles {
                 if let Some(h) = self.kept_head(c) {
                     return (*c, Ok(Some(h)));
                 }
-                let head = buildstore::asked::Record::read(&root.join(c)).map(|r| r.map(|r| Head::of(&r)));
+                let head =
+                    buildstore::asked::Record::read(&root.join(c)).map(|(r, size)| r.map(|r| Head::of(&r, size)));
                 if let Ok(Some(h)) = &head {
                     self.keep_head(c, h);
                 }
@@ -561,18 +567,18 @@ impl TerrainTiles {
             }
             // (One that can't be read now: tried again with the next load; one that doesn't
             // parse, held as such: its step re-runs once.)
-            let r = match buildstore::asked::Record::read(&root.join(c)) {
-                Ok(r) => Some(r.map(std::sync::Arc::new)),
+            let (r, size) = match buildstore::asked::Record::read(&root.join(c)) {
+                Ok((r, size)) => (Some(r.map(std::sync::Arc::new)), size),
                 Err(e) => {
                     eprintln!("agent: {c} can't be read now ({e:#})");
-                    None
+                    (None, 0)
                 }
             };
             // (Its head, for the cheap test alone: one kept here once it answered the same under
-            // another, else its own.)
+            // another, else its own; its size as read now.)
             if let Some(Some(r)) = &r {
-                let h = self.kept_head(c).unwrap_or_else(|| Head::of(r));
-                self.asked_heads.insert(c.clone(), Some(h));
+                let h = self.kept_head(c).unwrap_or_else(|| Head::of(r, size));
+                self.asked_heads.insert(c.clone(), Some(Head { size, ..h }));
             }
             self.asked.insert(c.clone(), r);
         }
@@ -609,12 +615,12 @@ impl TerrainTiles {
     /// start takes the line without asking again, whether its target reran yet or not (this one
     /// finds it in the memo its key asked through). A local file for each record a geometry or
     /// answering change asks again, never the NAS.
-    pub fn answered(&self, c: &str, r: &buildstore::asked::Record, now: &str, line: &str) {
+    pub fn answered(&self, c: &str, r: &buildstore::asked::Record, size: u64, now: &str, line: &str) {
         let h = Head {
             version: now.to_string(),
             answering: buildstore::coverage::ANSWERING,
             line: line.to_string(),
-            ..Head::of(r)
+            ..Head::of(r, size)
         };
         self.keep_head(c, &h);
     }
@@ -627,9 +633,10 @@ impl TerrainTiles {
 
     /// The cheap test of the record of content name `c` (`Head`: what it read of the coverage, by
     /// geometry for a target's, and the answering code it was answered by) and the line it ran under
-    /// (`asked_heads`): Some(None) for one that doesn't parse, None while it can't be read now.
-    pub fn asked_head(&self, c: &str) -> Option<Option<(String, u32, String)>> {
-        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| (h.version.clone(), h.answering, h.line.clone())))
+    /// (`asked_heads`), and its file's size (bytes; 0: not known): Some(None) for one that doesn't
+    /// parse, None while it can't be read now.
+    pub fn asked_head(&self, c: &str) -> Option<Option<(String, u32, String, u64)>> {
+        self.asked_heads.get(c).map(|h| h.as_ref().map(|h| (h.version.clone(), h.answering, h.line.clone(), h.size)))
     }
 
     /// The targets of other steps a target's record of content name `c` says its run read in
@@ -644,25 +651,25 @@ impl TerrainTiles {
     pub fn target_asked<T>(
         &self,
         c: &str,
-        f: impl FnOnce(Option<&buildstore::asked::Record>) -> T,
+        timed: &buildstore::asked::Timed,
+        f: impl FnOnce(Option<&buildstore::asked::Record>, u64) -> T,
     ) -> Result<T, Unread> {
         if let Some(Some(Some(r))) = self.asked.get(c) {
-            return Ok(f(Some(r)));
+            return Ok(f(Some(r), 0));
         }
         let root = self.root.as_ref().ok_or_else(|| Unread(format!("{c}: no records read yet")))?;
         // (By the content name its key read in the manifest: store::keyread's recorded read.)
         let _r = store::keyread::recorded();
-        let p = root.join(c);
+        let unread = |e: std::io::Error| Unread(format!("{c}: {e:#}"));
+        let o = buildstore::asked::Record::open(&root.join(c)).map_err(unread)?;
+        let size = o.size();
+        timed.sized(size);
         // (Held, by the pass's copy alone, while it's read, parsed and asked again: `f`.)
-        let _a = match &self.room {
-            Some(room) => {
-                let cost = buildstore::asked::record_cost(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
-                Some(self.reask.admit(cost, Some(room), agentcore::agent::memguard::EVERY))
-            }
-            None => None,
-        };
-        let r = buildstore::asked::Record::read(&p).map_err(|e| Unread(format!("{c}: {e:#}")))?;
-        Ok(f(r.as_ref()))
+        let _a = self.room.as_ref().map(|room| {
+            self.reask.admit(buildstore::asked::record_cost(size), Some(room), agentcore::agent::memguard::EVERY)
+        });
+        let r = o.read().map_err(unread)?;
+        Ok(f(r.as_ref(), size))
     }
 
     /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`
@@ -685,7 +692,7 @@ impl TerrainTiles {
     /// no file).
     #[cfg(test)]
     pub fn hold_asked(&mut self, content: &str, r: buildstore::asked::Record) {
-        self.asked_heads.insert(content.to_string(), Some(Head::of(&r)));
+        self.asked_heads.insert(content.to_string(), Some(Head::of(&r, 0)));
         self.asked.insert(content.to_string(), Some(Some(std::sync::Arc::new(r))));
     }
 
@@ -1259,15 +1266,22 @@ mod tests {
         }
         std::fs::write(d.path().join("nas").join(good), r.to_bytes()).unwrap();
         std::fs::write(d.path().join("nas").join(bad), b"not a record").unwrap();
+        // (Its file's size, kept in its head as the record was read.)
+        let n = r.to_bytes().len() as u64;
         let m: BTreeMap<String, String> =
             [good, bad, gone].iter().map(|c| (c.split('.').next().unwrap().to_string(), c.to_string())).collect();
         let mut t = TerrainTiles::new(Some(d.path().join("kept")));
         t.load_asked(&root, &m);
-        assert_eq!(t.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
+        assert_eq!(t.asked_head(good), Some(Some(("geo".into(), 0, "l".into(), n))));
         let reads = ["terrain-lo 3/4/2".to_string(), "terrain-lo 3/5/2".to_string()];
         assert_eq!(t.asked_reads(good), Some(Some(&reads[..])));
         assert_eq!(t.asked_head(bad), Some(None));
-        assert!(t.target_asked(bad, |r| r.is_none()).unwrap());
+        assert!(t.target_asked(bad, &t.reask().asking("pois", 0), |r, _| r.is_none()).unwrap());
+        // (A record asked again of a head with no size: timed by its size from the open.)
+        let timed = t.reask().asking("peaks", 0);
+        assert_eq!(t.target_asked(good, &timed, |r, size| (r.is_some(), size)).unwrap(), (true, n));
+        drop(timed);
+        assert_eq!(t.reask().now().took["peaks"].bytes, n);
         assert_eq!(t.asked_head(gone), None);
         assert!(t.unread.contains_key(gone) && !t.unread.contains_key(bad));
         // Another start: the head from here, the NAS's file gone.
@@ -1275,7 +1289,7 @@ mod tests {
         std::fs::rename(&nas_good, d.path().join("aside")).unwrap();
         let mut again = TerrainTiles::new(Some(d.path().join("kept")));
         again.load_asked(&root, &m);
-        assert_eq!(again.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
+        assert_eq!(again.asked_head(good), Some(Some(("geo".into(), 0, "l".into(), n))));
         assert_eq!(again.asked_reads(good), Some(Some(&reads[..])));
         // A head kept by another record format, or a peaks record's without what its questions
         // read (its waits read them): read again from the NAS (here, gone: unread).
@@ -1298,13 +1312,13 @@ mod tests {
         with_plain.insert("work/asked/pois/6-1-5".into(), plain.into());
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
         other.load_asked(&root, &with_plain);
-        assert_eq!(other.asked_head(plain), Some(Some(("geo".into(), 1, "old".into()))));
+        assert_eq!(other.asked_head(plain), Some(Some(("geo".into(), 1, "old".into(), 0))));
         assert_eq!(other.asked_reads(plain), Some(Some(&[][..])));
         assert!(!other.unread.contains_key(plain));
         let mut other = TerrainTiles::new(Some(d.path().join("kept")));
         std::fs::rename(d.path().join("aside"), &nas_good).unwrap();
         other.load_asked(&root, &m);
-        assert_eq!(other.asked_head(good), Some(Some(("geo".into(), 0, "l".into()))));
+        assert_eq!(other.asked_head(good), Some(Some(("geo".into(), 0, "l".into(), n))));
         assert_eq!(other.asked_reads(good), Some(Some(&reads[..])));
     }
 
@@ -1448,10 +1462,12 @@ mod tests {
         // A probe: the record named, none read, the other keys as ever; the plan's tiles untouched.
         let found = std::sync::Arc::new(Found::default());
         let probe = t.for_probe(found.clone());
-        crate::agent::idents::ask_all(&x!(&probe));
+        crate::agent::idents::ask_due(&x!(&probe));
         assert_eq!(key(&probe, old), None);
         assert_eq!(key(&probe, none), Some(geo(none)));
-        assert_eq!(found.take(), vec![("pois".to_string(), old.to_string())]);
+        let size = std::fs::metadata(d.path().join("nas").join(&m[&target_logical("pois", old)])).unwrap().len();
+        let named = buildstore::asked::Named { step: "pois".into(), target: old.into(), size };
+        assert_eq!(found.take(), vec![named], "its size as its head keeps it");
         assert!(!t.defers_now() && t.state() == state && t.reask().now().done == 0);
         let pass = t.reask().pass(1).expect("none running");
         assert!(t.defers_now() && t.state() != state && t.load_state() != load);
@@ -1471,6 +1487,17 @@ mod tests {
         assert!(!t.defers_now() && t.state() != state);
         // Nothing new to ask: no pass due.
         assert!(!crate::agent::idents::warm_due(&x!(&t)));
+        // Another Mac's start (its heads its own): a probe asks only the warms not done for what
+        // they're worked out from now; here, once a probe's warms marked them all done, none.
+        let mut other = TerrainTiles::new(Some(d.path().join("kept-other")));
+        other.defer();
+        other.load_asked(&root, &m);
+        let first = std::sync::Arc::new(Found::default());
+        crate::agent::idents::warm_all(&x!(&other.for_probe(first.clone())));
+        assert_eq!(first.take().len(), 1, "the record, found by the warms");
+        let again = std::sync::Arc::new(Found::default());
+        crate::agent::idents::ask_due(&x!(&other.for_probe(again.clone())));
+        assert_eq!(again.take(), Vec::new(), "no warm due, nothing probed");
     }
 
     /// Task #1473 re-review: what's kept here by content hash (packs' indexes, water digests,

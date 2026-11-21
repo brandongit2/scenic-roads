@@ -13934,6 +13934,49 @@ mod tests {
             assert!(differ.is_empty(), "{differ:?}");
             eprintln!("bench: [{round}] the coverage's memos hold {} KB", buildstore::coverage::memo_bytes() >> 10);
         }
+        // (Task #1590: one hi pack landing under lake-depth records, as the lead's plan meets it:
+        // the probe of the warms due (theplan's `start_reask`), those records asked on the plan's
+        // thread as a plan with no pass asks them, then the plan.)
+        let lake = "work/asked/lake-depth/";
+        let hi = m
+            .keys()
+            .filter_map(|l| l.strip_prefix(lake))
+            .map(|t| format!("layers/terrain/hi/{t}"))
+            .find(|l| m.contains_key(l));
+        let other = m.iter().find(|(l, _)| l.starts_with("layers/terrain/hi/") && Some(*l) != hi.as_ref());
+        if let (Some(hi), Some((_, c))) = (hi, other) {
+            let mut landed = m.clone();
+            landed.insert(hi.clone(), c.clone());
+            let found = std::sync::Arc::new(buildstore::asked::Found::default());
+            let probe = tiles.for_probe(found.clone());
+            crate::agent::idents::ask_due(&KeyCtx::new(&cov, &date, &landed, &inputs, reach.as_ref(), &probe));
+            let found = found.take();
+            let bytes: u64 = found.iter().map(|n| n.size).sum();
+            lap(&format!("{hi} landed: the probe, {} records found ({} MB)", found.len(), bytes >> 20), &mut t);
+            crate::agent::idents::warm_all(&KeyCtx::new(&cov, &date, &landed, &inputs, reach.as_ref(), &tiles));
+            lap(&format!("{hi} landed: its records asked again on the plan's thread"), &mut t);
+            let on_map = BTreeMap::new();
+            let p = super::plan_with(
+                &KeyMemo::default(),
+                &cov,
+                &date,
+                &landed,
+                &keys,
+                &inputs,
+                reach.as_ref(),
+                &tiles,
+                Publish {
+                    each: &each,
+                    on_map: &on_map,
+                    served: &BTreeMap::new(),
+                    since_catalogue: Some(0),
+                    held_for: None,
+                    held: false,
+                    way: Default::default(),
+                },
+            );
+            lap(&format!("{hi} landed: the plan ({})", store::naming::hash16(format!("{p:?}").as_bytes())), &mut t);
+        }
         // (The terrain-deep targets, those with data past z12 (not hollow), and the latter's tiles
         // by zoom, z13 to z16: after the plans, which work them out cold.)
         let deep = tiles.deep(&m, &cov).unwrap();

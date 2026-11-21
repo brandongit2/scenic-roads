@@ -98,8 +98,14 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
         3,
         "the plan's load: a pack's index, from where it's kept, else the NAS",
     ),
-    // A reader a key reads the NAS through, by a content name it read in the manifest first (a
-    // target's record is read so too, by buildstore::asked::Record::read: `target_asked`).
+    // The two readers a key reads the NAS through, by a content name it read in the manifest first.
+    (
+        "crates/pipeline/src/agent/tiles.rs",
+        "target_asked",
+        2,
+        "a target's record by its content name (store::keyread::recorded): opened, its size from \
+         the open, then read",
+    ),
     (
         "crates/pipeline/src/agent/tiles.rs",
         "outlines",

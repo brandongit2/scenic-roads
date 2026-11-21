@@ -348,18 +348,24 @@ struct Held {
     /// How long the last plan took (`build::plan_with`'s wall time): records that take less to ask
     /// again are asked on the plan's thread, with no pass (`start_reask`).
     last_plan: Cell<Option<Duration>>,
+    /// A test's work run as a plan is made, after `build::plan_with` (a pass ending meanwhile).
+    #[cfg(test)]
+    during_plan: Cell<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// The threads of the pass asking records again (`Held::start_reask`), each at the utility QoS and
-/// `unphased`. Measured on the lead (task #1590, its 6,050 records on 6 threads): 45 CPU minutes in
-/// 12, 3.75 threads busy on average, the rest waiting on the NAS; 4 keep it about as fast, and
-/// leave the Mac's other cores to its jobs, its plan and the plan's shadow.
-const REASK_THREADS: usize = 4;
+/// `unphased`: a third of the Mac's cores, at least one. Measured on the lead (task #1590, its
+/// 6,050 records on 6 of its 12 cores): 45 CPU minutes in 12, 3.75 threads busy on average, the
+/// rest waiting on the NAS; a third (4 there) keeps it about as fast, and leaves the Mac's other
+/// cores to its jobs, its plan and the plan's shadow.
+fn reask_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 3).max(1))
+}
 
-/// The pass's pool (`REASK_THREADS`).
+/// The pass's pool (`reask_threads`).
 fn reask_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(REASK_THREADS)
+        .num_threads(reask_threads())
         .thread_name(|i| format!("reask-{i}"))
         .start_handler(|_| {
             nasread::unphased();
@@ -370,13 +376,15 @@ fn reask_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
 
 /// Runs `work` as pass `pass` on a thread of its own, on the pass's pool (`reask_pool`; on that
 /// thread alone when none can be built). The pass ends as its work returns, an unwind too (the
-/// `Pass` dropped), a panic said as the plan part says its own.
+/// `Pass` dropped), a panic said as the plan part says its own and kept (`Pass::panicked`): no
+/// plan is kicked for it, no pass starts again until the agent does (a new app, or a restart),
+/// and the records it hadn't asked wait, said in the status: a panic of the code's own would only
+/// come again, every plan.
 fn run_pass(
     pass: buildstore::asked::Pass,
     work: impl FnOnce() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new().name("reask".into()).spawn(move || {
-        let _pass = pass;
         nasread::unphased();
         agentcore::agent::forecast::low_priority();
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match reask_pool() {
@@ -385,11 +393,13 @@ fn run_pass(
         }));
         if let Err(e) = made {
             let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
+            let why = why.unwrap_or_default();
             eprintln!(
-                "agent: the pass asking coverage records again panicked ({}); those it hadn't asked are asked by the plan's keys",
-                why.unwrap_or_default()
+                "agent: the pass asking coverage records again panicked ({why}); those it hadn't asked wait until the agent restarts"
             );
+            pass.panicked(why);
         }
+        drop(pass);
     })
 }
 
@@ -608,7 +618,7 @@ fn shadow(kept: &mut Option<Kept>, ask: Ask, skipped: u64) -> Shadow {
     // (A pass asking records again running, or ended since the plan: the shadow's keys of its
     // records would read what the plan's waited for. Not compared; the shadow kept as it was.)
     let now = ask.tiles.reask().now();
-    if ask.reask.0 || now.running || now.ended != ask.reask.1 {
+    if ask.reask.0 || now.stops_keys() || now.ended != ask.reask.1 {
         let said = format!(
             "plan shadow {}: not compared: the coverage records were being asked again off the plan's thread \
              as it was made, or have been since (their keys read what the plan's waited for)",
@@ -881,17 +891,21 @@ impl Held {
             reask_seen: Cell::new(0),
             home: home.to_path_buf(),
             last_plan: Cell::new(None),
+            #[cfg(test)]
+            during_plan: Cell::new(None),
         }
     }
 
     /// Asks again the records that must be, when that's due (idents::warm_due) and no pass runs:
-    /// those found by a probe, which reads none (`TerrainTiles::for_probe`). Asked here, on the
-    /// plan's thread, when they take less than the last plan took, by what records of their steps
-    /// took to ask so far (`Reask::estimate`: none measured yet, not here); else by a pass off it
-    /// (`run_pass`: each record admitted within the memory above the floor as the guard last read
-    /// it, `room_now`, buildstore::asked::Reask::admit), the lines it works out put in the memo the
-    /// plan's keys read, their heads kept. Until the pass ends the keys of a record it hasn't asked
-    /// yet wait (`defers_now`), and the plan offers the rest; its end kicks a plan (`kick`).
+    /// those found by a probe of the warms due, which reads none (`TerrainTiles::for_probe`,
+    /// idents::ask_due). Asked here, on the plan's thread, when they take less than the last plan
+    /// took, by the seconds a file byte of their steps has taken to ask so far and their sizes as
+    /// their heads keep them (`Reask::estimate`: none measured, or a size not known, not here), and
+    /// fit together in the memory above the floor (`record_cost`, `room_now`: no admission here);
+    /// else by a pass off it (`run_pass`: each record admitted within that memory,
+    /// buildstore::asked::Reask::admit), the lines it works out put in the memo the plan's keys
+    /// read, their heads kept. Until the pass ends the keys of a record it hasn't asked yet wait
+    /// (`defers_now`), and the plan offers the rest; its end kicks a plan (`kick`).
     fn start_reask(&self, r: &Round, reach: Option<Arc<Reaches>>, tiles: &TerrainTiles) {
         let x = KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), tiles);
         if !tiles.defers() || tiles.defers_now() || !super::idents::warm_due(&x) {
@@ -899,10 +913,12 @@ impl Held {
         }
         let found = Arc::new(buildstore::asked::Found::default());
         let probe = tiles.for_probe(found.clone());
-        super::idents::ask_all(&KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), &probe));
+        super::idents::ask_due(&KeyCtx::new(&r.covs.all, r.date, r.manifest, r.inputs, reach.as_deref(), &probe));
         let items = found.take();
-        let est = tiles.reask().estimate(items.iter().map(|(step, _)| step.as_str()));
-        if items.is_empty() || est.zip(self.last_plan.get()).is_some_and(|(e, p)| e <= p.as_secs_f64()) {
+        let est = tiles.reask().estimate(items.iter().map(|n| (n.step.as_str(), n.size)));
+        let cost: u64 = items.iter().map(|n| buildstore::asked::record_cost(n.size)).sum();
+        let fits = || room_now(&self.home).is_none_or(|room| cost <= room);
+        if items.is_empty() || est.zip(self.last_plan.get()).is_some_and(|(e, p)| e <= p.as_secs_f64()) && fits() {
             super::idents::warm_all(&x);
             return;
         }
@@ -970,7 +986,8 @@ impl Held {
     }
 
     /// The plan just made (`planned`, with `memo`, on `tiles`, in `made`: its wall time and its
-    /// thread's CPU time) handed to its shadow, with a copy of its round.
+    /// thread's CPU time; `reask`, the pass asking records again as it began: whether one ran, and
+    /// how many had ended) handed to its shadow, with a copy of its round.
     #[allow(clippy::too_many_arguments)]
     fn ask_shadow(
         &self,
@@ -980,6 +997,7 @@ impl Held {
         planned: &Planned,
         memo: &KeyMemo,
         made: (Duration, Duration),
+        reask: (bool, u64),
     ) {
         let mut s = self.shadow.borrow_mut();
         let Some(sh) = live(&mut s) else { return };
@@ -1004,7 +1022,7 @@ impl Held {
             keys: memo.keys(),
             wall: made.0,
             cpu: made.1,
-            reask: (tiles.defers_now(), tiles.reask().now().ended),
+            reask,
         };
         // (One waits at most, the latest: one it replaces is never shadowed.)
         sh.asks.put(ask);
@@ -1082,13 +1100,19 @@ impl PlanHeld for Held {
                 self.start_reask(r, reach_now.as_ref().map(|(_, r)| r.clone()), &tiles);
                 nasread::PLAN.enter("build::plan");
                 let (t, cpu) = (Instant::now(), jobrt::sys::thread_cpu_ns());
+                // (As the plan begins: a pass ending while it's made leaves keys it waited for.)
+                let reask = (tiles.defers_now(), tiles.reask().now().ended);
                 let hold = self.shadow_hold();
                 let p = build::plan_with(&memo, cov, r.date, r.manifest, r.done, r.inputs, reach, &tiles, publish);
+                #[cfg(test)]
+                if let Some(f) = self.during_plan.take() {
+                    f();
+                }
                 self.last_plan.set(Some(t.elapsed()));
                 if self.shadowing.get() {
                     let cpu = Duration::from_nanos(jobrt::sys::thread_cpu_ns().saturating_sub(cpu));
                     nasread::PLAN.enter("its shadow's copy");
-                    self.ask_shadow(r, publish, &tiles, &p, &memo, (t.elapsed(), cpu));
+                    self.ask_shadow(r, publish, &tiles, &p, &memo, (t.elapsed(), cpu), reask);
                 }
                 // (Its ask left first: the worker takes this plan's, not the one before.)
                 drop((hold, tiles));
@@ -1130,6 +1154,13 @@ impl PlanHeld for Held {
             (None, Some(cost)) => format!("; one of {}, more than the room above the memory floor, alone", gb(cost)),
             (None, None) => String::new(),
         };
+        if let Some(why) = &s.panicked {
+            return Some(format!(
+                "the pass asking them again panicked ({why}) after {} of {}: the targets of those not asked \
+                 wait until the agent restarts",
+                s.done, s.total
+            ));
+        }
         s.running.then(|| {
             format!(
                 "asked again by this build's answering code off the plan's thread, {} of {}{held}: \
@@ -1139,8 +1170,9 @@ impl PlanHeld for Held {
         })
     }
     fn kick(&self) -> Option<&'static str> {
-        let ended = self.tiles.borrow().reask().now().ended;
-        (self.reask_seen.replace(ended) != ended).then_some("the records asked again are in")
+        let s = self.tiles.borrow().reask().now();
+        (self.reask_seen.replace(s.ended) != s.ended && s.panicked.is_none())
+            .then_some("the records asked again are in")
     }
     fn unknown_why(&self, manifest: &BTreeMap<String, String>, n: usize) -> String {
         // (A z6 tile's coverage line waits for the pass asking records again: `reasking` says how far.)
@@ -1354,7 +1386,7 @@ mod tests {
         let held = Held::new(&d.path().join("inline"));
         held.last_plan.set(Some(Duration::from_secs(1)));
         let tiles = held.terrain_tiles(&root, &m);
-        tiles.reask().took("pois", 0.001);
+        tiles.reask().took("pois", 1e-6, 1_000);
         held.start_reask(&r, None, &tiles);
         let s = tiles.reask().now();
         assert_eq!((s.running, s.ended, s.done), (false, 0, 1), "asked on the plan's thread");
@@ -1362,12 +1394,84 @@ mod tests {
         drop(tiles);
         assert_eq!(held.kick(), None, "no pass, no kick");
         // A plan longer than none: by a pass again (another Mac's home, nothing asked yet).
-        let held = Held::new(&d.path().join("measured-longer"));
-        held.last_plan.set(Some(Duration::ZERO));
+        // By a pass, each begun as `start_reask` returns (its total set): a plan shorter than the
+        // estimate; a step unmeasured, whatever the last plan took; a measure under the last
+        // plan's but more than the room above the floor (the guard's sample here: 1 MB).
+        let by_pass = |home: &str, last: u64, took: bool| {
+            let held = Held::new(&d.path().join(home));
+            held.last_plan.set(Some(Duration::from_secs(last)));
+            let tiles = held.terrain_tiles(&root, &m);
+            if took {
+                tiles.reask().took("pois", 1e-6, 1_000);
+            }
+            held.start_reask(&r, None, &tiles);
+            assert_eq!(tiles.reask().now().total, 1, "{home}: by a pass");
+            store::testkit::eventually("the pass ended", || tiles.reask().now().ended == 1);
+        };
+        by_pass("measured-longer", 0, true);
+        by_pass("unmeasured", 1, false);
+        use agentcore::agent::memguard::{Live, Reading, LIVE};
+        std::fs::create_dir_all(d.path().join("no-room")).unwrap();
+        let reading = Reading { avail_mb: 1, ..Default::default() };
+        let l = Live { at: jobrt::jobs::now_s(), on: true, reading: Some(reading), ..Default::default() };
+        std::fs::write(d.path().join("no-room").join(LIVE), serde_json::to_vec(&l).unwrap()).unwrap();
+        by_pass("no-room", 1, true);
+    }
+
+    /// Task #1590 review: once a pass panicked no plan is kicked for it, none starts again, and
+    /// the records it hadn't asked wait, said in the status: a panic of the code's own doesn't
+    /// loop.
+    #[test]
+    fn after_a_pass_panicked_its_records_wait_and_no_plan_is_kicked() {
+        let d = tempfile::tempdir().unwrap();
+        let root = NasRoot::local_for_test(d.path().join("nas"));
+        let (c, m, [old, _]) = two_records(d.path());
+        let covs = Arc::new(agentcore::agent::Coverages { all: c.clone(), each: Vec::new() });
+        let (inputs, done) = (BTreeMap::new(), Keys::default());
+        let r = Round { root: &root, covs: &covs, date: "d", manifest: &m, inputs: &inputs, done: &done };
+        let held = Held::new(&d.path().join("home"));
         let tiles = held.terrain_tiles(&root, &m);
-        tiles.reask().took("pois", 0.001);
+        let pass = tiles.reask().pass(1).unwrap();
+        run_pass(pass, || panic!("a warm's")).unwrap().join().expect("the panic caught");
+        drop(tiles);
+        assert_eq!(held.kick(), None, "no plan kicked");
+        let said = held.reasking().expect("said");
+        assert!(said.contains("panicked (a warm's)") && said.contains("until the agent restarts"), "{said}");
+        let tiles = held.terrain_tiles(&root, &m);
         held.start_reask(&r, None, &tiles);
-        store::testkit::eventually("the pass ended", || tiles.reask().now().ended == 1);
+        let s = tiles.reask().now();
+        assert_eq!((s.running, s.ended), (false, 1), "none started again");
+        let x = KeyCtx::new(&c, "d", &m, &inputs, None, &tiles);
+        assert_eq!(super::super::idents::coverage_clip(old, &x), None, "its record waits");
+    }
+
+    /// Task #1590 review: a pass ending while a plan is made leaves the plan's keys of its records
+    /// waiting: its shadow, by the pass as the plan began, compares nothing.
+    #[test]
+    fn a_pass_ending_during_a_plan_leaves_its_shadow_comparing_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let root = NasRoot::local_for_test(d.path().join("nas"));
+        let covs = Arc::new(agentcore::agent::Coverages { all: Default::default(), each: Vec::new() });
+        let (none, done) = (BTreeMap::<String, String>::new(), Keys::default());
+        let r = Round { root: &root, covs: &covs, date: "d", manifest: &none, inputs: &none, done: &done };
+        let on_map = BTreeMap::new();
+        let publish = || Publish {
+            each: &covs.each,
+            on_map: &on_map,
+            served: &none,
+            since_catalogue: None,
+            held_for: None,
+            held: false,
+            way: Default::default(),
+        };
+        let held = Held::new(&d.path().join("home"));
+        held.plan(&r, publish(), false);
+        assert!(!held.shadow().expect("the first plan's shadow").said.contains("not compared"));
+        let pass = held.tiles.borrow().reask().pass(0).unwrap();
+        held.during_plan.set(Some(Box::new(move || drop(pass))));
+        held.plan(&r, publish(), false);
+        let said = held.shadow().expect("the plan's shadow").said;
+        assert!(said.contains("not compared"), "{said}");
     }
 
     /// Task #1590 review: a pass whose work panics, on its pool, ends all the same (its `Pass`

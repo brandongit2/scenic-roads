@@ -575,7 +575,9 @@ impl NasPath {
             })
         })?;
         nasio::opened(&p, len, ms_since(t));
-        Ok(NasFile::new(f, p, None, t, self.root.deadline()))
+        let mut f = NasFile::new(f, p, None, t, self.root.deadline());
+        f.len = len;
+        Ok(f)
     }
 
     /// The file opened for positioned reads (crate::range::PlainFile: counted there, its open and
@@ -1288,6 +1290,8 @@ pub struct NasFile {
     at: usize,
     /// Its reads, counted the NAS's or this Mac's cache's.
     reads: nasio::Reads,
+    /// Its length as it was opened to read (bytes; 0 opened to write).
+    len: u64,
 }
 
 impl NasFile {
@@ -1301,6 +1305,7 @@ impl NasFile {
             buf: Vec::new(),
             at: 0,
             reads: nasio::Reads::default(),
+            len: 0,
         }
     }
 
@@ -1420,6 +1425,11 @@ impl Seek for NasFile {
 }
 
 impl NasFile {
+    /// Its length as it was opened to read (bytes: the open's own stat; 0 opened to write).
+    pub fn opened_len(&self) -> u64 {
+        self.len
+    }
+
     /// `File::sync_all`, a call within its deadline (its path held while it's held).
     pub fn sync_all(&self) -> io::Result<()> {
         let _w = crate::waits::nas();
