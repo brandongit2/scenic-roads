@@ -97,7 +97,8 @@ pub struct Obs {
     pub wall: f64,
     /// Its peak memory (MB).
     pub peak: u64,
-    pub nas: Option<Moves>,
+    /// What it moved on the NAS, and the time it moved them over (s at the lead's pace).
+    pub nas: Option<(Moves, f64)>,
     /// How much slower its supply explains it ran (1 at least; jobrt::timings::JobFacts::explain).
     pub explain: f64,
     /// Whether it counts in the step's time (a `PER_WORK` step's run that did its work).
@@ -491,7 +492,8 @@ impl PerUnit {
             let m = logs.iter().sum::<f64>() / logs.len() as f64;
             (logs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / logs.len() as f64).sqrt()
         };
-        let mut rates: Vec<(f64, Moves, f64)> = timed.iter().filter_map(|(o, u)| Some((*u, o.nas?, o.wall))).collect();
+        let mut rates: Vec<(f64, Moves, f64)> =
+            timed.iter().filter_map(|(o, u)| Some((*u, o.nas?.0, o.nas?.1))).collect();
         rates.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut mem: Vec<(f64, u32, u64)> =
             units(all).iter().filter(|(o, _)| o.peak > 0).map(|(o, u)| (*u, o.threads, o.peak)).collect();
@@ -798,13 +800,19 @@ fn past_read(pts: &[(f64, f64)], u: f64, at: f64) -> Option<f64> {
 }
 
 /// `runs`' parallelism (`Par`): a run is a floor when the cores it kept busy while not waiting were
-/// within `CHECK_SHARE` of its threads.
+/// within `CHECK_SHARE` of its threads. A run that kept more cores busy while not waiting than its
+/// threads, past that share, computed through its waits (its threads working while one waited;
+/// task #1510: peaks' runs read as floors so), so it says nothing of the cores it
+/// kept busy and is left out.
 fn par(runs: &[&Obs], t: &Tuning) -> Par {
     let mut out = Par::default();
     let mut under = Vec::new();
     let mut kept = Vec::new();
     for r in runs.iter().filter(|r| r.timed && r.threads > 0) {
         let Some(b) = r.busy() else { continue };
+        if b > f64::from(r.threads) * (1.0 + jobrt::timings::CHECK_SHARE) {
+            continue;
+        }
         out.runs += 1;
         kept.push(r.work.unwrap_or(0.0) / r.wall.max(1.0));
         if b >= f64::from(r.threads) * (1.0 - jobrt::timings::CHECK_SHARE) {
@@ -974,6 +982,24 @@ mod tests {
         assert!((m.secs(&sizes, 2, 1.0, false).unwrap() - 20.0).abs() < 1e-9);
         // (A Mac twice the lead's time: twice.)
         assert!((m.secs(&sizes, 2, 2.0, false).unwrap() - 40.0).abs() < 1e-9);
+    }
+
+    /// Task #1510: a run that kept more cores busy while not waiting than it had threads (its
+    /// threads computing through its waits) says nothing of the step's parallelism: no floor of it.
+    #[test]
+    fn parallelism_leaves_out_runs_busier_than_their_threads() {
+        let t = Tuning::default();
+        let mut runs: Vec<Obs> = (0..10).map(|i| obs(i, 1.0, 40.0, 4, 100)).collect();
+        // (At 8 threads, its 16 s of CPU in 4 s all waiting: 16 cores busy, read as 8 at least.)
+        for i in 10..20 {
+            let mut o = obs(i, 1.0, 16.0, 8, 100);
+            o.wall = 4.0;
+            o.wait = 4.0;
+            runs.push(o);
+        }
+        let m = Model::of(runs, &[], &[], &t);
+        assert_eq!(m.par.floor, 4, "not 8");
+        assert_eq!(m.par.runs, 10);
     }
 
     /// Memory is a high percentile of the runs at the target's size or more: small runs, however

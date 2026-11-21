@@ -297,7 +297,8 @@ reserves that while it holds the lease (less what the job has written so far), a
 an ask says is the free space less the owner's room target and every live reservation, so no job
 is counted free twice. There is no fixed reserve: the room target is the only floor.
 
-- **Shared caches** (`needs::CACHES`: `depth`, `depth-lo`, `terrain-water`, `lakefill`, `water`):
+- **Shared caches** (`needs::CACHES`: `depth`, `depth-lo`, `terrain-water`, `lakefill`, `water`, the
+  steps that open `localread::Local`, held to the code by pipeline's `tests/cache_steps.rs`, task #1173):
   these steps read whole local copies of large NAS files (`localread`), made where the disk has
   room past the target, else the NAS is read in place. The cache's fill is measured from the job
   that filled it (its disk past its targets' output); the first job granted on a Mac reading a
@@ -306,7 +307,9 @@ is counted free twice. There is no fixed reserve: the room target is the only fl
 - **Caches counted as free.** On a member with a room target, what its caches can free counts as
   free disk (`room::Freeable::cheap`), freed toward the job's reservation while it runs, the disk
   guard behind it. A finished step's whole copies count as free for a job that doesn't read them
-  (`sched`'s `Copies`), so they never hold a later step off a Mac that has the room once they go.
+  (`sched`'s `Copies`), so they never hold a later step off a Mac that has the room once they go;
+  the bytes a job still holds (its lock on them) don't (each member says its copies' bytes and those in use,
+  `localread::held`, task #1173).
   The lead's caches aren't counted. A job held back only by disk its caches can give
   (`freeable_mb`) has the caches freed toward it and room held for its memory and cores meanwhile
   (`Agent::held_room`); the refusal names the disk (`held_disk_mb`). The caches are counted every
@@ -1038,15 +1041,17 @@ thousandths:
   the NAS is full before them, but past the whole they'd admit more than the probe measured. It is
   kept in the lead's store, so a restart within 30 minutes takes it up.
 - **Ways past the window**: a job weighing under a step (`nas-small`) isn't paced, though never past
-  the whole with the jobs out. A job alone goes whatever its weight, but not for 10 minutes after a
-  congested reading (`nas-lone-minutes`), each hold in a row twice as long, to 80 minutes; a reading
-  with room ends the hold.
+  the whole with the jobs out. A job alone goes whatever its weight, but only while the last
+  reading taken with nothing of the pool's running, its answers read, was near: spare, the disks
+  with room for that job (an outside load near the cliff shows there). A congested reading, or such
+  a reading without room, holds it back until a near one, for 80 minutes at most
+  (`nas-lone-most-minutes`): then one goes, the next 80 minutes after it, so nothing waits for good.
 - **The bounds are the pool's settings** (`nas::KNOBS`; `scenic pool set <name> [<value> | off]`,
   the build page's Settings): `nas-step` (50 thousandths, 10 to 500), `nas-small` (50, 0 to 500),
   `nas-decrease` (0.5, 0.1 to 0.9), `nas-floor-hours` (24, 1 to 24), `nas-slow` (3, 1.5 to 10),
   `nas-grow-seconds` (60, 10 to 600), `nas-read-seconds` (10, 2 to 60), `nas-span-seconds` (30, 10
-  to 300), `nas-cached-ms` (0.5, 0 to 10), `nas-restore-minutes` (30, 0 to 60), `nas-lone-minutes`
-  (10, 1 to 120), `nas-lone-most-minutes` (80, 10 to 240), `nas-young-spans` (20, 5 to 100:
+  to 300), `nas-cached-ms` (0.5, 0 to 10), `nas-restore-minutes` (30, 0 to 60),
+  `nas-lone-most-minutes` (80, 10 to 240), `nas-young-spans` (20, 5 to 100:
   the spans of its link's history a Mac's floor needs; a Mac whose floor is younger may cut the
   window, never grow it), `nas-track-minutes` (10, 2 to 60: how long the answers are kept to
   judge against), `nas-apart-seconds` (5, 0 to 60: how often each Mac's probe apart answers; 0, no
@@ -1206,7 +1211,8 @@ tile's area, one a target, and its source's time below):
   threads it could use (its waits, serial stretches), at the same percentile.
 - **parallelism** (`model::Par`): a run that kept every thread busy while not waiting is a floor;
   one that didn't says what the step can use (their median); waits left out, so a step crowded off
-  the NAS doesn't read as serial.
+  the NAS doesn't read as serial. A run that would have kept more cores busy while not waiting than
+  it had threads computed through its waits and says nothing of it: left out (task #1510).
 - **memory**: the `needs-mem-pct` percentile (98) of the peaks of its step's runs at or above its
   size (up to twice it; fewer than `MIN_RUNS`, the nearest such; past every run, a smaller run's
   peak grown by the step's slope over size, `model::slope`, at most in proportion; no slope, and no
@@ -1224,7 +1230,10 @@ tile's area, one a target, and its source's time below):
   nothing more; task #1542: bldprep 6/47/27, in range by its bytes but past every run by its
   buildings, had been read by its bytes alone, 517 MB against 10,770).
 - **NAS** (`model::Moves`): bytes read (the NAS or the page cache), written and read back, and its
-  creates, lists, stats and deletes; a target's rate its runs of about its size together.
+  creates, lists, stats and deletes; a target's rate its runs of about its size together, their
+  moves over their times, each run's over the time its own rate is over (a halo step's reads over
+  its job's read time, `nas_secs`: over its own second or two they read a lo pass at 53 GB/s, task
+  #1510).
 
 "Of about its size" means half to twice its units (fewer than `MIN_RUNS`, the nearest). A target is
 predicted by the first of its step's sizes, best first (the least spread of work per unit), that
@@ -1246,7 +1255,8 @@ before it of about its size; off by more than `needs-off` (3) times on its work,
 what its supply explains (the cores it lacked, the NAS's slowness: `jobrt::timings::explain`), it's
 flagged. `needs-relearn` (5) runs in a row off on one side, and the step learns its times from the
 first of them, as a cost version's bump does for code. `scenic pool needs` prints each step's runs,
-sizes, rates, memory, parallelism and flagged runs.
+sizes, rates, memory, parallelism and flagged runs, as the lead's coordinator holds them (asked of it,
+`/api/needs`), and a step with costs but none of the way it runs now says so.
 
 **The knobs** (`jobrt::needs::KNOBS`): `scenic pool set
 needs-work-pct|needs-high-pct|needs-mem-pct|needs-thread-share|needs-runs|needs-off|needs-relearn

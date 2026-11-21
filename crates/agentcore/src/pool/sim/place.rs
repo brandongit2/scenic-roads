@@ -441,7 +441,12 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         let here = |k: usize| -> BTreeMap<String, coord::CacheHere> {
             crate::needs::CACHES
                 .iter()
-                .map(|(c, _)| (c.to_string(), coord::CacheHere { have_mb: have[k].get(c).copied().unwrap_or(0) }))
+                .map(|(c, _)| {
+                    (
+                        c.to_string(),
+                        coord::CacheHere { have_mb: have[k].get(c).copied().unwrap_or(0), ..Default::default() },
+                    )
+                })
                 .collect()
         };
         // A job starting on Mac `k`: the guard's stop of one past the limit, else the invariants.

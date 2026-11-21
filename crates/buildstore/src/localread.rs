@@ -178,25 +178,42 @@ pub fn path(local: Option<&Local>, p: &NasPath) -> Place {
     local.map_or_else(|| Place::Nas(p.clone()), |l| l.path(p))
 }
 
-/// The bytes this Mac's cache folder `cache` holds of the shared cache (what a Mac holds of it:
-/// pipeline::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`), the lakes' fills'
-/// (`blobs/work/lakefill*`) and the depth sources' packs' (`blobs/sources/fetched/<id>/*.tar`). The stored GeoTIFFs' copies (`.tif`, the
-/// terrain's) are not the shared cache's: each terrain job's disk counts those it makes.
-pub fn held(cache: &Path) -> u64 {
-    let blobs = cache.join("blobs");
-    let packs: u64 = std::fs::read_dir(blobs.join("sources/fetched"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
-        .filter(|f| f.file_name().to_string_lossy().ends_with(".tar"))
-        .filter_map(|f| f.metadata().ok())
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .sum();
-    store::cachefile::bytes_of(&blobs.join("layers"), "basemap")
-        + store::cachefile::bytes_of(&blobs.join("work"), "lakefill")
-        + packs
+/// What this Mac's cache folder `cache` holds of the shared cache (what a Mac holds of it:
+/// agentcore::agent's `caches_here`), in bytes, and of those the bytes in use: held by a running
+/// process, the pool's or not (store::cachefile::in_use), which no freeing deletes until it ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub bytes: u64,
+    pub in_use: u64,
+}
+
+/// What this Mac's cache folder `cache` holds of the shared cache (`Held`): the basemaps' copies
+/// (`blobs/layers/basemap*`), the lakes' fills' (`blobs/work/lakefill*`) and the depth sources'
+/// packs' (`blobs/sources/fetched/<id>/*.tar`), the files `is_shared` names. The stored GeoTIFFs'
+/// copies (`.tif`, the terrain's) are not the shared cache's: each terrain job's disk counts those
+/// it makes.
+pub fn held(cache: &Path) -> Held {
+    fn walk(p: &Path, cache: &Path, h: &mut Held) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let path = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&path, cache, h),
+                Ok(t) if t.is_file() && is_shared(cache, &path) => {
+                    let len = e.metadata().map_or(0, |m| m.len());
+                    h.bytes += len;
+                    if store::cachefile::in_use(&path) {
+                        h.in_use += len;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut h = Held::default();
+    for dir in ["layers", "work", "sources/fetched"] {
+        walk(&cache.join("blobs").join(dir), cache, &mut h);
+    }
+    h
 }
 
 /// Whether `p`, a file under this Mac's cache folder `cache`, is one of the copies `held` counts:
@@ -237,7 +254,7 @@ mod tests {
         };
         let full = Local::new(&nr, &cache, jobrt::room::MAX_TARGET);
         assert_eq!(at(full.path(&nr.join(name))), nas.join(name));
-        assert_eq!(held(&cache), 0);
+        assert_eq!(held(&cache), Held::default());
         let l = Local::new(&store::nasfs::NasRoot::local_for_test(&nas), &cache, 0);
         let outside = d.path().join("elsewhere.tar");
         assert_eq!(at(l.path(&store::nasfs::NasPath::local_for_test(&outside))), outside);
@@ -248,11 +265,14 @@ mod tests {
         assert_eq!(got, cache.join("blobs").join(name));
         assert!(asked() - read >= 4096, "the copy counted as read");
         assert_eq!(std::fs::read(&got).unwrap(), vec![5u8; 4096]);
-        assert_eq!(held(&cache), 4096);
+        // (Task #1173: held by this process as it reads it, in use; let go, not.)
+        assert_eq!(held(&cache), Held { bytes: 4096, in_use: 4096 });
+        store::cachefile::release(&got);
+        assert_eq!(held(&cache), Held { bytes: 4096, in_use: 0 });
         // (A stored GeoTIFF's copy is its terrain job's, not the shared cache's.)
         std::fs::create_dir_all(cache.join("blobs/sources/fetched/glo30")).unwrap();
         std::fs::write(cache.join("blobs/sources/fetched/glo30/x_DEM.tif"), [0u8; 10]).unwrap();
-        assert_eq!(held(&cache), 4096);
+        assert_eq!(held(&cache).bytes, 4096);
         std::fs::remove_dir_all(&nas).unwrap();
         // (Here already: no room asked, the NAS not read.)
         assert_eq!(at(full.path(&nr.join(name))), got);

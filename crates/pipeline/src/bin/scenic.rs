@@ -1565,48 +1565,21 @@ fn cli_main() -> Result<()> {
                         println!("  {}", l.as_str().unwrap_or(""));
                     }
                 }
-                Some(PoolCmd::Needs { costs }) => {
-                    // Each step's model of what its jobs need (agentcore::needs::model_table). Read
-                    // only: the coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this
-                    // Mac's agent's), its disk floors and timings log beside them (each Mac's speed
-                    // and the jobs' records, as the coordinator reads them), at the pool's tuning
-                    // as this Mac's agent last had it, the lead's pace the one it keeps.
-                    let p = costs.unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
-                    let (costs, mut disks) =
-                        agentcore::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
-                    let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json"))
-                        .ok()
-                        .and_then(|b| serde_json::from_slice(&b).ok())
-                        .unwrap_or_default();
-                    disks.extend(kept);
-                    let agent = app_home().join("agent");
-                    let mut tail = jobrt::timings::LogTail::default();
-                    tail.read(&p.with_file_name("timings.jsonl"));
-                    let lead = coordwire::lead::saved(&agent).map(|k| k.member).unwrap_or_else(store::sys::host_name);
-                    let paces = agentcore::paces::Paces::of(&tail.speeds(agentcore::paces::mac_of, |_| true), &lead);
-                    let records = tail.facts().clone();
-                    let tuning = jobrt::control::read_pool_settings(&agent).map(|s| s.needs()).unwrap_or_default();
-                    println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
-                    let inputs = agentcore::needs::Inputs { paces: &paces, records: &records, tuning };
-                    print!(
-                        "{}",
-                        agentcore::needs::model_table(&agentcore::needs::Book::pool(
-                            pipeline::agent::theplan::the_plan(),
-                            &costs,
-                            Some(&disks),
-                            inputs
-                        ))
-                    );
-                    // Where each step's memory peaks: the phase (a program it runs) that held the
-                    // most over its last runs, from the build's timings beside the costs
-                    // (jobrt::timings::peak_holders).
-                    let runs = jobrt::timings::read_log(&p.with_file_name("timings.jsonl"));
-                    let holders = jobrt::timings::peak_holders(&runs, 20);
-                    if !holders.is_empty() {
+                Some(PoolCmd::Needs) => {
+                    // Each step's model of what its jobs need, as the lead's coordinator holds it
+                    // now (agentcore::needs::model_table: the pool's measures, each Mac's speed,
+                    // the jobs' records, the pool's tuning), and where each step's memory peaks
+                    // (its timings log, jobrt::timings::peak_holders). Reads only.
+                    let c = lead_client(Some(&r))?.context("no lead's coordinator to ask")?;
+                    let (code, v) = c.post_api("needs", &serde_json::json!({}))?;
+                    anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
+                    print!("{}", v["table"].as_str().unwrap_or_default());
+                    let peaks = v["peaks"].as_str().unwrap_or_default();
+                    if !peaks.is_empty() {
                         println!(
                             "\nwhere each step's memory peaks (its phase holding the most, its last 20 timed runs):"
                         );
-                        print!("{}", jobrt::timings::peak_text(&holders));
+                        print!("{peaks}");
                     }
                 }
                 Some(PoolCmd::NasProbe { dir }) => {

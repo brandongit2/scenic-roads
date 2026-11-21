@@ -358,7 +358,7 @@ pub enum PoolCmd {
     /// `near-slope on|off` (a done region's slope and tree cover by the z6 tiles near it), and the
     /// NAS pacing's bounds, each `<number>|off` (jobrt::budget::nas::KNOBS: `nas-step`,
     /// `nas-small`, `nas-decrease`, `nas-floor-hours`, `nas-slow`, `nas-grow-seconds`,
-    /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`, `nas-lone-minutes`,
+    /// `nas-read-seconds`, `nas-span-seconds`, `nas-cached-ms`, `nas-restore-minutes`,
     /// `nas-lone-most-minutes`, `nas-young-spans`, `nas-track-minutes`, `nas-apart-seconds`, `nas-apart-judges`), and the needs model's
     /// percentiles and windows,
     /// each `<number>|off` (jobrt::needs::KNOBS: `needs-work-pct`, `needs-high-pct`,
@@ -402,14 +402,11 @@ pub enum PoolCmd {
         #[arg(long, value_name = "FOLDER")]
         dir: Option<PathBuf>,
     },
-    /// Each step's model of what its jobs need (agentcore::needs::model): its sizes' work, waits,
-    /// NAS bytes and memory per unit, its parallelism, its memory by place and its runs flagged off
-    /// their predictions. Reads only
-    Needs {
-        /// The costs (costs.json or costs.jsonl; default: this Mac's coordinator's)
-        #[arg(long, value_name = "FILE")]
-        costs: Option<PathBuf>,
-    },
+    /// Each step's model of what its jobs need (agentcore::needs::model), as the lead's coordinator
+    /// holds it now: its sizes' work, waits, NAS bytes and memory per unit, its parallelism, its
+    /// memory by place and its runs flagged off their predictions, and where each step's memory
+    /// peaks. Reads only
+    Needs,
 }
 
 #[derive(Args, Debug)]

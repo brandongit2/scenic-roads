@@ -682,7 +682,8 @@ impl Backfill {
 }
 
 /// The whole copies (crate::needs::CACHES) a member's Mac holds of the shared caches no job it
-/// holds reads (task #1170). Its ask's disk leaves them out (crate::agent's `freeable`: held by
+/// holds reads (task #1170), but those in use (task #1173: `CacheHere::in_use_mb`, held by a
+/// process there, the pool's or not, which no freeing deletes while it runs). Its ask's disk leaves them out (crate::agent's `freeable`: held by
 /// their own rule, so a job reading them isn't counted their room twice), yet room-making and the
 /// freeing toward its target and reservations delete them for a job reading none of them
 /// (crate::agent::room: those no job there reads first, then those its forecast's jobs read, the
@@ -696,7 +697,7 @@ impl Backfill {
 /// job of its own needs its room free as it starts) nor on a Mac with no room target (its caches
 /// aren't counted there: the guard holds only a full disk), as for its other caches.
 struct Copies {
-    /// Each cache's: what the Mac holds of it, and what's left of that unspent (MB).
+    /// Each cache's: what the Mac holds of it not in use, and what's left of that unspent (MB).
     left: BTreeMap<&'static str, (u64, u64)>,
 }
 
@@ -708,7 +709,8 @@ impl Copies {
                 .iter()
                 .map(|(n, _)| *n)
                 .filter(|n| !read.contains(n))
-                .filter_map(|n| c.caches.get(n).map(|h| (n, (h.have_mb, h.have_mb))))
+                .filter_map(|n| c.caches.get(n).map(|h| (n, h.have_mb.saturating_sub(h.in_use_mb))))
+                .map(|(n, free)| (n, (free, free)))
                 .filter(|(_, (have, _))| *have > 0)
                 .collect(),
             None => BTreeMap::new(),

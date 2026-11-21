@@ -136,7 +136,9 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
 /// scratch, since Task #396: their disk is their own.) The one shared cache: the whole local copies
 /// of the basemap and the depth sources' packs the depth's and the water's steps read
 /// (buildstore::localread, task #551), copied only where the Mac has room for it past its room target,
-/// else read in place: reserved only on a Mac with that room (crate::coord's `missing`).
+/// else read in place: reserved only on a Mac with that room (crate::coord's `missing`). Its steps
+/// are those whose jobs open the copies, held to the code by pipeline's tests/cache_steps.rs (task
+/// #1173).
 pub const CACHES: [(&str, &[&str]); 1] =
     [(buildstore::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
 
@@ -436,54 +438,49 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
 /// weighed the whole NAS) counts its writes alone. With the time (s) it is over: a job's rate is its
 /// targets' moves over their times together (`Book::nas_load`).
 fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget::nas::Rate, f64)> {
+    let (m, secs) = moves_of(step, c).filter(|_| c.v >= the_plan.cost_version(step))?;
+    let r = jobrt::budget::nas::Rate {
+        bytes_s: m.bytes / secs,
+        creates_s: m.creates / secs,
+        listed_s: m.listed / secs,
+        stats_s: m.stats / secs,
+        deletes_s: m.deletes / secs,
+    };
+    Some((r, secs))
+}
+
+/// What run `c` of `step` moved on the NAS (`model::Moves`), as `nas_rate` counts it, and the time
+/// (s) it moved them over, so the one over the other is its rate: a `HALO_STEPS` step's reads its
+/// job's (`nas_read`) at their own rate (over `nas_secs`), beside its writes, over the longer of
+/// its own time and `nas_secs` (task #1510: its job's reads over its own second or two read a lo
+/// pass at 53 GB/s). None where it doesn't say its `bytes`.
+fn moves_of(step: &str, c: &Cost) -> Option<(model::Moves, f64)> {
+    if !c.sizes.contains_key("bytes") {
+        return None;
+    }
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
     // (A halo step's writes are spread over its job's time too, not over its own write phase:
     // pack's `secs` is that phase's 0-1 s, which weighed a pack at the whole NAS, 25 Oct.)
     let halo = HALO_STEPS.contains(&step);
     let secs = if halo { c.secs.max(c.sizes.get("nas_secs").copied().unwrap_or(0)) } else { c.secs }.max(1) as f64;
-    let read_s = if halo {
-        c.sizes.get("nas_secs").filter(|&&s| s > 0).map_or(0.0, |&s| g("nas_read") / s as f64)
+    let read = if halo {
+        c.sizes.get("nas_secs").filter(|&&s| s > 0).map_or(0.0, |&s| g("nas_read") * secs / s as f64)
     } else {
-        (g("bytes") - g("local") + g("held")).max(0.0) / secs
+        (g("bytes") - g("local") + g("held")).max(0.0)
     };
     // (What its uploads read back to check them: as measured, else, on a line from before it was
     // (task #1142), its `wrote`: each file costin counts made is a store::naming upload, read
     // back whole once it's written, as every one has been since the store began. So a step's old
     // measures weigh it as its new ones do, and no `cost_v` is bumped for it.)
     let back = c.sizes.get("read_back").map_or(g("wrote"), |&b| b as f64);
-    (c.v >= the_plan.cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
-        let r = jobrt::budget::nas::Rate {
-            bytes_s: read_s + (g("wrote") + back) / secs,
-            creates_s: g("creates") / secs,
-            listed_s: g("listed") / secs,
-            stats_s: g("stats") / secs,
-            deletes_s: g("deletes") / secs,
-        };
-        (r, secs)
-    })
-}
-
-/// What run `c` of `step` moved on the NAS (`model::Moves`), as `nas_rate` counts it, its totals: a
-/// `HALO_STEPS` step's reads its job's (`nas_read`), shared among the `shared` targets of its job
-/// in the book. None where it doesn't say its `bytes`.
-fn moves_of(step: &str, c: &Cost, shared: f64) -> Option<model::Moves> {
-    if !c.sizes.contains_key("bytes") {
-        return None;
-    }
-    let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
-    let read = if HALO_STEPS.contains(&step) {
-        g("nas_read") / shared.max(1.0)
-    } else {
-        (g("bytes") - g("local") + g("held")).max(0.0)
-    };
-    let back = c.sizes.get("read_back").map_or(g("wrote"), |&b| b as f64);
-    Some(model::Moves {
+    let m = model::Moves {
         bytes: read + g("wrote") + back,
         creates: g("creates"),
         listed: g("listed"),
         stats: g("stats"),
         deletes: g("deletes"),
-    })
+    };
+    Some((m, secs))
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -613,7 +610,7 @@ impl<'a> Book<'a> {
     fn obs(&self, step: &str, v: u32) -> Vec<model::Obs> {
         let of_step: Vec<(&String, &Cost)> =
             self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v == v && !is_drop(c)).collect();
-        // (How many targets each job ran: a halo step's job's reads are shared among them.)
+        // (How many targets each job ran: its record's instructions are a lone target's alone.)
         let mut of_job: BTreeMap<jobrt::jobid::JobId, f64> = BTreeMap::new();
         for (_, c) in &of_step {
             if let Some(j) = c.job {
@@ -648,7 +645,10 @@ impl<'a> Book<'a> {
                 sizes.insert(SOURCE.to_string(), s);
             }
             sizes.insert(model::TARGET.to_string(), 1.0);
-            let shared = c.job.and_then(|j| of_job.get(&j)).copied().unwrap_or(1.0);
+            let wall = (ran - wait) / ratio + wait;
+            // (Its NAS moves over their own time: its wall time, a halo step's the longer of it
+            // and its job's reads' (`moves_of`), at the lead's pace.)
+            let nas = moves_of(step, c).map(|(m, s)| (m, if HALO_STEPS.contains(&step) { s / ratio } else { wall }));
             out.push(model::Obs {
                 order: c.job.map_or(0, |j| j.n),
                 key: k.clone(),
@@ -656,9 +656,9 @@ impl<'a> Book<'a> {
                 threads: peak_threads(c),
                 work,
                 wait,
-                wall: (ran - wait) / ratio + wait,
+                wall,
                 peak: c.peak_mb.max(self.current_floor(step, k).unwrap_or(0)),
-                nas: moves_of(step, c, shared),
+                nas,
                 explain: fact.map_or(1.0, |f| f.explain.max(1.0)),
                 timed: time_weight(step, c).is_some(),
             });
@@ -1162,25 +1162,40 @@ fn own_cores(c: &Cost, t: u32) -> Cores {
     }
 }
 
+/// `x` with four significant figures, in scientific notation under a hundredth (a step's work
+/// per byte is nanoseconds: shown to four places it read 0.0000, task #1510).
+fn sig(x: f64) -> String {
+    if x != 0.0 && x.abs() < 0.01 {
+        format!("{x:.3e}")
+    } else {
+        format!("{x:.4}")
+    }
+}
+
 /// `scenic pool needs`: per step, its runs learned from, its sizes best first with their
-/// needs per unit, its parallelism, its memory by place, and the runs flagged off their predictions.
+/// needs per unit, its parallelism, its memory by place, and the runs flagged off their
+/// predictions; a step with costs but none of the way it runs now (its cost version) said so,
+/// with how many of earlier ways it has.
 pub fn model_table(book: &Book) -> String {
     let mut steps: Vec<&str> = book.costs.keys().map(|k| step_of_key(k)).collect();
     steps.sort();
     steps.dedup();
     let t = &book.tuning;
     let mut out = format!(
-        "per unit of its sizes, best first (the least spread of work per unit): work in the lead's CPU s and the rest of its time in s at the {}th percentile of its runs; memory at the {}th of its runs that size or more; NAS bytes a second (at the lead's pace) of its runs of about one unit, their bytes over their time\n\n",
+        "per unit of its sizes, best first (the least spread of work per unit): work in the lead's CPU s and the rest of its time in s at the {}th percentile of its runs; memory at the {}th of its runs that size or more; NAS bytes a second (at the lead's pace) of its smallest runs (of about one unit, or its ten smallest), their bytes over their time\n\n",
         t.work_pct, t.mem_pct
     );
     for s in &steps {
         let md = book.model(s);
         let n = &md.needs;
         if n.runs == 0 {
+            let v = book.the_plan.cost_version(s);
+            let older = book.costs.iter().filter(|(k, c)| step_of_key(k) == *s && c.v < v && !is_drop(c)).count();
+            out += &format!("{s:<14} no runs the way it runs now (cost version {v}); {older} of earlier ways\n");
             continue;
         }
         let since = n.since.as_deref().map_or(String::new(), |k| format!(", relearned from {k}"));
-        let busy = n.par.busy.map_or("-".to_string(), |b| format!("{b:.1}"));
+        let busy = n.par.busy.map_or("-".to_string(), sig);
         out += &format!(
             "{s:<14} {} runs, its times from {}{since}; parallelism {:.1} (floor {}, busy {busy}, of {} runs)\n",
             n.runs,
@@ -1190,7 +1205,7 @@ pub fn model_table(book: &Book) -> String {
             n.par.runs
         );
         for p in n.by.iter().take(3) {
-            let f = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x:.4}"));
+            let f = |x: Option<f64>| x.map_or("-".to_string(), sig);
             let mid = p.mem(1.0, 0).map_or("-".to_string(), |m| format!("{m} MB"));
             let nas = p.rate(1.0).map_or("-".to_string(), |m| format!("{:.0} B/s", m.bytes));
             let per = match (p.mem_per_thread, p.thread_mb(1.0)) {
@@ -1199,12 +1214,12 @@ pub fn model_table(book: &Book) -> String {
                 (None, None) => "no threads said".to_string(),
             };
             out += &format!(
-                "  per {:<10} {:>5} runs, spread {:.2}: work {} s, rest {:.4} s, NAS {nas}, memory at one {mid}, {per}\n",
+                "  per {:<10} {:>5} runs, spread {:.2}: work {} s, rest {} s, NAS {nas}, memory at one {mid}, {per}\n",
                 p.size,
                 p.runs,
                 p.spread,
                 f(p.whole.work),
-                p.whole.rest
+                sig(p.whole.rest)
             );
         }
         if let Some(nr) = md.near.as_ref().filter(|nr| nr.runs > 0) {
@@ -1225,38 +1240,11 @@ pub fn model_table(book: &Book) -> String {
     out
 }
 
-/// Reads costs from `costs.json` (`{<cost key>: Cost}`, the coordinator's) or a `costs.jsonl` (a
-/// job's done lines: `{unit, peak_mb, secs, v, disk_mb, sizes}`; its disk taken as a disk measure).
-pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>, BTreeMap<String, u64>)> {
-    let s = std::fs::read_to_string(p)?;
-    if let Ok(m) = serde_json::from_str::<BTreeMap<String, Cost>>(&s) {
-        return Ok((m, BTreeMap::new()));
-    }
-    let (mut costs, mut disks) = (BTreeMap::new(), BTreeMap::new());
-    for l in s.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
-        let (Some(k), Some(peak)) = (v["unit"].as_str(), v["peak_mb"].as_u64()) else { continue };
-        let sizes = v["sizes"]
-            .as_object()
-            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect())
-            .unwrap_or_default();
-        if let Some(d) = v["disk_mb"].as_u64().filter(|&d| d > 0) {
-            disks.insert(k.to_string(), d);
-        }
-        costs.insert(
-            k.to_string(),
-            Cost {
-                job: None,
-                peak_mb: peak,
-                secs: v["secs"].as_u64().unwrap_or(0),
-                worker: None,
-                v: v["v"].as_u64().unwrap_or(0) as u32,
-                sizes,
-                ..Default::default()
-            },
-        );
-    }
-    Ok((costs, disks))
+/// The costs a by-hand test reads (`costs.json`: `{<cost key>: Cost}`, the coordinator's, as its
+/// store holds them).
+#[cfg(test)]
+fn read_costs(p: &std::path::Path) -> anyhow::Result<BTreeMap<String, Cost>> {
+    Ok(serde_json::from_str(&std::fs::read_to_string(p)?)?)
 }
 
 #[cfg(test)]
@@ -1517,6 +1505,11 @@ mod tests {
             Some(jobrt::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() }),
             "b38's: writes alone"
         );
+        // (Task #1510: a target not run, its step's runs' moves over their own times together,
+        // each as its own rate counts it: 6/1/2's reads over the job's 20 s, not over its own 0 s
+        // (a lo pass read at 53 GB/s), (30 MB + 3 × 400 B) over 10 + 20 + 10 s.)
+        let r = b.nas("pack", "6/9/9").unwrap();
+        assert!((r.bytes_s - 750_030.0).abs() < 1e-6, "{r:?}");
         // (On a NAS of 100 MB/s and 40 creates/s: its 1.5 MB/s and 0.25 creates/s, not the whole.)
         let l = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         assert_eq!(l.weight(b.nas("pack", "6/1/2").unwrap()), 22);
@@ -1941,7 +1934,7 @@ mod tests {
             return;
         };
         let dir = std::path::Path::new(&dir);
-        let (all, _) = read_costs(&dir.join("costs.json")).unwrap();
+        let all = read_costs(&dir.join("costs.json")).unwrap();
         let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
         let events: Vec<crate::coord::history::Event> =
             text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
@@ -2163,7 +2156,7 @@ mod tests {
             return;
         };
         let the_plan = crate::agent::seam::for_tests();
-        let (mut all, _) = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
+        let mut all = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
         for (k, c) in all.iter_mut() {
             c.v = the_plan.cost_version(crate::coord::CostKey::parse(k).step);
         }
@@ -2202,7 +2195,7 @@ mod tests {
             return;
         };
         let the_plan = crate::agent::seam::for_tests();
-        let (mut all, _) = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
+        let mut all = read_costs(&std::path::Path::new(&dir).join("costs.json")).unwrap();
         for (k, c) in all.iter_mut() {
             c.v = the_plan.cost_version(crate::coord::CostKey::parse(k).step);
         }
@@ -2239,7 +2232,7 @@ mod tests {
         };
         let label = std::env::var("SCENIC_ADMIT_LABEL").unwrap_or_else(|_| "admit".into());
         let dir = std::path::Path::new(&dir);
-        let (all, _) = read_costs(&dir.join("costs.json")).unwrap();
+        let all = read_costs(&dir.join("costs.json")).unwrap();
         let floors_all: BTreeMap<String, Floor> =
             serde_json::from_str(&std::fs::read_to_string(dir.join("floors.json")).unwrap()).unwrap();
         let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();

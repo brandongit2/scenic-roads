@@ -1514,11 +1514,13 @@ fn job_run(c: &crate::coord::Coordinator, step: &str, outcome: Outcome, done: &[
 }
 
 /// What this Mac's cache folder `cache` holds of each shared cache (crate::needs::CACHES; task
-/// #392), read off the disk: the whole local copies (buildstore::localread::held). Read as it asks, so
-/// whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
+/// #392), read off the disk: the whole local copies (buildstore::localread::held), and of them those
+/// in use (task #1173). Read as it asks, so whatever emptied or holds them (room-making, the OSM
+/// pass's clear, a hand, a job run by hand) counts.
 fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
-    let have_mb = buildstore::localread::held(cache) >> 20;
-    BTreeMap::from([(buildstore::localread::CACHE.to_string(), crate::coord::CacheHere { have_mb })])
+    let h = buildstore::localread::held(cache);
+    let here = crate::coord::CacheHere { have_mb: h.bytes >> 20, in_use_mb: h.in_use >> 20 };
+    BTreeMap::from([(buildstore::localread::CACHE.to_string(), here)])
 }
 
 extern "C" fn on_signal(_: i32) {

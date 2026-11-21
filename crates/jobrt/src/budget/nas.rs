@@ -187,11 +187,12 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 /// A reading that held says why (`Verdict::Held`'s `Hold`: the first of those gates it failed),
 /// for the lead's status (`Reading::line`): a held reading without its reason can't be made.
 ///
-/// A job beside nothing that the window doesn't take goes all the same, but not for
-/// `Tuning::lone_s` from a congested reading (`Pace::lone`: beside an outside load near the cliff,
-/// each lone job would take the NAS over it, and the hold is all that keeps it off), each hold in
-/// a row twice as long, to `Tuning::lone_most_s`; a spare reading ends it. Then one goes, so
-/// nothing waits for good.
+/// A job beside nothing that the window doesn't take goes all the same (`Pace::lone`), but only
+/// while the last reading taken with nothing of the pool's running, its answers read, was near:
+/// spare, with the disks' room for the job waiting (an outside load near the cliff shows there with
+/// nothing of the pool's out, and one job beside it would take the NAS over). A congested reading
+/// shuts the way too, until such a reading. Shut for `Tuning::lone_most_s`, one goes all the same
+/// (the hold, the escape: nothing waits for good), and the next goes a `lone_most_s` after it.
 ///
 /// It starts at a step, or at what the jobs already leased weigh where that's more (a lead's
 /// coordinator starting knows nothing of the NAS's load but what runs on it), unless the lead kept
@@ -241,8 +242,6 @@ pub struct State {
     pub settled_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lone_at: Option<u64>,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub lone_n: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub seen: Vec<Seen>,
     /// The state before a cut on missed deadlines judged not the NAS's doing (`Pace::read`), taken
@@ -274,10 +273,6 @@ pub struct Undo {
     pub settled_at: Option<u64>,
 }
 
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
 impl Default for State {
     fn default() -> Self {
         State {
@@ -287,7 +282,6 @@ impl Default for State {
             cut_at: None,
             settled_at: None,
             lone_at: None,
-            lone_n: 0,
             seen: Vec::new(),
             undo: None,
             stall: None,
@@ -538,7 +532,10 @@ impl Reading {
             Verdict::Held(h) => format!("held: {}", h.words()),
         };
         let lone = self.lone_until.map_or(String::new(), |u| {
-            format!("; a job beside nothing held back {} min more", u.saturating_sub(now).div_ceil(60))
+            format!(
+                "; a job beside nothing held back until a reading with nothing running has room for it, {} min more at most",
+                u.saturating_sub(now).div_ceil(60)
+            )
         });
         format!(
             "NAS pacing: window {}{th}, {} in use{used}{wants}; last reading {} s ago{ratio}{load}: {verdict}{lone}{probe}",
@@ -700,9 +697,7 @@ pub struct Tuning {
     pub cached_ms: f64,
     /// The longest a kept state is taken up by a restarted lead (s).
     pub restore_s: u64,
-    /// How long a congested reading holds a lone job back (s; `Pace::lone`), and the longest
-    /// its doubling makes a hold in a row (s; never under `lone_s`).
-    pub lone_s: u64,
+    /// The longest a job beside nothing is held back waiting for a near reading (s; `Pace::lone`).
     pub lone_most_s: u64,
     /// How many spans of its link's history a Mac's floor needs before it counts (measured within
     /// `floor_s`): younger, its answers may cut, never grow (agentcore::agent::live).
@@ -759,11 +754,9 @@ pub fn answer_of(samples: impl IntoIterator<Item = f64>, cached_ms: f64) -> Opti
 }
 /// The longest a kept state is taken up, by default (s).
 pub const RESTORE_S: u64 = 30 * 60;
-/// How long a congested reading holds a lone job back, by default (s): as long as a job waits
+/// The longest a job beside nothing is held back, by default (s): 8 times as long as a job waits
 /// for the budget before it goes as an aged one (`OWN_AGE`).
-pub const LONE_S: u64 = OWN_AGE.as_secs();
-/// The longest a hold in a row lasts, by default (s): 8 times `LONE_S`.
-pub const LONE_MOST_S: u64 = 8 * LONE_S;
+pub const LONE_MOST_S: u64 = 8 * OWN_AGE.as_secs();
 /// The spans of its link's history a Mac's floor needs, by default: ten minutes of listings at
 /// the default span.
 pub const YOUNG_SPANS: u64 = 20;
@@ -785,7 +778,6 @@ impl Default for Tuning {
             span_s: SPAN_S,
             cached_ms: CACHED_MS,
             restore_s: RESTORE_S,
-            lone_s: LONE_S,
             lone_most_s: LONE_MOST_S,
             young_spans: YOUNG_SPANS,
             apart_s: APART_S,
@@ -799,7 +791,7 @@ pub type Knob = crate::settings::Knob<Tuning>;
 
 /// The pacing's bounds as the pool's settings (agentcore::coord::asks): each a number in its range,
 /// null its default.
-pub const KNOBS: [Knob; 16] = [
+pub const KNOBS: [Knob; 15] = [
     Knob {
         name: "nas-step",
         what: "the window's step a growth cadence, and its least; answers are judged against those this much lighter or heavier in measured use",
@@ -900,17 +892,8 @@ pub const KNOBS: [Knob; 16] = [
         set: |k, v| k.restore_s = (v * 60.0) as u64,
     },
     Knob {
-        name: "nas-lone-minutes",
-        what: "a congested reading holds a job beside nothing back this long",
-        unit: "min",
-        least: 1.0,
-        most: 120.0,
-        get: |k| k.lone_s as f64 / 60.0,
-        set: |k, v| k.lone_s = (v * 60.0) as u64,
-    },
-    Knob {
         name: "nas-lone-most-minutes",
-        what: "holds of a job beside nothing in a row double up to this long",
+        what: "a job beside nothing waits this long at most for a reading with nothing running to have room for it",
         unit: "min",
         least: 10.0,
         most: 240.0,
@@ -948,7 +931,7 @@ pub const KNOBS: [Knob; 16] = [
 
 impl Tuning {
     /// The tuning with each knob's value as `get` says it (None, or out of its range: its default);
-    /// the longest hold never under one, the readings kept never fewer than a growth cadence's.
+    /// the readings kept never fewer than a growth cadence's.
     pub fn of(get: impl Fn(&str) -> Option<f64>) -> Tuning {
         let mut k = Tuning::default();
         for n in &KNOBS {
@@ -956,7 +939,6 @@ impl Tuning {
                 (n.set)(&mut k, v);
             }
         }
-        k.lone_most_s = k.lone_most_s.max(k.lone_s);
         k.track_s = k.track_s.max(k.grow_s);
         k
     }
@@ -988,21 +970,13 @@ impl Pace {
     }
 
     /// Whether a job beside nothing that the window doesn't take may go all the same
-    /// (`Limits::alone`): not for `lone_for` from a reading past the knee (a lone job beside an
-    /// outside load that holds the NAS near its cliff goes over it; the congested reading may be
-    /// its own); open again once the hold has lasted, or a spare reading has ended it.
+    /// (`Limits::alone`): while the way is open (the last reading with nothing of the pool's
+    /// running, its answers read, near, and nothing congested since), or once it has been shut
+    /// `Tuning::lone_most_s` (the escape: a lone job beside an outside load that holds the NAS near
+    /// its cliff goes over it, yet nothing waits for good).
     pub fn lone(&self) -> bool {
         let at = self.last.as_ref().map_or(0, |r| r.at);
-        self.st.lone_at.is_none_or(|s| at >= s + self.lone_for())
-    }
-
-    /// How long the lone way's hold lasts (s): `Tuning::lone_s`, doubled for each hold since the
-    /// NAS last had room (a spare reading), to `Tuning::lone_most_s` at most (an outside load that
-    /// holds the NAS near its cliff for hours lets a lone job over it ever more rarely).
-    fn lone_for(&self) -> u64 {
-        let k = &self.tuning;
-        let doubled = 1u64.checked_shl(self.st.lone_n.saturating_sub(1)).unwrap_or(u64::MAX);
-        k.lone_s.saturating_mul(doubled).min(k.lone_most_s.max(k.lone_s))
+        self.st.lone_at.is_none_or(|s| at >= s + self.tuning.lone_most_s)
     }
 
     /// A reading (`Sample`) by the bounds `k`: what it did.
@@ -1130,20 +1104,19 @@ impl Pace {
         let room_for = |w: u32| load.is_none_or(|l| l + f64::from(w) / 10.0 <= f64::from(s.pct));
         let room = room_for(s.wants.unwrap_or(k.step));
         let spare = ratio.is_some() && !rising && !j.swelling && !knee && room_for(k.step);
-        // (The lone way's hold: begun at a congested reading; once it has lasted its time
-        // (`lone_for`), let go by a reading not congested or a job going beside nothing, a
-        // congested reading then beginning another, twice as long; a spare reading ends it
-        // whenever, and its doubling.)
-        let expired = self.st.lone_at.is_some_and(|at| t >= at + self.lone_for());
-        if expired && (!past || (prev == 0 && s.in_use > 0)) {
-            self.st.lone_at = None;
-        }
-        if spare && !past {
-            (self.st.lone_at, self.st.lone_n) = (None, 0);
-        }
-        if past && self.st.lone_at.is_none() {
+        // (The lone way: opened by a near reading taken with nothing of the pool's running (spare,
+        // the disks with room for the job waiting); shut by such a reading not near, or by a
+        // congested one. A job gone beside nothing through the escape (shut a `lone_most_s`)
+        // shuts it a `lone_most_s` more from then.)
+        let idle = s.in_use == 0 && ratio.is_some();
+        let escaped = self.st.lone_at.is_some_and(|at| t >= at + k.lone_most_s);
+        if escaped && prev == 0 && s.in_use > 0 {
             self.st.lone_at = Some(t);
-            self.st.lone_n = self.st.lone_n.saturating_add(1);
+        }
+        if idle && spare && room && !past {
+            self.st.lone_at = None;
+        } else if past || idle {
+            self.st.lone_at.get_or_insert(t);
         }
         if self.last.is_none() && !self.restored {
             self.st.window = self.st.window.max(in_use);
@@ -1245,7 +1218,7 @@ impl Pace {
         let threshold = st.threshold.map(|th| th.round() as u32);
         let load_pct = self.load.map(|l| (l * 10.0).round() / 10.0);
         let disk_pct = busiest.map(|l| (l * 10.0).round() / 10.0);
-        let lone_until = self.st.lone_at.map(|at| at + self.lone_for()).filter(|&u| t < u);
+        let lone_until = self.st.lone_at.map(|at| at + k.lone_most_s).filter(|&u| t < u);
         self.last = Some(Reading {
             at: t,
             counted,
@@ -3068,7 +3041,6 @@ mod tests {
                 cut_at: Some(t),
                 settled_at: None,
                 lone_at: Some(t),
-                lone_n: 1,
                 seen: p.st.seen.clone(),
                 undo: None,
                 stall: None,
@@ -3096,83 +3068,85 @@ mod tests {
         assert_eq!(q.window(), 800, "too old: afresh");
     }
 
-    /// R3: a congested reading holds a job beside nothing back for `lone_s` (an outside load near
-    /// the cliff, one job taking it over), then lets one go; a spare reading ends the hold at
-    /// once; holds in a row double, to `lone_most_s`.
+    /// Task #1494 (R3): a job beside nothing goes only while the last reading taken with nothing of
+    /// the pool's running was near (spare, the disks with room for the job waiting); a congested
+    /// reading, or such a reading with no room, shuts the way until a near one, `lone_most_s` at
+    /// most (the escape), and the next goes a `lone_most_s` after a job gone through it.
     #[test]
-    fn a_congested_reading_holds_a_lone_job_back_a_while() {
+    fn a_lone_job_goes_only_after_a_near_reading_with_nothing_running() {
         let mut p = Pace::default();
         assert!(p.lone(), "nothing read: open");
         at(&mut p, 0, 5.0, 0, Some(150));
-        assert!(p.lone());
+        assert!(p.lone(), "near with nothing running");
         miss(&mut p, 10, 0, Some(150));
         assert!(!p.lone(), "congested with nothing out");
         let held = Limits { window: p.window(), alone: p.lone(), ..Default::default() };
         assert!(!held.paced(0, 150), "not beside nothing");
         assert!(Limits { alone: true, ..held }.paced(0, 150));
-        miss(&mut p, 10 + LONE_S - 10, 0, Some(150));
-        assert!(!p.lone(), "still held");
-        miss(&mut p, 10 + LONE_S, 0, Some(150));
-        assert!(p.lone(), "a `lone_s` on: one goes");
-        miss(&mut p, 20 + LONE_S, 150, None);
-        assert!(!p.lone(), "the job gone beside nothing, congested: held again");
-        p.load = Some(82.0);
-        disks(&mut p, 30 + LONE_S, &[ans("m1", 5.0, 5.0)], &[82.0], 150, None);
-        assert!(!p.lone(), "the disks with no room for a step within its `lone_s`: still held");
-        p.load = Some(2.0);
-        at(&mut p, 40 + LONE_S, 5.0, 0, Some(150));
-        assert!(p.lone(), "spare: the hold ended at once");
-        // (An ordinary cut with nothing running after it: the NAS recovered, a heavy job beside
-        // nothing goes at the next spare reading, not `lone_s` on.)
+        // (An outside load near the cliff, nothing of the pool's out: the disks at 80 %, room for a
+        // step (85 %) but not for the job waiting (95 %): spare, not near; shut until the escape.)
+        let mut t = 20;
+        for _ in 0..(LONE_MOST_S / 10 - 2) {
+            p.load = Some(80.0);
+            disks(&mut p, t, &[ans("m1", 5.0, 5.0)], &[80.0], 0, Some(150));
+            assert!(!p.lone(), "the disks without room for the job waiting, at {t}");
+            t += 10;
+        }
+        disks(&mut p, 10 + LONE_MOST_S, &[ans("m1", 5.0, 5.0)], &[80.0], 0, Some(150));
+        assert!(p.lone(), "shut a `lone_most_s`: one goes");
+        disks(&mut p, 20 + LONE_MOST_S, &[ans("m1", 5.0, 5.0)], &[80.0], 150, None);
+        assert!(!p.lone(), "the job gone through the escape: the next a `lone_most_s` after it");
+        disks(&mut p, 20 + 2 * LONE_MOST_S - 10, &[ans("m1", 5.0, 5.0)], &[80.0], 0, Some(150));
+        assert!(!p.lone());
+        disks(&mut p, 20 + 2 * LONE_MOST_S, &[ans("m1", 5.0, 5.0)], &[80.0], 0, Some(150));
+        assert!(p.lone());
+        // (A reading with jobs out, spare, opens nothing; the next with nothing out, near, does.)
         let mut p = Pace::default();
         miss(&mut p, 0, 400, None);
-        miss(&mut p, 10, 0, Some(900));
-        assert!(!p.lone());
+        at(&mut p, 10, 5.0, 100, Some(900));
+        assert!(!p.lone(), "spare, but with the pool's jobs out");
         at(&mut p, 20, 5.0, 0, Some(900));
-        assert!(p.lone(), "recovered: open");
-        assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, 900));
-        // (Holds in a row, never spare between: each twice as long, to 8 times.)
+        assert!(!p.lone(), "the disks quiet but no room for the job waiting (90 %)");
+        at(&mut p, 30, 5.0, 0, Some(150));
+        assert!(p.lone(), "near: open");
+        assert!(Limits { window: p.window(), alone: p.lone(), ..Default::default() }.paced(0, 150));
+        // (A reading with nothing out and no answers read says nothing: the way as it was.)
+        let unread =
+            |t| Sample { t, answers: &[], blind: false, busy: None, pct: 85, in_use: 0, moving: &[], wants: Some(150) };
+        p.read(&unread(40), &Tuning::default());
+        assert!(p.lone());
+        // (The escape as set.)
+        let k = Tuning::of(|n| (n == "nas-lone-most-minutes").then_some(10.0));
+        assert_eq!(k.lone_most_s, 600);
         let mut p = Pace::default();
-        let mut t = 0;
-        miss(&mut p, t, 0, Some(150));
-        for hold in [1, 2, 4, 8, 8] {
-            assert!(!p.lone());
-            miss(&mut p, t + hold * LONE_S - 10, 0, Some(150));
-            assert!(!p.lone(), "held {hold} times `lone_s`");
-            miss(&mut p, t + hold * LONE_S, 0, Some(150));
-            assert!(p.lone());
-            t += hold * LONE_S + 10;
-            miss(&mut p, t, 150, None);
-        }
-        // (The longest hold as set: 20 minutes, holds of 10, 20, 20.)
-        let k = Tuning { lone_most_s: 2 * LONE_S, ..Tuning::default() };
-        let read = |p: &mut Pace, t: u64, in_use: u32| {
-            let answers = [Answer { missed: true, ..ans("m1", 5.0, 5.0) }];
-            let s = Sample {
-                t,
-                answers: &answers,
+        p.read(
+            &Sample {
+                t: 0,
+                answers: &[Answer { missed: true, ..ans("m1", 5.0, 5.0) }],
                 blind: false,
                 busy: Some(&QUIET),
                 pct: 85,
-                in_use,
+                in_use: 0,
                 moving: &[],
                 wants: Some(150),
-            };
-            p.read(&s, &k);
-            p.lone()
-        };
-        let (mut p, mut t) = (Pace::default(), 0);
-        read(&mut p, t, 0);
-        for hold in [1, 2, 2] {
-            assert!(!read(&mut p, t + hold * LONE_S - 10, 0), "held {hold} times `lone_s`");
-            assert!(read(&mut p, t + hold * LONE_S, 0));
-            t += hold * LONE_S + 10;
-            read(&mut p, t, 150);
-        }
-        let k = Tuning::of(|n| {
-            (n == "nas-lone-minutes").then_some(120.0).or((n == "nas-lone-most-minutes").then_some(10.0))
-        });
-        assert_eq!((k.lone_s, k.lone_most_s), (7200, 7200), "the longest hold never under one");
+            },
+            &k,
+        );
+        assert!(!p.lone());
+        p.read(
+            &Sample {
+                t: 600,
+                answers: &[Answer { missed: true, ..ans("m1", 5.0, 5.0) }],
+                blind: false,
+                busy: Some(&QUIET),
+                pct: 85,
+                in_use: 0,
+                moving: &[],
+                wants: Some(150),
+            },
+            &k,
+        );
+        assert!(p.lone());
         let k =
             Tuning::of(|n| (n == "nas-grow-seconds").then_some(600.0).or((n == "nas-track-minutes").then_some(2.0)));
         assert_eq!((k.grow_s, k.track_s), (600, 600), "the readings kept never fewer than a cadence's");
@@ -3216,12 +3190,12 @@ mod tests {
         );
         let r = p.last.clone().unwrap();
         assert_eq!((r.threshold, r.wants), (Some(200), Some(150)));
-        assert_eq!(r.lone_until, Some(t + LONE_S), "congested: a lone job held back");
+        assert_eq!(r.lone_until, Some(t + LONE_MOST_S), "congested: a lone job held back");
         assert_eq!(
             r.line(p.window(), t + 70),
             "NAS pacing: window 6 % (threshold 20 %), 40 % in use, 40 % moving, the next job held back for it needs 15 %; \
              last reading 60 s ago, answers on m1's jobs' SMB session 8.0× their best (2.0× a step lighter), disks 2 % busy: held: congested, within \
-             the last cut's hold-off; a job beside nothing held back 9 min more"
+             the last cut's hold-off; a job beside nothing held back until a reading with nothing running has room for it, 79 min more at most"
         );
         assert!(
             p.why().unwrap().ends_with("(the NAS answering m1 in 40 ms, 8.0× its best, rising with the pool's use)"),
@@ -3688,19 +3662,34 @@ mod tests {
         let scaled = Burst { scaled: true, ..Burst::of(30, 150, 250, 300) }.run(true);
         say("R2 floors scaled (the first model)", &scaled);
         assert_eq!(scaled.cliff_s, 0);
-        // (R3: an outside load of 80 % from 30 to 90 minutes in, so a job beside nothing (its
-        // 25 %) takes the NAS over the cliff: a reading past the knee holds the lone way for
-        // `lone_s`, then one job goes, the next hold twice as long; at the cliff only with the jobs
-        // out as it came and those lone ones, the burst done after.)
+        // (R3, task #1494: an outside load of 80 % from 30 to 90 minutes in, so a job beside
+        // nothing (its 25 %) takes the NAS over the cliff: the readings with nothing of the
+        // pool's out show the disks without room for one, so none goes beside nothing until the
+        // load has gone; at the cliff only with the jobs out as it came, the burst done after.)
         let r3: fn(u64) -> u32 = |t| if (1800..5400).contains(&t) { 800 } else { 0 };
         let r = Burst { outside: r3, ..Burst::of(40, 150, 250, 300) }.run(true);
         say("R3 outside load 800", &r);
-        let lone = Burst { outside: r3, k: Tuning { lone_s: 0, ..Tuning::default() }, ..Burst::of(40, 150, 250, 300) }
-            .run(true);
-        say("R3 outside load 800, lone jobs unheld (before)", &lone);
-        // (Held 1, 2 and 4 times `lone_s` through its hour: three lone jobs, and those out as it came.)
-        assert!(r.cliff_s <= 4 * 300 + 60, "at the cliff only as the lone jobs go");
-        assert!(r.cliff_s * 4 <= lone.cliff_s);
+        let lone =
+            Burst { outside: r3, k: Tuning { lone_most_s: 0, ..Tuning::default() }, ..Burst::of(40, 150, 250, 300) }
+                .run(true);
+        say("R3 outside load 800, lone jobs unheld", &lone);
+        let never = Burst {
+            outside: r3,
+            k: Tuning { lone_most_s: 48 * 3600, ..Tuning::default() },
+            ..Burst::of(40, 150, 250, 300)
+        }
+        .run(true);
+        say("R3 outside load 800, no job beside nothing", &never);
+        // (The jobs out as the load came stay out their 300 s: no job beside nothing adds to it.)
+        assert!(r.cliff_s <= 300, "at the cliff only as the load came: {r:?}");
+        assert_eq!(r.cliff_s, never.cliff_s, "{r:?} against {never:?}");
+        assert!(r.cliff_s * 10 <= lone.cliff_s, "{r:?} against {lone:?}");
+        // (Nothing starves: the outside load for good, a job beside nothing goes a `lone_most_s`
+        // on, one at a time.)
+        let always: fn(u64) -> u32 = |t| if t >= 1800 { 800 } else { 0 };
+        let r = Burst { outside: always, ..Burst::of(24, 150, 250, 300) }.run(true);
+        say("R3's load for good", &r);
+        assert!(r.end <= 1800 + 24 * (LONE_MOST_S + 300), "every job done: {r:?}");
     }
 
     /// Task #1506's re-review: the burst's cases with the disks read at half the NAS's true load

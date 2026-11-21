@@ -193,7 +193,7 @@ const WHY_MAX: usize = 3000;
 /// `/work/`).
 pub const API: &[&str] = &[
     "live", "swarm", "history", "steps", "regions", "catalogs", "tocome", "built", "pause", "inputs", "act",
-    "settings", "hold", "asked", "timings", "floors", "redo",
+    "settings", "hold", "asked", "timings", "floors", "redo", "needs",
 ];
 
 /// What a job's target cost last time (a z6 tile's, another shared step's, a task's): its peak memory
@@ -1746,11 +1746,15 @@ impl NasMount {
     }
 }
 
-/// What a Mac holds of a shared cache (`Capacity::caches`): its files' bytes on its disk (MB).
+/// What a Mac holds of a shared cache (`Capacity::caches`): its files' bytes on its disk (MB), and
+/// of those the bytes in use (task #1173: held by a running process, the pool's or not, so no
+/// freeing deletes them until it ends; buildstore::localread::Held).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CacheHere {
     pub have_mb: u64,
+    #[serde(skip_serializing_if = "is_zero64")]
+    pub in_use_mb: u64,
 }
 
 /// The pool's NAS traffic (crate::agent::live::NAS_TRAFFIC's order): each member's with a
@@ -6349,6 +6353,20 @@ fn route(
             let cleared = serde_json::json!({ "floors": n - floors.len(), "disks": d - s.disks.len() });
             Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks, "cleared": cleared })))
         }
+        "/api/needs" => {
+            // Each step's model of what its jobs need as this coordinator holds it now
+            // (crate::needs::model_table: its measures, the Macs' speeds, the jobs' records, the
+            // pool's tuning), and where each step's memory peaks (its timings log's last 20 timed
+            // runs, jobrt::timings::peak_holders): `scenic pool needs` (task #1510: it read the
+            // costs file of an agent before the pool's store, 31 Oct's).
+            let (table, dir) = {
+                let s = shared.lock().unwrap();
+                (crate::needs::model_table(&s.book()), s.dir.clone())
+            };
+            let runs = jobrt::timings::read_log(&dir.join("timings.jsonl"));
+            let peaks = jobrt::timings::peak_text(&jobrt::timings::peak_holders(&runs, 20));
+            Ok((200, serde_json::json!({ "table": table, "peaks": peaks })))
+        }
         "/api/timings" => {
             // The runs' timings kept (jobrt::timings), the last `last` of each kind (or of `kind`):
             // `scenic timings` on another Mac.
@@ -9335,6 +9353,19 @@ mod tests {
         assert!(c.floors(true, None, None).is_empty());
     }
 
+    /// Task #1510: `scenic pool needs` prints the model this coordinator holds (its measures, as
+    /// its store keeps them), asked of it, not a costs file beside it (an agent's before the store
+    /// left 31 Oct's): a step measured now is in it.
+    #[test]
+    fn the_needs_table_is_the_coordinators() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "depth", &[("6/1/1", Some((500, 20_000, 2000)))]);
+        let (code, v) = w.post_json("/api/needs", &serde_json::json!({})).unwrap();
+        assert_eq!(code, 200, "{v}");
+        let table = v["table"].as_str().unwrap();
+        assert!(table.lines().any(|l| l.starts_with("depth ")), "{table}");
+    }
+
     #[test]
     fn a_clear_over_http_changes_what_the_running_coordinator_sizes_and_holds() {
         let (_d, c, w) = start();
@@ -11562,7 +11593,7 @@ mod tests {
         }
         let holding = |mb: u64| Ask {
             cap: Some(Capacity {
-                caches: [(cache.to_string(), CacheHere { have_mb: mb })].into(),
+                caches: [(cache.to_string(), CacheHere { have_mb: mb, ..Default::default() })].into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -12976,7 +13007,7 @@ mod tests {
                 cores_free: 8,
                 disk_mb: 20_000,
                 caches: have
-                    .map(|h| (buildstore::localread::CACHE.to_string(), CacheHere { have_mb: h }))
+                    .map(|h| (buildstore::localread::CACHE.to_string(), CacheHere { have_mb: h, ..Default::default() }))
                     .into_iter()
                     .collect(),
                 ..Default::default()
@@ -13023,7 +13054,8 @@ mod tests {
     /// the whole copies, asking for `want` jobs of `can` with `mem_mb` of memory (task #1170: the
     /// M4 on 12 Nov, 28 GB of them, the depth steps done).
     fn copies_ask(can: &[&str], mem_mb: u64, copies: u64, target_mb: u64, want: usize) -> Ask {
-        let caches = [(buildstore::localread::CACHE.to_string(), CacheHere { have_mb: copies })].into();
+        let caches =
+            [(buildstore::localread::CACHE.to_string(), CacheHere { have_mb: copies, ..Default::default() })].into();
         let disk = (46 << 10) - target_mb.min(46 << 10);
         Ask {
             want,
@@ -13079,6 +13111,14 @@ mod tests {
             "{}",
             why(&c)
         );
+        // (Task #1173: those in use, held by a process there the pool doesn't know of, aren't
+        // counted: with 10 GB of the 28 in use, 18 GB freeable, short of the 19.2.)
+        let (_d, c, w, _clock) = every((0, 0));
+        offered(&c);
+        let mut held = copies_ask(&["pack"], 30_000, 28 << 10, 30 << 10, 1);
+        held.cap.as_mut().unwrap().caches.get_mut(buildstore::localread::CACHE).unwrap().in_use_mb = 10 << 10;
+        assert!(w.ask(&held).unwrap().is_none(), "{}", why(&c));
+        assert!(why(&c).contains("disk short by 1.2 GB"), "{}", why(&c));
         // No room target: none counted.
         let (_d, c, w, _clock) = every((0, 0));
         offered(&c);
@@ -14783,7 +14823,7 @@ mod tests {
         let (offer, lead) = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
-            // (Cut to a step by a lone job, its lone way held for a second time.)
+            // (Cut to a step by a lone job, its lone way shut.)
             let t = s.wall_s();
             let kept = State {
                 at: t,
@@ -14792,7 +14832,6 @@ mod tests {
                 cut_at: Some(t),
                 settled_at: Some(t),
                 lone_at: Some(t),
-                lone_n: 2,
                 ..State::default()
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
@@ -14925,7 +14964,6 @@ mod tests {
                 cut_at: Some(t),
                 settled_at: Some(t),
                 lone_at: Some(t),
-                lone_n: 1,
                 ..State::default()
             };
             assert!(s.nas_pace.restore(&kept, t, k.restore_s));
