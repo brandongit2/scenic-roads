@@ -17286,6 +17286,13 @@ mod tests {
             r.insert(sources.clone(), m[&sources].clone());
         });
         assert_eq!(plan(&mut a, regions), (vec![format!("inputs {regions} full")], vec![]));
+        // Task #1587: not listed yet (an agent just started): the test unit, which has records,
+        // waits, saying so, nothing planned; the regions, with none yet, plan nothing and say nothing.
+        a.planner().inputs.watch = Some((nas.clone(), inputs::inputs::watch::Watch::unlisted_for_test()));
+        let (jobs, why) = plan(&mut a, unit);
+        assert!(jobs.is_empty(), "{jobs:?}");
+        assert!(why.len() == 1 && why[0].contains("not listed yet"), "{why:?}");
+        assert_eq!(plan(&mut a, regions), (vec![], vec![]));
     }
 
     /// Task #932: what a Mac's jobs may hold for one to start is what's available above its memory

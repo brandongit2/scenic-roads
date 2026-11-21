@@ -90,6 +90,12 @@ impl Watch {
         Watch { shared, thread: Some(thread) }
     }
 
+    /// A watch that never lists: every unit as before its first listing.
+    #[cfg(feature = "testkit")]
+    pub fn unlisted_for_test() -> Watch {
+        Watch { shared: Default::default(), thread: None }
+    }
+
     /// Lists again at once.
     pub fn ask(&self) {
         let (lock, cv) = &*self.shared;

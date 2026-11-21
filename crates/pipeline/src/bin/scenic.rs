@@ -253,18 +253,21 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
         .as_ref()
         .map(|s| s.inputs.iter().filter(|v| v.checking).map(|v| v.unit.clone()).collect())
         .unwrap_or_default();
-    // (A running check's job on the lead, for its progress: "Checking the <unit> inputs", or from
-    // a lead older than task #502, "Checking the inputs dropped in <unit>".)
+    // (A running check's job on the lead, for its progress: "Checking the <unit> inputs".)
     let running: Vec<(String, agent::JobView)> = status
         .iter()
         .flat_map(|s| s.jobs())
         .filter_map(|j| {
             let unit = j.what.strip_prefix("Checking the ")?;
-            let unit = unit.strip_suffix(", every file").unwrap_or(unit);
-            let unit = unit.strip_prefix("inputs dropped in ").or_else(|| unit.strip_suffix(" inputs"))?;
+            let unit = unit.strip_suffix(", every file").unwrap_or(unit).strip_suffix(" inputs")?;
             Some((unit.to_string(), j))
         })
         .collect();
+    // (What a unit's check waits for, as the lead's status says: "Checking <unit>", plan.rs's gate_work.)
+    let waits = |u: &str| -> Vec<String> {
+        let what = format!("Checking {u}");
+        status.iter().flat_map(|s| &s.waiting).filter(|w| w.what == what).map(|w| w.why.clone()).collect()
+    };
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
     let by = format!("scenic inputs on {}", store::sys::host_name());
     let unit_arg = |u: &str| -> Result<String> {
@@ -296,6 +299,9 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
                         Some((_, j)) => println!("  {}", check_line(j)),
                         None => println!("  check: planned, not running yet"),
                     }
+                }
+                for why in waits(&v.unit) {
+                    println!("  check waits: {why}");
                 }
                 if let Some(u) = &v.unread {
                     println!("  can't be read now: {u}");

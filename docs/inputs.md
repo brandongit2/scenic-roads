@@ -95,7 +95,9 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 
 - The lead (pool.md §5) lists every inputs folder (recursively, skipping `todo/` and `how/` at the top)
   and the acceptances every two minutes, on a thread of its own (crate::inputs::watch). Members
-  don't list. `scenic inputs check [<unit>]` asks for a listing now.
+  don't list. `scenic inputs check [<unit>]` asks for a listing now. Until its first listing since
+  the agent started, a unit with records waits ("not listed yet"); one whose listing fails waits,
+  saying why.
 - A file whose time is within the last 10 s is left for the next listing. The check is given the
   listing its key was made from (`--listing`, `inputs::Planned`) and checks exactly it: a file
   changed since, or passed over as too recent, stays as accepted (or out, if new).
@@ -356,7 +358,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   Accept and Accept All; a quiet line while checking.
 - **The Regions panel** marks a held region (§6.1.9).
 - **`scenic status`** prints held or checking units; `scenic inputs` lists every unit's version,
-  state, findings and acceptances.
+  state, what its check waits for (the lead's status's `waiting`, "Checking <unit>"), findings and
+  acceptances.
 
 ### 4.8 Credits from the inputs
 

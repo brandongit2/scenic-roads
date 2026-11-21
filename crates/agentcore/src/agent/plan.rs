@@ -3449,21 +3449,32 @@ impl Planner {
             let s = |p: &Path| p.to_string_lossy().into_owned();
             for unit in &units {
                 let Some(checks) = inputs::inputs::checks(unit) else { continue };
-                if let Some(why) = watch.failed(unit) {
+                let failed = watch.failed(unit);
+                if let Some(why) = &failed {
                     waiting.push(Waiting {
                         step: Some("inputs".into()),
                         what: format!("Checking {unit}"),
                         why: format!("its inputs folder can't be listed now: {why}"),
                     });
                 }
-                let Some(l) = watch.get(unit) else { continue };
+                let recorded = [inputs::inputs::logical(unit), inputs::inputs::held_logical(unit)]
+                    .iter()
+                    .any(|r| manifest.contains_key(r));
+                // (Not listed since the agent started, with records: it waits for its first listing,
+                // which the watch makes within EVERY, rather than vanish from the plan meanwhile.)
+                let Some(l) = watch.get(unit) else {
+                    if failed.is_none() && recorded {
+                        waiting.push(Waiting {
+                            step: Some("inputs".into()),
+                            what: format!("Checking {unit}"),
+                            why: "its inputs folder is not listed yet since the agent started".into(),
+                        });
+                    }
+                    continue;
+                };
                 // (Nothing added yet and nothing ever taken in or held: nothing to check.)
                 let empty = l.listing.files.is_empty() && l.listing.strays.is_empty() && l.listing.misplaced.is_empty();
-                if empty
-                    && [inputs::inputs::logical(unit), inputs::inputs::held_logical(unit)]
-                        .iter()
-                        .all(|r| !manifest.contains_key(r))
-                {
+                if empty && !recorded {
                     continue;
                 }
                 // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
