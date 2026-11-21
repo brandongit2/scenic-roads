@@ -50,6 +50,12 @@ def scan(text, depth=0):
         if sets & WHERE: block(PM_ONLY)
         if not toks: continue
         c0, rest = os.path.basename(toks[0]), toks[1:]
+        # (Key publish is publish.sh's: its own slot and the test Mac to itself, #1563. An agent's run under
+        # it holds a real publish back; an agent's publish-shaped run is a measurement run, #1575.)
+        rt = rest if c0 == "remote-tests.sh" else rest[1:] if c0 in ("sh", "bash", "zsh") and rest and os.path.basename(rest[0]) == "remote-tests.sh" else None
+        if rt and rt[0] == "publish":
+            block("Key publish is publish.sh's (its own slot, the test Mac to itself): run under a key of your own, "
+                  "and mark a publish-shaped or timing run #perf in its command (a measurement run, one at a time on the test Mac).")
         # (sh -c "$(…)", eval "$(…)" and $(…) -p … run what the substitution writes: a cargo test there can't be read)
         if any(TEST.search(b) and "cargo" in b for b in bodies[a:n]) and "${SUBSTITUTION}" in " ".join(toks[:1] + (rest if c0 in ("sh", "bash", "zsh", "dash", "eval") else [])):
             block("A command built from a substitution that writes out a cargo test can't be checked: write the cargo test out plainly.")

@@ -44,6 +44,10 @@ for r in '> /p/log' '>/p/log' '>> /p/log' '>>/p/log' '2> /p/log' '2>/p/log' '2>>
   check "No full test suites" "cargo test -p $crate $r"
   check "--release" "cargo test -p $crate --release $r -- $f"
 done
+# Key publish is publish.sh's (#1575): an agent's run under it is refused, its own key not.
+check "Key publish is publish.sh's" "tools/app/remote-tests.sh publish $wt 'export SCENIC_PUBLISH=1; cargo nextest run -p $crate'"
+check "Key publish is publish.sh's" "SCENIC_PUBLISH=1 zsh $wt/tools/app/remote-tests.sh publish $wt 'cargo nextest run -p $crate' > /p/log 2>&1"
+check ok "tools/app/remote-tests.sh t1575-m $wt 'cargo nextest run -p $crate --release -E \"test(/^$mod::/)\" #perf'"
 check ok "cargo test -p $crate 2>&1 -- $f"
 check ok "cargo test -p $crate 2>&1 --lib -- $f"
 check ok "cargo test -p $crate -- $f 2>&1 | tee /p/log"

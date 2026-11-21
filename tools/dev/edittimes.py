@@ -3,7 +3,8 @@
 
   tools/dev/edittimes.py [-n ROUNDS] [--top] [--cmd 'cargo …'] <file> …
 
-Run in a built tree on the test Mac (through tools/app/remote-tests.sh, tools/dev/testing.md). For
+Run in a built tree on the test Mac (through tools/app/remote-tests.sh, its command marked #perf: a
+measurement run, one at a time there, tools/dev/testing.md). For
 each round, for each file in turn: one comment line appended to it (`--top`: put at its head, so
 every item after it moves a line, as most real edits move them), then the build command run and
 timed (wall, CPU of its processes, `time -l`'s peak: the largest process), then the file put back

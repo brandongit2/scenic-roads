@@ -114,6 +114,14 @@ determined agent can still get round both. Tested by `tools/dev/test/test-guard.
   it holds them to module-path filters). A full suite only to reproduce a failure
   the PM names: mark the command `#repro`.
 - `--release` only for performance work: mark the command `#perf` (it may use `--workspace`).
+- **A measurement run** (#1575): a run sent to the test Mac that times tests or programs or imitates
+  publish's (a whole crate's suite, the plan tests' full set) says so in the command remote-tests.sh
+  runs: `#perf` (or `#repro`) in it as a word, a comment of the command itself
+  (`remote-tests.sh <key> <tree> 'cargo test --release -p terrain -- … #perf'`, not after the closing
+  quote, where the shell drops it), or `SCENIC_PUBLISH` set in it under a key of your own. The test
+  Mac admits those one at a time ("Tests on the test Mac", the capacity's `measures=`), each in a check
+  slot as any run. Key `publish` is publish.sh's: an agent's remote-tests.sh under it is refused (the
+  hook). A measurement that needs the test Mac to itself asks the PM for a quiet period.
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
   - first, on the publishing Mac, `crates/server/tests/serves.rs` against the release server it
@@ -606,10 +614,22 @@ are its own for the disk rule and the drop below.
   the command in its own tree, no copy, but in a slot and with its share, freed as it ends). The slots: one per 4 cores
   and per 12 GB of memory, the fewer (the M4, 14 cores and 48 GB: 3 slots), or as
   `~/scenic-check/capacity` on the test Mac sets them (lines `slots=<n>`, `threads=<n>`,
-  `publish_threads=<n>`, `publish_wait=<minutes>`, any of them, each
+  `publish_threads=<n>`, `publish_wait=<minutes>`, `measures=<n>`, any of them, each
   a whole number from 1 to 999; spaces, CRs and `#` comments left out; a key given twice, the last
   read; read by each run as it starts, and each line it doesn't take, or a key given again, printed
   with its value; a folder or unreadable file in its place said, and the capacity derived).
+  Measurement runs (#1575; their marks: "A measurement run" above) take a measurement turn before
+  their slot, `measures=` of them at once (1 by default): a second waits for the first's turn
+  ("a measurement run (…): the test Mac's 1 measurement turns are taken (<key>): waiting", 30 min,
+  then refused), holding no slot meanwhile, so the checks go on beside the one that runs, within the
+  slots, and publish's tests never wait for one that waits. Behind publish's run a measurement run
+  takes no turn, as no run takes a slot (that wait not counted in its 30 min). The turn
+  (`~/scenic-check/.slots/m<n>`) is freed with the run's slot, a gone run's as a gone slot is. Its
+  line says it ("…; a measurement run, turn 1 of 1)"); the dev jobs page shows the wait as "a
+  measurement turn" and the turn on the run (`measure`). A measurement run under way when publish's
+  starts goes on to its end, as a check does, and publish's tests wait for it. The turns hold only
+  for runs from branches with #1575 (the test Mac's side is sent with each run): an older branch's
+  measurement run takes a slot alone.
   A run's share is of the cores the pool's jobs leave (#1563): they run at nice 0 and the tests at
   nice 20, so what they keep busy the tests don't get. The pool's busy cores are read from `ps` as
   the run starts (the `%cpu` of the Mac's `scenic agent` process and every process under it, a
