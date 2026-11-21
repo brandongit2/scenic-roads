@@ -9142,7 +9142,7 @@ mod tests {
         c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
         c.add_costs(&[(
             cost_key("pack", &halo[0]),
-            Cost { peak_mb: 1000, secs: 30, worker: None, v: 0, ..Default::default() },
+            Cost { peak_mb: 1000, secs: 30, worker: None, v: cost_version("pack"), ..Default::default() },
         )]);
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         c.add_job_run("pack", &halo[..1], 1_500);

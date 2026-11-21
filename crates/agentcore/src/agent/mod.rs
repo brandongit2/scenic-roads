@@ -18690,7 +18690,7 @@ mod tests {
             assert!(v > 0, "{s}");
             assert_eq!(secs_key(crate::agent::seam::for_tests(), s), format!("{s} v{v}"));
         }
-        assert_eq!(secs_key(crate::agent::seam::for_tests(), "pack"), "pack", "a step of way 0: its name alone");
+        assert_eq!(secs_key(crate::agent::seam::for_tests(), "prune"), "prune", "a step of way 0: its name alone");
     }
 
     #[test]
