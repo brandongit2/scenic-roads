@@ -9309,7 +9309,7 @@ mod tests {
         // A run's measure takes its place.
         c.add_costs(&[(
             cost_key("peaks", "6/1/1"),
-            Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
+            Cost { peak_mb: 3000, secs: 60, worker: None, v: cost_version("peaks"), ..Default::default() },
         )]);
         assert_eq!((floor_of(&c, "peaks", "6/1/1"), mem_of(&c, "peaks", "6/1/1")), (None, Some(3000)));
         let g = w.ask(&can(4096)).unwrap().unwrap();
