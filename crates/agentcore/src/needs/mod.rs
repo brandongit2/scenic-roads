@@ -421,7 +421,7 @@ enum CacheRef<'a> {
 /// forecast took terrain-deep runs of cost version 0, 0-8 s runs that found no tiffs, as known,
 /// where the coordinator sized the same targets by the step's runs at minutes a target).
 pub fn own<'c>(the_plan: &dyn Plan, costs: &'c BTreeMap<String, Cost>, step: &str, target: &str) -> Option<&'c Cost> {
-    costs.get(&cost_key(step, target)).filter(|c| c.v >= the_plan.cost_version(step))
+    costs.get(&cost_key(step, target)).filter(|c| c.v == the_plan.cost_version(step))
 }
 
 /// The z/x/y tile a target (or a cost key's) ends in.
@@ -475,7 +475,7 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
 /// weighed the whole NAS) counts its writes alone. With the time (s) it is over: a job's rate is its
 /// targets' moves over their times together (`Book::nas_load`).
 fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget::nas::Rate, f64)> {
-    let (m, secs) = moves_of(step, c).filter(|_| c.v >= the_plan.cost_version(step))?;
+    let (m, secs) = moves_of(step, c).filter(|_| c.v == the_plan.cost_version(step))?;
     let r = jobrt::budget::nas::Rate {
         bytes_s: m.bytes / secs,
         creates_s: m.creates / secs,
@@ -508,7 +508,7 @@ fn moves_of(step: &str, c: &Cost) -> Option<(model::Moves, f64)> {
     // (What its uploads read back to check them: as measured, else, on a line from before it was
     // (task #1142), its `wrote`: each file costin counts made is a store::naming upload, read
     // back whole once it's written, as every one has been since the store began. So a step's old
-    // measures weigh it as its new ones do, and no `cost_v` is bumped for it.)
+    // measures weigh it as its new ones do, and its cost version doesn't move for it.)
     let back = c.sizes.get("read_back").map_or(g("wrote"), |&b| b as f64);
     let m = model::Moves {
         bytes: read + g("wrote") + back,
@@ -639,7 +639,7 @@ impl<'a> Book<'a> {
 
     /// The floor of `key` learned the way its step runs now (MB).
     fn current_floor(&self, step: &str, key: &str) -> Option<u64> {
-        self.floor(key).filter(|f| f.v >= self.the_plan.cost_version(step)).map(|f| f.mb)
+        self.floor(key).filter(|f| f.v == self.the_plan.cost_version(step)).map(|f| f.mb)
     }
 
     /// The step's runs of way `v` (its costs of it, drops left out), as the model reads them
@@ -716,9 +716,11 @@ impl<'a> Book<'a> {
             }
         }
         let v = self.the_plan.cost_version(step);
-        // (Its latest earlier way's runs: their work stands in while the way it runs now has few.)
-        let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c);
-        let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max();
+        // (Its latest earlier way's runs: their work stands in while the way it runs now has few.
+        // Ways are hashes, not ordered: the latest is the way of its latest run of another way, by
+        // its job, `Cost::job`.)
+        let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v != v && !is_drop(c);
+        let way = self.costs.iter().filter(|(k, c)| of(k, c)).max_by_key(|(_, c)| c.job).map(|(_, c)| c.v);
         let older_obs = way.map(|w| self.obs(step, w)).unwrap_or_default();
         let older = way.map(|w| (w, model::Model::of(older_obs.clone(), &[], &[], &self.tuning)));
         // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
@@ -731,7 +733,7 @@ impl<'a> Book<'a> {
             .disks
             .into_iter()
             .flatten()
-            .filter(|(k, _)| step_of_key(k) == step && self.costs.get(*k).is_none_or(|c| c.v >= v))
+            .filter(|(k, _)| step_of_key(k) == step && self.costs.get(*k).is_none_or(|c| c.v == v))
             .map(|(k, &d)| {
                 let mut sizes = sizes_of(k, self.costs.get(k));
                 sizes.insert(model::TARGET.to_string(), 1.0);
@@ -759,13 +761,13 @@ impl<'a> Book<'a> {
         let runs = self
             .costs
             .iter()
-            .filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c))
+            .filter(|(k, c)| step_of_key(k) == step && c.v == v && !is_drop(c))
             .map(|(k, c)| (k, c.peak_mb));
         let floors = self
             .floors
             .into_iter()
             .flatten()
-            .filter(|(k, f)| step_of_key(k) == step && f.v >= v && !self.costs.get(*k).is_some_and(is_drop))
+            .filter(|(k, f)| step_of_key(k) == step && f.v == v && !self.costs.get(*k).is_some_and(is_drop))
             .map(|(k, f)| (k, f.mb));
         for (k, mb) in runs.chain(floors).filter(|(_, mb)| *mb > 0) {
             if let Some(t) = tile(k) {
@@ -796,7 +798,7 @@ impl<'a> Book<'a> {
     /// say it; one target.
     fn sizes(&self, step: &str, target: &str, offered: Option<(&str, u64)>) -> BTreeMap<String, f64> {
         let v = self.the_plan.cost_version(step);
-        self.sizes_by(step, target, offered, |w| w >= v)
+        self.sizes_by(step, target, offered, |w| w == v)
     }
 
     /// `sizes` as a model of the ways `way` holds for reads them: the target's run of one of those
@@ -841,7 +843,7 @@ impl<'a> Book<'a> {
             let c = self
                 .costs
                 .get(&cost_key(src, target))
-                .filter(|c| c.v >= self.the_plan.cost_version(src) && !is_drop(c))?;
+                .filter(|c| c.v == self.the_plan.cost_version(src) && !is_drop(c))?;
             Some(1.0 + c.secs as f64 / self.ratio(c.worker.as_deref()))
         });
         let mut g = cache.sources.lock().unwrap_or_else(|e| e.into_inner());
@@ -1029,7 +1031,7 @@ impl<'a> Book<'a> {
                 .iter()
                 .filter(|(k, c)| {
                     let s = step_of_key(k);
-                    only.is_none_or(|o| s == o) && c.v >= self.the_plan.cost_version(s) && is_drop(c)
+                    only.is_none_or(|o| s == o) && c.v == self.the_plan.cost_version(s) && is_drop(c)
                 })
                 .map(|(_, c)| c)
                 .collect()
@@ -1060,7 +1062,7 @@ impl<'a> Book<'a> {
     /// or shrinks the threads from there (task #1420).
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
         let v = self.the_plan.cost_version(step);
-        if let Some(c) = self.costs.get(&cost_key(step, target)).filter(|c| c.v >= v) {
+        if let Some(c) = self.costs.get(&cost_key(step, target)).filter(|c| c.v == v) {
             if let Some(&t) = c.sizes.get("threads") {
                 return Some(own_cores(c, (t as u32).max(1)));
             }
@@ -1250,7 +1252,7 @@ pub fn model_table(book: &Book) -> String {
         let n = &md.needs;
         if n.runs == 0 {
             let v = book.the_plan.cost_version(s);
-            let older = book.costs.iter().filter(|(k, c)| step_of_key(k) == *s && c.v < v && !is_drop(c)).count();
+            let older = book.costs.iter().filter(|(k, c)| step_of_key(k) == *s && c.v != v && !is_drop(c)).count();
             out += &format!("{s:<14} no runs the way it runs now (cost version {v}); {older} of earlier ways\n");
             continue;
         }

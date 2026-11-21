@@ -216,7 +216,7 @@ pub struct Cost {
     pub sizes: BTreeMap<String, u64>,
     /// Its target's run before's peak (MB), where that run was of the same way of its step, the way
     /// it runs now, on as many threads (`moved_from`): what `Coordinator::not_raised` weighs this
-    /// run's peak against, a step's code moving its memory with no cost version raised showing as
+    /// run's peak against, a step's code moving its memory with its cost version unchanged showing as
     /// most of its reruns off their runs before on one side. Set by the lead as it takes the cost;
     /// None on a worker's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,7 +238,7 @@ fn moved_from(the_plan: &dyn crate::agent::seam::Plan, kept: Option<&Cost>, new:
     (same && k.peak_mb > 0 && new.peak_mb > 0).then_some(k.peak_mb)
 }
 
-/// A step whose reruns of the way it runs now show its memory moved with no cost version raised
+/// A step whose reruns of the way it runs now show its memory moved with its cost version unchanged
 /// (`Coordinator::not_raised`): its way, on which side (`lower`: they took less than their runs
 /// before), how many targets moved so and of how many reruns that count, and the one off the most,
 /// with its peaks before and now (MB) and the Mac of its run now.
@@ -263,9 +263,10 @@ fn is_zero64(v: &u64) -> bool {
     *v == 0
 }
 
-/// The way a step runs now, as far as its memory and time go (its row's `cost_v`,
-/// crate::agent::steps::Step): a cost measured another way says nothing of what a run takes now.
-/// A task's kind, or a step the table doesn't know: 0.
+/// The way a step runs now, as far as its memory and time go (crate::agent::steps::cost_version:
+/// a hash of the code versions its outputs are keyed by): a cost or floor measured another way
+/// says nothing of what a run takes now. Ways are equal or not, never ordered. A task's kind, a
+/// step that declares no versions, or a step the table doesn't know: 0.
 #[cfg(test)]
 pub fn cost_version(step: &str) -> u32 {
     crate::agent::seam::for_tests().cost_version(step)
@@ -276,7 +277,7 @@ pub fn cost_version(step: &str) -> u32 {
 pub fn unit_peak(unit_v: u32, costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
     costs
         .get(unit)
-        .filter(|c| c.v >= unit_v)
+        .filter(|c| c.v == unit_v)
         .map(|c| c.peak_mb)
         .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
@@ -940,7 +941,7 @@ impl Shared {
         }
     }
 
-    /// The steps whose memory moved with no cost version raised (`NotRaised`). Each rerun of the way
+    /// The steps whose memory moved with its cost version unchanged (`NotRaised`). Each rerun of the way
     /// its step runs now (`Cost::was_mb`) counts where the larger of its two peaks is past its
     /// step's bar by its runs alone (`needs::Book::move_bar_mb`: what a thread of it holds, the needs
     /// model's memory percentile of their peaks over their threads, none scaled to a target's size,
@@ -992,17 +993,19 @@ impl Shared {
         out
     }
 
-    /// Floors seen (by cost key): each kept where its target has none, one of an older way of its
-    /// step, or a lower one; or where it was learned alone and the one kept wasn't (a batch's floor
-    /// may be its earlier targets' caches). A floor of the OSM pass (`osm-pass <date>`) puts the
-    /// earlier passes' away. True when any changed.
+    /// Floors seen (by cost key): each kept where its target has none, one of another way of its
+    /// step than the way it runs now (`cost_version`) where the new one is of it, or a lower one; or
+    /// where it was learned alone and the one kept wasn't (a batch's floor may be its earlier
+    /// targets' caches). A floor of another way never takes the place of one of the way it runs now.
+    /// A floor of the OSM pass (`osm-pass <date>`) puts the earlier passes' away. True when any
+    /// changed.
     fn add_floors(&mut self, floors: &[(String, Floor)]) -> bool {
         self.needs_rev += 1;
         let mut any = false;
         for (u, f) in floors {
             let take = match self.floors.get(u) {
                 None => true,
-                Some(old) if old.v != f.v => f.v > old.v,
+                Some(old) if old.v != f.v => f.v == self.the_plan.cost_version(CostKey::parse(u).step),
                 Some(old) => f.mb > old.mb || (f.alone && !old.alone),
             };
             if take {
@@ -2749,7 +2752,7 @@ impl Coordinator {
         s.sched.too_big(&macs, now)
     }
 
-    /// The steps whose targets' reruns show their memory moved with no cost version raised
+    /// The steps whose targets' reruns show their memory moved with its cost version unchanged
     /// (`NotRaised`, `Shared::not_raised`): flagged (crate::agent::flags::not_raised).
     pub fn not_raised(&self) -> Vec<NotRaised> {
         self.shared.lock().unwrap().not_raised()
@@ -9442,6 +9445,39 @@ mod tests {
         assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
     }
 
+    /// Task #1253: a step whose code version moved (its cost version, derived from it, another
+    /// now: the costs and floors kept are of its way before, here a greater one, as a way that
+    /// sorted after it would be) is sized by none of them: neither its old peak nor its old floor
+    /// holds it or raises `peak_of`; its next run's peak sizes it, and a floor of the old way
+    /// learned after it raises nothing, where one of the way it runs now does. Another step's
+    /// measures of its own way, kept beside them, size it throughout.
+    #[test]
+    fn a_ways_change_leaves_its_old_peak_and_floors_out_and_its_next_run_sizes_it() {
+        let (_d, c, _w) = start();
+        let (step, t, key) = ("terrain-hi", "6/1/1", cost_key("terrain-hi", "6/1/1"));
+        let (now, old) = (cost_version(step), cost_version(step).wrapping_add(1));
+        let run = |mb: u64, v: u32| Cost { peak_mb: mb, secs: 60, v, ..Default::default() };
+        let peak = |c: &Coordinator| c.shared.lock().unwrap().peak_of(step, t, 0, 0);
+        let other = cost_key("slope-hi", "6/1/1");
+        c.add_costs_by(&[(other.clone(), run(800, cost_version("slope-hi")))], "m1");
+        c.add_costs_by(&[(key.clone(), run(10_700, old))], "m1");
+        c.add_floors(&[(key.clone(), Floor { mb: 20_000, alone: true, v: old })]);
+        assert_eq!(c.holding_floor(step, t), None, "its old floor holds nothing");
+        assert!(mem_of(&c, step, t).is_none(), "a cold start: nothing of the way it runs now");
+        assert!(peak(&c) < 10_700, "neither its old peak nor its old floor sizes it: {}", peak(&c));
+        assert_eq!(mem_of(&c, "slope-hi", t), Some(800), "another step's own way, as kept");
+        c.add_costs_by(&[(key.clone(), run(1_500, now))], "m1");
+        assert_eq!((mem_of(&c, step, t), peak(&c)), (Some(1_500), 1_500), "its next run");
+        c.add_floors(&[(key.clone(), Floor { mb: 20_000, alone: true, v: old })]);
+        assert_eq!(peak(&c), 1_500, "a floor of its old way raises nothing");
+        assert_eq!(c.holding_floor(step, t), None);
+        c.add_floors(&[(key.clone(), Floor { mb: 3_000, alone: true, v: now })]);
+        assert_eq!(peak(&c), 3_000, "one of the way it runs now does");
+        c.add_floors(&[(key, Floor { mb: 20_000, alone: true, v: old })]);
+        assert_eq!(peak(&c), 3_000, "nor does a later floor of the old way take its place");
+        assert_eq!(mem_of(&c, "slope-hi", t), Some(800));
+    }
+
     /// Task #657: the scheduler's look-ups kept (`Sched::offered`, `measured_of`, the Book's NAS
     /// rates) grant as they'd grant worked out afresh. Two coordinators take one random run of
     /// offers, measures (costs, floors, disk floors), asks, finishes, failures and lapses; before
@@ -12029,8 +12065,8 @@ mod tests {
         // so its first run measures it, nothing else weighing anything granted beside it meanwhile;
         // never past a window cut under the whole.
         let daily = [("threads", 1), ("bytes", 119_607_616_284), ("listed", 295_768), ("stats", 288_071)];
-        c.add_costs_by(&[(cost_key("gc", "gc"), Cost { v: 0, ..cost("gc", &daily) })], "m4");
-        assert!(cost_version("gc") > 0, "the queue's way is its own");
+        let other = cost_version("gc").wrapping_add(1);
+        c.add_costs_by(&[(cost_key("gc", "gc"), Cost { v: other, ..cost("gc", &daily) })], "m4");
         let held = jobrt::budget::nas::Limits { window: 300, ..limits };
         c.shared.lock().unwrap().nas_own = Some(held);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the window cut to the use: held");

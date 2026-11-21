@@ -1153,7 +1153,7 @@ pub struct Status {
     /// lead's, each round; flagged (flags::too_big).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub too_big: Vec<crate::coord::TooBig>,
-    /// The steps whose targets' reruns show their memory moved with no cost version raised
+    /// The steps whose targets' reruns show their memory moved with its cost version unchanged
     /// (crate::coord::Coordinator::not_raised): the lead's, each round; flagged (flags::not_raised).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_raised: Vec<crate::coord::NotRaised>,

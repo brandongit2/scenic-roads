@@ -593,7 +593,7 @@ pub fn step_sums(
     let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
     for (k, c) in costs {
         let step = crate::agent::memguard::step_of_key(k);
-        if c.v < the_plan.cost_version(step) {
+        if c.v != the_plan.cost_version(step) {
             continue;
         }
         let Some(w) = crate::needs::time_weight(step, c) else { continue };
@@ -1718,7 +1718,7 @@ impl Pool {
             .sched
             .costs
             .iter()
-            .filter(|(k, c)| c.v >= v(k))
+            .filter(|(k, c)| c.v == v(k))
             .map(|(k, _)| crate::agent::memguard::step_of_key(k).to_string())
             .collect();
         if inp.sched.is_none() {

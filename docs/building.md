@@ -467,7 +467,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   `coverage::Coverage::read_peak_mb`: the memos' cap and each shape's own, its rings, grids and
   edge trees read in place from the kept file, the file cache's pages, docs/inputs.md §6.1.4),
   else run alone. Measures
-  of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
+  of another `coord::cost_version` (derived from the step's code versions) count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the
   front of the plan (the coordinator's `pick_every`; after its own last target of the step when
   that's open).

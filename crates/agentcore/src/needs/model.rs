@@ -38,7 +38,7 @@
 //! **Prediction against what came** (`Off`): each run, in the order they came, against what the
 //! runs before it predicted: off by more than `off` times on its work, or on its time past what its
 //! supply explains (JobFacts::explain), it's flagged; `relearn` runs in a row off on one side of
-//! their work and the step learns from the first of them on, as a cost version's bump does for code.
+//! their work and the step learns from the first of them on, as a change of its cost version does for code.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -906,7 +906,7 @@ fn check(runs: &[Obs], t: &Tuning) -> (Vec<Off>, Option<usize>) {
             start = i;
         }
         if row.0 >= t.relearn as usize {
-            // (Relearned: from the first of the row on, as a cost version's bump.)
+            // (Relearned: from the first of the row on, as a change of its cost version does.)
             since = Some(start);
             bins = Bins::default();
             busy.clear();

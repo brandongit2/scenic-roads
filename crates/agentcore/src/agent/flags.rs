@@ -84,15 +84,16 @@
 //!   memory for jobs at its best among those that run it, with that room. Flagged until a Mac with
 //!   the room asks, or the measure or the plan changes.
 //! - **Cost version** (`cost-version`): a step whose targets' reruns of the way it runs now (its
-//!   cost version, the steps table's `cost_v`) took more than the needs model's `off` (the pool's
-//!   `needs-off`) times less, or more, memory than their runs before on as many threads, for
-//!   `relearn` (`needs-relearn`) targets or more on one side and most of its reruns whose larger
-//!   peak is past what a thread of the step adds by its needs model (`Status::not_raised`,
-//!   crate::coord::Coordinator::not_raised, crate::coord::Cost::was_mb; task #1507): its code
-//!   moved its memory with no cost version raised, so its targets not run since are still sized
-//!   by the old code's runs; or their inputs moved as much. A flag per step and side: how many targets,
-//!   the one off the most with both peaks, and the Mac of its run. Flagged until the version is
-//!   raised (its costs then of an older way) or those targets run again alike.
+//!   cost version, crate::coord::cost_version, derived from its code versions) took more than the
+//!   needs model's `off` (the pool's `needs-off`) times less, or more, memory than their runs
+//!   before on as many threads, for `relearn` (`needs-relearn`) targets or more on one side and
+//!   most of its reruns whose larger peak is past what a thread of the step adds by its needs model
+//!   (`Status::not_raised`, crate::coord::Coordinator::not_raised, crate::coord::Cost::was_mb; task
+//!   #1507): code outside the versions its cost version is derived from moved its memory (a shared
+//!   reader's, #1109's coverage read in place), so its targets not run since are still sized by
+//!   the old code's runs; or their inputs moved as much. A flag per step and side: how many
+//!   targets, the one off the most with both peaks, and the Mac of its run. Flagged until its
+//!   cost version moves (its costs then of another way) or those targets run again alike.
 //! - **NAS apart** (`nas-apart`): a Mac answering the lead's pacing whose probe on its own ssh to
 //!   the NAS is down (crate::coord::Capacity::nas_apart's `down`, crate::agent::apart), with why
 //!   (its key's agent not answering among the causes): its probe's figures are missing, and with
@@ -291,7 +292,7 @@ pub fn not_raised(st: &Status) -> Vec<Flag> {
             kind: "cost-version".into(),
             mac: n.mac.clone(),
             said: format!(
-                "{}: {} of its {} reruns at its cost version {} took {} memory than their runs before ({} {} then, {} now): if its code moved its memory, raise its cost_v, as its targets not run since are sized by their old runs",
+                "{}: {} of its {} reruns at its cost version {} took {} memory than their runs before ({} {} then, {} now): code outside the versions its cost version is derived from, or its inputs, moved its memory, and its targets not run since are sized by their old runs until they run again",
                 n.step,
                 n.targets,
                 n.reruns,

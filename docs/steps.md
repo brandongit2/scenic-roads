@@ -318,7 +318,7 @@ makes the same bytes on every Mac.
     A z6 tile makes its blocks a row at a time (each strip decoded once for the row), each block's
     band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
     its threads as its agent controls them (docs/pool.md §7.1, Threads controlled live). The trees program's NAS reads count in the
-    target's NAS weight (`bytes`; `coord::cost_version` 4).
+    target's NAS weight (`bytes`).
   - Lossless WebP by `codecs::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/coordinator.md §3), the same bytes at any thread count.
@@ -761,7 +761,7 @@ index, so a new release rebuilds every z6 tile.
   list of ways (16 bytes a way) and dots (3/4/2's 8/5: 21 M ways, 3.2 M dots). Measured on the M4 at 8 threads (12
   Nov), peak and drawing time: 3/4/2 17.3 GB, 91 s → 2.3 GB, 88 s (2.2 GB at 2 threads); 3/6/3
   10.9 GB, 48 s → 1.4 GB, 43 s; 3/3/3 1.95 GB, 8 s → 0.41 GB, 8 s. Its disk is the base packs'
-  copies, as pack's (3/6/3: 20.6 GB read). Its cost version is 1 (task #1507): a run of the
+  copies, as pack's (3/6/3: 20.6 GB read). A run of its
   earlier way bounds no run of it (docs/pool.md §7.7). The same bytes, its key unmoved: a z3 tile
   made before (3/6/3) isn't made again for this.
 - Landmarks, stations, ferries and overlays come from their own jobs, so no road pack depends on
@@ -1250,8 +1250,8 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   and 0.16 GB of packs: AusBathyTopo's pieces cross 176,723 tiles (83,559 no other source's),
   Kartverket's 163,578 (57,837), INFOMAR's 16,346 (4,711), Ontario's lakes 13,429 (none their own).
   The two runs ran at once on the M4 under a load of 30 to 230 (other agents' builds), 2,439 and
-  2,479 s: the time is the load's, not the step's cost. The step's cost version is 2, so the pool
-  learns the new memory need.
+  2,479 s: the time is the load's, not the step's cost. The pool learns the new memory need from
+  each target's next run (docs/pool.md §7.7).
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1403).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent

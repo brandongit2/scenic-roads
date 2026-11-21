@@ -100,7 +100,7 @@ impl Paces {
         for e in events.iter().filter(|e| e.t > from && e.t <= now && job(e)) {
             let (Some(w), Some(step), Some(secs)) = (e.worker.as_deref(), e.step.as_deref(), e.secs) else { continue };
             let mac = mac_of(w);
-            let Some(v) = e.v.filter(|&v| v >= the_plan.cost_version(step)) else { continue };
+            let Some(v) = e.v.filter(|&v| v == the_plan.cost_version(step)) else { continue };
             let own: Option<u64> = e
                 .targets
                 .iter()

@@ -685,7 +685,9 @@ cores again and the Mac is granted nothing more until they fit.
   left running and the new agent takes it over (docs/building.md §2, Restarts), running the old
   release's programs to its end; the lead's status names such jobs (`Capacity::old_app`).
 - **Floors**: the most a target held is its floor (`floors.json`), rising only, tagged with the
-  step's `cost_version`; a target's predicted memory is never below it. A target whose floor
+  step's `cost_version`; a target's predicted memory is never below its floor of the way its step
+  runs now, and a floor of another way neither holds it nor raises it, nor takes the place of one
+  of the way it runs now (§7.7, One model per step). A target whose floor
   exceeds every Mac's room waits, the status saying so. `scenic pool floors [--clear [<step>
   [<target>]]]` lists or clears them, through the running lead's coordinator.
 
@@ -1194,8 +1196,19 @@ thousandths:
   those readings (0.046 %).
 
 **One model per step** (`agentcore::needs::Book`; the model `needs::model`): only what was measured
-the way the step runs now counts (`coord::cost_version`, the steps table's `cost_v`); runs and
-floors of an older way are no measure (disk floors carry no version and always count). A target's
+the way the step runs now counts (`coord::cost_version`); runs and floors of another way are no
+measure, and a floor of another way never raises a target's memory (disk floors carry no version
+and always count). **The way** is derived, never kept by hand (`steps::cost_version`, task
+#1253): a hash of the code versions the step's outputs are keyed by, its row's `versions` (the
+`v` lines of its key, its own version and the codecs and code it borrows), then `key_versions`
+for a step whose key is made outside the table (pack's `PACK_V`, lo's `LO_V`, lakefill's
+`LAKEFILL_V`); 0 for a step that declares none (the pass's own, prune, gc, redo, inputs, the
+backup) and for a task's kind. A change that builds a step's targets again so moves its way and
+its alone (terrain-hi's `TERRAIN_V` moves terrain-hi's, terrain-deep's and terrain-lo's, which
+name it): their measures are of another way from then, each target a cold start until the step
+is measured again, while the lead's restart and every other change keep the costs and floors as
+they are. Ways are equal or not, never ordered: a measure of a later way counts for nothing too
+(a member on an older app sending measures of its way, or the lead on one). A target's
 memory, disk and time are its own run's (memory never below its floor), its memory times its
 step's **spread over its reruns** (`needs::Reruns::spread`, task #1586): of each of its targets
 that reran one of the way it runs now on as many threads (`Cost::was_mb`) after a run that peaked
@@ -1273,7 +1286,7 @@ only lengthen a prediction.
 before it of about its size; off by more than `needs-off` (3) times on its work, or on its time past
 what its supply explains (the cores it lacked, the NAS's slowness: `jobrt::timings::explain`), it's
 flagged. `needs-relearn` (5) runs in a row off on one side, and the step learns its times from the
-first of them, as a cost version's bump does for code. `scenic pool needs` prints each step's runs,
+first of them, as a change of its cost version does for code. `scenic pool needs` prints each step's runs,
 sizes, rates, memory, parallelism and flagged runs, as the lead's coordinator holds them (asked of it,
 `/api/needs`), and a step with costs but none of the way it runs now says so.
 
@@ -1378,7 +1391,8 @@ live-scale test against 135). `scenic forecast-check --replay`'s last table hold
 against what it was sized to, by step and Mac.
 
 **A cold start** (no target of its step measured the way it runs now) is packed by its
-*provisional need*: the most its step's runs of its latest earlier way measured (or its offered
+*provisional need*: the most its step's runs of its latest earlier way (the way of its latest run,
+by job, of another way) measured (or its offered
 guess: unit's and pois' extract size), times 3/2 (`coord::sched::provisional_mb`), its disk its
 step's measures'. With neither, it runs alone (`Sched::no_figure`). Its cores: one thread when its
 step honours its threads (`coord::THREADS_HONOURED`: `slope-hi`, `slope-deep`, `terrain-deep`,
@@ -1390,9 +1404,10 @@ it. **A records-only step** (`records_only`: `redo`) is packed at one thread, no
 its memory measured. A floor never stalls the build: the first slot starts once room-making has
 done what it can, the disk guard as backstop.
 
-**A version not raised.** A cost version is raised by hand with the change that moves a step's
-needs; it can't be derived from the step's key version (which moves with its outputs) nor a digest
-of its code (nearly every release would make every step a cold start). So the lead watches: a
+**A version not raised.** A step's cost version is derived from the code versions its outputs are
+keyed by (§7.7, One model per step), so code that moves its memory outside them (a reader shared by
+many steps, #1109's coverage read in place) moves no cost version, and a digest of all the code
+would make every step a cold start with nearly every release. So the lead watches: a
 target's rerun of the same way on as many threads notes its run before's peak (`Cost::was_mb`). One
 off by more than `needs-off` (3) times, where it matters in packing, is counted: where the larger
 of its two peaks is past its step's bar by its runs: what a thread of it holds (their peaks over
@@ -1405,7 +1420,7 @@ its lightest quarter's peak inputs' small targets rerunning within their 20 to 2
 counted. A move up past the step's heaviest raises that bar at most to a tenth of itself; a move
 of a target under a tenth of its step's 95th-percentile peak counts for nothing; a step with
 `needs-relearn` (5) or more such on one side, and most of its reruns, is flagged `cost-version`
-(§10, Flags): raise the step's `cost_v`.
+(§10, Flags): its targets not run since are sized by their old runs until they run again.
 
 ### 7.8 The agent never waits on one NAS call
 
@@ -1763,8 +1778,8 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
     memory less its floor, its disk for jobs with what reservations and caches can free:
     `Coordinator::too_big`). No packing grants these and no room is held, so they would wait
     unsaid. It stands until a Mac with room asks, or the measure or plan changes.
-  - *cost-version*: a step whose reruns moved their memory past `needs-off` times without a cost
-    version raised (§7.7, A version not raised), one flag per step and side.
+  - *cost-version*: a step whose reruns moved their memory past `needs-off` times with its cost
+    version unchanged (§7.7, A version not raised), one flag per step and side.
   - *nas-apart*: a Mac whose probe apart on its own ssh is down, with why (its key's agent not
     answering among them; §7.7, The probe apart down): its figures missing, and with
     `nas-apart-judges` on its answers its listings on its jobs' SMB session; none while

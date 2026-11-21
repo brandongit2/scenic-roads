@@ -932,7 +932,7 @@ commit; re-exports at the old paths as before.
       input, went to the seam with 6f2; its filling reads the table and `KeyCtx`), `Kind`
       and `Scope`. The second review made progress's `grouped` private: nothing else calls it.
       What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
-      downloads; the first read naming a target: needs' `source_secs`; a row's `cost_v`; a
+      downloads; the first read naming a target: needs' `source_secs`; a row's cost version; a
       target's reads along its ways) are `Plan`'s questions (6f2).
    2. **6f2, `Plan`** (built, 6-7 Nov 2026, in parts: the merge, the frozen-plan check, the trait):
       the trait, in the runtime, implemented by the plan; `&'static dyn

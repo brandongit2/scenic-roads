@@ -410,9 +410,9 @@ impl NasWeigher<'_> {
             None => self.book.nas(step, target),
         };
         // (A step known to load the NAS (`NAS_STEPS`) none of whose runs the way it runs now
-        // (`cost_v`) noted its rate: the whole budget, so its first job never overloads the NAS
-        // unseen, task #499 review; runs of an earlier way count for nothing, crate::needs's
-        // `nas_rate`.)
+        // (crate::coord::cost_version) noted its rate: the whole budget, so its first job never
+        // overloads the NAS unseen, task #499 review; runs of an earlier way count for nothing,
+        // crate::needs's `nas_rate`.)
         r.map_or(if NAS_STEPS.contains(&step) { jobrt::budget::nas::WHOLE } else { 0 }, |r| self.limits.weight(r))
     }
 
@@ -1048,12 +1048,12 @@ impl Sched {
     /// The floor of `target` of `step` that holds it off a Mac: one learned alone, the way its step
     /// runs now (crate::coord::cost_version).
     pub(super) fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
-        self.floors.get(&cost_key(step, target)).filter(|f| f.v >= self.the_plan.cost_version(step)).copied()
+        self.floors.get(&cost_key(step, target)).filter(|f| f.v == self.the_plan.cost_version(step)).copied()
     }
 
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
-    /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
-    /// estimate there is until it runs again).
+    /// its costs and `size`, and never below its floor of the way its step runs now
+    /// (crate::coord::cost_version): a cost or floor of another way never raises it.
     pub(super) fn peak_of(&self, step: &str, target: &str, size: u64, threads: u32) -> u64 {
         self.book()
             .mem(
@@ -1929,8 +1929,8 @@ impl Sched {
     }
 
     /// A cold start's provisional need (task #499): `provisional_mb` of the most, over its targets,
-    /// its step's runs of its latest earlier way measured (crate::needs::Book::older_mem: a cost
-    /// version raised, task #979) or it was offered with (`offered_mb`), the disk its step's
+    /// its step's runs of its latest earlier way measured (crate::needs::Book::older_mem: its cost
+    /// version moved, task #979) or it was offered with (`offered_mb`), the disk its step's
     /// measures say (none: 0). None when neither says anything: no figure, so it runs alone
     /// (`no_figure`). It goes beside other jobs when that fits; the memory guard
     /// (crate::agent::memguard) stops one that overruns, and its floor is learned.

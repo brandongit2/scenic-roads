@@ -51,7 +51,7 @@ impl Plan for ThePlan {
         steps::row(step).is_some_and(|r| r.kind == Kind::Fetch)
     }
     fn cost_version(&self, step: &str) -> u32 {
-        steps::row(step).map_or(0, |s| s.cost_v)
+        steps::cost_version(step)
     }
     fn sources_naming(&self, step: &str, target: &str) -> Vec<&'static str> {
         let reads = steps::row(step).map_or(&[][..], |r| r.reads);

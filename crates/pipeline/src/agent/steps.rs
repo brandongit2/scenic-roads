@@ -165,10 +165,31 @@ pub struct Step {
     /// first, then codecs and borrowed code. The key's `v` lines (`key_lines`); empty for a step
     /// whose key isn't derived from its reads (`derived`).
     pub versions: &'static [(&'static str, fn() -> String)],
-    /// The way it runs now, as far as its memory and time go (agentcore::coord::cost_version): a cost
-    /// measured another way says nothing of what a run takes now. Bumped with a change that moves
-    /// them; never a build key.
-    pub cost_v: u32,
+    /// The code versions the key of a step whose key isn't derived (`derived`) names where it is
+    /// made (pack's and lo's in build's base-pack keys, lakefill's in its own): with `versions`,
+    /// what its cost version is derived from (`cost_version`).
+    pub key_versions: &'static [(&'static str, fn() -> String)],
+}
+
+/// The way `step` runs now, as far as its memory and time go (agentcore::coord::cost_version):
+/// derived from the code versions its outputs are keyed by (`versions`, then `key_versions`), so a
+/// change that builds its targets again has its costs and floors learned again, and only its own.
+/// A hash of their lines (`v <name> <version>`), never 0; 0 for a step that declares none (and for
+/// a task's kind or a name the table doesn't know). Never a build key.
+pub fn cost_version(step: &str) -> u32 {
+    static WAYS: std::sync::OnceLock<std::collections::HashMap<&'static str, u32>> = std::sync::OnceLock::new();
+    let ways = WAYS.get_or_init(|| TABLE.iter().map(|r| (r.name, way_of(r))).collect());
+    ways.get(step).copied().unwrap_or(0)
+}
+
+/// `cost_version` of row `r`, worked out.
+fn way_of(r: &Step) -> u32 {
+    let lines: Vec<String> = r.versions.iter().chain(r.key_versions).map(|(n, v)| format!("v {n} {}", v())).collect();
+    if lines.is_empty() {
+        return 0;
+    }
+    let h = store::naming::hash16(lines.join("\n").as_bytes());
+    u32::from_str_radix(&h[..8], 16).unwrap_or(1).max(1)
 }
 
 /// One thing a target's run reads (docs/readiness.md §2): what it waits for (`readiness`) and what
@@ -891,7 +912,7 @@ const fn step(
         records_only: false,
         reads: &[],
         versions: &[],
-        cost_v: 0,
+        key_versions: &[],
     }
 }
 
@@ -1021,6 +1042,7 @@ pub const TABLE: [Step; 65] = [
     },
     Step {
         alone: true,
+        key_versions: &[("lakefill", || super::build::LAKEFILL_V.to_string())],
         ..step(
             "pass",
             Derive,
@@ -1077,7 +1099,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         alone: true,
         answered: true,
         versions: &[("heritage-sites", || super::build::HERITAGE_SITES_V.to_string())],
@@ -1094,7 +1115,6 @@ pub const TABLE: [Step; 65] = [
     // Terrain's z6 tiles (a z6 tile each, eight a job; a z3 tile is its whole run, the scheme
     // before z6 tiles).
     Step {
-        cost_v: 1,
         versions: &[("terrain-water", || super::build::TERRAIN_WATER_V.to_string())],
         reads: &[In { name: "water-pin", of: idents::water_pin }, In { name: "water-wants", of: idents::water_wants }],
         ..step(
@@ -1110,7 +1130,6 @@ pub const TABLE: [Step; 65] = [
     // the lead to name in their stores' indexes, as AWS's raw tiles' are: terrain::pyramids. A z6
     // tile's fetch at most 4,096 tiles in memory at once, its wanted set a few MB.)
     Step {
-        cost_v: 1,
         versions: &[("pyramids-fill", || terrain::pyramids::V.to_string())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "pyramids", of: idents::pyramids }, In { name: "deep-targets", of: idents::deep_targets }],
         ..step(
@@ -1129,7 +1148,6 @@ pub const TABLE: [Step; 65] = [
     // buildstore::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
     // tiles' terrain-deep targets alone: their mids are its z12 tiles' quarters there.)
     Step {
-        cost_v: 9,
         shared: true,
         versions: &[("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }, Of { step: "pyramids-fill", of: own, grain: Grain::Read(idents::nothing) }],
@@ -1143,7 +1161,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 2,
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, Of { step: "pyramids-fill", of: z6_of_z10, grain: Grain::Read(idents::nothing) }],
@@ -1157,7 +1174,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 4,
         versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
         ..step(
@@ -1172,7 +1188,6 @@ pub const TABLE: [Step; 65] = [
     // (Built once all terrain-lo is done, in the terrain stage: slope reads it, waiting for it,
     // docs/readiness.md decision 2.)
     Step {
-        cost_v: 2,
         versions: &[("terrain-root", || 2.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[All { step: "terrain-lo", grain: Outputs }],
         ..step(
@@ -1185,7 +1200,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 2,
         shared: true,
         versions: &[("slope-deep", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }],
@@ -1199,7 +1213,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 6,
         shared: true,
         versions: &[("slope-hi", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
@@ -1213,7 +1226,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 2,
         versions: &[("slope-lo", || terrain::slope_pack::SLOPE_LO_V.to_string()), ("slope", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
@@ -1228,7 +1240,6 @@ pub const TABLE: [Step; 65] = [
     // The polar caps past the Web Mercator tiles' 85.05° (terrain::polar; docs/polar.md): a block's
     // terrain, then its shading, then a pole's root of both.
     Step {
-        cost_v: 1,
         versions: &[("polar-terrain", || terrain::polar::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }],
         ..step(
@@ -1253,7 +1264,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 2,
         versions: &[("polar-root", || terrain::polar::ROOT_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }, In { name: "polar-blocks", of: idents::polar_blocks }, Of { step: "polar-terrain", of: pole_blocks, grain: Grain::Read(idents::polar_terrain_packs) }, Of { step: "polar-slope", of: pole_blocks, grain: Grain::Read(idents::polar_slope_packs) }],
         ..step(
@@ -1265,18 +1275,13 @@ pub const TABLE: [Step; 65] = [
             w_polar_root,
         )
     },
-    // (Cost version 4: #1109, coverage read in place; 3: the canopy rows read where they lie and
-    // counted, its blocks paced, task #606: 2's copied whole squares uncounted, so its NAS weight was
-    // its uploads alone.)
     Step {
-        cost_v: 4,
         shared: true,
         versions: &[("trees", || trees::treepacks::TREES_V.to_string())],
         reads: &[In { name: "coverage:inside", of: idents::coverage_inside }, In { name: "trees-sources", of: idents::trees_sources }],
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
-        cost_v: 2,
         versions: &[("trees-lo", || trees::treepacks::TREES_LO_V.to_string()), ("trees", || trees::treepacks::TREES_V.to_string())],
         reads: &[Mids { step: "trees", of: z6_of_z3, named: idents::trees_mids }],
         ..step(
@@ -1289,7 +1294,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         shared: true,
         versions: &[("lake-depth", || terrain::depth::lakes::V.to_string())],
         reads: &[
@@ -1306,11 +1310,7 @@ pub const TABLE: [Step; 65] = [
             w_lake_depth,
         )
     },
-    // (Cost version 2: composed only at a grid's own zoom, the coarser levels the means of the finer,
-    // and the floor's shading's assembly made in depth-lo, task #804; 1: a grid lined up with no
-    // overview sampled from one askew, task #433.)
     Step {
-        cost_v: 2,
         shared: true,
         versions: &[("depth", || super::build::depth_versions("depth"))],
         reads: &[
@@ -1330,7 +1330,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 2,
         versions: &[("depth-lo", || super::build::depth_versions("depth-lo"))],
         reads: &[
             Of { step: "depth", of: z6_of_z3, grain: Outputs },
@@ -1362,13 +1361,7 @@ pub const TABLE: [Step; 65] = [
             w_depth_root,
         )
     },
-    // (Cost version: a z6 tile's measure its job's processes together, as the memory guard measures a
-    // job; 0 was its programs' most, one at a time; 2: its processes started without malloc's large
-    // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks; 3: its
-    // elevations sampled in batches, inputs::dem::generic::BATCH, where 2's sampled a z6 tile's
-    // vertices at once: 16 GB for the densest; 4: #1109, coverage read in place.)
     Step {
-        cost_v: 4,
         shared: true,
         versions: &[("unit", || super::build::UNIT_V.to_string())],
         reads: &[In { name: "extract", of: idents::extract }, In { name: "roads", of: idents::roads }, In { name: "ways", of: idents::ways }, In { name: "elevation", of: idents::elevation }, In { name: "unit-sources", of: idents::unit_sources }, Of { step: "terrain-lo", of: u_lo, grain: Grain::Tiles(idents::unit_tiles) }, Of { step: "terrain-hi", of: u_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: u_deep, grain: Grain::Tiles(idents::unit_deep_tiles) }, OfAlong { step: "terrain-lo", of: ua_lo }, OfAlong { step: "terrain-hi", of: ua_hi }, OfAlong { step: "terrain-deep", of: ua_deep }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_slices) }, All { step: "reach", grain: Grain::Read(idents::nothing) }, All { step: "buildings", grain: Grain::Read(idents::roadside) }],
@@ -1381,18 +1374,12 @@ pub const TABLE: [Step; 65] = [
             w_unit,
         )
     },
-    // (Cost version: 1, its targets' cost lines holding the base packs' fetch for them all (task
-    // #1586, scenic-build's `write_cost_line`), ~3 GB where 0's lines began after it, at 44-99 MB.)
     Step {
-        cost_v: 1,
+        key_versions: &[("pack", || super::build::PACK_V.to_string())],
         ..step("tiles", Pack, Z6, "pack", "Draws a tile's road and rail map tiles and its data.", w_pack)
     },
-    // (Cost version: 1, its z3 tile's road and rail tiles drawn a tile at a time, each tile's ways
-    // cut a run at a time (codecs::hipack::tiles_one_by_one, task #1182), where 0 held the z3 tile's
-    // ways cut at once: 17.5 GB for 3/4/2. 2: its cost lines holding the base packs' fetch, as
-    // pack's 1.)
     Step {
-        cost_v: 2,
+        key_versions: &[("lo", || super::build::LO_V.to_string())],
         ..step(
             "tiles",
             Pack,
@@ -1440,10 +1427,8 @@ pub const TABLE: [Step; 65] = [
     // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
     // coastline, made again only where a piece or the land moved; the buildings' mask pieces drawn
     // from the build's normalized buildings (bld::bld::extents), the files its record doesn't name
-    // read. (Cost version 2: the sea side's inland water kept as bits, task #1439; 1: the cut, task
-    // #1361: its peak 2.75 → 3.01 GB on the mini.)
+    // read.
     Step {
-        cost_v: 2,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
         reads: &[
             In { name: "extents", of: idents::extents_pieces },
@@ -1465,9 +1450,7 @@ pub const TABLE: [Step; 65] = [
     // coverage, the input check's measures, the store's fill masks and the pyramids' stores (it
     // waits for their fill), cut to the pass's coastline's land, made again only where a dataset or
     // the land moved. Any member's, as `available`'s: it reads the store's masks over the NAS.
-    // (Cost version 1: the cut, task #1361: a z6 tile all sea reads nothing, a z6 tile's mask held.)
     Step {
-        cost_v: 1,
         versions: &[("available-built", || terrain::available::built::KEY_V.to_string())],
         reads: &[
             In { name: "elevation", of: idents::built_datasets },
@@ -1498,7 +1481,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         // (The coverage read from the regions, the pass's outlines for its countries, then the
         // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578;
         // the coverage itself, shared with every step, is most of it.)
@@ -1514,13 +1496,11 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         versions: &[("rail", || super::build::RAIL_V.to_string())],
         reads: &[All { step: "rail-feeds", grain: Grain::Read(idents::rail_feeds) }, In { name: "rail-reads", of: idents::rail_reads }, In { name: "coverage:cover", of: idents::coverage_cover }, In { name: "coverage:asked", of: idents::coverage_asked }, In { name: "spacing", of: idents::spacing }],
         ..step("trains", Derive, World, "rail", "Counts trains a day on the regions' rail.", w_rail)
     },
     Step {
-        cost_v: 1,
         shared: true,
         versions: &[("pois", || super::build::POIS_V.to_string())],
         reads: &[In { name: "extract", of: idents::extract }, In { name: "coverage:clip", of: idents::coverage_clip }, All { step: "trailends", grain: Grain::Read(idents::pass_trailends) }, In { name: "spacing", of: idents::spacing }],
@@ -1533,7 +1513,6 @@ pub const TABLE: [Step; 65] = [
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
-        cost_v: 1,
         answered: true,
         versions: &[("items", || super::build::ITEMS_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, All { step: "pois", grain: Grain::Read(idents::pois_now) }],
@@ -1546,11 +1525,7 @@ pub const TABLE: [Step; 65] = [
             w_items,
         )
     },
-    // (Cost version 2: #1109, coverage read in place; 1: the World Heritage outlines clipped from the
-    // pass's `whs` set, not the filtered planet; 0's floor, 21.9 GB, no run with its memory timed came
-    // near: 6.4 GB, the clip's 4 GB.)
     Step {
-        cost_v: 2,
         answered: true,
         versions: &[("heritage", || super::build::HERITAGE_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_sites_out) }, In { name: "heritage-sets", of: idents::heritage_sets }, In { name: "coverage:cover", of: idents::coverage_cover }],
@@ -1564,7 +1539,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         versions: &[("marks", || super::build::MARKS_V.to_string())],
         reads: &[All { step: "items", grain: Grain::Read(idents::items_out) }, All { step: "heritage", grain: Grain::Read(idents::heritage_marks) }, All { step: "pois", grain: Grain::Read(idents::units_pois) }, All { step: "peaks", grain: Grain::Read(idents::units_peaks) }],
         ..step(
@@ -1581,10 +1555,7 @@ pub const TABLE: [Step; 65] = [
         reads: &[In { name: "heritage-dots", of: idents::heritage_dots }, All { step: "heritage", grain: Grain::Read(idents::heritage_areas) }, In { name: "base-tiles", of: idents::base_tiles }, All { step: "items", grain: Grain::Read(idents::nothing) }, All { step: "pois", grain: Grain::Read(idents::nothing) }, All { step: "peaks", grain: Grain::Read(idents::nothing) }],
         ..step("landmarks", Pack, World, "overlays", "Draws the area overlays.", w_overlays)
     },
-    // (Cost version 2: #1109, coverage read in place; 1: the coverage asked by distance, never grown,
-    // task #493: 0's floors, 43 GB from buffering the regions' outlines, no run since came near: 0.2 GB.)
     Step {
-        cost_v: 2,
         versions: &[("bld-fetch", || super::build::BLD_FETCH_V.to_string())],
         reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "coverage:asked", of: idents::coverage_asked }],
         ..step(
@@ -1611,7 +1582,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         shared: true,
         versions: &[("bldtiles", || bld::bld::BUILDINGS_V.to_string())],
         reads: &[Of { step: "bldprep", of: bt_prep, grain: Grain::Read(idents::bld_prepared) }, In { name: "bld-sources", of: idents::bld_sources }, In { name: "coverage:shapes", of: idents::coverage_shapes }, In { name: "bld-heritage", of: idents::bld_heritage }],
@@ -1679,7 +1649,6 @@ pub const TABLE: [Step; 65] = [
         )
     },
     Step {
-        cost_v: 1,
         versions: &[("timetables-todo", || roads::timetables::VERSION.to_string())],
         reads: &[In { name: "transit-lines", of: idents::transit_lines }, In { name: "coverage:asked", of: idents::coverage_asked }],
         ..step(
@@ -1691,12 +1660,8 @@ pub const TABLE: [Step; 65] = [
             w_timetables_todo,
         )
     },
-    // (Way 2: the pending uploads checked by their sizes, `wc -c` on the NAS, task #1001. Way 1's
-    // runs hashed them, 813 GB in 4,844 s: weighed the whole NAS by them, the clean-up waited for a
-    // quiet NAS that never came. Way 1 had put away the daily job's runs the same way, task #1000.)
     Step {
         alone: true,
-        cost_v: 2,
         ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_gc)
     },
     Step {
@@ -2590,6 +2555,56 @@ fn w_prune(l: &str, removal: bool) -> bool {
 // (The plan's own tests: pipeline's alone, not where agentcore compiles the plan in, agentcore/build.rs.)
 #[cfg(all(test, not(in_agentcore)))]
 mod tests {
+    /// Task #1253: a step's cost version is derived from the code versions its outputs are keyed
+    /// by, so a version's change moves the cost version of exactly the steps keyed by it (terrain-hi's
+    /// `TERRAIN_V`: terrain-hi, terrain-deep and terrain-lo, which name it), every other step's
+    /// kept; one keyed outside the table (pack, lo) by its own key's version; one that declares
+    /// none, 0.
+    #[test]
+    fn a_cost_version_moves_with_its_steps_code_versions_alone() {
+        use super::{cost_version, way_of, TABLE};
+        let now: Vec<u32> = TABLE.iter().map(way_of).collect();
+        for (r, &v) in TABLE.iter().zip(&now) {
+            assert_eq!(cost_version(r.name), v, "{}", r.name);
+            let declared = !r.versions.is_empty() || !r.key_versions.is_empty();
+            assert_eq!(v != 0, declared, "{}: 0 exactly when it declares no version", r.name);
+        }
+        assert_eq!(cost_version("tail"), 0, "a task's kind");
+        // (Distinct for the steps that declare versions: none shares another's way by chance.)
+        let mut ways: Vec<u32> = now.iter().copied().filter(|&v| v != 0).collect();
+        let n = ways.len();
+        ways.sort_unstable();
+        ways.dedup();
+        assert_eq!(ways.len(), n);
+        let changed =
+            |name: &str| -> Vec<&'static str> {
+                let mut t = TABLE;
+                for r in &mut t {
+                    let moved =
+                        |vs: &'static [(&'static str, fn() -> String)]| -> &'static [(&'static str, fn() -> String)] {
+                            let new: Vec<(&'static str, fn() -> String)> =
+                                vs.iter()
+                                    .map(|&(n, f)| {
+                                        if n == name {
+                                            (n, (|| "moved".to_string()) as fn() -> String)
+                                        } else {
+                                            (n, f)
+                                        }
+                                    })
+                                    .collect();
+                            Box::leak(new.into_boxed_slice())
+                        };
+                    (r.versions, r.key_versions) = (moved(r.versions), moved(r.key_versions));
+                }
+                t.iter().zip(&now).filter(|(r, &v)| way_of(r) != v).map(|(r, _)| r.name).collect()
+            };
+        assert_eq!(changed("terrain-hi"), ["terrain-hi", "terrain-deep", "terrain-lo"]);
+        assert_eq!(changed("heritage-sites"), ["heritage-sites"]);
+        assert_eq!(changed("pack"), ["pack"], "keyed by PACK_V outside the table");
+        assert_eq!(changed("lo"), ["lo"]);
+        assert!(changed("no such version").is_empty());
+    }
+
     /// A write-set tests a name by its parts, held in place (`parts`): a name deeper than a
     /// pattern is not that pattern's, however deep; one ending in `..` takes any depth.
     #[test]
