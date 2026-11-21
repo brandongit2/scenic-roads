@@ -164,13 +164,17 @@ How the PM keeps it:
   mutation runs.
 - Fix a review's lows in the same round, or drop them with a line saying why. A fix that needs a
   new mechanism becomes its own task.
+- **File a follow-up only for a reproduced or measured harm.** A pool-mechanism task (scheduling,
+  pacing, the needs model) needs a recorded live problem behind it. Extensions to NAS pacing and
+  the needs model wait until their live checks report.
 - Start a fresh builder rather than resuming one far past ~100 M tokens of context.
 
 ### Merge, publish, close
 
 - **Merge:** run `tools/dev/merge-ok.sh <branch>`, then fast-forward `main` and push.
-- **Publish:** if a second merge is ready within about 15 minutes of a running publish, fold both
-  into one publish.
+- **Publish in batches, a few times a day**, not once per merge. Each publish runs the full suite on
+  the M4 and restarts every Mac's agent into the new app. Publish at once only for a fix that
+  unblocks the pool or the owner.
 - **A task closes when its publish succeeds.** It stays open, as `backgrounded`, only for a real
   risk that meets all three of these tests:
   1. a named way the change could fail live;
