@@ -813,6 +813,9 @@ namestodo's "reading the catalog, the languages spoken and the translations").
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
+`~/scenic` is a link to it, made by the agent as it starts (`agent::applink`): a path without a
+space, for agents' shell commands.
+
 ```
 bin/scenic-launcher     the launcher (never rebuilt)
 run/<name>              what the launcher runs, one argument per line: server, agent (written by
