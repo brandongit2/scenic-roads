@@ -4014,8 +4014,8 @@ impl Coordinator {
         held::beat(&mut self.shared.lock().unwrap(), b)
     }
 
-    /// The members holding leases while away (`held::away`): member, leases, last heard (unix s).
-    pub fn away(&self) -> Vec<(String, usize, u64)> {
+    /// The members holding leases while away (`held::away`).
+    pub fn away(&self) -> Vec<held::Away> {
         held::away(&self.shared.lock().unwrap())
     }
 
@@ -7603,7 +7603,7 @@ mod tests {
             unit_offer(&c, "6/1/1");
             assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
         }
-        assert_eq!(c.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
+        assert_eq!(c.away().iter().map(|a| (a.member.as_str(), a.jobs)).collect::<Vec<_>>(), [("m1", 1)]);
         assert!(c.member_beat(&word("m1", &[g.lease])).released.is_empty(), "still its");
         assert!(w.beat(g.lease, None).unwrap(), "its job goes on under it");
         // Its job ends: the lease by its word, the target free.

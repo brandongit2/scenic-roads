@@ -99,6 +99,11 @@
 //!   the pool's `nas-apart-judges` on its answers are its listings on its jobs' SMB session,
 //!   undecidable while its own jobs move (docs/pool.md §7.7). Flagged until the probe answers
 //!   again, or the pool's `nas-apart-seconds` is set to 0 (off: no flag).
+//! - **Away** (`away`): a member holding its jobs' leases while the lead hasn't heard from it for
+//!   `held::AWAY_S` (2 min) or more (`Status::away`, crate::coord::Coordinator::away): "m1: 2 jobs
+//!   held, not heard from since 14:02 (25 min)", their targets granted to no other Mac. Flagged
+//!   until it's heard again, its leases end by its word or the owner's (`scenic pool release`), or
+//!   after `held::AWAY_RELEASE_S` (12 h) unheard, when they're released.
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -111,7 +116,7 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big",
+/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat", "refused", "too-big", "away",
 /// "cost-version", "nas-apart"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
@@ -222,7 +227,40 @@ pub fn of(
     v.extend(too_big(st));
     v.extend(not_raised(st));
     v.extend(apart(st));
+    v.extend(away(st, now));
     v
+}
+
+/// The away flags (the module's doc): one per member of `Status::away`, its last word's time in the
+/// lead's local time.
+pub fn away(st: &Status, now: u64) -> Vec<Flag> {
+    st.away
+        .iter()
+        .map(|a| Flag {
+            kind: "away".into(),
+            mac: a.member.clone(),
+            said: format!(
+                "{}: {} held, not heard from since {} ({}): their targets go to no other Mac until it's heard again or they're released, by the owner (scenic pool release {}) or after {} h unheard",
+                a.member,
+                if a.jobs == 1 { "1 job".to_string() } else { format!("{} jobs", a.jobs) },
+                clock(a.heard),
+                span(now.saturating_sub(a.heard)),
+                a.member,
+                crate::coord::held::AWAY_RELEASE_S / 3600
+            ),
+        })
+        .collect()
+}
+
+/// Unix time `t` as this Mac's clock shows it: "14:02".
+fn clock(t: u64) -> String {
+    let t = t as libc::time_t;
+    // SAFETY: `tm` is plain old data, filled in by the call; `t` and `tm` are valid for it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return format!("@{t}");
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
 /// The NAS-apart flags (the module's doc): a Mac answering the NAS's pacing whose probe on its own

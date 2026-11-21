@@ -92,7 +92,7 @@ struct LeadLine: Decodable {
     let flags: [Flag]?
 }
 
-/// A flag of the lead's status (crates/agentcore/src/agent/flags.rs Flag): "idle", "stuck", "slow", "stale", "repeat" or "refused", the
+/// A flag of the lead's status (crates/agentcore/src/agent/flags.rs Flag): its kind ("idle", "stuck", "away" …), the
 /// Mac it's about, what it says.
 struct Flag: Decodable {
     let kind: String

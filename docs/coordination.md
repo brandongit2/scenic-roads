@@ -244,8 +244,9 @@ can tell "holder gone" from "holder unreachable" only by hearing from it, so it 
   ends it still owes the lead (told again each loop until answered).
 - **A member the lead stops hearing from** keeps its leases: held while away after `held::AWAY_S`
   (2 min without a beat, `Coordinator::away`), released after `held::AWAY_RELEASE_S` (12 h unheard,
-  decision 1). *Planned:* saying it on the page, the status and the menu bar ("M1: 2 jobs held,
-  not heard from since 14:02"; task #1158); no view shows it today.
+  decision 1). The lead's status says them (`away`: member, jobs held, last heard) and flags each
+  (pool.md §10, Flags: *away*, "m1: 2 jobs held, not heard from since 14:02 (25 min): …"), so the
+  build page, `scenic status` and the menu bar show it.
 - **Releasing them** is otherwise the owner's call: `scenic pool release <member>` (`POST
   /pool/release`) when that Mac is known gone for good. A hand-off from a released lease is
   refused if a newer lease set its targets (lease order), so nothing is merged twice.

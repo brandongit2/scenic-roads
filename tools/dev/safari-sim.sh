@@ -5,7 +5,8 @@
 # SCENIC_SIM_HOLD=<seconds> waits that long before shutting down; SCENIC_SIM_PORT=<n> serves on another
 # port than 8097 (another agent's run holding it); SCENIC_SIM_JOB=<id> opens that job's page too
 # (/job/<id>, #1105: safari-job.png); SCENIC_SIM_AGENT=<host:port> reads another Mac's agent (the
-# lead's, which keeps the jobs' spans).
+# lead's, which keeps the jobs' spans); SCENIC_SIM_FLAG=<kind:mac:said> gives the lead's status that
+# flag too (touch-test.mjs's --flag).
 #   tools/dev/safari-sim.sh [out-dir] [device name]     (default: iPhone 18 Pro)
 set -uo pipefail
 case ${1:-} in
@@ -29,7 +30,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-node "$here/touch-test.mjs" --serve --port $port --agent ${SCENIC_SIM_AGENT:-127.0.0.1:8090} >"$out/server.log" 2>&1 &
+flag=(); [[ -n ${SCENIC_SIM_FLAG:-} ]] && flag=(--flag "$SCENIC_SIM_FLAG")
+node "$here/touch-test.mjs" --serve --port $port --agent ${SCENIC_SIM_AGENT:-127.0.0.1:8090} $flag >"$out/server.log" 2>&1 &
 srv=$!
 # (A port already held, someone else's server: their page would be the one shown.)
 sleep 1; kill -0 $srv 2>/dev/null || { srv=; echo "FAIL the server didn't start on $port ($out/server.log); SCENIC_SIM_PORT=<n> for another"; exit 1; }

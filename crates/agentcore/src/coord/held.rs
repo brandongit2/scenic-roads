@@ -11,7 +11,8 @@
 //! - **Every member's**: when each member was last heard is kept in the store (`kept::Heard`), so a
 //!   lead's restart doesn't drop it.
 //! - **A member not heard from** keeps its leases (they never lapse): held by an away member after
-//!   `AWAY_S` (`away`; no view says it yet: task #1158), and released after `AWAY_RELEASE_S` (12 h, the PM's
+//!   `AWAY_S` (`away`: in the lead's status, `Status::away`, and flagged, crate::agent::flags's
+//!   "away", on the build page, `scenic status` and the menu bar), and released after `AWAY_RELEASE_S` (12 h, the PM's
 //!   decision of 30 Oct: a repeat costs doubled work only, the merge refusing the old lease's
 //!   result) or by the owner (`scenic pool release <member>`, `POST /pool/release`).
 
@@ -393,9 +394,19 @@ fn ended(s: &mut Shared, gone: &[lease::Lease], why: &str) {
     }
 }
 
+/// A member holding its jobs' leases while away (`away`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Away {
+    pub member: String,
+    /// Its jobs' leases held.
+    pub jobs: usize,
+    /// When it was last heard (unix s).
+    pub heard: u64,
+}
+
 /// The members whose leases are held while away (unheard `AWAY_S` or more, under
-/// `AWAY_RELEASE_S`): each with its jobs' leases and when it was last heard (unix s).
-pub fn away(s: &Shared) -> Vec<(String, usize, u64)> {
+/// `AWAY_RELEASE_S`): each with its jobs' leases and when it was last heard.
+pub fn away(s: &Shared) -> Vec<Away> {
     let (now, unix) = (s.now(), wall(s));
     s.keep
         .members()
@@ -407,7 +418,7 @@ pub fn away(s: &Shared) -> Vec<(String, usize, u64)> {
                 .live(now)
                 .filter(|l| matches!(l.work, lease::Work::Job { .. }) && crate::agent::host_of(&l.worker) == m)
                 .count();
-            (n > 0).then_some((m, n, h.at))
+            (n > 0).then_some(Away { member: m, jobs: n, heard: h.at })
         })
         .collect()
 }

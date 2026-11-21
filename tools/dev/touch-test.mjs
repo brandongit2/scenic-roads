@@ -49,6 +49,9 @@
 //                     AGE s ago, in PHASE, past a threshold (`loop_stuck_s`) of 300 s (task #899:
 //                     an agent before it says no threshold); the Machines tab's lead card then
 //                     checked for its chip, the Overview for its alert (chrome-loop-stuck)
+//   --flag KIND:MAC:SAID  the lead's status in /api/swarm given that flag too (agent::flags::Flag:
+//                     #1158's away, "away:m1:m1: 2 jobs held, …"); the Overview's alerts then
+//                     checked for it (chrome-flag)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --job-id ID       job ID's page checked too (/job/ID, #1105); `--job FILE`: every job's view
 //                     answered from FILE (GET /api/job/<id>), ID 1-1 by default; `--timings FILE`
@@ -130,6 +133,7 @@ const ONLY_MAP = process.argv.includes("--only-map");
 const PHASE_TIMES = arg("--phase-times", null);
 const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
+const FLAG = arg("--flag", null)?.match(/^([^:]+):([^:]+):(.*)$/s)?.slice(1) ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 // (A forwarded answer's headers, less the agent's page version: every answer says this server's.)
@@ -222,7 +226,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, own(r.headers)); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FLAG && o.agent) o.agent.flags = [...(o.agent.flags || []), { kind: FLAG[0], mac: FLAG[1], said: FLAG[2] }]; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -574,6 +578,17 @@ async function run() {
       check("loop stuck: the overview's alerts say it", said);
       await shot("chrome-loop-stuck-overview");
       check("loop stuck: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+    }
+
+    // A flag of the lead's (#1158's away, say): the overview's alerts say it as the lead does.
+    if (FLAG) {
+      errors.length = 0;
+      await show("overview");
+      const line = `${FLAG[0][0].toUpperCase()}${FLAG[0].slice(1)}: ${FLAG[2]}`;
+      await until(`document.body.innerText.includes(${JSON.stringify(line)})`, 5000);
+      check("flag: the overview's alerts say it", await js(`document.body.innerText.includes(${JSON.stringify(line)})`), line);
+      await shot("chrome-flag");
+      check("flag: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
     // The steps' time breakdowns (#844): a row under each step that ran in the footer's range, its

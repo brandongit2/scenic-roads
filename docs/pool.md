@@ -767,7 +767,9 @@ job is given its member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED
   answer; a landing failing under the next one's own failure). The lead's own job's
   "end" says which in its note; it, a member's "fail" and its "done" that failed carry them as
   `failed` (/work/fail's and /work/done's `failed_on`), and an end of none, an older app's, holds
-  every target not done. Both are pool settings (`scenic pool set
+  every target not done. A member's job granted while its pool is off (run in its outbox, its
+  finished targets handed off once the pool is back) tells its failure the same way, a /work/fail
+  owed until the lead answers. Both are pool settings (`scenic pool set
   backoff-start-hours|backoff-ceiling-hours <hours>|off`, the build page's Settings, "Backoff"; the
   start 0.1 to 24 h, the ceiling 1 to 168 h, the history's week), taken as set. A lead's start
   counts the holds and the refusals in a row again from its history (`seed_backoff`): its "fail",
@@ -1632,6 +1634,11 @@ to each member (`mail.json`); a recipient's read marks are in its own folder, so
     answering among them; §7.7, The probe apart down): its figures missing, and with
     `nas-apart-judges` on its answers its listings on its jobs' SMB session; none while
     `nas-apart-seconds` is 0.
+  - *away*: a member holding its jobs' leases while the lead hasn't heard from it for 2 min or more
+    (`held::AWAY_S`, `Coordinator::away`, the status's `away`): how many jobs, and since when
+    (the lead's clock) and how long it's been unheard; their targets go to no other Mac until it's
+    heard again or they're released, by the owner (`scenic pool release <member>`) or after 12 h
+    unheard (coordination.md §6.1).
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (`scenic pool
     set overdue-factor <times>|off` or the build page's Settings), 1.1 to 100; not set, 3
     (`OVERDUE_DEFAULT`, the owner's call).

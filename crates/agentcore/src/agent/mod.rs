@@ -1157,6 +1157,10 @@ pub struct Status {
     /// (crate::coord::Coordinator::not_raised): the lead's, each round; flagged (flags::not_raised).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_raised: Vec<crate::coord::NotRaised>,
+    /// The members holding their jobs' leases while unheard (crate::coord::Coordinator::away): the
+    /// lead's, each round; flagged (flags::away).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub away: Vec<crate::coord::held::Away>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -3428,7 +3432,7 @@ impl Agent {
                 };
                 self.held_entries.extend(held);
             }
-            Some(Held::Leased { dir, .. }) => {
+            Some(Held::Leased { lease, dir }) => {
                 // What it did: every target, or (paused at a safe point) those it finished, handed
                 // off; else given back, failed or (stopped, not failed) interrupted.
                 // (A failed job's finished targets are handed off too, the rest held against it.)
@@ -3446,6 +3450,29 @@ impl Agent {
                 let interrupted = !ok && matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped;
                 // (What its targets held at least, for the lead's floors when it isn't done.)
                 let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"), job)) };
+                // A job's failure told to the lead now, or owed until it answers (`tell_owed`): its
+                // backoff holds what it failed on, as a pooled job's end does (task #1571: only its
+                // finished targets went on, drained into the pool's hand-offs, `Run::drain_outbox`,
+                // and its targets could be granted again at once). Its lease, owed, stays listed
+                // in the beats till then (`held_of_lead`). (A task's end goes by `send_outbox`.)
+                if task.is_none() && outcome.holds(guard_stopped) {
+                    let tell = Tell::End(Box::new(crate::coord::Fail {
+                        lease,
+                        error: fail_why(outcome, note, true),
+                        floors: floors.clone(),
+                        disks,
+                        job_disk_mb: job_disk,
+                        failed_on,
+                        excused: excused.to_string(),
+                        ..Default::default()
+                    }));
+                    // (Leading now: told to the lead once it works as a member, as a pooled job's.)
+                    if self.coord.is_some() {
+                        self.owed.push(tell);
+                    } else {
+                        self.tell_or_owe(tell);
+                    }
+                }
                 let r = serde_json::json!({ "ok": ok, "done": done, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
                 if let Err(e) = store::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
@@ -5120,6 +5147,7 @@ impl Agent {
             status.handoffs_refused = c.handoffs_refused();
             status.too_big = c.too_big();
             status.not_raised = c.not_raised();
+            status.away = c.away();
             status.flags = flags::of(self.o.the_plan, &status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());
@@ -11485,7 +11513,7 @@ mod tests {
 
     /// A lead's agent for the parts' tests (docs/agent-parts.md §7): its own NAS and home, its lock
     /// taken, a single loop's (its parts started by the test).
-    fn parts_agent(d: &Path) -> (Agent, PathBuf) {
+    pub(super) fn parts_agent(d: &Path) -> (Agent, PathBuf) {
         let root = d.join("nas");
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let a = test_agent(Options {
@@ -12164,7 +12192,16 @@ mod tests {
         assert!(
             running.iter().all(|r| r.started_at < held_at && r.pausing.is_some()),
             "nothing started under the hold: {:?}",
-            running.iter().map(|r| (&r.spec.id, r.pausing.clone())).collect::<Vec<_>>()
+            running
+                .iter()
+                .map(|r| (
+                    &r.spec.id,
+                    r.pausing.clone(),
+                    r.paused.clone(),
+                    r.started_at.checked_duration_since(held_at),
+                    held_at.checked_duration_since(r.started_at)
+                ))
+                .collect::<Vec<_>>()
         );
         drop(hung);
         a.plan.stop(Duration::ZERO);
@@ -17405,7 +17442,7 @@ mod tests {
         let kept = home.join("cache/coverage").join(buildstore::coverage::kept_name(&a.version));
         let older = kept.with_file_name(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
-        std::fs::write(&kept, b"RDCOV007").unwrap();
+        std::fs::write(&kept, b"RDCOV008").unwrap();
         std::fs::write(&older, b"RDCOV006").unwrap();
         let first = rings(
             &agent(&store::nasfs::NasRoot::local_for_test(&root), &home)
@@ -21932,6 +21969,114 @@ mod membership_tests {
         assert!(!fail_why(Outcome::Done, "", false).is_empty());
         assert!(!fail_why(Outcome::Failed, " ", true).trim().is_empty());
         assert_eq!(fail_why(Outcome::Failed, "boom", true), "boom");
+    }
+
+    /// Task #1571: a member's job granted while the pool is off (`Held::Leased`, run in its outbox)
+    /// that fails tells the lead, owed while the lead isn't reached; once it is, the lead holds the
+    /// target the job failed on against this Mac (its backoff), not its other target.
+    #[test]
+    fn a_job_leased_out_of_the_pool_that_fails_is_held_by_the_lead_once_told() {
+        let d = tempfile::tempdir().unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(nas.clone()),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        assert!(a.pool.is_none(), "the pool off");
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let ts = vec![("6/12/25".to_string(), "k".to_string()), ("6/12/26".to_string(), "k".to_string())];
+        let cl = crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            &a.host,
+        );
+        // (Granted this Mac as an ask grants: a lease of both targets.)
+        let lease = {
+            let mut s = c.shared.lock().unwrap();
+            let (now, unix) = (s.now(), now_s());
+            let work = crate::coord::lease::Work::Job { step: "unit".into(), targets: ts.clone() };
+            s.leases.grant_at(&a.host, work, now, unix)
+        };
+        // Its job, run in the lease's outbox folder: it began both and failed on 6/12/25.
+        let dir = a.outbox().join(lease.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("work.json"), serde_json::to_vec(&jobs::Work { step: "unit".into(), targets: ts.clone() }).unwrap())
+            .unwrap();
+        std::fs::write(
+            dir.join("costs.jsonl"),
+            "{\"unit\":\"6/12/25\",\"started\":1}\n{\"unit\":\"6/12/26\",\"started\":1}\n{\"unit\":\"6/12/25\",\"failed\":true}\n",
+        )
+        .unwrap();
+        a.slots[0].lease = Some(Held::Leased { lease: lease, dir: dir.clone() });
+        let spec = JobSpec {
+            id: "unit 6/12/25".into(),
+            what: "z6 tiles".into(),
+            cmd: vec!["/usr/bin/true".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(jobs::Work { step: "unit".into(), targets: ts.clone() }),
+        };
+        let log = a.o.home.join("job-0.log");
+        a.slots[0].running = Some(Running::start(spec, None, 1, &[], log, &a.record_path(0), None, None).unwrap());
+        // It fails while the lead isn't reached: its failure owed, its lease still listed.
+        a.client = None;
+        a.end_lease(0, Outcome::Failed, &[], "boom");
+        match a.owed.as_slice() {
+            [Tell::End(f)] => {
+                assert_eq!((f.lease, f.interrupted, f.error.as_str()), (lease, false, "boom"));
+                assert_eq!(f.failed_on, ["6/12/25"]);
+            }
+            o => panic!("told {} things", o.len()),
+        }
+        assert!(a.held_of_lead().contains(&lease), "listed in its beats till told");
+        assert!(dir.join("result.json").is_file(), "its folder kept for the pool's hand-offs");
+        // The lead reached: told; it holds what the job failed on against this Mac, and only that.
+        a.client = Some(cl);
+        a.tell_owed(&nas);
+        assert!(a.owed.is_empty());
+        let failed: BTreeSet<(String, String)> = c.shared.lock().unwrap().failed.keys().cloned().collect();
+        assert_eq!(failed, [(a.host.clone(), crate::coord::cost_key("unit", "6/12/25"))].into());
+        assert!(!c.held("unit").contains("6/12/25"), "its lease ended");
+    }
+
+    /// Task #1158: a member holding a job's lease while the lead hasn't heard from it for 5 min is
+    /// in the lead's status (`Status::away`) and flagged, the same flag in its beat answers' lead
+    /// line (the members' menu bars); heard again, neither.
+    #[test]
+    fn the_lead_s_status_says_a_member_holding_leases_while_away() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, _root) = super::tests::parts_agent(d.path());
+        a.round().unwrap();
+        let c = a.coord.clone().unwrap();
+        let heard = now_s() - 290;
+        {
+            let mut s = c.shared.lock().unwrap();
+            s.keep.heard("m1", Vec::new(), heard);
+            let (now, unix) = (s.now(), now_s());
+            let work = crate::coord::lease::Work::Job { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] };
+            s.leases.grant_at("m1", work, now, unix);
+        }
+        a.round().unwrap();
+        let st = a.beat.view.get().as_ref().clone().unwrap().status;
+        assert_eq!(st.away, [crate::coord::held::Away { member: "m1".into(), jobs: 1, heard }]);
+        let flag = st.flags.iter().find(|f| f.kind == "away").expect("flagged");
+        assert_eq!(flag.mac, "m1");
+        assert!(flag.said.starts_with("m1: 1 job held, not heard from since "), "{}", flag.said);
+        assert!(flag.said.contains("(5 min)"), "{}", flag.said);
+        // (The same in the lead line its beat answers carry, as another member hears it.)
+        let line = c.member_beat(&crate::coord::held::Beat { member: "m2".into(), ..Default::default() }).lead;
+        assert!(line.is_some_and(|l| l.flags.contains(flag)));
+        // Heard again: not away.
+        c.member_beat(&crate::coord::held::Beat { member: "m1".into(), ..Default::default() });
+        a.round().unwrap();
+        let st = a.beat.view.get().as_ref().clone().unwrap().status;
+        assert!(st.away.is_empty() && !st.flags.iter().any(|f| f.kind == "away"), "{:?}", st.flags);
     }
 
     /// Task #1567 review: a member's job the memory guard stopped tells the lead its failure isn't
