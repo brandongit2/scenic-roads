@@ -14,9 +14,9 @@
       or semicolons outside parentheses; only an entry's leading #N is the task left out. Given more
       than once, the lists are merged.
       Refused, nothing written, unless every task named is a small task (the board's `small`),
-      queued, waiting or in flight, not archived and in no other batch; whose text or note says
-      "predicted gain" only with a "Measure first: <the probe or the records>; dropped below
-      <figure>" line in its note (#1577: measured before it's built); at most five; every left-out
+      queued, waiting or in flight, not archived and in no other batch; one whose text or note has a
+      line beginning "Predicted gain:" only with a line "Measure first: <the probe or the records>;
+      dropped below <figure>" in its note (#1577: measured before it's built); at most five; every left-out
       entry has a reason; and, when fewer than five, every other queued small task is named in
       --left-out (a waiting one needn't be). A task in flight is put in the batch as it is (its status
       kept): a small task in no batch, such as one marked small while under way, is recorded so.
@@ -63,11 +63,11 @@ WAITS = ("", "waiting")  # not started: queued, or waiting on the owner (also be
 OUT = ("", "abandoned")  # a member in one of these has left its batch's work (queued again, or dropped)
 NUM = re.compile(r"#(\d+)")
 ENTRY = re.compile(r"^#(\d+)\s*(.*)$", re.S)
-# A task whose value is a predicted gain (#1577) says so in its text or note, and is measured before
-# it's built: its note's "Measure first:" line names the probe or the records, and the figure below
-# which it's dropped.
-GAIN = re.compile(r"\bpredicted gain\b", re.I)
-MEASURE = re.compile(r"^\s*Measure first:\s*(\S.*)$", re.M | re.I)
+# A task whose value is a predicted gain (#1577) says so by a line of its text or note beginning
+# "Predicted gain:", and is measured before it's built: its note's "Measure first:" line names the
+# probe or the records, then "; dropped below" the figure.
+GAIN = re.compile(r"^\s*Predicted gain:", re.M | re.I)
+MEASURE = re.compile(r"^[ \t]*Measure first:[ \t]*(\S.*?;[ \t]*dropped below[ \t]+\S.*)$", re.M | re.I)
 
 
 def call(method, path, body=None):

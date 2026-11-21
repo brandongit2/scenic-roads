@@ -315,9 +315,16 @@ class Batch(Base):
     def test_a_predicted_gain_starts_only_with_its_measure_first_line_which_its_batch_event_carries(self):
         for n in range(1, 6):
             self.b.task(n)
-        self.b.items["i2"]["text"] = "Threads for slope-deep: a predicted gain of 20 %"
-        self.b.items["i4"]["note"] = "From the report. Predicted gain: 1 h a day."
+        self.b.items["i2"]["text"] = "Threads for slope-deep\nPredicted gain: 20 % of its wall"
+        self.b.items["i4"]["note"] = "From the report.\n  predicted gain: 1 h a day."
+        # (The words alone, not on a line of their own, mark nothing.)
+        self.b.items["i5"]["note"] = "Unlike #1497, no predicted gain here; a predicted gain: none."
         self.refused("1", "2", "3", "4", "5", says="#2 is a predicted gain: its note needs a line 'Measure first:")
+        self.refused("1", "2", "3", "4", "5", says="#4 is a predicted gain")
+        # (A Measure first line without the figure below which it's dropped isn't one.)
+        self.b.items["i2"]["note"] = "Measure first: slope-deep's CPU share in the job records"
+        self.b.items["i4"]["note"] += "\nMeasure first: one probe run; dropped below"
+        self.refused("1", "2", "3", "4", "5", says="#2 is a predicted gain")
         self.refused("1", "2", "3", "4", "5", says="#4 is a predicted gain")
         self.b.items["i2"]["note"] = "Measure first: slope-deep's CPU share in the job records; dropped below 15 %"
         self.b.items["i4"]["note"] += "\nmeasure first: one probe run of the step; dropped below 10 min"
