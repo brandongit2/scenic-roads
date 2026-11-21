@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(kept(None, Some(&Hold { cores: 14, ..me.clone() }), false, 14), 13, "a core left to the jobs");
         assert_eq!(kept(Some(&s), None, false, 14), 0);
         // Its process gone: nothing held.
-        let mut c = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let mut c = store::spawn::spawn(&mut store::spawn::command("/usr/bin/true")).unwrap();
         let gone = c.id() as i32;
         c.wait().unwrap();
         put(&Hold { pid: gone, ..me.clone() });

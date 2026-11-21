@@ -13569,7 +13569,7 @@ mod tests {
         a.tend_threads(&cond);
         assert_eq!((file(&a, 0), a.capacity(&cond).in_use), (4, false), "no hold: as it was");
         // Publish's tests hold all but 2 cores, their run's process alive.
-        let mut run = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let mut run = store::spawn::spawn(store::spawn::command("/bin/sleep").arg("60")).unwrap();
         let hold = share::Hold { cores: cores - 2, pid: run.id() as i32, at: jobs::now_s() };
         std::fs::write(a.o.home.join(share::HOLD_FILE), serde_json::to_vec(&hold).unwrap()).unwrap();
         a.take_settings();
