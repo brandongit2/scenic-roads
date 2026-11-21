@@ -13819,13 +13819,30 @@ mod tests {
     }
 
     /// Task #1567 review: the lead's own jobs of a step failing one after another (its "end" that
-    /// held, `finish_failed`) brake it on the step as a member's do, live and after a restart.
+    /// held, `finish_failed`) brake it on the step as a member's do, live and after a restart; a
+    /// page's retry of the step between forgets those not counted yet.
     #[test]
     fn the_lead_s_own_failing_jobs_brake_it_on_their_step() {
         let (d, c, _w, _clock) = every((0, 0));
         c.set_epoch(1);
         let me = c.me.clone();
-        for t in ["6/1/1", "6/1/2", "6/1/3"] {
+        let fail_all = |ts: [&str; 3]| {
+            for t in ts {
+                let (id, job) = grant_pack(&c, &me, &[t]);
+                c.finish_failed(id, &[], &[], "");
+                c.note(history::Event {
+                    worker: Some(me.clone()),
+                    job,
+                    step: Some("pack".into()),
+                    ok: Some(false),
+                    held: true,
+                    ..history::Event::new("end")
+                });
+            }
+            did_pack(&c, "m3", &ts);
+        };
+        let first = ["6/1/1", "6/1/2", "6/1/3"];
+        for t in first {
             let (id, job) = grant_pack(&c, &me, &[t]);
             c.finish_failed(id, &[], &[], "");
             c.note(history::Event {
@@ -13837,11 +13854,19 @@ mod tests {
                 ..history::Event::new("end")
             });
         }
-        did_pack(&c, "m3", &["6/1/1", "6/1/2", "6/1/3"]);
+        c.clear_failed(Some("pack"), "6/1/1", "a test");
+        did_pack(&c, "m3", &first);
+        assert!(!braked_on_pack(&c, &me), "a retry between: forgotten, not counted");
+        fail_all(["6/2/1", "6/2/2", "6/2/3"]);
+        // (Braked once: the first three, forgotten, never braked it.)
+        let brakes =
+            |c: &Coordinator| c.shared.lock().unwrap().failed.get(&(me.clone(), sched::brake_key("pack"))).map(|e| e.1);
         assert!(braked_on_pack(&c, &me), "live");
+        assert_eq!(brakes(&c), Some(1));
         c.stop();
         let (b, _) = start_for_test(&d.path().join("coord"), &me, "");
         assert!(braked_on_pack(&b, &me), "after a restart");
+        assert_eq!(brakes(&b), Some(1), "after a restart");
     }
 
     /// Task #1567 review: a brake is for a faulty Mac, not a faulty step or data (a server's
