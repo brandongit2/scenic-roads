@@ -1283,18 +1283,24 @@ the cautious limit; the memory guard and brake (§7.1, The memory floor) stand b
   threads a job of it starts on (its grant by the cost book), whatever cores the Mac has, so a
   target's memory is one figure everywhere: what `pack` packs, what room is held for it, what a
   Mac's last ask is weighed by, what flags it too big. A target with its own run: that peak plus
-  its memory per thread past the threads it ran on; else its floor or its place's figure, grown to
-  those threads by its step's model; else its step's model.
+  its memory per thread past the threads it ran on, by the rule its step's runs are grown by
+  (`needs::Book::thread_mb`, task #1584): the memory per thread fitted over its step's runs'
+  sizes and threads, at least `needs-thread-share` of its peak over its threads; that whole where
+  its step's runs fit nothing a thread (fewer than ten said their threads, or all the same
+  ones). Else its floor or its place's figure, grown to those threads by its step's model; else
+  its step's model.
 - **Fewer threads where memory is short** (`Sched::mem_threads`, task #1582): a job of a step
   whose jobs keep to the threads they're granted (`sched::keeps_threads`: the steps honouring
   their threads and the paced ones, the input checks and tree cover) whose memory on its start
   threads passes the room is read on the most fewer that fit, down to one, and granted that many
   at most; its memory on the threads it's granted (fewer again for the cores left) is what it's
   packed, counted and held at, and its grant covers those threads alone. A target measured on 1
-  thread with 0.7 cores busy starts on 2 by the cost book, its second thread at its whole peak (the
-  regions check: 4.6 GB on 1, 9.0 GB on 2); where the room fits 4.6 GB alone it starts on 1, and
-  its agent grows it only where the Mac's memory covers the next thread. What room is held for
-  it, the words of a refusal and too big's flag read it on the threads that room fits.
+  thread with 0.7 cores busy starts on 2 by the cost book (the regions check: 4.6 GB on 1; on 2,
+  9.0 GB while the input checks' runs, all on one thread, fit nothing a thread, 6.7 GB once they
+  do); where the room fits 4.6 GB alone it starts on 1, and its agent grows it only where the
+  Mac's memory covers the next thread. What room is held for it, how it is counted for a member
+  placement weighs (`Sched::placed_start`, by that member's last ask), the cores held with its
+  room, the words of a refusal and too big's flag read it on the threads that room fits.
 - **A job's targets together** (`Sched::job_need`): a job is admitted at the most of its targets'
   memory, all on the threads the most of them starts on, and targets are added only while that
   fits the room.

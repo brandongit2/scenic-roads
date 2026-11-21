@@ -732,11 +732,12 @@ impl Model {
         self.mem_units(sizes).into_iter().filter_map(|(p, u)| p.thread_mb(u)).max()
     }
 
-    /// The memory per thread fitted over its runs' sizes and threads (`PerUnit::mem_per_thread`)
-    /// of the first size a target of `sizes` is read by: a slope, the same for every size. None
-    /// where none is fitted.
-    pub fn fitted_per_thread(&self, sizes: &BTreeMap<String, f64>) -> Option<f64> {
-        self.mem_units(sizes).first()?.0.mem_per_thread
+    /// Memory per thread of a target of `sizes` whose own peak over its threads is `linear` (MB),
+    /// by the rule its step's runs are grown by (`PerUnit::per_thread_of`, of the first size it is
+    /// read by): the memory per thread fitted over their sizes and threads, at least
+    /// `thread_share` of `linear`; `linear` itself where none is fitted.
+    pub fn per_thread_of(&self, sizes: &BTreeMap<String, f64>, linear: f64) -> f64 {
+        self.mem_units(sizes).first().map_or(linear, |(p, _)| p.per_thread_of(linear))
     }
 
     /// The bar a move of one of the step's targets' memory is weighed against, by its runs alone,

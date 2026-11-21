@@ -70,9 +70,9 @@ pub struct Held {
     pub rule: Rule,
     pub words: String,
     /// The job held back with its disk short now (the first refused for its room, `Rule::Room`, or
-    /// the one room is held for, `Rule::Waiting`) whose memory and cores fit its Mac once its jobs
-    /// end, the disk left out (the most its jobs could hold, `ask_limit`, and its cores for jobs,
-    /// `ask_cores`), and whose disk its caches can give (`Capacity::freeable_mb`): the disk it
+    /// the one room is held for, `Rule::Waiting`) whose memory fits its Mac once its jobs end, the
+    /// disk left out (the most its jobs could hold, `ask_limit`; its cores always fit, a job granted
+    /// within its Mac's for jobs, `ask_cores`), and whose disk its caches can give (`Capacity::freeable_mb`): the disk it
     /// needs (MB: its step's disk floor and its shared cache's fill among it, the whole copies
     /// counted free for it taken off), which its Mac's agent frees its caches toward past its room
     /// target and reservations (crate::agent's `held_room`); room is held for it meanwhile
@@ -628,14 +628,14 @@ impl Backfill {
     }
 
     /// The refusal of `room` and the `cores` left (`words`'s), held as `Rule::Waiting`: with the
-    /// disk the waiting job needs when its disk is short now and its memory and cores fit its Mac
-    /// once its jobs end (`whole`) and its disk is within `reach` (`disk_reach`), so the disk freed
-    /// now isn't what it waits for then (`Held::disk_mb`).
-    fn held(&self, room: &Ask, cores: u32, whole: (u64, u32), reach: u64, later: bool) -> Held {
+    /// disk the waiting job needs when its disk is short now and its memory fits its Mac once its
+    /// jobs end (`whole_mb`) and its disk is within `reach` (`disk_reach`), so the disk freed now
+    /// isn't what it waits for then (`Held::disk_mb`).
+    fn held(&self, room: &Ask, cores: u32, whole_mb: u64, reach: u64, later: bool) -> Held {
         let w = &self.w;
         let need = w.disk_mb.saturating_sub(w.credit);
         let short = room.disk_mb.is_some_and(|d| d + w.credit < w.disk_mb);
-        let rest = w.mem_mb <= whole.0 && w.cores <= whole.1 && need <= reach;
+        let rest = w.mem_mb <= whole_mb && need <= reach;
         let named = short && rest;
         Held {
             disk_mb: named.then_some(need),
@@ -763,21 +763,14 @@ struct Refused {
 
 impl Refused {
     /// The disk the blocked target needs (MB, the whole copies counted for it, `copies`, taken off)
-    /// when its disk is past the room left `room` (`Held::disk_mb`) and its memory and cores fit its
-    /// Mac once its jobs end (`fits_whole`, as `Backfill::held` weighs them: short of memory now
-    /// beside them, it's held for once the disk is freed, `room_wait`) and within `reach`, the most
-    /// its Mac's disk can give (`disk_reach`); None when it would never fit there, or none is blocked.
-    fn disk_alone(
-        &self,
-        room: &Ask,
-        copies: u64,
-        reach: u64,
-        fits_whole: impl FnOnce(&str, &str, u64) -> bool,
-    ) -> Option<u64> {
-        let (step, target, m) = self.blocked.as_ref()?;
+    /// when its disk is past the room left `room` (`Held::disk_mb`) and its memory fits its Mac's
+    /// `whole_mb` once its jobs end (as `Backfill::held` weighs it: short of memory now beside them,
+    /// it's held for once the disk is freed, `room_wait`) and within `reach`, the most its Mac's
+    /// disk can give (`disk_reach`); None when it would never fit there, or none is blocked.
+    fn disk_alone(&self, room: &Ask, copies: u64, reach: u64, whole_mb: u64) -> Option<u64> {
+        let (_, _, m) = self.blocked.as_ref()?;
         let need = m.disk_mb.saturating_sub(copies);
-        (room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && need <= reach && fits_whole(step, target, m.mem_mb))
-            .then_some(need)
+        (room.disk_mb.is_some_and(|d| m.disk_mb > d + copies) && need <= reach && m.mem_mb <= whole_mb).then_some(need)
     }
 
     /// The disk the blocked target needs past `reach` (MB), when it does: no cache is freed for it
@@ -2058,11 +2051,11 @@ impl Sched {
         let ours = tenths_to_cores((total * 10).saturating_sub(cores));
         let outside = outside_cores(a, ours);
         cores = cores.saturating_sub(outside * 10);
-        // (Its Mac's memory and cores (tenths) once its jobs end, the disk left out: what a job held
-        // back for its disk must fit for its disk to be named, `Held::disk_mb`. Its ceiling, not the
-        // room the memory has now: a Mac under pressure still frees its caches for a job its memory
-        // takes once the pressure eases.)
-        let whole = (super::ask_limit(a).unwrap_or(a.mem_mb), total * 10);
+        // (Its Mac's memory once its jobs end, the disk left out: what a job held back for its disk
+        // must fit for its disk to be named, `Held::disk_mb`; its cores always do, `need_cores`
+        // granting within them. Its ceiling, not the room the memory has now: a Mac under pressure
+        // still frees its caches for a job its memory takes once the pressure eases.)
+        let whole = super::ask_limit(a).unwrap_or(a.mem_mb);
         // (And the disk it can give such a job, its caches freed: `disk_reach`.)
         let reach = disk_reach(a);
         // (The jobs it holds as room held for a waiting job weighs them (`Backfill`): how long each
@@ -2231,7 +2224,8 @@ impl Sched {
                         // freed, `Held::disk_mb`.)
                         let whole = disk_with(a, fill, credit.saturating_add(caches_free(a)));
                         waiting = self.room_wait(o, &whole, &room_o, now).map(|(m, ts)| {
-                            let n = self.pack_need(&o.step, &ts);
+                            // (Its cores on the threads its memory was read at in that room.)
+                            let n = self.pack_need_in(&o.step, &ts, whole.mem_mb);
                             let w = RoomWait {
                                 step: o.step.clone(),
                                 target: ts.first().cloned().unwrap_or_default(),
@@ -2329,11 +2323,7 @@ impl Sched {
                     None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
-                        let fits_whole = |st: &str, t: &str, mem_mb: u64| {
-                            let n = self.pack_need(st, &[t.to_string()]);
-                            mem_mb <= whole.0 && self.need_cores(st, &n, total).1 <= whole.1
-                        };
-                        let disk_mb = r.disk_alone(&room, credit, reach, fits_whole);
+                        let disk_mb = r.disk_alone(&room, credit, reach, whole);
                         // (Past what its disk can give, its caches freed: none freed for it.)
                         let past = r.past_reach(credit, reach).map_or(String::new(), |n| {
                             format!(
@@ -2405,7 +2395,8 @@ impl Sched {
     /// What each thread a job of `step` over `targets`, admitted at `mem_mb` on `on` threads (those
     /// its memory was read at, `read_at`), adds to its memory past them (MB), and
     /// the threads its memory covers: its targets' most (crate::needs::Book::thread_mb: a target's
-    /// own run's peak over its threads, at least its step's fitted memory per thread; one never
+    /// own run's peak over its threads by its step's rule, the fitted memory per thread, at least
+    /// `needs-thread-share` of that, or that whole where none is fitted; one never
     /// run, its step's memory per thread, fitted over its runs' sizes and threads, else its runs'
     /// peaks over their threads); the threads, `on`, or its own runs' where every target ran on
     /// more (`needs::own_threads`: its peak came on them). Where a target's isn't said, the whole
@@ -3254,14 +3245,18 @@ impl Sched {
                 return false;
             }
             let (t, k, _) = &o.targets[i];
-            let Some(m) = self.measured(&o.step, t) else { return true };
+            if self.measured(&o.step, t).is_none() {
+                return true;
+            }
             // (Each other member by the rules its own ask would meet, and only one that would take
-            // it now: a target passed to it is one it takes.)
+            // it now: a target passed to it is one it takes. Its memory as that ask would read it,
+            // on the threads its room fits it on, `measured_in`.)
             let mut who: Vec<(String, f64, Option<f64>)> = slots
                 .keys()
                 .filter_map(|n| {
                     let w = self.workers.get(n)?;
                     let x = w.ask.as_ref()?;
+                    let m = self.measured_in(&o.step, t, x.mem_mb)?;
                     let takes = x.can.contains(&o.step)
                         && self.may_take_measured(o, x, t, k, &m, held, now)
                         && !self.swamped(n, x, now)

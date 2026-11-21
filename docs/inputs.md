@@ -248,9 +248,10 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   emptied) with the threads its job may use now, which the agent decides each minute on what the
   job keeps busy (docs/pool.md §7.1, Threads controlled live: doubled while every
   thread is busy and its waits on the NAS and the network (not the local disk, whose reads rise
-  with its threads) are under a quarter of its time, as the Mac's free cores allow and its memory covers each extra thread at the
-  step's measured peak over the threads it was measured at, the whole peak where those aren't
-  recorded; cut while threads sit idle, however much it waits). The file is read again
+  with its threads) are under a quarter of its time, as the Mac's free cores allow and its memory covers each extra thread at its
+  grant's memory a thread (docs/pool.md §7.7, Memory admission: its own run's peak over its threads
+  by its step's rule, the whole peak where its runs fit nothing a thread; its whole peak where
+  its threads aren't recorded); cut while threads sit idle, however much it waits). The file is read again
   within a second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops
   one that overruns all the same). Tree cover jobs (`trees`) are paced the same way (their blocks'
   bands under permits, docs/steps.md §2).

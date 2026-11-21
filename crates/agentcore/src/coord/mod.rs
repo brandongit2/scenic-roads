@@ -1863,8 +1863,9 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
-    /// `sched::Sched::thread_mb`: a target with its own run, that run's peak over its threads, at
-    /// least its step's fitted memory per thread; one without, its step's memory per thread by the
+    /// `sched::Sched::thread_mb`: a target with its own run, that run's peak over its threads by
+    /// its step's rule (the fitted memory per thread, at least `needs-thread-share` of that, or
+    /// that whole where none is fitted); one without, its step's memory per thread by the
     /// needs model; 0: no figure, a cold start's, so its job grows
     /// past none of them), and the threads the memory it was packed
     /// at covers (its threads and those its memory was read at, the more): its agent reserves that a thread for each one it
@@ -11321,21 +11322,12 @@ mod tests {
     fn a_job_short_of_memory_on_its_start_threads_starts_on_fewer() {
         let ask = |mem_mb: u64| {
             let (_d, c, _w, _clock) = every((0, 0));
-            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 4_389_031)].into();
-            let v = cost_version("inputs");
-            let cost = Cost { peak_mb: 4_590, secs: 6_199, worker: None, v, sizes, ..Default::default() };
-            c.add_costs(&[(cost_key("inputs", "inputs/regions"), cost)]);
+            regions_check(&c);
             assert_eq!(
                 c.shared.lock().unwrap().sched.start_threads("inputs", ["inputs/regions"]),
                 2,
                 "its busy 0.7 and a thread more"
             );
-            let own = Offer {
-                step: "inputs".into(),
-                targets: vec![("inputs/regions".into(), "k".into(), 0)],
-                job: Some("inputs inputs/regions".into()),
-            };
-            c.offer("p", vec![own]);
             let a = Ask { can: vec!["inputs".into()], ..every_ask("m4", "inputs", mem_mb, 100_000) };
             let g = c.ask_own(&a, &BTreeSet::new(), 0);
             let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
@@ -11345,6 +11337,100 @@ mod tests {
         assert_eq!(ask(10_000), Ok((2, 9_180, 4_590, 2)), "room for 2: on 2");
         let why = ask(4_000).expect_err("past its room even on 1 thread");
         assert!(why.contains("needs 4.5 GB of memory"), "its least, on 1 thread: {why}");
+    }
+
+    /// The regions check of 19 Nov (`a_job_short_of_memory_on_its_start_threads_starts_on_fewer`):
+    /// 4,590 MB on 1 thread, 0.7 cores busy; on the 2 it starts on, 1.7 cores counted. Offered as
+    /// the lead's own job.
+    fn regions_check(c: &Coordinator) {
+        let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 4_389_031)].into();
+        let v = cost_version("inputs");
+        let cost = Cost { peak_mb: 4_590, secs: 6_199, worker: None, v, sizes, ..Default::default() };
+        c.add_costs(&[(cost_key("inputs", "inputs/regions"), cost)]);
+        let own = Offer {
+            step: "inputs".into(),
+            targets: vec![("inputs/regions".into(), "k".into(), 0)],
+            job: Some("inputs inputs/regions".into()),
+        };
+        c.offer("p", vec![own]);
+    }
+
+    /// Task #1584 (#1582's review, L2): a job of a step keeping to its threads, granted fewer than
+    /// it starts on, is counted held on the threads it was granted (`Sched::lease_need`), and a
+    /// grow past them at its memory a thread (`Sched::grown_mb`): the regions check granted 1
+    /// thread is held at 4,590 MB, not at 9,180 on the 2 the cost book starts it on; grown to 2,
+    /// one thread more counted, not none.
+    #[test]
+    fn a_job_granted_fewer_threads_is_held_and_grown_on_those_it_was_granted() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        regions_check(&c);
+        let a = Ask { can: vec!["inputs".into()], ..every_ask("m4", "inputs", 4_700, 100_000) };
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("granted on 1 thread");
+        assert_eq!((g.threads, g.peak_mb), (1, 4_590));
+        let mut s = c.shared.lock().unwrap();
+        let l = s.leases.of(g.lease).unwrap().clone();
+        assert_eq!(s.sched.lease_mem(&l), 4_590, "held on its 1 thread");
+        s.leases.running_on(g.lease, 2, 2);
+        let l = s.leases.of(g.lease).unwrap().clone();
+        let Work::Job { step, targets } = &l.work else { panic!("a job") };
+        assert_eq!(s.sched.grown_mb(&l, step, targets.iter().map(|t| t.0.as_str()), 4_590), 4_590, "a thread past it");
+    }
+
+    /// Task #1584 (#1582's review, L1): the room held for a job of a step keeping to its threads
+    /// counts its cores on the threads its memory fits the Mac's room on (`Sched::pack_need_in`),
+    /// not those it starts on: the regions check, whose 4,590 MB fit a 5,000 MB Mac on 1 thread,
+    /// held beside a 1,000 MB job of slope-hi (0.4 cores) on a Mac of 2 cores, waits for its memory
+    /// alone: its 1 core fits the 1.6 left, where the 1.7 it counts for on 2 threads didn't.
+    #[test]
+    fn room_held_for_a_job_on_fewer_threads_counts_its_cores_there() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 24_000)].into();
+        let v = cost_version("slope-hi");
+        let cost = Cost { peak_mb: 1_000, secs: 60, worker: None, v, sizes, ..Default::default() };
+        c.add_costs(&[(cost_key("slope-hi", "6/1/1"), cost)]);
+        let _h = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+        regions_check(&c);
+        let a = Ask {
+            can: vec!["inputs".into()],
+            cores: 2,
+            cap: Some(Capacity { at: unix_now(), cores: 2, cores_free: 2, ..Default::default() }),
+            ..every_ask("m4", "inputs", 5_000, 100_000)
+        };
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "3.9 GB left of 5");
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(
+            why.starts_with("room held for a job of inputs inputs/regions (4.5 GB of memory, 3.9 GB left"),
+            "{why}"
+        );
+        assert!(!why.contains(" cores, "), "its 1 core fits the 1.6 left: {why}");
+    }
+
+    /// Task #1584 (#1582's review, L1): placement counts another member as taking a target of a
+    /// step keeping to its threads where that member's room fits it on fewer threads than it
+    /// starts on, as that member's own ask reads it (`Sched::measured_in`). slope-hi's 6/1/1,
+    /// measured on m2 on 1 thread at 4,590 MB, 0.7 cores busy: 9,180 MB on the 2 it starts on.
+    /// m2, its 5,000 MB fitting it on 1 thread and finishing it sooner (its own run's Mac; m1, no
+    /// speeds measured, twice its time), takes it, so m1's pick passes it; m2 short of even 1
+    /// thread (4,000 MB), m1 takes it.
+    #[test]
+    fn placement_counts_a_member_whose_room_fits_a_target_on_fewer_threads() {
+        let picks_m1 = |m2_mb: u64| {
+            let (_d, c, w1, _clock) = every((0, 0));
+            let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
+            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 4_389_031)].into();
+            let v = cost_version("slope-hi");
+            let cost = Cost { peak_mb: 4_590, secs: 6_199, worker: None, v, sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost)], "m2");
+            assert!(w2.ask(&every_ask("m2", "slope-hi", m2_mb, 100_000)).unwrap().is_none());
+            c.set_placement(Some(placement(&[])));
+            let s = c.shared.lock().unwrap();
+            assert_eq!(s.sched.start_threads("slope-hi", ["6/1/1"]), 2);
+            assert_eq!(s.sched.measured("slope-hi", "6/1/1").map(|m| m.mem_mb), Some(9_180));
+            let one = Offer { step: "slope-hi".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], job: None };
+            !s.pick_every(&one, &every_ask("m1", "slope-hi", 30_000, 100_000), s.now()).is_empty()
+        };
+        assert!(!picks_m1(5_000), "m2's: sooner there, its room fitting it on 1 thread");
+        assert!(picks_m1(4_000), "m2 short of it even on 1 thread: m1's");
     }
 
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:
