@@ -44,7 +44,7 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   SQLite's `schema_version` counts): the M6's update puts a database back as it was when a version
   that changed its form doesn't start (tools/app/services.zsh).
 - **On the M6** it ships with the app and its agent installs each version (docs/macs.md, Services:
-  `services.zsh setup devtools`, once, writes the LaunchAgent `local.scenic.devtools`, `--host ::`,
+  `services.zsh set-up devtools`, once, writes the LaunchAgent `local.scenic.devtools`, `--host ::`,
   IPv4 and IPv6, log `~/Library/Logs/scenic/devtools.log`). The other Macs use it at
   http://mac-mini-de-brandon:8077, and any device on the tailnet at https://map.brandontsang.net/dev/
   (Caddy, `tools/caddy`).

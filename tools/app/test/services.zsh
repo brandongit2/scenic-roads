@@ -126,38 +126,38 @@ curl -sf -X POST $B/api/c/items -H 'content-type: application/json' -d '{"text":
 [[ $(items) == 1 ]] || no "the checkout's dev tools" "items $(items 2>&1)"
 
 version one; v1=$REPLY
-# (Task #1214: staged executable, so the documented `…/services/services.zsh setup devtools` runs.)
+# (Task #1214: staged executable, so the documented `…/services/services.zsh set-up devtools` runs.)
 [[ -x $v1 && $(head -1 $v1) == "#!/bin/zsh" ]] && ok "services_stage: the script is executable" \
   || no "services_stage: the script is executable" "$(ls -l $v1)"
-run $v1 setup devtools
-if (( rc )); then no "setup devtools" "exit $rc: $out"
-elif [[ $(page) != "<!-- ${v1:h:h:t} -->" ]]; then no "setup devtools" "the page isn't one's: $(page)"
-elif [[ $(items) != 1 ]]; then no "setup devtools" "items $(items), not the checkout's 1"
+run $v1 set-up devtools
+if (( rc )); then no "set-up devtools" "exit $rc: $out"
+elif [[ $(page) != "<!-- ${v1:h:h:t} -->" ]]; then no "set-up devtools" "the page isn't one's: $(page)"
+elif [[ $(items) != 1 ]]; then no "set-up devtools" "items $(items), not the checkout's 1"
 elif [[ $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist) != "[\"${node//\//\\/}\",\"${${H//\//\\/}}\\/devtools\\/current\\/tools\\/devtools\\/server.mjs\",\"--host\",\"::\",\"--port\",\"$port\",\"--data\",\"${data//\//\\/}\"]" ]]; then
-  no "setup devtools" "the plist: $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist)"
-else ok "setup devtools: from the checkout's, its data kept where it is"; fi
+  no "set-up devtools" "the plist: $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist)"
+else ok "set-up devtools: from the checkout's, its data kept where it is"; fi
 [[ $(uv) == $jform ]] || no "jobs.db" "user_version $(uv), not $jform"
 
 print -rl -- '# an older names file' other.test > $box/names
 csetup=(--caddy $box/bin/caddy --name svc.test --cert $box/cert.pem --key $box/key.pem --https-port $hport)
-run $v1 setup caddy --config $box/nowhere/Caddyfile $csetup
-(( rc == 1 )) && [[ $out == *"isn't set up"* && ! -f $H/caddy/setup ]] && ok "setup caddy refuses a Mac without its Caddy" \
-  || no "setup caddy refuses a Mac without its Caddy" "exit $rc: $out"
-run $v1 setup caddy $csetup
-if (( rc )); then no "setup caddy" "exit $rc: $out"
-elif [[ $(mark) != one ]]; then no "setup caddy" "serves $(mark), not one"
-elif [[ $(grep -v '^#' $box/names) != $'svc.test\nother.test' ]]; then no "setup caddy" "names (its first, the others kept): $(<$box/names)"
-elif [[ $(<$H/version) != ${v1:h:h:t} ]]; then no "setup caddy" "version $(<$H/version)"
+run $v1 set-up caddy --config $box/nowhere/Caddyfile $csetup
+(( rc == 1 )) && [[ $out == *"isn't set up"* && ! -f $H/caddy/setup ]] && ok "set-up caddy refuses a Mac without its Caddy" \
+  || no "set-up caddy refuses a Mac without its Caddy" "exit $rc: $out"
+run $v1 set-up caddy $csetup
+if (( rc )); then no "set-up caddy" "exit $rc: $out"
+elif [[ $(mark) != one ]]; then no "set-up caddy" "serves $(mark), not one"
+elif [[ $(grep -v '^#' $box/names) != $'svc.test\nother.test' ]]; then no "set-up caddy" "names (its first, the others kept): $(<$box/names)"
+elif [[ $(<$H/version) != ${v1:h:h:t} ]]; then no "set-up caddy" "version $(<$H/version)"
 elif ! grep -qxF "https://svc.test:$hport {" $box/caddy/sites/scenic.caddy || grep -q '@[a-z_]*@' $box/caddy/sites/scenic.caddy; then
-  no "setup caddy" "the site file isn't filled in: $(head -12 $box/caddy/sites/scenic.caddy)"
-elif [[ $out != *"devtools: at "*" already"* ]]; then no "setup caddy" "the dev tools restarted too: $out"
-else ok "setup caddy: the site in the Mac's Caddy, the dev tools left running"; fi
-run $v1 setup caddy --bogus x
-(( rc == 2 )) && ok "setup refuses an unknown option" || no "setup refuses an unknown option" "exit $rc"
+  no "set-up caddy" "the site file isn't filled in: $(head -12 $box/caddy/sites/scenic.caddy)"
+elif [[ $out != *"devtools: at "*" already"* ]]; then no "set-up caddy" "the dev tools restarted too: $out"
+else ok "set-up caddy: the site in the Mac's Caddy, the dev tools left running"; fi
+run $v1 set-up caddy --bogus x
+(( rc == 2 )) && ok "set-up refuses an unknown option" || no "set-up refuses an unknown option" "exit $rc"
 # (A setup again takes its settings before as its defaults.)
-run $v1 setup caddy
+run $v1 set-up caddy
 (( rc == 0 )) && [[ $(mark) == one ]] && grep -qxF "https://svc.test:$hport {" $box/caddy/sites/scenic.caddy \
-  && ok "setup caddy again: its settings before kept" || no "setup caddy again: its settings before kept" "exit $rc: $out"
+  && ok "set-up caddy again: its settings before kept" || no "set-up caddy again: its settings before kept" "exit $rc: $out"
 
 # ---- update -----------------------------------------------------------------------------------------
 version two; v2=$REPLY

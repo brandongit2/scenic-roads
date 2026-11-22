@@ -4,7 +4,7 @@
 # updater), or take a release's archive by its path (a Mac with no lead to fetch from: setting up the
 # lead itself), unpack it, point ~/Library/Application
 # Support/scenic/app/current at it, set up the map server on the Mac that serves the map (the Mac
-# mini: the one `services.zsh setup caddy` gave the
+# mini: the one `services.zsh set-up caddy` gave the
 # map's name, ~/.config/scenic/names; its run file, its launchd job started; on any other Mac an
 # old one is removed), and copy Scenic.app to /Applications.
 # Opening Scenic then starts this Mac's build service (its agent, a member of the pool:
@@ -123,7 +123,7 @@ PATH="${uv:h}:$PATH" "$HOME_S/app/$version/scenic-build" pyenv --dem "$HOME_S/ap
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
 # The map server, a launchd service of its own on the map's Mac alone, the Mac mini: the one
-# `services.zsh setup caddy` gave the map's name (~/.config/scenic/names), or the pool's declared lead
+# `services.zsh set-up caddy` gave the map's name (~/.config/scenic/names), or the pool's declared lead
 # (state/build/lead-member.json names this Mac's member, agent/member), either one, so a file gone
 # missing on the mini never removes its map. There: its run file, its job restarted, or loaded. On
 # another Mac, one from before #874 is unloaded and removed, its offline map left (a server started

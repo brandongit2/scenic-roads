@@ -228,7 +228,7 @@ and codesign.
    or, on a Mac with no lead to fetch from (setting up the lead itself), takes a release's archive
    by its path (`--archive <version>.tgz`: one a Mac keeps in `app/releases/`); a Mac holding no
    releases yet keeps it as its own. On the map's Mac (the one
-   `services.zsh setup caddy` gave the map's name, a name in `~/.config/scenic/names`, or the one
+   `services.zsh set-up caddy` gave the map's name, a name in `~/.config/scenic/names`, or the one
    `state/build/lead-member.json` declares the lead: either) it also creates the map server's
    LaunchAgent; on any other it removes one, leaving the Mac's offline map.
 7. Allow `scenic` (and on the map's Mac `server`) through the firewall (pool.md §6.8).
@@ -287,8 +287,8 @@ map's site in the Mac's Caddy (`tools/caddy/scenic.caddy`) ship in every release
 the dashboard serves), and run from `~/Library/Application Support/scenic/services/`, not from a
 git checkout. The dev tools' data has no copy off the mini.
 - **Set up once per service**, by hand, from the installed app, whose copy of the script is
-  executable (`services_stage`): `~/scenic/app/current/services/services.zsh setup devtools`, then
-  `… setup caddy`. Each writes its settings (`services/<service>/setup`; an option changes each:
+  executable (`services_stage`): `~/scenic/app/current/services/services.zsh set-up devtools`, then
+  `… set-up caddy`. Each writes its settings (`services/<service>/setup`; an option changes each:
   `--help`) and installs that version. The dev tools' also writes their LaunchAgent, taking what
   the LaunchAgent of that label ran before as its defaults (node, port and data folder), and loads
   it again from the new plist. Caddy's writes no LaunchAgent (Caddy is the Mac's, below): its
@@ -673,7 +673,7 @@ tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
   else is 403, Funnel included. No key.
 - **A page elsewhere is never the map's:** the `Host` must be an address, localhost, a name only a
   tailnet or local network resolves, or a name the owner gave this Mac (`~/.config/scenic/names`, a
-  name a line, written by `services.zsh setup caddy`; `coordwire::net::names`, read again each minute,
+  name a line, written by `services.zsh set-up caddy`; `coordwire::net::names`, read again each minute,
   so a new name is taken within a minute, no restart): DNS rebinding refused.
   An `Origin` must be the map's own page or this Mac's; CORS only to this Mac's own pages.
 - **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): the first name in

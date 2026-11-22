@@ -8,12 +8,12 @@
 # version's `services.zsh update`, so Caddy's routes change only once the coordinator serving them
 # is up, and only on a Mac where a service was set up.
 #
-#   services.zsh setup devtools [--node <path>] [--data <folder>] [--port <n>]
-#   services.zsh setup caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>]
+#   services.zsh set-up devtools [--node <path>] [--data <folder>] [--port <n>]
+#   services.zsh set-up caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>]
 #                            [--cert <file>] [--key <file>] [--https-port <n>]
 #   services.zsh update [--reload]
 #
-# setup (once per service, by hand, from the installed app's copy, run as a program:
+# set-up (once per service, by hand, from the installed app's copy, run as a program:
 # ~/scenic/app/current/services/services.zsh) writes the service's settings
 # (<home>/services/<service>/setup), then runs update for that service as --reload does.
 # - The dev tools': also their LaunchAgent, which runs them from <home>/services/, loaded again from
@@ -51,32 +51,32 @@
 # A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: the dev
 # tools' job loaded again from its plist, Caddy reloaded with the site file). The versions done are
 # in <home>/services/version; one that failed in `failed`, which the agent doesn't try again (a run
-# by hand does). One run at a time, setup's too (<home>/services/lock).
+# by hand does). One run at a time, set-up's too (<home>/services/lock).
 #
 # SCENIC_SERVICES_SANDBOX=<dir> (tools/app/test/services.zsh, and a trial on the Mac mini): <dir>
 # holds the home, the LaunchAgents' plists, the names file and the Caddyfile's default
 # (<dir>/caddy/Caddyfile), the labels are local.scenic-sandbox.<dir's name>.<service>: nothing of
 # the Mac's own services is touched.
 set -euo pipefail
-usage="usage: services.zsh setup devtools [--node <path>] [--data <folder>] [--port <n>]
-       services.zsh setup caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>] [--cert <file>] [--key <file>] [--https-port <n>]
+usage="usage: services.zsh set-up devtools [--node <path>] [--data <folder>] [--port <n>]
+       services.zsh set-up caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>] [--cert <file>] [--key <file>] [--https-port <n>]
        services.zsh update [--reload]"
 bad() { print -ru2 -- "services.zsh: $*"$'\n'"$usage"; exit 2 }
 typeset -A opt
 cmd=${1:-} svc=
 case $cmd in
   -h|--help) print -r -- $usage; exit 0 ;;
-  setup)
+  set-up)
     svc=${2:-}
     case $svc in
       devtools) allowed=(--node --data --port) ;;
       caddy) allowed=(--caddy --config --name --cert --key --https-port) ;;
-      *) bad "setup: devtools or caddy, not ${svc:-nothing}" ;;
+      *) bad "set-up: devtools or caddy, not ${svc:-nothing}" ;;
     esac
     shift 2
     while (( $# )); do
-      (( ${allowed[(Ie)$1]} )) || bad "setup $svc: unexpected $1"
-      (( $# >= 2 )) || bad "setup $svc: $1 needs a value"
+      (( ${allowed[(Ie)$1]} )) || bad "set-up $svc: unexpected $1"
+      (( $# >= 2 )) || bad "set-up $svc: $1 needs a value"
       opt[$1]=$2; shift 2
     done ;;
   update)
@@ -102,7 +102,7 @@ fi
 mkdir -p $H $agents $logs
 say() { print -r -- "services: $(strftime %T $EPOCHSECONDS) $*" }
 
-# One run at a time, setup's included (its plist and settings written under the lock too).
+# One run at a time, set-up's included (its plist and settings written under the lock too).
 touch $H/lock
 zsystem flock -t 0 -f lockfd $H/lock 2>/dev/null || { say "another run holds $H/lock"; exit 1; }
 
@@ -115,7 +115,7 @@ gone() {  # gone <label>: unloaded, waited for until launchd has let it go
   for (( i = 0; i < 100; i++ )); do loaded $1 || return 0; sleep 0.1; done
   say "$1 still loaded after 10 s"; return 1
 }
-# reloads <service>: its jobs are to be loaded again from their plists (setup's of it, --reload's).
+# reloads <service>: its jobs are to be loaded again from their plists (set-up's of it, --reload's).
 reloads() { [[ ${opt[reload]:-} == (all|$1) ]] }
 # restart <service> <label> <plist>: the job running again from its plist: kickstarted (killed and
 # started again) when loaded, else loaded; when the service reloads, unloaded and loaded again.
@@ -144,44 +144,44 @@ plist() {
   mv -f $tmp $file
 }
 # The program and arguments a loaded job runs (one per line), and its working folder and an
-# environment variable's value: what setup's defaults are read from.
+# environment variable's value: what set-up's defaults are read from.
 job_args() { [[ -f $agents/$1.plist ]] && plutil -extract ProgramArguments json -o - $agents/$1.plist | python3 -c 'import json, sys; print("\n".join(json.load(sys.stdin)))' }
 job_key() { [[ -f $agents/$1.plist ]] && plutil -extract $2 raw -o - $agents/$1.plist 2>/dev/null }
 
-# ---- setup -----------------------------------------------------------------------------------------
+# ---- set-up ----------------------------------------------------------------------------------------
 # A setup file: the service's settings, as `name=value` lines zsh reads back (values quoted).
 write_setup() {  # write_setup <service> <name>…: those variables' values
   local f=$H/$1/setup n; shift
   mkdir -p ${f:h}
-  { print -r -- "# Written by services.zsh setup ${f:h:t} ($(strftime %Y-%m-%dT%H:%M:%S $EPOCHSECONDS), app $version)."
+  { print -r -- "# Written by services.zsh set-up ${f:h:t} ($(strftime %Y-%m-%dT%H:%M:%S $EPOCHSECONDS), app $version)."
     for n; do print -r -- "$n=${(q)${(P)n}}"; done } > $f.tmp
   mv -f $f.tmp $f
 }
 
-if [[ $cmd == setup && $svc == devtools ]]; then
+if [[ $cmd == set-up && $svc == devtools ]]; then
   label=$prefix.devtools
   old=("${(@f)$(job_args $label || true)}")
   node=${opt[--node]:-${old[1]:-}}
-  [[ -n $node ]] || bad "setup devtools: no --node, and no LaunchAgent $label to take it from"
-  case $node in */shims/*) bad "setup devtools: $node is a shim; give the real node" ;; esac
+  [[ -n $node ]] || bad "set-up devtools: no --node, and no LaunchAgent $label to take it from"
+  case $node in */shims/*) bad "set-up devtools: $node is a shim; give the real node" ;; esac
   [[ -x $node ]] || { say "no node at $node"; exit 1; }
   $node -e 'require("node:sqlite")' 2>/dev/null || { say "$node lacks node:sqlite (needs 22.5+)"; exit 1; }
   i=${old[(Ie)--data]}
   data=${opt[--data]:-${${i:#0}:+${old[i+1]}}}
   data=${data:-$(job_key $label WorkingDirectory || true)}
-  [[ -n $data ]] || bad "setup devtools: no --data, and no LaunchAgent $label to take it from"
+  [[ -n $data ]] || bad "set-up devtools: no --data, and no LaunchAgent $label to take it from"
   [[ -d $data ]] || { say "no data folder $data"; exit 1; }
   data=${data:A}
   i=${old[(Ie)--port]}
   port=${opt[--port]:-${${${i:#0}:+${old[i+1]}}:-8077}}
-  [[ $port == <1-65535> ]] || bad "setup devtools: --port $port isn't a port"
+  [[ $port == <1-65535> ]] || bad "set-up devtools: --port $port isn't a port"
   plist=$agents/$label.plist
   write_setup devtools label plist node data port
   app="$H/devtools/current/tools/devtools"
   PLIST_LOG=$logs/devtools.log plist $label $plist $node "$app/server.mjs" --host :: --port $port --data $data
   say "devtools set up: $label (node $node, port $port, data $data)"
   opt[reload]=$svc cmd=update
-elif [[ $cmd == setup && $svc == caddy ]]; then
+elif [[ $cmd == set-up && $svc == caddy ]]; then
   # (Its setup before, if any, gives the defaults.)
   caddy= config= name= cert= key= https_port=
   [[ -f $H/caddy/setup ]] && source $H/caddy/setup
@@ -194,14 +194,14 @@ elif [[ $cmd == setup && $svc == caddy ]]; then
   [[ -x $caddy ]] || { say "no caddy at $caddy (brew install caddy)"; exit 1; }
   [[ -f $config ]] || { say "no Caddyfile at $config: the Mac's Caddy isn't set up (docs/macs.md, Services)"; exit 1; }
   config=${config:A}
-  [[ -n $name ]] || bad "setup caddy: no --name, and none in $names_file"
+  [[ -n $name ]] || bad "set-up caddy: no --name, and none in $names_file"
   [[ -r $cert && -r $key ]] || { say "can't read $cert and $key"; exit 1; }
-  [[ $https_port == <1-65535> ]] || bad "setup caddy: --https-port $https_port isn't a port"
+  [[ $https_port == <1-65535> ]] || bad "set-up caddy: --https-port $https_port isn't a port"
   write_setup caddy caddy config name cert key https_port
   # (Its first line; the other names it held stay after it.)
   others=(${(f)"$(grep -v '^#' $names_file 2>/dev/null | grep -vxF -- $name || true)"})
   mkdir -p ${names_file:h}
-  { print -r -- "# Written by services.zsh setup caddy: the names Caddy serves this Mac under."
+  { print -r -- "# Written by services.zsh set-up caddy: the names Caddy serves this Mac under."
     print -rl -- $name $others } > $names_file.tmp && mv -f $names_file.tmp $names_file
   say "caddy set up: https://$name:$https_port, the site in ${config:h}/sites ($caddy)"
   opt[reload]=$svc cmd=update
