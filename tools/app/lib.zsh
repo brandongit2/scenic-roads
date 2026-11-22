@@ -264,20 +264,24 @@ app_pack() {
 # the git checkout <tree>: the script, executable (it is run as a program, by hand and by the
 # agent), caddy/scenic.caddy, and devtools/ laid out as in the repo (its tracked files but its tests
 # and README, tools/devtools; and web/buildpage's modules its server serves, its PAGE_LIB, beside
-# them as its ../../web/buildpage).
+# them as its ../../web/buildpage). Any step failing fails it, each checked where it's run: it's
+# called under `||`, where errexit is off (22 Nov: a copy of a file the tree no longer had failed,
+# and the release shipped without it).
 services_stage() {
-  local tree=${1:A} to=$2 f
-  mkdir -p $to/caddy $to/devtools/web/buildpage
-  cp -X $tree/tools/app/services.zsh $to/services.zsh
-  chmod 755 $to/services.zsh
-  cp -X $tree/tools/caddy/scenic.caddy $to/caddy/scenic.caddy
-  git -C $tree ls-files tools/devtools | grep -Ev '^tools/devtools/(test/|README\.md$)' | while read -r f; do
-    mkdir -p $to/devtools/${f:h}; cp -X $tree/$f $to/devtools/$f
+  local tree=${1:A} to=$2 f files libs
+  mkdir -p $to/caddy $to/devtools/web/buildpage \
+    && cp -X $tree/tools/app/services.zsh $to/services.zsh \
+    && chmod 755 $to/services.zsh \
+    && cp -X $tree/tools/caddy/scenic.caddy $to/caddy/scenic.caddy || return 1
+  files=(${(f)"$(git -C $tree ls-files tools/devtools)"}) || return 1
+  for f in ${files:#tools/devtools/(test/*|README.md)}; do
+    mkdir -p $to/devtools/${f:h} && cp -X $tree/$f $to/devtools/$f || return 1
   done
   # (Its path in the environment, not in argv: the server, imported, starts only as the program,
   # which its argv[1] would make it.)
-  SERVER=$tree/tools/devtools/server.mjs node --input-type=module \
-    -e 'const m = await import(process.env.SERVER); console.log([...m.PAGE_LIB].join("\n"))' | while read -r f; do cp -X $tree/web/buildpage/$f $to/devtools/web/buildpage/$f; done
+  libs=(${(f)"$(SERVER=$tree/tools/devtools/server.mjs node --input-type=module \
+    -e 'const m = await import(process.env.SERVER); console.log([...m.PAGE_LIB].join("\n"))')"}) || return 1
+  for f in $libs; do cp -X $tree/web/buildpage/$f $to/devtools/web/buildpage/$f || return 1; done
   [[ -f $to/devtools/tools/devtools/server.mjs && -n $(ls $to/devtools/web/buildpage) ]]
 }
 # app_manifest <folder> <version> <archive>: the manifest (a release's, as the lead keeps it) of

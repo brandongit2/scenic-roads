@@ -31,14 +31,33 @@ case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;
   *) print -ru2 -- "publish.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
-cd ${0:A:h}/../..
-source tools/app/lib.zsh
-source tools/dev/devjob.zsh
+# A publish runs the scripts of the commit it publishes, never this checkout's (22 Nov: a checkout 51
+# commits behind staged a release with its own lib.zsh, which copied a file the commit had renamed,
+# and shipped it without it): it fetches origin's main, takes that commit's tools/ and scripts/ into
+# a folder of its own, and runs that publish.sh in its place, in this checkout (SCENIC_PUBLISH_*:
+# the commit, this checkout, that folder). So this checkout's own edits, its branch and how far
+# behind it is play no part, and it can change while the publish runs. A rollback runs as it is:
+# it builds nothing, and must work without origin.
+if [[ -z ${SCENIC_PUBLISH_HEAD:-} && -z $rollback ]]; then
+  cd ${0:A:h}/../..
+  git fetch -q origin main || { echo "publish: can't fetch origin's main"; exit 1; }
+  head=$(git rev-parse origin/main)
+  scripts=$(mktemp -d)
+  git archive $head tools scripts | tar -x -C $scripts || { echo "publish: can't take $head's scripts"; rm -rf $scripts; exit 1; }
+  SCENIC_PUBLISH_HEAD=$head SCENIC_PUBLISH_CHECKOUT=$PWD SCENIC_PUBLISH_SCRIPTS=$scripts exec zsh $scripts/tools/app/publish.sh "$@"
+fi
+# (Read, then out of the environment: the tests and builds it runs see none of them.)
+pub_head=${SCENIC_PUBLISH_HEAD:-} scripts=${SCENIC_PUBLISH_SCRIPTS:-${0:A:h:h:h}}
+cd ${SCENIC_PUBLISH_CHECKOUT:-${0:A:h}/../..}
+unset SCENIC_PUBLISH_HEAD SCENIC_PUBLISH_CHECKOUT SCENIC_PUBLISH_SCRIPTS
+source $scripts/tools/app/lib.zsh
+source $scripts/tools/dev/devjob.zsh
 # Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
 # system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
 path=(/opt/homebrew/bin ~/.cargo/bin $path)
 sb=$(mktemp -d)
 cleanup=("rm -rf $sb")
+if [[ -n $pub_head ]]; then cleanup+=("rm -rf $scripts"); fi
 # Its last line says how it ended: "published <version>" (exit 0), or, on any other exit, "publish:
 # FAILED, nothing published (exit N)" with N non-zero, whatever stopped it. (A wrapper's own exit
 # status, e.g. `publish.sh > log; grep … log`, is the wrapper's last command's: read this line or
@@ -81,12 +100,11 @@ if [[ $rollback == asked ]]; then
   rollback=done
   exit 0
 fi
-# What's published is always the tip of origin's main, fetched now, so every version names a commit
-# either Mac can check out; this checkout (its branch, its edits) plays no part. (Built from a
-# snapshot of that commit, below.)
+# What's published is always the tip of origin's main, fetched as the publish began (its scripts
+# run now, above), so every version names a commit either Mac can check out; this checkout (its
+# branch, its edits) plays no part. (Built from a snapshot of that commit, below.)
 step fetch
-git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
-head=$(git rev-parse --short origin/main)
+head=$(git rev-parse --short $pub_head)
 dj_attr $djrun head $head
 # The lead's live release, read now (through this Mac's installed app): refused now, before
 # building, when it couldn't go in (checked again at the install, by the lead too, where a rollback
@@ -113,7 +131,7 @@ fi
 repo=$PWD
 # The fonts each version serves, from this checkout's data/fonts (not in git: scripts/fonts.sh makes
 # them), every glyph range there before anything is built.
-bash $repo/scripts/fonts.sh --check $repo/data/fonts || exit 1
+bash $scripts/scripts/fonts.sh --check $repo/data/fonts || exit 1
 cache=~/Library/Caches/scenic-publish
 mkdir -p $cache
 step snapshot

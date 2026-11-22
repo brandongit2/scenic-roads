@@ -326,6 +326,42 @@ out=$(ro $Q $I) && no "rollback_ok a floor commit not here" "allowed" || { [[ $o
 out=$(ro $G 0000000) && no "rollback_ok unknown commit" "allowed" || { [[ $out == *"commit 0000000 isn't in this repository"* ]] && ok "rollback_ok unknown commit refused, saying so" || no "rollback_ok unknown commit" "$out"; }
 rm -f $prev
 
+# services_stage, called as publish.sh calls it (under `||`, errexit off there): a tree with every
+# file stages; one without a file it copies (the site file; a tracked dev tools file gone from disk)
+# fails, whatever its last check says (22 Nov: a release shipped without its site file).
+repo=${0:A:h:h:h:h}
+st=$tmp/stage-tree
+mkdir -p $st
+git -C $repo ls-files tools/app/services.zsh tools/caddy tools/devtools web/buildpage | rsync -a --files-from=- $repo/ $st/
+git -C $st init -q && git -C $st add -A
+stage() { zsh -c "set -euo pipefail; source ${(q)lib}; services_stage ${(q)st} ${(q)tmp}/staged-$1 || exit 1" >/dev/null 2>&1 }
+stage whole && [[ -f $tmp/staged-whole/caddy/scenic.caddy ]] && ok "services_stage: a whole tree stages" || no "services_stage: a whole tree" "failed"
+mv $st/tools/caddy/scenic.caddy $tmp/site.keep
+stage nosite && no "services_stage without the site file" "staged" || ok "services_stage without the site file fails"
+mv $tmp/site.keep $st/tools/caddy/scenic.caddy
+rm $st/tools/devtools/public/index.html
+stage nopage && no "services_stage without a dev tools file" "staged" || ok "services_stage without a dev tools file fails"
+
+# publish.sh from a checkout behind origin's main runs that commit's publish.sh, in this checkout,
+# never its own (22 Nov: a checkout 51 commits behind staged a release with its own lib.zsh).
+gitc() { git -c user.name=t -c user.email=t@t.test -c commit.gpgsign=false "$@" }
+po=$tmp/pub-origin.git pc=$tmp/pub-checkout pn=$tmp/pub-newer
+git init -q --bare $po
+git clone -q $po $pc 2>/dev/null
+git -C $pc checkout -q -b main
+mkdir -p $pc/tools/app $pc/scripts
+cp $repo/tools/app/publish.sh $pc/tools/app/publish.sh
+print -r -- '# a script' > $pc/scripts/x
+gitc -C $pc add -A && gitc -C $pc commit -qm one && git -C $pc push -q origin main
+git clone -q -b main $po $pn
+print -r -- 'print -r -- "newer publish.sh: head $SCENIC_PUBLISH_HEAD checkout $SCENIC_PUBLISH_CHECKOUT in $PWD"' > $pn/tools/app/publish.sh
+gitc -C $pn commit -qam two && git -C $pn push -q origin main
+two=$(git -C $pn rev-parse HEAD) one=$(git -C $pc rev-parse HEAD)
+out=$(zsh $pc/tools/app/publish.sh 2>&1)
+if [[ $out != "newer publish.sh: head $two checkout ${pc:A} in ${pc:A}" ]]; then no "publish.sh runs the published commit's scripts" "$out"
+elif [[ $(git -C $pc rev-parse HEAD) != $one || -n $(git -C $pc status --porcelain) ]]; then no "publish.sh leaves its checkout" "$(git -C $pc status --short)"
+else ok "publish.sh from a checkout behind runs the published commit's publish.sh, the checkout left as it was"; fi
+
 # The services (tools/app/services.zsh), in a sandbox of their own.
 zsh ${0:A:h}/services.zsh || failed=1
 

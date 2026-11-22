@@ -706,7 +706,12 @@ or away; normally on the Mac mini over ssh: `ssh m6 'cd ~/projets/scenic-roads &
 shell profile is needed). A release goes live on **the lead** (The lead's releases, below), over
 HTTP: the app's ~840 files as one archive. It
 1. builds the tip of origin's main, fetched now, in its own snapshot
-   (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
+   (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds,
+   with that commit's own scripts: it takes the commit's `tools/` and `scripts/` into a scratch
+   folder and runs that `publish.sh` in its place, in this checkout, so the checkout's own scripts
+   (its edits, its branch, however far behind it is) play no part and the checkout may change while
+   it runs (a rollback runs as it is: it builds nothing); a step of the release's that fails (a file
+   `services_stage` can't copy) stops it;
    refuses without the signing identity, or when codesign can't use its key unprompted;
 2. reads the lead's live release (through this Mac's installed app's `scenic releases`) and
    stops there when the lead's coordinator doesn't answer; refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
