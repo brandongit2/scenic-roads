@@ -262,7 +262,7 @@ app_pack() {
 # services_stage <tree> <folder>: the services a release ships (tools/app/services.zsh, which the
 # agent of a Mac they're set up on runs to install them), put in <folder> (the app's services/) from
 # the git checkout <tree>: the script, executable (it is run as a program, by hand and by the
-# agent), caddy/Caddyfile, and devtools/ laid out as in the repo (its tracked files but its tests
+# agent), caddy/scenic.caddy, and devtools/ laid out as in the repo (its tracked files but its tests
 # and README, tools/devtools; and web/buildpage's modules its server serves, its PAGE_LIB, beside
 # them as its ../../web/buildpage).
 services_stage() {
@@ -270,7 +270,7 @@ services_stage() {
   mkdir -p $to/caddy $to/devtools/web/buildpage
   cp -X $tree/tools/app/services.zsh $to/services.zsh
   chmod 755 $to/services.zsh
-  cp -X $tree/tools/caddy/Caddyfile $to/caddy/Caddyfile
+  cp -X $tree/tools/caddy/scenic.caddy $to/caddy/scenic.caddy
   git -C $tree ls-files tools/devtools | grep -Ev '^tools/devtools/(test/|README\.md$)' | while read -r f; do
     mkdir -p $to/devtools/${f:h}; cp -X $tree/$f $to/devtools/$f
   done

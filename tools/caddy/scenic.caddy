@@ -1,0 +1,31 @@
+# The map's site on the Mac mini (docs/macs.md, Devices), on the tailnet alone (its name's DNS
+# record is the M6's Tailscale address), with the owner's certificate (acme.sh, renewed outside
+# Caddy). Caddy is the Mac's own, not the map's: its Caddyfile imports every project's site file
+# from its sites/ folder (docs/macs.md, Services). services.zsh's update fills in the name,
+# certificate, key and port below from its setup, puts the file there as scenic.caddy, and reloads
+# Caddy.
+
+https://@name@:@https_port@ {
+	tls "@cert@" "@key@"
+
+	# The build page (the agent's coordinator, docs/coordinator.md §7), at /build/.
+	redir /build /build/
+	handle_path /build/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+
+	# The dev tools app (tools/devtools): its index, the task board at /dev/task-board/, the dev job
+	# dashboard at /dev/jobs/. (The board's address before it, a task's link with it, sent there; 308
+	# so a write from its page still open, to /task-board/api/…, stays one: the app takes that path.)
+	redir /dev /dev/
+	handle_path /dev/* {
+		reverse_proxy 127.0.0.1:8077
+	}
+	redir /task-board /dev/task-board/ 308
+	redir /task-board/* /dev{uri} 308
+
+	# The map (crates/server).
+	handle {
+		reverse_proxy 127.0.0.1:7311
+	}
+}

@@ -1,7 +1,7 @@
-//! The services a Mac runs beside the app (docs/macs.md, Services: the dev tools app and Caddy on
-//! the Mac mini), kept at the version its agent runs. They're set up once by hand
-//! (`services.zsh setup`, the app's `services/`), which leaves a `setup` file for each in the
-//! app's home's `services/<service>/`; after that, once this Mac's port answers (its coordinator,
+//! The services a Mac runs beside the app (docs/macs.md, Services: the dev tools app and the map's
+//! site in the Mac's own Caddy, on the Mac mini), kept at the version its agent runs. They're set
+//! up once by hand (`services.zsh setup`, the app's `services/`), which leaves a `setup` file for
+//! each in the app's home's `services/<service>/`; after that, once this Mac's port answers (its coordinator,
 //! broker or viewer listening: Caddy's /build routes are theirs), the agent runs its version's
 //! `services/services.zsh update` on a thread of its own, unless `services/version` (done) or
 //! `services/failed` (tried) names that version already. Nothing on a Mac with none set up, nor

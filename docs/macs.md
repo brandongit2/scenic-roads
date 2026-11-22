@@ -155,7 +155,7 @@ as it starts, from the declared lead, and builds that role's parts (docs/agent-p
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini | grants by `/work/ask` |
 | Coordinator, pool store, hand-off merge, the map's log and feed, publishing, GC, backup, catalogue and prune, the other `LEAD_ONLY` steps | the mini | `/pool/*`, `/work/*`, `/map/*` |
 | Map server and its mirror | the mini; a laptop's own on demand (The offline map, above) | devices: map.brandontsang.net; a laptop's own: http://localhost:7311 |
-| Caddy, the dev tools app | the mini | — |
+| The map's site in Caddy, the dev tools app | the mini | — |
 
 - **The menu bar** (tools/status; `scenic menu`, `agentcore::menu`) reads this Mac's disk alone,
   never the NAS: its own agent's status (the fresher of `status.json` and `helper.json`: a file
@@ -197,8 +197,8 @@ the members' in its own (its agent's `status.json`, `helpers`, which other Macs 
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
 (docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the dev tools app, the task board and the dev job dashboard
-(`tools/devtools`, http://mac-mini-de-brandon:8077), and Caddy, both
-shipped with the app and installed by its agent (Services, below), and is the map's address for the phone, the iPad and devices
+(`tools/devtools`, http://mac-mini-de-brandon:8077), and the map's site in the Mac's own Caddy,
+both shipped with the app and installed by its agent (Services, below), and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing) and is the NAS's
 Mac every publish installs through (in this checkout, whose git checks the order); its publishes' tests
@@ -281,18 +281,19 @@ and codesign.
 - The app reads the current and the previous form of every file kind.
 
 **Services** (the Mac mini: `tools/app/services.zsh`): the dev tools app (`tools/devtools`, the
-task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`) and Caddy
-(`tools/caddy`, `local.scenic.caddy`) ship in every release, in the app's `services/` (the
-script, `caddy/Caddyfile`, and `devtools/` laid out as in the repo, with the build page's modules
+task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`) and the
+map's site in the Mac's Caddy (`tools/caddy/scenic.caddy`) ship in every release, in the app's
+`services/` (the script, `caddy/scenic.caddy`, and `devtools/` laid out as in the repo, with the build page's modules
 the dashboard serves), and run from `~/Library/Application Support/scenic/services/`, not from a
 git checkout. The dev tools' data has no copy off the mini.
 - **Set up once per service**, by hand, from the installed app, whose copy of the script is
   executable (`services_stage`): `~/scenic/app/current/services/services.zsh setup devtools`, then
-  `… setup caddy`. Each writes its LaunchAgent and its settings (`services/<service>/setup`), taking
-  what the LaunchAgent of that label ran before as its defaults (the dev tools' node, port and data
-  folder; Caddy's program, name, certificate and key; an option changes each: `--help`), loads it
-  again from the new plist, and installs that version. Caddy's also writes the name to
-  `~/.config/scenic/names`.
+  `… setup caddy`. Each writes its settings (`services/<service>/setup`; an option changes each:
+  `--help`) and installs that version. The dev tools' also writes their LaunchAgent, taking what
+  the LaunchAgent of that label ran before as its defaults (node, port and data folder), and loads
+  it again from the new plist. Caddy's writes no LaunchAgent (Caddy is the Mac's, below): its
+  defaults are its setup's before (Caddy's program, the Mac's Caddyfile, the name, certificate,
+  key and port), and it also writes the name to `~/.config/scenic/names`.
 - **Kept at the app's version by the agent** (`agentcore::agent::services`): once this Mac's port
   answers (its coordinator, broker or viewer listening, as the agent starts on a new version), the
   agent runs that version's `services.zsh update`, unless `services/version` says it's done or
@@ -309,22 +310,30 @@ git checkout. The dev tools' data has no copy off the mini.
   `schema_version`), the job stopped meanwhile: what was written to that database since the copy,
   seconds, is lost then. A run cut short after the switch (the agent's job stopped with it, a
   power cut) leaves `services/devtools/backup/pending`, and the next run goes on from it: the
-  version before and the copies taken before it. Then Caddy: the new Caddyfile validated with the
-  job's settings, put in `services/caddy/Caddyfile`, Caddy restarted and checked (a new process
-  answering HTTPS within 10 s), else the last one seen serving put back. A failure goes to the
+  version before and the copies taken before it. Then Caddy: the new site file filled in from
+  the setup (its `@name@`, `@cert@`, `@key@` and `@https_port@`), put in the Mac's Caddy's `sites/`
+  as `scenic.caddy`, the whole Caddyfile validated, Caddy reloaded through its admin API and
+  checked (HTTPS answering within 10 s); a step failing, the site file last seen serving
+  (`services/caddy/scenic.caddy.before`) is put back and Caddy reloaded again. A failure goes to the
   agent's log, and the agent doesn't try that version again; `services.zsh update` by hand does.
   One run at a time (`services/lock`), setup's too.
 - **The board's data stays where it was**: the data folder its setup names (on the Mac mini, the
   git checkout's `tools/devtools/`: `taskboard.db` and `jobs.db`, untracked).
 - **Tested** in a sandbox (`SCENIC_SERVICES_SANDBOX`, `tools/app/test/services.zsh`, run with
   `tools/app/test/shell.zsh`): real LaunchAgents under labels of their own, the dev tools on a free
-  port, a stand-in Caddy.
+  port, a stand-in for the Mac's Caddy beside another project's site.
+- **Caddy is the Mac's, not the map's:** one Caddy holds port 443 for every site the Mac mini
+  serves, whatever the project. Its LaunchAgent `local.caddy` (log `~/Library/Logs/caddy.log`) runs
+  `~/srv/caddy/Caddyfile`, which enables the admin API on `localhost:2019` (so a site changes by
+  `caddy reload`, with no restart) and imports every `~/srv/caddy/sites/*.caddy`: each project puts
+  in only its own site file there and reloads (`~/srv/caddy/README.md`). The map's is
+  `scenic.caddy`; services.zsh never touches Caddy's own files or another site's.
 - **What still runs from the git checkout on the Mac mini:** publishing (`tools/app/publish.sh`, by
   hand over ssh, and the NAS's side of each publish, whose git checks the order); the dev sweep
   (`local.scenic.sweep`, `tools/dev/sweep-targets.sh` every 20 minutes: it cleans that checkout's
   own agent worktrees and build folders, so it belongs with the checkout); and the board's data
   (above). acme.sh's cron entry (the owner's, outside the repo) renews the certificate and restarts
-  `local.scenic.caddy`.
+  `local.caddy`.
 
 **Server** (the Mac mini alone: a plain LaunchAgent, `local.scenic.server`, no window or menu;
 installed by `tools/app/install.sh`, updated by the updater).
@@ -649,9 +658,9 @@ installed by `tools/app/install.sh`, updated by the updater).
 tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
 `https://mac-mini-de-brandon.<tailnet>.ts.net:8443`. No other Mac runs a map server (task #874).
 - **map.brandontsang.net** (`tools/caddy`): its DNS record (Cloudflare, DNS only) is the M6's
-  Tailscale address, so only the tailnet reaches it. Caddy on the M6 (`brew install caddy`; the
-  LaunchAgent `local.scenic.caddy`, installed with each release: Services, above; log
-  `~/Library/Logs/scenic/caddy.log`) serves it on port 443 with the owner's Let's Encrypt
+  Tailscale address, so only the tailnet reaches it. The M6's Caddy (`brew install caddy`; the
+  Mac's own, `local.caddy`, with the map's site installed with each release: Services, above)
+  serves it on port 443 with the owner's Let's Encrypt
   certificate (`~/certs/map.crt`, `map.key`; acme.sh with Cloudflare DNS renews it and restarts
   Caddy, the owner's token never in the repo): `/` the map (:7311), `/build` the build page (the
   agent, :8090, the page at its root: `/build/`), `/dev` the dev tools app (:8077: `/dev/task-board/` the

@@ -131,7 +131,7 @@ mod tests {
         std::fs::create_dir_all(u.path().join("Library/Caches/scenic/map")).unwrap();
         std::fs::create_dir_all(u.path().join("Library/LaunchAgents")).unwrap();
         std::fs::write(u.path().join(format!("Library/LaunchAgents/{LABEL}.plist")), b"x").unwrap();
-        std::fs::write(u.path().join("Library/LaunchAgents/local.scenic.caddy.plist"), b"x").unwrap();
+        std::fs::write(u.path().join("Library/LaunchAgents/local.caddy.plist"), b"x").unwrap();
         let gone = delete(&its_files(home.path(), u.path()));
         assert_eq!(gone.len(), 2, "{gone:?}");
         assert!(!home.path().join("run/server").exists());
@@ -140,6 +140,6 @@ mod tests {
             assert!(home.path().join(p).exists(), "{p} kept");
         }
         assert!(u.path().join("Library/Caches/scenic/map").exists(), "the followed map kept");
-        assert!(u.path().join("Library/LaunchAgents/local.scenic.caddy.plist").exists());
+        assert!(u.path().join("Library/LaunchAgents/local.caddy.plist").exists());
     }
 }

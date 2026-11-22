@@ -1,27 +1,32 @@
 #!/bin/zsh
 # The services the Mac mini runs beside the app (docs/macs.md, Services): the dev tools app
-# (tools/devtools: the task board and the dev job dashboard, on :8077) and Caddy (tools/caddy: the
-# map's name on the tailnet). Every release ships them in the app's services/ folder
-# (tools/app/lib.zsh's services_stage: this script, caddy/Caddyfile, and devtools/ laid out as in
-# the repo), and the Mac's agent keeps them at the version it runs
+# (tools/devtools: the task board and the dev job dashboard, on :8077) and the map's site in the
+# Mac's Caddy (tools/caddy/scenic.caddy: the map's name on the tailnet). Every release ships them in
+# the app's services/ folder (tools/app/lib.zsh's services_stage: this script, caddy/scenic.caddy,
+# and devtools/ laid out as in the repo), and the Mac's agent keeps them at the version it runs
 # (agentcore::agent::services): once its coordinator listens on this Mac's port, it runs this
 # version's `services.zsh update`, so Caddy's routes change only once the coordinator serving them
 # is up, and only on a Mac where a service was set up.
 #
 #   services.zsh setup devtools [--node <path>] [--data <folder>] [--port <n>]
-#   services.zsh setup caddy [--caddy <path>] [--name <name>] [--cert <file>] [--key <file>]
-#                            [--https-port <n>]
+#   services.zsh setup caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>]
+#                            [--cert <file>] [--key <file>] [--https-port <n>]
 #   services.zsh update [--reload]
 #
 # setup (once per service, by hand, from the installed app's copy, run as a program:
 # ~/scenic/app/current/services/services.zsh) writes the service's settings
-# (<home>/services/<service>/setup) and its LaunchAgent, which runs it from <home>/services/, then
-# runs update, that service's jobs loaded again from their new plists. Its defaults are what that
-# LaunchAgent runs now, if anything: the dev tools' node and data folder (`--data`, else its
-# working folder: on the Mac mini, the git checkout's tools/devtools, where the board's data is);
-# Caddy's program, name (~/.config/scenic/names), certificate and key (else `caddy` on the PATH,
-# ~/certs/map.crt and map.key). Caddy's setup also writes the name first in ~/.config/scenic/names (its
-# other names kept), which the map server and the agent read (coordwire::net::names).
+# (<home>/services/<service>/setup), then runs update for that service as --reload does.
+# - The dev tools': also their LaunchAgent, which runs them from <home>/services/, loaded again from
+#   its new plist. Its defaults are what that LaunchAgent runs now, if anything: its node and data
+#   folder (`--data`, else its working folder: on the Mac mini, the git checkout's tools/devtools,
+#   where the board's data is).
+# - Caddy's: no LaunchAgent. Caddy is the Mac's own, run by a LaunchAgent of the Mac's
+#   (`local.caddy`), whose Caddyfile (`--config`, ~/srv/caddy/Caddyfile) imports every project's
+#   site file from the sites/ folder beside it and enables Caddy's admin API, so a site changes by
+#   a reload. Its defaults are its setup's before, else `caddy` on the PATH, that Caddyfile, the
+#   first name in ~/.config/scenic/names, ~/certs/map.crt and map.key, and port 443. It also writes
+#   the name first in ~/.config/scenic/names (its other names kept), which the map server and the
+#   agent read (coordwire::net::names).
 #
 # update, for each service set up, the dev tools first:
 # - the dev tools: left as they are when they answer at this version, or at a copy whose files are
@@ -37,20 +42,24 @@
 #   the switch and its end (the agent's job stopped, a power cut) leaves devtools/backup/pending (the
 #   version it came from) beside the copies: the next run goes on from them. The two versions'
 #   copies are kept, the others removed.
-# - Caddy: this version's Caddyfile checked (caddy validate, with the job's names), put in
-#   <home>/services/caddy/Caddyfile, Caddy restarted and checked (a new process answering HTTPS on
-#   its port within 10 s); else the last one seen serving (Caddyfile.before) put back.
-# A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: every
-# service's jobs loaded again from their plists, as setup does for its own). The versions done are
+# - Caddy: this version's site file, its @name@, @cert@, @key@ and @https_port@ filled in from the
+#   setup, put in the Caddyfile's sites/ as scenic.caddy; the whole Caddyfile checked (caddy
+#   validate), Caddy reloaded (caddy reload, through its admin API) and checked (HTTPS answering
+#   for the name within 10 s). A step failing, the site file last seen serving
+#   (<home>/services/caddy/scenic.caddy.before; none, no site file) is put back and Caddy reloaded
+#   again. Caddy itself, and the other projects' sites, are never touched.
+# A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: the dev
+# tools' job loaded again from its plist, Caddy reloaded with the site file). The versions done are
 # in <home>/services/version; one that failed in `failed`, which the agent doesn't try again (a run
 # by hand does). One run at a time, setup's too (<home>/services/lock).
 #
 # SCENIC_SERVICES_SANDBOX=<dir> (tools/app/test/services.zsh, and a trial on the Mac mini): <dir>
-# holds the home, the LaunchAgents' plists and the names file, the labels are
-# local.scenic-sandbox.<dir's name>.<service>: nothing of the Mac's own services is touched.
+# holds the home, the LaunchAgents' plists, the names file and the Caddyfile's default
+# (<dir>/caddy/Caddyfile), the labels are local.scenic-sandbox.<dir's name>.<service>: nothing of
+# the Mac's own services is touched.
 set -euo pipefail
 usage="usage: services.zsh setup devtools [--node <path>] [--data <folder>] [--port <n>]
-       services.zsh setup caddy [--caddy <path>] [--name <name>] [--cert <file>] [--key <file>] [--https-port <n>]
+       services.zsh setup caddy [--caddy <path>] [--config <Caddyfile>] [--name <name>] [--cert <file>] [--key <file>] [--https-port <n>]
        services.zsh update [--reload]"
 bad() { print -ru2 -- "services.zsh: $*"$'\n'"$usage"; exit 2 }
 typeset -A opt
@@ -61,7 +70,7 @@ case $cmd in
     svc=${2:-}
     case $svc in
       devtools) allowed=(--node --data --port) ;;
-      caddy) allowed=(--caddy --name --cert --key --https-port) ;;
+      caddy) allowed=(--caddy --config --name --cert --key --https-port) ;;
       *) bad "setup: devtools or caddy, not ${svc:-nothing}" ;;
     esac
     shift 2
@@ -84,10 +93,11 @@ uid=$(id -u) domain=gui/$(id -u)
 if [[ -n ${SCENIC_SERVICES_SANDBOX:-} ]]; then
   box=${SCENIC_SERVICES_SANDBOX:A}
   H=$box/services agents=$box/LaunchAgents names_file=$box/names prefix=local.scenic-sandbox.${box:t}
-  logs=$box/logs
+  logs=$box/logs caddy_conf=$box/caddy/Caddyfile
 else
   H="$HOME/Library/Application Support/scenic/services" agents=$HOME/Library/LaunchAgents
   names_file=$HOME/.config/scenic/names prefix=local.scenic logs=$HOME/Library/Logs/scenic
+  caddy_conf=$HOME/srv/caddy/Caddyfile
 fi
 mkdir -p $H $agents $logs
 say() { print -r -- "services: $(strftime %T $EPOCHSECONDS) $*" }
@@ -172,30 +182,28 @@ if [[ $cmd == setup && $svc == devtools ]]; then
   say "devtools set up: $label (node $node, port $port, data $data)"
   opt[reload]=$svc cmd=update
 elif [[ $cmd == setup && $svc == caddy ]]; then
-  label=$prefix.caddy
-  typeset -A was
-  for k in SCENIC_MAP_NAME SCENIC_CERT SCENIC_KEY SCENIC_HTTPS_PORT; do was[$k]=$(job_key $label EnvironmentVariables.$k || true); done
-  old=("${(@f)$(job_args $label || true)}")
-  caddy=${opt[--caddy]:-${old[1]:-$(command -v caddy || echo /opt/homebrew/bin/caddy)}}
-  name=${opt[--name]:-${was[SCENIC_MAP_NAME]:-$(grep -v '^#' $names_file 2>/dev/null | head -1 || true)}}
-  cert=${opt[--cert]:-${was[SCENIC_CERT]:-$HOME/certs/map.crt}}
-  key=${opt[--key]:-${was[SCENIC_KEY]:-$HOME/certs/map.key}}
-  https_port=${opt[--https-port]:-${was[SCENIC_HTTPS_PORT]:-443}}
+  # (Its setup before, if any, gives the defaults.)
+  caddy= config= name= cert= key= https_port=
+  [[ -f $H/caddy/setup ]] && source $H/caddy/setup
+  caddy=${opt[--caddy]:-${caddy:-$(command -v caddy || echo /opt/homebrew/bin/caddy)}}
+  config=${opt[--config]:-${config:-$caddy_conf}}
+  name=${opt[--name]:-${name:-$(grep -v '^#' $names_file 2>/dev/null | head -1 || true)}}
+  cert=${opt[--cert]:-${cert:-$HOME/certs/map.crt}}
+  key=${opt[--key]:-${key:-$HOME/certs/map.key}}
+  https_port=${opt[--https-port]:-${https_port:-443}}
   [[ -x $caddy ]] || { say "no caddy at $caddy (brew install caddy)"; exit 1; }
+  [[ -f $config ]] || { say "no Caddyfile at $config: the Mac's Caddy isn't set up (docs/macs.md, Services)"; exit 1; }
+  config=${config:A}
   [[ -n $name ]] || bad "setup caddy: no --name, and none in $names_file"
   [[ -r $cert && -r $key ]] || { say "can't read $cert and $key"; exit 1; }
   [[ $https_port == <1-65535> ]] || bad "setup caddy: --https-port $https_port isn't a port"
-  plist=$agents/$label.plist
-  write_setup caddy label plist caddy name cert key https_port
-  typeset -A PLIST_ENV=(SCENIC_MAP_NAME $name SCENIC_CERT $cert SCENIC_KEY $key SCENIC_HTTPS_PORT $https_port)
-  PLIST_LOG=$logs/caddy.log plist $label $plist $caddy run --config "$H/caddy/Caddyfile" --adapter caddyfile
-  unset PLIST_ENV
+  write_setup caddy caddy config name cert key https_port
   # (Its first line; the other names it held stay after it.)
   others=(${(f)"$(grep -v '^#' $names_file 2>/dev/null | grep -vxF -- $name || true)"})
   mkdir -p ${names_file:h}
   { print -r -- "# Written by services.zsh setup caddy: the names Caddy serves this Mac under."
     print -rl -- $name $others } > $names_file.tmp && mv -f $names_file.tmp $names_file
-  say "caddy set up: $label (https://$name:$https_port, $caddy)"
+  say "caddy set up: https://$name:$https_port, the site in ${config:h}/sites ($caddy)"
   opt[reload]=$svc cmd=update
 fi
 
@@ -307,44 +315,48 @@ update_devtools() {
 }
 
 update_caddy() {
-  local label plist caddy name cert key https_port
+  local caddy config name cert key https_port
   source $H/caddy/setup
-  local d=$H/caddy new=$from/caddy/Caddyfile was code p
-  check_env() { SCENIC_MAP_NAME=$name SCENIC_CERT=$cert SCENIC_KEY=$key SCENIC_HTTPS_PORT=$https_port "$@" }
+  local d=$H/caddy t i code p
+  local site=${config:h}/sites/scenic.caddy new=$d/scenic.caddy.new before=$d/scenic.caddy.before
   tls() { [[ $(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port/) != 000 ]] }
-  if ! check_env $caddy validate --config $new --adapter caddyfile > $d/validate.log 2>&1; then
-    say "caddy: $version's Caddyfile doesn't validate: $(tail -3 $d/validate.log)"; return 1
+  serves() {  # Caddy reloaded with the Caddyfile as it is now, answering HTTPS within 10 s
+    $caddy reload --config $config --adapter caddyfile > $d/reload.log 2>&1 || return 1
+    for (( i = 0; i < 50; i++ )); do tls && return 0; sleep 0.2; done
+    return 1
+  }
+  back() {  # the site file last seen serving put back (none, none), Caddy reloaded with it
+    if [[ -f $before ]]; then mv -f $before $site; else rm -f $site; fi
+    serves && say "caddy: the site before serves again" || say "caddy: the site before doesn't serve either"
+  }
+  # This version's site file, filled in from the setup.
+  t=$(<$from/caddy/scenic.caddy) || { say "caddy: no site file in $from/caddy"; return 1 }
+  t=${t//@name@/$name} t=${t//@cert@/$cert} t=${t//@key@/$key} t=${t//@https_port@/$https_port}
+  print -r -- $t > $new || { say "caddy: can't write $new"; return 1 }
+  if cmp -s $new $site && ! reloads caddy && tls; then
+    rm -f $new $before
+    say "caddy: at $version's site already"; return 0
   fi
-  if cmp -s $new $d/Caddyfile && ! reloads caddy && [[ -n $(pid_of $label) ]] && tls; then
-    rm -f $d/Caddyfile.before
-    say "caddy: at $version's Caddyfile already"; return 0
+  # (The one to go back to: the site file last seen serving. A .before is left only by a run cut
+  # short, whose own site file wasn't checked: that one stays.)
+  if [[ -f $site && ! -f $before ]]; then
+    cp -X $site $before.tmp && mv -f $before.tmp $before || { say "caddy: can't keep the site before"; return 1 }
   fi
-  # (The one to go back to: the Caddyfile last seen serving. A Caddyfile.before is left only by a
-  # run cut short, whose own Caddyfile wasn't checked: that one stays.)
-  if [[ -f $d/Caddyfile && ! -f $d/Caddyfile.before ]]; then
-    cp -X $d/Caddyfile $d/Caddyfile.before.tmp && mv -f $d/Caddyfile.before.tmp $d/Caddyfile.before \
-      || { say "caddy: can't keep the Caddyfile before"; return 1 }
+  mkdir -p ${site:h} && mv -f $new $site || { say "caddy: can't write $site"; return 1 }
+  if ! $caddy validate --config $config --adapter caddyfile > $d/validate.log 2>&1; then
+    say "caddy: $config doesn't validate with $version's site: $(tail -3 $d/validate.log)"
+    back; return 1
   fi
-  cp -X $new $d/Caddyfile.tmp && mv -f $d/Caddyfile.tmp $d/Caddyfile || { say "caddy: can't write $d/Caddyfile"; return 1 }
-  was=$(pid_of $label || true)
-  restart caddy $label $plist
-  if up $label "$was" 50 tls; then
-    rm -f $d/Caddyfile.before
-    code=()
-    for p in / /build/ /dev/; do
-      code+=("$p $(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port$p)")
-    done
-    say "caddy: $version's Caddyfile serves https://$name:$https_port (${(j:, :)code})"
-    return 0
+  if ! serves; then
+    say "caddy: no HTTPS on :$https_port within 10 s of a reload with $version's site ($(tail -1 $d/reload.log)): the one before back"
+    back; return 1
   fi
-  say "caddy: no HTTPS on :$https_port within 10 s with $version's Caddyfile: the one before back"
-  if [[ -f $d/Caddyfile.before ]]; then
-    mv -f $d/Caddyfile.before $d/Caddyfile
-    was=$(pid_of $label || true)
-    restart caddy $label $plist
-    up $label "$was" 50 tls && say "caddy: the Caddyfile before serves again" || say "caddy: the Caddyfile before doesn't serve either"
-  fi
-  return 1
+  rm -f $before
+  code=()
+  for p in / /build/ /dev/; do
+    code+=("$p $(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port$p)")
+  done
+  say "caddy: $version's site serves https://$name:$https_port (${(j:, :)code})"
 }
 
 any=
